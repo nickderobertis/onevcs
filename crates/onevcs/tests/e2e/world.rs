@@ -1,0 +1,594 @@
+//! The fixtures the lifecycle journeys are driven against.
+//!
+//! Everything here is **real** except the remote host's decisioning. Origins are
+//! real bare repositories, checkouts are real clones, hooks are real executable
+//! files git runs, and every publication is a real `git push` into a real origin.
+//! What is substituted is the `gh` program: it answers as GitHub would about which
+//! change requests exist and what their checks say — and when it merges one, it
+//! does so with real git against the real bare origin.
+//!
+//! Unix only. The substituted host and the hooks the gate journeys install are
+//! POSIX shell, which is what the repositories this tool drives actually carry.
+
+// llmlint: ignore-file[e2e_not_mocked] the one boundary an offline gate cannot drive
+// is the remote host's own decisioning — which change requests exist, what their
+// checks say, whether a merge is allowed. That is what the program installed here as
+// `gh` answers, and nothing else is substituted: origins are real bare repositories,
+// checkouts are real clones, hooks are real files git runs, every publication is a
+// real `git push`, and when this program merges a change it does so with real git
+// against the same bare origin. A journey asserting that a change reached its base
+// is therefore asserting about git, not about this fixture.
+
+#![cfg(unix)]
+
+use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use assert_cmd::cargo::CommandCargoExt;
+use fs4::fs_std::FileExt;
+
+/// One scratch host: its own home, its own `onevcs` state root, its own origins.
+pub struct World {
+    /// Held for its lifetime: dropping it removes the scratch host.
+    _directory: tempfile::TempDir,
+    root: PathBuf,
+}
+
+impl World {
+    /// A host with git configured and an empty `onevcs` state root.
+    pub fn new() -> Self {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        // Canonical, because `register` records a checkout by its real path and a
+        // path rule is matched against that. On a host whose temporary directory is
+        // reached through a symlink — macOS's `/var` is one — a journey built on the
+        // uncanonical name would write a rule that silently matches nothing, which
+        // is the fixture disagreeing with the tool rather than a finding.
+        let root = std::fs::canonicalize(directory.path()).expect("a canonical scratch root");
+        let world = Self {
+            _directory: directory,
+            root,
+        };
+        std::fs::write(
+            world.path(".gitconfig"),
+            "[user]\n\tname = Journey\n\temail = journey@example.invalid\n\
+             [init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n\
+             [advice]\n\tdetachedHead = false\n",
+        )
+        .expect("a git configuration");
+        world
+    }
+
+    /// A path under this host's scratch root.
+    pub fn path(&self, relative: impl AsRef<Path>) -> PathBuf {
+        self.root.join(relative)
+    }
+
+    /// The state root every `onevcs` invocation in this world shares.
+    pub fn home(&self) -> PathBuf {
+        self.path(".onevcs")
+    }
+
+    /// The `onevcs` binary, pointed at this world.
+    pub fn onevcs(&self) -> assert_cmd::Command {
+        let mut command =
+            std::process::Command::cargo_bin("onevcs").expect("the binary must be built");
+        command
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.root)
+            .env("ONEVCS_HOME", self.home())
+            // Journeys must not wait out a production bound when something is
+            // genuinely stuck; each one that tests a bound sets its own.
+            .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "60")
+            .env("ONEVCS_CHECKS_POLL_SECONDS", "0.02")
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20")
+            .env("ONEVCS_GH", self.path("bin/gh"))
+            .env("ONEVCS_FAKE_GH_STATE", self.path("gh-state"))
+            .current_dir(&self.root);
+        // The one inherited variable: a coverage run tells the instrumented binary
+        // where to write its profile. Cleared, it falls back to the working
+        // directory — which for the commands that run inside a checkout is a stray
+        // file in a tree these journeys assert is clean.
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
+        assert_cmd::Command::from_std(command)
+    }
+
+    /// Every advisory lock file this world's state root holds so far.
+    ///
+    /// A lock is named after a digest of what it guards, so which one guards a
+    /// given run root is read off *when it appears* rather than recomputed here.
+    pub fn locks(&self) -> BTreeSet<PathBuf> {
+        std::fs::read_dir(self.home().join("locks"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    /// Hold one of this world's advisory locks exclusively, exactly as a second
+    /// `onevcs` working inside that run root does. Released when the file is dropped.
+    pub fn occupy(lock: &Path) -> std::fs::File {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock)
+            .unwrap_or_else(|e| panic!("the lock at {} is openable: {e}", lock.display()));
+        assert!(
+            FileExt::try_lock_exclusive(&file).expect("the lock is takeable"),
+            "nothing else may hold {} when a journey occupies it",
+            lock.display()
+        );
+        file
+    }
+
+    /// Run real git, requiring it to succeed.
+    pub fn git(&self, cwd: &Path, args: &[&str]) -> String {
+        let output = self.git_raw(cwd, args);
+        assert!(
+            output.status.success(),
+            "git {} failed in {}:\n{}{}",
+            args.join(" "),
+            cwd.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Run real git, whatever it says.
+    pub fn git_raw(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.root)
+            .output()
+            .expect("git must be installed")
+    }
+
+    /// A real bare origin with one commit on `main`, and its clone URL.
+    pub fn bare_origin(&self, name: &str) -> PathBuf {
+        let seed = self.path(format!("seed-{name}"));
+        std::fs::create_dir_all(&seed).expect("a seed directory");
+        self.git(&seed, &["init", "-q", "-b", "main"]);
+        std::fs::write(seed.join("README.md"), "# origin\n").expect("a seed file");
+        self.git(&seed, &["add", "-A"]);
+        self.git(&seed, &["commit", "-q", "-m", "chore: seed the repository"]);
+
+        let origin = self.path(format!("{name}.git"));
+        self.git(
+            &self.root,
+            &["init", "-q", "--bare", &origin.to_string_lossy()],
+        );
+        self.git(
+            &seed,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        self.git(&seed, &["push", "-q", "origin", "main"]);
+        std::fs::remove_dir_all(&seed).expect("the seed is disposable");
+        // A non-bare receiver would refuse the publication push; a bare one is what
+        // an origin is.
+        origin
+    }
+
+    /// Clone an origin into this world and return the checkout.
+    pub fn clone_of(&self, origin: &Path, name: &str) -> PathBuf {
+        let checkout = self.path(name);
+        self.git(
+            &self.root,
+            &[
+                "clone",
+                "-q",
+                &origin.to_string_lossy(),
+                &checkout.to_string_lossy(),
+            ],
+        );
+        checkout
+    }
+
+    /// Commit a file on a branch of a checkout.
+    pub fn commit_file(&self, checkout: &Path, file: &str, contents: &str, subject: &str) {
+        std::fs::write(checkout.join(file), contents).expect("a file to commit");
+        self.git(checkout, &["add", "-A"]);
+        self.git(checkout, &["commit", "-q", "-m", subject]);
+    }
+
+    /// Install an executable `pre-push` hook running `body`.
+    pub fn install_pre_push(&self, checkout: &Path, body: &str) -> PathBuf {
+        let hooks = self.path(format!(
+            "hooks-{}",
+            checkout.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&hooks).expect("a hooks directory");
+        let hook = hooks.join("pre-push");
+        write_script(
+            &hook,
+            &format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
+        );
+        self.git(
+            checkout,
+            &["config", "core.hooksPath", &hooks.to_string_lossy()],
+        );
+        hook
+    }
+
+    /// Install the program that answers as `gh` for one origin.
+    pub fn install_fake_host(&self, origin: &Path) {
+        let bin = self.path("bin");
+        std::fs::create_dir_all(&bin).expect("a bin directory");
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path("gh-state/origin"),
+            origin.to_string_lossy().as_bytes(),
+        )
+        .expect("the host must know which origin it merges into");
+        write_script(&bin.join("gh"), FAKE_GH);
+    }
+
+    /// What the substituted host reports as a change request's checks.
+    ///
+    /// One `|`-separated row per check: name, status, conclusion, and whether it
+    /// is required. Not a tab — bash's `read` collapses runs of IFS *whitespace*
+    /// however IFS is set, which silently eats a check with no conclusion yet.
+    /// The host renders its rollup from this and decides whether a merge may
+    /// proceed from the same rows, so what it reports and what it acts on cannot
+    /// disagree.
+    pub fn host_checks(&self, checks: &[Check]) {
+        let rows: String = checks
+            .iter()
+            .map(|check| {
+                format!(
+                    "{}|{}|{}|{}\n",
+                    check.name,
+                    check.status,
+                    check.conclusion.unwrap_or(""),
+                    if check.required { "true" } else { "false" }
+                )
+            })
+            .collect();
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/checks.rows"), rows).expect("a check rollup");
+    }
+
+    /// Make the substituted host answer in a shape it has no business answering in.
+    ///
+    /// `no-head` drops the commit a change request's checks are reported against,
+    /// `no-number` drops its identifier, `rollup-not-a-list` answers about its
+    /// checks with something that is not a list of them, `no-state` will not say
+    /// whether it is open or merged, and `no-url` / `url-names-no-change` print
+    /// something other than a change request's URL when one is opened.
+    pub fn answer_malformed(&self, shape: &str) {
+        std::fs::write(self.path("gh-state/malformed"), shape)
+            .expect("a host that answers in the wrong shape");
+    }
+
+    /// Make the substituted host answer about a check without saying whether it
+    /// blocks the merge.
+    pub fn report_checks_that_do_not_say_if_they_block(&self) {
+        std::fs::write(self.path("gh-state/partial-checks"), "")
+            .expect("a host that answers partially");
+    }
+
+    /// Make the substituted host accept a merge and then not perform it.
+    pub fn accept_merges_without_performing_them(&self) {
+        std::fs::write(self.path("gh-state/refuse-merge"), "")
+            .expect("a host that says yes and does nothing");
+    }
+
+    /// Make the substituted host unable to hand over a check's log.
+    pub fn refuse_check_logs(&self) {
+        std::fs::write(self.path("gh-state/no-logs"), "").expect("a host that keeps its logs");
+    }
+
+    /// Every event a session's stream carries, read the way a consumer reads it.
+    pub fn events(&self, token: &str) -> Vec<serde_json::Value> {
+        let output = self
+            .onevcs()
+            .args(["events", token])
+            .output()
+            .expect("the binary runs");
+        assert!(
+            output.status.success(),
+            "`onevcs events {token}` failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("every event is one JSON object"))
+            .collect()
+    }
+
+    /// The events of one kind, in order.
+    pub fn events_of(&self, token: &str, kind: &str) -> Vec<serde_json::Value> {
+        self.events(token)
+            .into_iter()
+            .filter(|event| event["kind"] == kind)
+            .collect()
+    }
+}
+
+fn write_script(path: &Path, contents: &str) {
+    std::fs::write(path, contents).expect("a script");
+    let mut permissions = std::fs::metadata(path)
+        .expect("a written script")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("an executable script");
+}
+
+/// One check the substituted host reports.
+pub struct Check {
+    /// The check's name, as branch protection lists it.
+    pub name: &'static str,
+    /// Where it is: `completed`, or anything else for still running.
+    pub status: &'static str,
+    /// How it ended, once it has.
+    pub conclusion: Option<&'static str>,
+    /// Whether it blocks the merge.
+    pub required: bool,
+}
+
+/// The token printed by `onevcs session open`.
+pub fn token_of(stdout: &[u8]) -> String {
+    let value: serde_json::Value =
+        serde_json::from_slice(stdout).expect("session open prints one JSON object");
+    value["token"]
+        .as_str()
+        .expect("a session carries a token")
+        .to_owned()
+}
+
+/// The worktree printed by `onevcs session open`.
+pub fn worktree_of(stdout: &[u8]) -> PathBuf {
+    let value: serde_json::Value =
+        serde_json::from_slice(stdout).expect("session open prints one JSON object");
+    PathBuf::from(
+        value["worktree"]
+            .as_str()
+            .expect("a session carries a worktree"),
+    )
+}
+
+/// GitHub's decisioning, and nothing else.
+///
+/// It records which change requests exist and what their checks say. When it is
+/// asked to merge one it performs the merge **with real git against the real bare
+/// origin** — so a journey that asserts a change reached its base is asserting
+/// about git, not about this script.
+const FAKE_GH: &str = r##"#!/usr/bin/env bash
+set -euo pipefail
+
+STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
+mkdir -p "$STATE"
+ORIGIN="$(cat "$STATE/origin")"
+CHECKS="$STATE/checks.rows"
+malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
+
+command="${1:-}"; shift || true
+
+case "$command" in
+  api)
+    printf 'tester\n'
+    exit 0
+    ;;
+  run)
+    name=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --job) name="${2:-}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ -f "$STATE/no-logs" ]; then
+      printf 'this repository keeps its check logs to itself\n' >&2
+      exit 1
+    fi
+    if [ -f "$STATE/log-$name.txt" ]; then
+      cat "$STATE/log-$name.txt"
+    else
+      printf 'the host log for check %s\n' "$name"
+    fi
+    exit 0
+    ;;
+  pr) ;;
+  *)
+    printf 'fake gh: unsupported command %s\n' "$command" >&2
+    exit 1
+    ;;
+esac
+
+subcommand="${1:-}"; shift || true
+number=""
+case "$subcommand" in
+  view|merge) number="${1:-}"; shift || true ;;
+esac
+
+repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) repo="${2:-}"; shift 2 ;;
+    --head) head="${2:-}"; shift 2 ;;
+    --base) base="${2:-}"; shift 2 ;;
+    --title) title="${2:-}"; shift 2 ;;
+    --body) body="${2:-}"; shift 2 ;;
+    --json) json_fields="${2:-}"; shift 2 ;;
+    --state) shift 2 ;;
+    --auto) auto=1; shift ;;
+    *) shift ;;
+  esac
+done
+
+# The rollup and the merge decision are rendered from the same rows, so what the
+# host reports and what it acts on cannot disagree.
+rollup() {
+  printf '['
+  local separator="" name status conclusion required entry
+  while IFS='|' read -r name status conclusion required; do
+    [ -n "$name" ] || continue
+    if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
+    if [ -f "$STATE/partial-checks" ]; then
+      printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s}' \
+        "$separator" "$name" "$status" "$entry"
+    else
+      printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"isRequired":%s}' \
+        "$separator" "$name" "$status" "$entry" "$required"
+    fi
+    separator=","
+  done <"$CHECKS" 2>/dev/null || true
+  printf ']'
+}
+
+verdict() {
+  local name status conclusion required total settled red
+  total=0; settled=0; red=0
+  while IFS='|' read -r name status conclusion required; do
+    [ -n "$name" ] || continue
+    [ "$required" = "true" ] || continue
+    total=$((total + 1))
+    [ "$status" = "completed" ] || continue
+    settled=$((settled + 1))
+    case "$conclusion" in
+      success|skipped|neutral) ;;
+      *) red=1 ;;
+    esac
+  done <"$CHECKS" 2>/dev/null || true
+  if [ "$red" = "1" ]; then printf 'red'
+  elif [ "$total" -gt 0 ] && [ "$total" = "$settled" ]; then printf 'green'
+  else printf 'pending'; fi
+}
+
+case "$subcommand" in
+  list)
+    printf '['
+    separator=""
+    for record in "$STATE"/pr-*.env; do
+      [ -e "$record" ] || continue
+      . "$record"
+      [ "$PR_STATE" = "OPEN" ] || continue
+      [ "$PR_HEAD" = "$head" ] || continue
+      [ "$PR_BASE" = "$base" ] || continue
+      case "$malformed" in
+        no-number)
+          printf '%s{"url":"%s","state":"%s","headRefOid":"%s"}' \
+            "$separator" "$PR_URL" "$PR_STATE" "$PR_HEAD_SHA"
+          separator=","
+          continue ;;
+        no-head)
+          printf '%s{"number":%s,"url":"%s","state":"%s"}' \
+            "$separator" "$PR_NUMBER" "$PR_URL" "$PR_STATE"
+          separator=","
+          continue ;;
+      esac
+      printf '%s{"number":%s,"url":"%s","state":"%s","headRefOid":"%s"}' \
+        "$separator" "$PR_NUMBER" "$PR_URL" "$PR_STATE" "$PR_HEAD_SHA"
+      separator=","
+    done
+    printf ']\n'
+    ;;
+  create)
+    case "$malformed" in
+      no-url)
+        printf 'created something, somewhere\n'
+        exit 0 ;;
+      url-names-no-change)
+        printf 'https://github.com/%s/pulls\n' "$repo"
+        exit 0 ;;
+    esac
+    next=1
+    while [ -f "$STATE/pr-$next.env" ]; do next=$((next + 1)); done
+    head_sha="$(git --git-dir "$ORIGIN" rev-parse "refs/heads/$head" 2>/dev/null || printf 'unknown')"
+    {
+      printf 'PR_NUMBER=%s\n' "$next"
+      printf 'PR_URL=https://github.com/%s/pull/%s\n' "$repo" "$next"
+      printf 'PR_STATE=OPEN\n'
+      printf 'PR_HEAD=%s\n' "$head"
+      printf 'PR_BASE=%s\n' "$base"
+      printf 'PR_HEAD_SHA=%s\n' "$head_sha"
+      printf 'PR_MERGE_COMMIT=\n'
+    } >"$STATE/pr-$next.env"
+    printf '%s\n' "$title" >"$STATE/pr-$next.title"
+    printf '%s\n' "$body" >"$STATE/pr-$next.body"
+    printf 'https://github.com/%s/pull/%s\n' "$repo" "$next"
+    ;;
+  view)
+    . "$STATE/pr-$number.env"
+    # `gh` returns exactly the fields it was asked for, and so does this: a caller
+    # that reads a field out of an answer it never requested is a caller that works
+    # here and fails against the real host.
+    wanted() { case ",$json_fields," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+    merge_commit=null
+    if [ -n "$PR_MERGE_COMMIT" ]; then merge_commit="{\"oid\":\"$PR_MERGE_COMMIT\"}"; fi
+    case "$malformed" in
+      no-head)
+        printf '{"number":%s,"state":"%s","mergeCommit":null,"statusCheckRollup":[]}\n' \
+          "$PR_NUMBER" "$PR_STATE"
+        exit 0 ;;
+      rollup-not-a-list)
+        printf '{"number":%s,"state":"%s","headRefOid":"%s","mergeCommit":null,"statusCheckRollup":"soon"}\n' \
+          "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA"
+        exit 0 ;;
+      no-state)
+        # Its checks are answered as usual, so the publication reaches the merge —
+        # which is the call that has to know whether the change is already merged.
+        printf '{"number":%s,"headRefOid":"%s","mergeCommit":null,"statusCheckRollup":%s}\n' \
+          "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
+        exit 0 ;;
+    esac
+    separator=""
+    printf '{'
+    if wanted number; then printf '%s"number":%s' "$separator" "$PR_NUMBER"; separator=","; fi
+    if wanted state; then printf '%s"state":"%s"' "$separator" "$PR_STATE"; separator=","; fi
+    if wanted mergeStateStatus; then printf '%s"mergeStateStatus":"CLEAN"' "$separator"; separator=","; fi
+    if wanted headRefOid; then printf '%s"headRefOid":"%s"' "$separator" "$PR_HEAD_SHA"; separator=","; fi
+    if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
+    if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
+    printf '}\n'
+    ;;
+  merge)
+    . "$STATE/pr-$number.env"
+    if [ "$auto" = "1" ] && [ -f "$STATE/auto-merge-unavailable" ]; then
+      printf 'Auto-merge is not enabled for this repository\n' >&2
+      exit 1
+    fi
+    if [ "$auto" = "1" ] && [ "$(verdict)" != "green" ]; then
+      # Native auto-merge: the host holds the change and lands it when its own
+      # required checks pass. Nothing merges now.
+      exit 0
+    fi
+    if [ -f "$STATE/refuse-merge" ]; then
+      # Accepted, and then nothing happens — the shape a caller cannot tell from a
+      # merge that worked without asking the host again.
+      exit 0
+    fi
+    work="$STATE/merge-$PR_NUMBER"
+    rm -rf "$work"
+    git clone -q "$ORIGIN" "$work"
+    git -C "$work" checkout -q "$PR_BASE"
+    git -C "$work" merge -q --squash "origin/$PR_HEAD"
+    git -C "$work" commit -q -m "$(cat "$STATE/pr-$PR_NUMBER.title") (#$PR_NUMBER)"
+    git -C "$work" push -q origin "$PR_BASE"
+    oid="$(git -C "$work" rev-parse HEAD)"
+    {
+      printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
+      printf 'PR_URL=%s\n' "$PR_URL"
+      printf 'PR_STATE=MERGED\n'
+      printf 'PR_HEAD=%s\n' "$PR_HEAD"
+      printf 'PR_BASE=%s\n' "$PR_BASE"
+      printf 'PR_HEAD_SHA=%s\n' "$PR_HEAD_SHA"
+      printf 'PR_MERGE_COMMIT=%s\n' "$oid"
+    } >"$STATE/pr-$PR_NUMBER.env"
+    rm -rf "$work"
+    ;;
+  *)
+    printf 'fake gh: unsupported pr subcommand %s\n' "$subcommand" >&2
+    exit 1
+    ;;
+esac
+"##;

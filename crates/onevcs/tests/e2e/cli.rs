@@ -1,23 +1,20 @@
-//! Driving the command surface the way a user does.
+//! The **boundary**: which invocations the parser accepts, and which it rejects.
 //!
-//! Two contracts are under test. The **boundary** still holds while the crate is
-//! interface-only: a malformed invocation is rejected with clap's usage error
-//! (exit 2) before anything else runs, and a well-formed one is accepted. What
-//! follows acceptance is the **refusal**: exit 70, naming the command and where
-//! its contract lives, so a caller learns which seam it reached rather than only
-//! that something is missing.
+//! A malformed invocation is rejected with clap's usage error, exit 2, before
+//! anything else runs. A well-formed one gets past the parser and is answered by
+//! the command itself — which is what `lifecycle.rs`, `host.rs`, and `registry.rs`
+//! drive, against real repositories. What this module holds is the argument
+//! surface `docs/contract.md` declares, and nothing behind it.
 
 use predicates::prelude::*;
 
 use crate::support::{commands, onevcs};
 
-/// A command that parsed but has no implementation yet.
-const NOT_IMPLEMENTED: i32 = 70;
 /// clap's usage error.
 const USAGE_ERROR: i32 = 2;
 
 /// Every well-formed invocation the contract's usage block spells, paired with
-/// the command name the refusal must report.
+/// the command it names.
 fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
         ("register", vec!["register", "/home/agent/projects/onevcs"]),
@@ -134,17 +131,26 @@ fn version_reports_this_build() {
 }
 
 #[test]
-fn every_documented_invocation_is_accepted_and_then_refused() {
+fn every_documented_invocation_gets_past_the_parser() {
+    let scratch = tempfile::tempdir().expect("a scratch state root");
     for (command, argv) in accepted_invocations() {
-        onevcs()
+        let output = onevcs()
             .args(&argv)
-            .assert()
-            .code(NOT_IMPLEMENTED)
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains(format!(
-                "`{command}` is not implemented yet"
-            )))
-            .stderr(predicate::str::contains("docs/contract.md"));
+            // Its own state root, so nothing here reads or writes an operator's.
+            .env("ONEVCS_HOME", scratch.path())
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        // Whatever the command then decides, it decided it: a usage error here
+        // would mean the parser and the documented surface had drifted apart.
+        assert!(
+            !stderr.contains("Usage:"),
+            "`{command}` was rejected at the boundary:\n{stderr}"
+        );
+        assert!(
+            stderr.is_empty() || stderr.starts_with("onevcs:"),
+            "`{command}` diagnosed itself in a shape nothing else uses:\n{stderr}"
+        );
     }
 }
 

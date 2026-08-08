@@ -10,13 +10,25 @@ side (identities, sessions over an isolated worktree, preserved work);
 it); a **rules file** decides, per repository, how a change publishes and what
 verifies it. Everything a run does is emitted as an NDJSON event stream.
 
-> ## Interface-only, for now
->
-> This repository is the approved contract — [`docs/contract.md`](docs/contract.md)
-> — compiled. Every public type, trait, config schema, and CLI argument is final
-> and typed; nothing behind them is implemented. Trait methods return
-> `Error::NotImplemented` and every CLI subcommand exits `70`. Behaviour lands
-> per-seam, and each seam brings its own real journey with it.
+The public surface is the approved contract — [`docs/contract.md`](docs/contract.md)
+— compiled, and it is implemented: the registry with its lazy migration, the rules
+engine, sessions over borrowing clones, bounded git, the FIFO merge queue, both
+publication strategies, recovery and provenance, the merge train, and the event
+stream.
+
+## What one change looks like
+
+```console
+onevcs register ~/projects/widgets                 # once per checkout
+onevcs rules check widgets                         # which policy, and why
+token=$(onevcs session open widgets --branch feature/thing | jq -r .token)
+# …work in the worktree the session printed…
+onevcs publish "$token"                            # verify, then land it
+onevcs events "$token"                             # everything it did, as NDJSON
+```
+
+Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
+`~/.onevcs`.
 
 ## Install
 
@@ -36,9 +48,8 @@ the archives and their `.sha256` checksums for a direct download.
 onevcs --help
 ```
 
-The whole command surface, and the exit codes `publish` reserves (`1` gate or
-checks failed, `2` invalid, `3` sync conflict), are declared in
-[`docs/contract.md`](docs/contract.md).
+`--help` is the command surface, and `publish` reserves its own exit codes for a
+gate that failed, a request that was invalid, and a base that moved under it.
 
 ## Develop
 
@@ -48,9 +59,7 @@ just check       # the deterministic gate: format, clippy, tests, coverage, docs
 just gate        # check, plus the diff-scoped LLM-judge tier — the pre-push bar
 ```
 
-`just --list` is the full index. [`AGENTS.md`](AGENTS.md) holds the durable
-instructions: what the gate enforces, how releases work, and the rules that govern
-changes while the crate is interface-only.
+`just --list` is the full index.
 
 ## License
 

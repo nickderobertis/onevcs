@@ -17,16 +17,14 @@ request**, which GitHub maps to a pull request.
 It is consumed as the `onevcs` crate, as the `onevcs` binary (crates.io, PyPI
 `onevcs-cli`, npm `onevcs-cli`), and by `onepipeline`.
 
-## The contract comes first, and it is interface-only right now
+## The contract comes first, and it is not negotiable in passing
 
 [`docs/contract.md`](docs/contract.md) is the approved contract, committed
 verbatim. It is the source of truth for every public type, trait, config schema,
 CLI argument, and event kind in this crate.
 
-**This repository is currently interface-only.** The public surface compiles and
-is fully typed; nothing behind it is implemented. Every trait method and every
-CLI subcommand refuses loudly (`Error::NotImplemented`, exit code `70`) rather
-than pretending. Two rules follow, until a task says otherwise:
+The contract is **implemented**, behind private modules that the public surface
+does not name. Two rules follow, and they are not conditional on that:
 
 - **Do not add a public item the contract does not name.** Where the contract
   under-specifies a type, the inferred shape and the open questions it leaves are
@@ -35,8 +33,10 @@ than pretending. Two rules follow, until a task says otherwise:
   decisions that came from the user.
 - **Do not resolve a contract conflict by changing the interface.** Report it.
 
-Implementation lands per-seam as separate tasks; when one does, its real journey
-lands with it and the corresponding stub disappears.
+`Error::NotImplemented` (exit code `70`) is what a seam with no body answers.
+Publishing a change request for a hosted origin that is not GitHub reaches one:
+the identity is well-formed and the policy is honourable, and this build simply
+has no implementation for that host.
 
 ## Two standing goals on every task
 
@@ -129,8 +129,9 @@ values live in the secret store, never in the tree.
 - Security is gate-level: no secrets in the tree, least-privilege CI tokens, and
   a narrow agent allowlist in `.claude/settings.json`.
 - **`70` is this repo's own exit code**, and the only one the contract does not
-  fix: the command parsed but is not implemented. The whole CLI answers it while
-  this repo is interface-only.
+  fix: the command parsed but the seam behind it is not implemented. A hosted
+  origin that is not GitHub answers it today; anything else that reaches it is a
+  seam that arrived without a body.
 
 ## Scripts and output are context
 

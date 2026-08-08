@@ -30,15 +30,29 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+fs4 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
 url = { workspace = true }
+
+# The bound on a git command terminates its whole process group, so a wedged hook
+# cannot outlive the push it was gating. There is no portable spelling for that.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+# The occupancy journeys take a session's advisory lease the way a second process
+# does — the same lock, from outside the binary, rather than a stand-in for one.
+fs4 = { workspace = true }
 predicates = { workspace = true }
+# The journeys read the binary's own NDJSON stream back, which is the surface a
+# consumer meets rather than an internal the suite could reach around.
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 # The end-to-end journeys: they spawn the compiled binary as a subprocess, so they

@@ -168,11 +168,20 @@ fn the_installed_npm_command_runs_the_binary_its_platform_package_carries() {
         "the packaged binary is not this build"
     );
 
-    // The exit code a caller depends on has to survive the launcher's spawn.
-    let refused = run_installed(&project, &["resolve", "onevcs"]);
-    assert_eq!(refused.status.code(), Some(70), "{refused:?}");
+    // The exit code a caller depends on has to survive the launcher's spawn, and so
+    // does a command that actually does something: `repos` reads the state root and
+    // reports what it found.
+    let listed = run_installed(&project, &["repos"]);
+    assert!(listed.status.success(), "{listed:?}");
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("not implemented"),
+        !String::from_utf8_lossy(&listed.stdout).trim().is_empty(),
+        "{listed:?}"
+    );
+
+    let refused = run_installed(&project, &["resolve", "nothing-is-registered-as-this"]);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("not a registered repository"),
         "{refused:?}"
     );
 
