@@ -22,7 +22,7 @@ use crate::event::EventKind;
 use crate::registry::{RepoType, Workflow};
 use crate::store::{self, Resolution};
 use crate::stream::{self, Stream};
-use crate::workspace::object;
+use crate::workspace::{object, Ref};
 use crate::{gate, git, home, ids, lock, policy, provenance, publish, queue};
 
 /// What happened to one candidate of the train.
@@ -52,7 +52,7 @@ impl Status {
 #[derive(Debug, Clone)]
 pub struct BranchOutcome {
     /// The candidate.
-    pub branch: String,
+    pub branch: Ref,
     /// What happened to it.
     pub status: Status,
 }
@@ -88,7 +88,7 @@ impl Ending {
 #[derive(Debug, Clone)]
 pub struct Outcome {
     /// The base the train landed on.
-    pub base: String,
+    pub base: Ref,
     /// Each candidate, in the order it was offered.
     pub branches: Vec<BranchOutcome>,
     /// Where it left the base.
@@ -250,7 +250,7 @@ fn train(
     }
     let _ = std::fs::remove_dir_all(&workspace);
     Ok(Outcome {
-        base: base.to_owned(),
+        base: Ref::from_git(base),
         branches,
         ending,
     })
@@ -287,7 +287,7 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
     let unattested = provenance::unattested(root, base, branch)?;
     if !unattested.is_empty() {
         return Ok(BranchOutcome {
-            branch: branch.to_owned(),
+            branch: Ref::from_git(branch),
             status: Status::Skipped(format!(
                 "incomplete provenance ({} unattested commit(s)); this branch belongs to \
                  `onevcs recover {branch} --repo {}`",
@@ -357,7 +357,7 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
         let message = publish::compose_message(&subject, &trailers);
         let landed = squash_publish(root, base, branch, &message, workspace)?;
         Ok(BranchOutcome {
-            branch: branch.to_owned(),
+            branch: Ref::from_git(branch),
             status: if landed {
                 Status::Merged
             } else {
@@ -373,7 +373,7 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
 
 fn skipped(branch: &str, reason: &str) -> BranchOutcome {
     BranchOutcome {
-        branch: branch.to_owned(),
+        branch: Ref::from_git(branch),
         status: Status::Skipped(reason.to_owned()),
     }
 }

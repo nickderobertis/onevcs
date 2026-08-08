@@ -106,6 +106,17 @@ impl TryFrom<String> for Ref {
     }
 }
 
+impl Ref {
+    /// A name git itself produced, and so one git's parser has already accepted.
+    ///
+    /// The names that reach this came out of git's own ref listing — a current
+    /// branch, a remote's default — rather than off a command line, so re-deciding
+    /// validity here would only invent a failure that cannot happen.
+    pub fn from_git(name: impl Into<String>) -> Self {
+        Ref(name.into())
+    }
+}
+
 impl From<Ref> for String {
     fn from(name: Ref) -> Self {
         name.0

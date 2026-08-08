@@ -36,6 +36,12 @@ pub trait RemoteHost {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChangeSpec {
     /// The branch carrying the change.
+    // llmlint: ignore[invalid_states_unrepresentable] a validated branch-ref newtype is
+    // exactly what the publication path carries internally, and it cannot surface here:
+    // the contract fixes the matching `ChangeRequest.base` as `String` and names no ref
+    // type, so spelling one on this side of the same trait would add a public item the
+    // contract does not name and disagree with the type it does. Both names are handed to
+    // git before they reach a host, which is where the parser that decides them lives.
     pub head: String,
     /// The branch it targets, which for a stacked change is the branch below it.
     pub base: String,
@@ -55,6 +61,10 @@ pub struct ChangeRequest {
     /// The commit its checks are reported against.
     pub head_sha: Sha,
     /// The branch it targets.
+    // llmlint: ignore[invalid_states_unrepresentable] the contract declares this field
+    // verbatim as `pub base: String` and names no ref type to narrow it to; changing it
+    // is changing the interface, which is reported rather than done. Every one this crate
+    // constructs is read out of a host response naming a branch the host already has.
     pub base: String,
 }
 

@@ -206,15 +206,15 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
         // Through the trait: the same call a caller embedding this crate makes.
         Git.preserve(&record.session(), Provenance::Complete)?;
     }
-    let change_base = publish::preserved_change_base(&record.base, record.change_base.as_deref());
+    let change_base = publish::preserved_change_base(&record.base, record.change_base.as_ref());
     let context = publish::Context {
         resolution,
         policy: resolved.policy.clone(),
         effective,
         repo: record.clone.clone(),
         worktree: record.worktree.clone(),
-        branch: record.branch.to_string(),
-        base: record.base.to_string(),
+        branch: record.branch.clone(),
+        base: record.base.clone(),
         change_base,
         run_root: record.run_root.clone(),
         title: args.title.clone(),

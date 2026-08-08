@@ -22,7 +22,7 @@ use crate::host::{ChangeRequest, ChangeSpec, Check, GitHub, MergeOutcome, Remote
 use crate::rules::{Gate, GateKind, MergePolicy, Policy};
 use crate::store::Resolution;
 use crate::stream::{self, Stream};
-use crate::workspace::object;
+use crate::workspace::{object, Ref};
 use crate::{gate, gh, git, home, ids, lock, policy, provenance, queue};
 
 /// How many times a base that moved under a publication is re-merged before the
@@ -70,12 +70,12 @@ pub struct Context {
     /// The tree the gate runs in.
     pub worktree: PathBuf,
     /// The branch carrying the change.
-    pub branch: String,
+    pub branch: Ref,
     /// The root base.
-    pub base: String,
+    pub base: Ref,
     /// What the change is published onto, which for a stacked change is the branch
     /// below it rather than the root.
-    pub change_base: String,
+    pub change_base: Ref,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
     /// An explicit title, which replaces the synthesized subject.
@@ -98,7 +98,7 @@ pub fn run(context: &Context, stream: &mut Stream) -> Result<Outcome> {
     let compared = if git::ref_exists(&context.repo, &format!("refs/remotes/{remote_base}")) {
         remote_base.clone()
     } else {
-        context.change_base.clone()
+        context.change_base.to_string()
     };
 
     sync(context, stream, &compared)?;
@@ -332,8 +332,8 @@ fn publish_as_change(
     let change = match existing.into_iter().next() {
         Some(change) => change,
         None => host.open_change(ChangeSpec {
-            head: context.branch.clone(),
-            base: context.change_base.clone(),
+            head: context.branch.to_string(),
+            base: context.change_base.to_string(),
             title: subject.to_owned(),
             body: Some(compose_body(subject, trailers)),
         })?,
@@ -623,6 +623,6 @@ pub fn exit_code(error: &Error) -> u8 {
 }
 
 /// A session's own record, once publication has decided what it publishes onto.
-pub fn preserved_change_base(record_base: &str, recorded: Option<&str>) -> String {
-    recorded.unwrap_or(record_base).to_owned()
+pub fn preserved_change_base(record_base: &Ref, recorded: Option<&Ref>) -> Ref {
+    recorded.unwrap_or(record_base).clone()
 }

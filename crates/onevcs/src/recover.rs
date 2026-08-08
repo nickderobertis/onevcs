@@ -16,7 +16,7 @@ use crate::event::EventKind;
 use crate::registry::Registry;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::workspace::object;
+use crate::workspace::{object, Ref};
 use crate::{gate, git, home, ids, policy, provenance, publish, rules};
 
 /// Verify and publish a preserved branch.
@@ -43,7 +43,7 @@ pub fn run(
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
 
-    let base = git::default_branch(&resolution.publication, "origin")?;
+    let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
     let origin = git::remote_url(&source, "origin")
         .unwrap_or_else(|_| source.to_string_lossy().into_owned());
     git::retain_objects_for_borrowers(&source)?;
@@ -55,8 +55,12 @@ pub fn run(
     git::fetch(&clone, "origin")?;
 
     let compared = crate::vcs::base_ref(&clone, &base);
-    let change_base = provenance::recorded_change_base(&clone, &compared, branch)?
-        .unwrap_or_else(|| base.clone());
+    // A recorded base is read back out of a commit the repository carries, so it is
+    // input to be checked rather than a name this process already decided.
+    let change_base = match provenance::recorded_change_base(&clone, &compared, branch)? {
+        Some(recorded) => Ref::try_from(recorded).map_err(error::invalid)?,
+        None => base.clone(),
+    };
     let compared_change_base = crate::vcs::base_ref(&clone, &change_base);
 
     let unattested = provenance::unattested(&clone, &compared_change_base, branch)?;
@@ -138,7 +142,7 @@ pub fn run(
         effective: resolved.policy.publication,
         repo: clone,
         worktree,
-        branch: branch.to_owned(),
+        branch: Ref::from_git(branch),
         base,
         change_base,
         run_root,
