@@ -78,28 +78,18 @@ Composed from the create-repo reference pieces:
 
 ## Command surface
 
-`just --list` is the index; do not hand-roll equivalents.
+`just --list` is the index; do not hand-roll equivalents. Three things it does
+not tell you:
 
-- `just bootstrap` — set up from a clean clone.
-- `just check` — the deterministic gate: format check, clippy, tests (unit +
-  contract + e2e) with coverage enforced, and docs. Offline and credential-free.
-- `just gate` — the complete pre-push bar: `just check` plus the diff-scoped
-  llmlint tier. This is what must be green before pushing.
-- `just test` / `just lint` / `just format` / `just fmt-check` / `just doc` —
-  individual tiers, each fanned across the Nx graph.
-- `just test-e2e` — the binary journeys in isolation (also run by `check`).
-- `just deps-check` — `cargo deny` + `cargo machete`. Out of `check` because it
-  needs a network advisory database; CI runs it as its own job.
-- `just msrv` — build under the floor declared in `Cargo.toml`.
-- `just upgrade` — refresh lockfiles, then re-run the gate.
-- `just lint-llm` / `just lint-llm-diff` / `just lint-llm-validate` — the
-  LLM-judge tier, config in `llmlint.yml`, harness selection in `oneharness.toml`.
-  Deliberately outside `just check`, which stays deterministic.
-
-The repo-wide verbs delegate to Nx (`scripts/nx.sh`), which fans the uniform
-target names across every project; PR CI narrows the same targets to the affected
-projects via `scripts/nx-affected.sh`, which **fails closed** — no derivable merge
-base means run everything.
+- **`just gate` is the bar, not `just check`.** `check` is the deterministic tier
+  and stays offline and credential-free; `gate` adds the diff-scoped llmlint tier,
+  and that is what must be green before pushing.
+- **The repo-wide verbs delegate to Nx** (`scripts/nx.sh`), which fans the uniform
+  target names across the graph. A target's *body* belongs to its project, never
+  to a for-each loop here.
+- **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
+  derivable merge base it runs everything, because a speed optimisation that can
+  silently skip a check is a correctness hole.
 
 ## Commits, releases, and merging
 
@@ -129,27 +119,19 @@ values live in the secret store, never in the tree.
 
 ## Invariants (non-negotiable)
 
-- The gate is strict: `cargo fmt --check`, `clippy -D warnings`, `RUSTDOCFLAGS=-D
-  warnings`, and the tests all fail on issues. No warnings-only mode.
-- **Coverage is enforced at 95% line coverage** (`cargo llvm-cov
-  --fail-under-lines 95` in `just check`). Lower it only with a documented reason
-  here.
-- **Tests are realistic, not mocked.** The e2e suite spawns the compiled binary
-  as a subprocess and asserts exit code, stdout, and stderr. The contract suite
-  reads the fixtures out of `docs/contract.md` itself, so the doc and the types
-  cannot drift.
-- Validate external input at its trust boundary: the registry document, the rules
-  file, and every event envelope are parsed defensively and rejected with a
-  message naming the problem.
+- The gate is strict. No warnings-only mode: a diagnostic is an error, or it is
+  suppressed at its site with a written reason.
+- **Coverage is enforced at 95% line coverage.** Lower it only with a documented
+  reason here.
+- **Tests are realistic, not mocked**, and complete rather than minimal: every
+  journey, happy path *and* failure.
+- Validate external input at its trust boundary, and reject it with a message
+  naming the problem.
 - Security is gate-level: no secrets in the tree, least-privilege CI tokens, and
   a narrow agent allowlist in `.claude/settings.json`.
-
-## Exit codes
-
-`0` only on success. The contract fixes `publish`'s codes: `1` gate or checks
-failed, `2` invalid input (also clap's own usage error), `3` sync conflict after
-a bounded resolve-and-requeue. `70` means the command parsed but is not
-implemented — the whole CLI answers `70` while this repo is interface-only.
+- **`70` is this repo's own exit code**, and the only one the contract does not
+  fix: the command parsed but is not implemented. The whole CLI answers it while
+  this repo is interface-only.
 
 ## Scripts and output are context
 
@@ -166,11 +148,6 @@ This repo runs on agents, so the suite is the only QA loop.
 - **Done means complete, not minimal**: every journey, happy path *and*
   failure/recovery.
 - Coverage is a floor, not the target.
-- The suite is the source of truth for what is covered. Two contracts it holds
-  that reading the tests alone would not make obvious: the envelope and rules
-  fixtures are **extracted from `docs/contract.md`**, and every event kind the
-  contract lists must exist as an `EventKind` variant — so editing the doc
-  without the types (or the reverse) fails the gate.
 
 ## Keeping the allowlist current
 

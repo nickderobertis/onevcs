@@ -1,6 +1,5 @@
 //! Shared helpers for the end-to-end journeys.
 
-#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 use assert_cmd::cargo::CommandCargoExt;
@@ -23,7 +22,6 @@ pub fn binary_dir() -> PathBuf {
 }
 
 /// The workspace root, so a journey can reach the scripts a release also runs.
-#[cfg(unix)]
 pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -31,18 +29,14 @@ pub fn workspace_root() -> PathBuf {
         .expect("the crate lives inside the workspace")
 }
 
-/// Every command the CLI offers, as `docs/contract.md` names them.
-pub const COMMANDS: &[&str] = &[
-    "register",
-    "repos",
-    "resolve",
-    "session",
-    "publish",
-    "recover",
-    "recoverable",
-    "integrate",
-    "sync",
-    "events",
-    "artifact",
-    "rules",
-];
+/// Every command the CLI offers, read from the parser rather than restated — a
+/// hand-kept list here would let a command be added to the contract and the
+/// parser while the journeys below kept passing without it.
+pub fn commands() -> Vec<String> {
+    use clap::CommandFactory;
+    onevcs::cli::Cli::command()
+        .get_subcommands()
+        .map(|c| c.get_name().to_owned())
+        .filter(|name| name != "help")
+        .collect()
+}

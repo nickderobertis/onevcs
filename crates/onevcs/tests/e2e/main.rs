@@ -5,6 +5,7 @@
 //! here calls into the library.
 
 mod cli;
+mod packaging;
 // Unix only: the script it drives is POSIX shell. See the module's own note.
 #[cfg(unix)]
 mod smoke;

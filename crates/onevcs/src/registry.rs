@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 pub struct Registry {
     /// The schema version. `5` is the shape declared here; `2`–`4` are migrated
     /// lazily on read.
+    // llmlint: ignore[boundary_inputs_validated] deciding which versions are acceptable is
+    // the lazy v2-v4 migration the contract specifies, and that is implementation this
+    // interface-only crate does not carry yet. Everything the shape can reject — an
+    // unknown workflow or repo_type, a missing gate, a stray key — is rejected here and
+    // asserted in tests/contract.rs.
     pub version: u32,
     /// Every known repository identity, keyed by its normalized origin
     /// (`github.com/owner/name`, or a path for a local one).

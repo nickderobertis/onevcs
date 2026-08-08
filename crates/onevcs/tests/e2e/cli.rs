@@ -9,7 +9,7 @@
 
 use predicates::prelude::*;
 
-use crate::support::{onevcs, COMMANDS};
+use crate::support::{commands, onevcs};
 
 /// A command that parsed but has no implementation yet.
 const NOT_IMPLEMENTED: i32 = 70;
@@ -86,9 +86,9 @@ fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
 fn help_lists_the_whole_command_surface() {
     let assert = onevcs().arg("--help").assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("help is UTF-8");
-    for command in COMMANDS {
+    for command in commands() {
         assert!(
-            stdout.contains(command),
+            stdout.contains(&command),
             "`onevcs --help` does not mention `{command}`:\n{stdout}"
         );
     }

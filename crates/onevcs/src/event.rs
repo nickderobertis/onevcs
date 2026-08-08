@@ -14,6 +14,13 @@ use serde_json::{Map, Value};
 /// per-stream [`seq`](Envelope::seq) gaps. There are no cross-stream ordering
 /// promises beyond timestamps.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// llmlint: ignore-block[boundary_inputs_validated] the envelope's semantic boundary checks
+// — that `v` is 1, that `ts` is millisecond-precision UTC RFC3339, that a payload text
+// field was truncated at 4096 bytes — are the reader's job, and this crate is
+// interface-only: it declares the shape and adds no logic behind it. The shape itself is
+// enforced here (an unknown `kind` or `source`, a `seq` that is not a u64, a missing
+// field are all rejected by serde and asserted in tests/contract.rs), and the semantic
+// checks land with the parser seam that reads a stream.
 pub struct Envelope {
     /// Envelope schema version. `1` is the shape `docs/contract.md` declares.
     pub v: u32,
@@ -37,6 +44,7 @@ pub struct Envelope {
     /// fetched through its CLI.
     pub artifacts: Vec<ArtifactRef>,
 }
+// llmlint: ignore-end[boundary_inputs_validated]
 
 /// The library that produced an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct RulesFile {
     /// The schema version. `1` is the shape declared here.
+    // llmlint: ignore[boundary_inputs_validated] rejecting a version this build cannot read
+    // belongs to the loader, which is implementation this interface-only crate does not
+    // carry yet. The shape is enforced: an undeclared publication, approvals, or gate
+    // kind, a missing default, or a stray key is rejected here and asserted in
+    // tests/contract.rs.
     pub version: u32,
     /// The rules, in priority order: the first one that matches wins.
     pub rules: Vec<Rule>,

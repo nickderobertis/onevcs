@@ -39,6 +39,7 @@ url = { workspace = true }
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+tempfile = { workspace = true }
 
 # The end-to-end journeys: they spawn the compiled binary as a subprocess, so they
 # are their own target (`just test-e2e` runs it alone) while `just check` still

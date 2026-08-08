@@ -1,7 +1,7 @@
 # What the contract left to inference
 
-[`docs/contract.md`](contract.md) names every public item this crate exposes, but
-it does not spell every field of every type it names. Where a shape had to be
+The approved contract names every public item this crate exposes, but it does not
+spell every field of every type it names. Where a shape had to be
 chosen to make the contract compile, it is recorded here — so a reviewer can see
 exactly which lines are approved and which are an inference waiting to be
 confirmed, and so the next task extends this record instead of inventing again.

@@ -33,6 +33,7 @@ base_branch() {
   if [ -z "$ref" ]; then
     if [ -n "${CI:-}" ]; then
       echo "nx-affected: no base branch — this is not a pull-request build" >&2
+      echo "ACTION: none needed; every project runs. To scope a local run, set ONEVCS_NX_BASE_REF." >&2
       return 1
     fi
     printf 'main'
@@ -40,6 +41,7 @@ base_branch() {
   fi
   if ! printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$'; then
     echo "nx-affected: '$ref' is not a usable branch name" >&2
+    echo "ACTION: set ONEVCS_NX_BASE_REF (or GITHUB_BASE_REF) to a plain branch name such as 'main'" >&2
     return 1
   fi
   printf '%s' "$ref"
@@ -68,12 +70,14 @@ case "${1:-}" in
   }
   if ! base="$(resolve_base)"; then
     echo "nx-affected: no merge base — treating '$project' as affected" >&2
+    echo "ACTION: none needed; the matrices run. To narrow them, fetch the base branch (git fetch --unshallow) so a merge base exists." >&2
     printf 'true\n'
     exit 0
   fi
   # Read for Nx's answer, so the wrapper must not fold it into a summary line.
   if ! projects="$(ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh show projects --affected --base="$base" --head=HEAD --json)"; then
     echo "nx-affected: Nx could not list the affected projects — treating '$project' as affected" >&2
+    echo "ACTION: none needed; the matrices run. Reproduce Nx's own error with 'just nx show projects --affected --base=$base --head=HEAD'." >&2
     printf 'true\n'
     exit 0
   fi
@@ -93,6 +97,7 @@ case "${1:-}" in
   }
   if ! base="$(resolve_base)"; then
     echo "nx-affected: no merge base — running every project instead of the affected ones" >&2
+    echo "ACTION: none needed; this is the fail-closed path. To scope it, fetch the base branch (git fetch --unshallow) so a merge base exists." >&2
     exec bash scripts/nx.sh run-many "$@"
   fi
   exec bash scripts/nx.sh affected --base="$base" --head=HEAD "$@"

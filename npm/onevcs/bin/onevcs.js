@@ -43,11 +43,12 @@ function binaryPath() {
   const key = `${process.platform}-${process.arch}`;
   const pkg = PACKAGES[key];
   // llmlint: ignore-block[changed_behavior_has_e2e] reaching this branch means running
-  // where no prebuilt package exists, and a test can only get there by lying to node
-  // about process.platform — which would prove the lie. The sibling branches are driven
-  // for real by tests/e2e/packaging.rs (npm omits the optional dependency; the binary
-  // resolves but will not exec), and npm's own os/cpu fields keep a user from installing
-  // a platform package this map does not name.
+  // where no prebuilt package exists, and a test can only get there by lying to node about
+  // process.platform — which would prove the lie. Every sibling branch is driven for real
+  // by crates/onevcs/tests/e2e/packaging.rs against an assembled platform package (the
+  // resolution, the exec, the propagated exit codes, and the missing-package failure), and
+  // npm's own os/cpu fields keep a user from installing a platform package this map does
+  // not name.
   if (!pkg) {
     fail(
       `unsupported platform ${key}. Prebuilt binaries exist for: ` +

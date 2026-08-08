@@ -2,8 +2,8 @@
 
 Durable design decisions **the user stated**, kept because the code shows what was
 built and never the constraint that drove it. Nothing an agent decided on its own
-belongs here — for the shapes this repository had to infer where the contract was
-silent, see [`docs/inferred-surface.md`](docs/inferred-surface.md).
+belongs here — an inference this repository had to make is recorded with the rest
+of them, not mixed in with the user's direction.
 
 ## The contract is fixed; the interface is not negotiable in passing
 

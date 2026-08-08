@@ -27,10 +27,6 @@ use onevcs::{
 };
 use serde_json::{json, Value};
 
-// ---------------------------------------------------------------------------
-// Reading the contract
-// ---------------------------------------------------------------------------
-
 /// The approved contract, read from the repository rather than embedded here.
 fn contract() -> String {
     let path = contract_path();
@@ -100,10 +96,6 @@ fn backticked_on_line(prefix: &str) -> Vec<String> {
     }
     spans
 }
-
-// ---------------------------------------------------------------------------
-// The envelope
-// ---------------------------------------------------------------------------
 
 /// The envelope fixture with its `<placeholder>` values replaced by real ones,
 /// so the shape the contract declares can actually be parsed.
@@ -305,10 +297,6 @@ fn the_contract_and_the_code_name_the_same_event_kinds() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The rules file
-// ---------------------------------------------------------------------------
-
 #[test]
 fn the_rules_fixture_round_trips() {
     let fixture = block("yaml");
@@ -431,10 +419,6 @@ fn the_policy_flag_and_the_rules_file_spell_the_policies_the_same_way() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The registry
-// ---------------------------------------------------------------------------
-
 #[test]
 fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
     let document = json!({
@@ -522,10 +506,6 @@ fn a_malformed_registry_is_rejected_at_the_boundary() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// The declared Rust surface
-// ---------------------------------------------------------------------------
 
 #[test]
 fn the_declared_structs_have_exactly_the_declared_fields() {
@@ -771,10 +751,6 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The command surface
-// ---------------------------------------------------------------------------
-
 /// Every command name the contract's usage block spells.
 fn documented_commands() -> BTreeSet<String> {
     let mut names = BTreeSet::new();
@@ -830,6 +806,7 @@ fn every_flag_the_contract_spells_exists_on_the_command_that_takes_it() {
     }
 }
 
+/// Every long flag any command in the tree takes.
 fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     for arg in command.get_arguments() {
         if let Some(long) = arg.get_long() {
@@ -839,4 +816,122 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     for sub in command.get_subcommands() {
         collect_long_flags(sub, into);
     }
+}
+
+/// A file in the repository, read relative to the workspace root.
+fn repo_file(relative: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+#[test]
+fn the_release_smoke_script_asserts_the_whole_command_surface() {
+    // scripts/smoke-published.sh is the one definition of "the installed binary
+    // works", and it walks a hand-written list. A command added to the parser and
+    // not to that list would ship unasserted on every install surface.
+    let script = repo_file("scripts/smoke-published.sh");
+    let listed = script
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("for command in "))
+        .and_then(|rest| rest.strip_suffix("; do"))
+        .expect("smoke-published.sh iterates a command list");
+    let asserted: BTreeSet<String> = listed.split_whitespace().map(str::to_owned).collect();
+
+    let implemented: BTreeSet<String> = Cli::command()
+        .get_subcommands()
+        .map(|c| c.get_name().to_owned())
+        .filter(|name| name != "help")
+        .collect();
+    assert_eq!(
+        asserted, implemented,
+        "scripts/smoke-published.sh and the parser disagree about the command surface"
+    );
+}
+
+#[test]
+fn every_copy_of_the_platform_target_table_agrees() {
+    // The Rust-target-to-npm-platform mapping is spelled four times, in four
+    // languages, because each consumer needs it in its own form: the assembler
+    // builds the package, the launcher resolves it, the manifest pins it, and the
+    // release matrix compiles for it. Nothing but this reconciles them, and a
+    // target added to three of the four ships a package nobody can install.
+    let assembler = repo_file("scripts/npm-build.mjs");
+    let launcher = repo_file("npm/onevcs/bin/onevcs.js");
+    let manifest = repo_file("npm/onevcs/package.json");
+    let release = repo_file(".github/workflows/release.yml");
+
+    // `"x86_64-unknown-linux-gnu": { platform: "linux", arch: "x64", exe: false },`
+    let mut from_assembler = BTreeSet::new();
+    let mut packages_from_assembler = BTreeSet::new();
+    for line in assembler.lines() {
+        let line = line.trim();
+        let Some((target, rest)) = line.split_once("\": {") else {
+            continue;
+        };
+        let Some(target) = target.strip_prefix('"') else {
+            continue;
+        };
+        if !target.contains('-') || !rest.contains("platform:") {
+            continue;
+        }
+        let field = |name: &str| {
+            rest.split_once(&format!("{name}: \""))
+                .and_then(|(_, tail)| tail.split_once('"'))
+                .map(|(value, _)| value.to_owned())
+                .unwrap_or_else(|| panic!("no {name} for {target} in npm-build.mjs"))
+        };
+        packages_from_assembler.insert(format!(
+            "onevcs-cli-{}-{}",
+            field("platform"),
+            field("arch")
+        ));
+        from_assembler.insert(target.to_owned());
+    }
+    assert!(
+        from_assembler.len() >= 5,
+        "npm-build.mjs's target table did not parse: {from_assembler:?}"
+    );
+
+    // `  "linux-x64": "onevcs-cli-linux-x64",`
+    let packages_from_launcher: BTreeSet<String> = launcher
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("\"")
+                .and_then(|l| l.split_once(": "))
+        })
+        .filter_map(|(_, value)| value.trim().strip_prefix('"'))
+        .filter_map(|value| value.split_once('"'))
+        .map(|(name, _)| name.to_owned())
+        .filter(|name| name.starts_with("onevcs-cli-"))
+        .collect();
+
+    let manifest: Value = serde_json::from_str(&manifest).expect("the launcher manifest is JSON");
+    let packages_from_manifest: BTreeSet<String> = manifest["optionalDependencies"]
+        .as_object()
+        .expect("the launcher pins its platform packages")
+        .keys()
+        .cloned()
+        .collect();
+
+    let from_release: BTreeSet<String> = release
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- target: "))
+        .map(str::to_owned)
+        .collect();
+
+    assert_eq!(
+        packages_from_assembler, packages_from_launcher,
+        "scripts/npm-build.mjs and the npm launcher name different platform packages"
+    );
+    assert_eq!(
+        packages_from_assembler, packages_from_manifest,
+        "scripts/npm-build.mjs and npm/onevcs/package.json name different platform packages"
+    );
+    assert_eq!(
+        from_assembler, from_release,
+        "scripts/npm-build.mjs and the release matrices build different targets"
+    );
 }

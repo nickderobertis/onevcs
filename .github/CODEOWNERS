@@ -1,0 +1,12 @@
+# Review routing. One owner today; the file exists so a project added to the Nx
+# graph gets its reviewers declared beside it rather than inherited by accident.
+*                       @nickderobertis
+
+# The approved contract and the record of what it left to inference: a change here
+# is a change to three repositories' shared surface, never a local decision.
+/docs/contract.md       @nickderobertis
+/docs/inferred-surface.md @nickderobertis
+
+/crates/onevcs/         @nickderobertis
+/npm/                   @nickderobertis
+/.github/               @nickderobertis
