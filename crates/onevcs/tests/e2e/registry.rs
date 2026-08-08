@@ -1,0 +1,458 @@
+//! The registry and the rules engine, driven through the binary.
+//!
+//! Two subjects that decide everything downstream: which identity a repository
+//! argument resolves to, and which publication policy that identity gets. Both are
+//! read out of the commands a user actually runs — `register`, `repos`, `resolve`,
+//! `rules check` — rather than out of the document they happen to be stored in.
+
+use predicates::prelude::*;
+
+use crate::world::World;
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn registering_a_checkout_reports_the_identity_its_origin_normalizes_to() {
+    let world = World::new();
+    let origin = world.bare_origin("widgets");
+    let checkout = world.clone_of(&origin, "widgets");
+
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alias: widgets"))
+        .stdout(predicate::str::contains("workflow: local"))
+        .stdout(predicate::str::contains("repo_type: single-owner"));
+
+    // `resolve` answers with the same identity, and by every spelling that names
+    // it: the alias, the checkout path, and the origin URL.
+    for spelling in [
+        checkout.to_string_lossy().into_owned(),
+        "widgets".to_owned(),
+        origin.to_string_lossy().into_owned(),
+    ] {
+        let assert = world
+            .onevcs()
+            .args(["resolve", &spelling])
+            .assert()
+            .success();
+        let value: serde_json::Value =
+            serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
+        assert_eq!(value["alias"], "widgets", "{spelling} resolved elsewhere");
+        assert_eq!(
+            value["publication_checkout"],
+            checkout.to_string_lossy().into_owned()
+        );
+    }
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn every_spelling_of_one_hosted_origin_is_one_identity() {
+    let world = World::new();
+    let origin = world.bare_origin("shared");
+    let canonical = world.clone_of(&origin, "canonical");
+    let safety = world.clone_of(&origin, "safety");
+
+    world
+        .onevcs()
+        .args([
+            "register",
+            &canonical.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/widgets.git",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("github.com/acme-corp/widgets"));
+    world
+        .onevcs()
+        .args([
+            "register",
+            &safety.to_string_lossy(),
+            "--origin",
+            "ssh://git@github.com/acme-corp/widgets",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("github.com/acme-corp/widgets"));
+
+    let assert = world.onevcs().arg("repos").assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("github.com/acme-corp/widgets"))
+            .count(),
+        1,
+        "two spellings of one origin must be one identity:\n{stdout}"
+    );
+    // …carrying both checkouts, which is what lets a safety clone inherit the
+    // canonical checkout's publication policy instead of disagreeing with it.
+    assert!(stdout.contains("  canonical\t"), "{stdout}");
+    assert!(stdout.contains("  safety\t"), "{stdout}");
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn the_gate_audit_reports_what_runs_on_each_identitys_merge_path() {
+    let world = World::new();
+    let origin = world.bare_origin("audited");
+    let checkout = world.clone_of(&origin, "audited");
+
+    // A local identity with no hook: nothing on its merge path runs a gate, and a
+    // publication would therefore be unproven. Registration says so on stderr.
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "nothing on this identity's merge path runs a gate",
+        ));
+    world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merge-path coverage: nothing"));
+
+    world.install_pre_push(&checkout, "exit 0");
+    world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "merge-path coverage: pre-push hook",
+        ));
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn a_version_4_registry_migrates_lazily_on_the_first_read() {
+    let world = World::new();
+    let origin = world.bare_origin("legacy");
+    let checkout = world.clone_of(&origin, "legacy");
+    let key = std::fs::canonicalize(&origin)
+        .expect("the origin exists")
+        .to_string_lossy()
+        .trim_end_matches(".git")
+        .to_owned();
+    write_registry(
+        &world,
+        &serde_json::json!({
+            "version": 4,
+            "identities": {
+                &key: {"origin": &key, "workflow": "local", "repo_type": "single-owner",
+                       "gate": "make check"}
+            },
+            "checkouts": {
+                "legacy": {"path": checkout.to_string_lossy(), "identity": &key}
+            }
+        }),
+    );
+
+    let assert = world
+        .onevcs()
+        .args(["resolve", "legacy"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
+    assert_eq!(value["gate"], "make check");
+    assert_eq!(value["repo_type"], "single-owner");
+
+    // The migration is written back once, in one atomic replacement, rather than
+    // being redone on every read.
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    )
+    .expect("the registry is JSON");
+    assert_eq!(stored["version"], 5);
+    assert_eq!(stored["identities"][&key]["gate"], "make check");
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn a_version_2_registry_infers_the_type_its_workflow_is_evidence_for() {
+    let world = World::new();
+    let origin = world.bare_origin("v2");
+    let checkout = world.clone_of(&origin, "v2");
+    let key = std::fs::canonicalize(&origin)
+        .expect("the origin exists")
+        .to_string_lossy()
+        .trim_end_matches(".git")
+        .to_owned();
+    write_registry(
+        &world,
+        &serde_json::json!({
+            "version": 2,
+            "identities": {&key: {"origin": &key, "workflow": "local"}},
+            "checkouts": {"v2": {"path": checkout.to_string_lossy(), "identity": &key}}
+        }),
+    );
+
+    let assert = world.onevcs().args(["resolve", "v2"]).assert().success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
+    // A local workflow pushes straight to its base and never opens a change
+    // request, which is affirmative single-owner evidence rather than a guess.
+    assert_eq!(value["repo_type"], "single-owner");
+    // No version before 4 recorded a gate, so the identity says plainly that it
+    // cannot name its own complete bar.
+    assert_eq!(value["gate"], "<no-op>");
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
+    let world = World::new();
+    write_registry(
+        &world,
+        &serde_json::json!({"version": 99, "identities": {}, "checkouts": {}}),
+    );
+    world
+        .onevcs()
+        .arg("repos")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("declares version 99"))
+        .stderr(predicate::str::contains("this build reads 2 to 5"));
+
+    std::fs::write(world.home().join("registry.json"), "{not json").expect("a broken registry");
+    world
+        .onevcs()
+        .arg("repos")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not JSON"));
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn an_unregistered_repository_names_what_is_registered() {
+    let world = World::new();
+    let origin = world.bare_origin("known");
+    let checkout = world.clone_of(&origin, "known");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+
+    world
+        .onevcs()
+        .args(["resolve", "somewhere-else"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not a registered repository"))
+        .stderr(predicate::str::contains("Known checkouts: known"));
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
+    let world = World::new();
+    let origin = world.bare_origin("ruled");
+    let checkout = world.clone_of(&origin, "ruled");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/widgets.git",
+        ])
+        .assert()
+        .success();
+    let rules = world.path("rules.yml");
+    std::fs::write(
+        &rules,
+        "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp, name: \"*\"}\n\
+         \x20   publication: change-open\n    approvals: required\ndefault: {publication: \
+         change-auto, approvals: none, gate: {kind: pre-push}}\n",
+    )
+    .expect("a rules file");
+    point_at_rules(&world, &rules);
+
+    world
+        .onevcs()
+        .args(["rules", "check", "ruled"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "identity: github.com/acme-corp/widgets",
+        ))
+        .stdout(predicate::str::contains(
+            "matched: rule 1 {host: github.com, owner: acme-corp, name: *}",
+        ))
+        .stdout(predicate::str::contains(
+            "publication: change-open (from rule 1)",
+        ))
+        .stdout(predicate::str::contains(
+            "approvals: required (from rule 1)",
+        ))
+        // The rule sets no gate, so the field falls through to the default and the
+        // explanation says which of the two decided it.
+        .stdout(predicate::str::contains(
+            "gate: pre-push (from the default)",
+        ));
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn a_repository_no_rule_matches_falls_through_to_the_default() {
+    let world = World::new();
+    let origin = world.bare_origin("unmatched");
+    let checkout = world.clone_of(&origin, "unmatched");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/other-org/thing.git",
+        ])
+        .assert()
+        .success();
+    let rules = world.path("rules.yml");
+    std::fs::write(
+        &rules,
+        "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp}\n\
+         \x20   publication: local-direct\n    approvals: none\n\
+         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+    )
+    .expect("a rules file");
+    point_at_rules(&world, &rules);
+
+    world
+        .onevcs()
+        .args(["rules", "check", "unmatched"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "matched: no rule; the default applies",
+        ))
+        .stdout(predicate::str::contains(
+            "publication: change-open (from the default)",
+        ))
+        .stdout(predicate::str::contains("gate: checks (from the default)"));
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
+    let world = World::new();
+    let origin = world.bare_origin("contradictory");
+    let checkout = world.clone_of(&origin, "contradictory");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let rules = world.path("rules.yml");
+    std::fs::write(
+        &rules,
+        "version: 1\nrules: []\n\
+         default: {publication: local-direct, approvals: required, gate: {kind: pre-push}}\n",
+    )
+    .expect("a rules file");
+    point_at_rules(&world, &rules);
+
+    // The failure this prevents is silent: the change lands, and nothing later
+    // reports that the approval the repository asked for was never sought.
+    world
+        .onevcs()
+        .args(["rules", "check", "contradictory"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "combining publication: local-direct with approvals: required",
+        ));
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
+    let world = World::new();
+    let origin = world.bare_origin("future");
+    let checkout = world.clone_of(&origin, "future");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let rules = world.path("rules.yml");
+    std::fs::write(
+        &rules,
+        "version: 7\nrules: []\ndefault: {publication: change-open, approvals: required, \
+         gate: {kind: checks}}\n",
+    )
+    .expect("a rules file");
+    point_at_rules(&world, &rules);
+
+    world
+        .onevcs()
+        .args(["rules", "check", "future"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("declares version 7"));
+}
+
+#[test]
+#[ignore = "red-listed: the seam this drives is not implemented yet"]
+fn a_path_rule_matches_the_checkout_rather_than_the_origin() {
+    let world = World::new();
+    let origin = world.bare_origin("by-path");
+    let checkout = world.clone_of(&origin, "by-path");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let rules = world.path("rules.yml");
+    std::fs::write(
+        &rules,
+        format!(
+            "version: 1\nrules:\n  - match: {{path: \"{}/*\"}}\n    publication: local-direct\n\
+             default: {{publication: change-open, approvals: none, gate: {{kind: checks}}}}\n",
+            world.path("").to_string_lossy().trim_end_matches('/')
+        ),
+    )
+    .expect("a rules file");
+    point_at_rules(&world, &rules);
+
+    world
+        .onevcs()
+        .args(["rules", "check", "by-path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "publication: local-direct (from rule 1)",
+        ));
+}
+
+fn write_registry(world: &World, value: &serde_json::Value) {
+    std::fs::create_dir_all(world.home()).expect("a state root");
+    std::fs::write(
+        world.home().join("registry.json"),
+        serde_json::to_string_pretty(value).expect("a registry document"),
+    )
+    .expect("a registry");
+}
+
+/// Point the registry at a rules file, the way a host's own configuration does.
+pub fn point_at_rules(world: &World, rules: &std::path::Path) {
+    let path = world.home().join("registry.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("a registry"))
+            .expect("the registry is JSON");
+    value["rules"] = serde_json::Value::String(rules.to_string_lossy().into_owned());
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&value).expect("a registry document"),
+    )
+    .expect("a registry");
+}

@@ -6,10 +6,20 @@
 //! here calls into the library.
 
 mod cli;
+// Unix only: these drive a substituted `gh` and real `pre-push` hooks, both POSIX
+// shell. See `world.rs`.
+#[cfg(unix)]
+mod host;
+#[cfg(unix)]
+mod lifecycle;
 mod packaging;
+#[cfg(unix)]
+mod registry;
 // Unix only: the scripts these drive are POSIX shell. See each module's own note.
 #[cfg(unix)]
 mod scripts;
 #[cfg(unix)]
 mod smoke;
 mod support;
+#[cfg(unix)]
+mod world;
