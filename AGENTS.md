@@ -23,10 +23,8 @@ It is consumed as the `onevcs` crate, as the `onevcs` binary (crates.io, PyPI
 verbatim. It is the source of truth for every public type, trait, config schema,
 CLI argument, and event kind in this crate.
 
-**This repository is currently interface-only.** The public surface compiles and
-is fully typed; nothing behind it is implemented. Every trait method and every
-CLI subcommand refuses loudly (`Error::NotImplemented`, exit code `70`) rather
-than pretending. Two rules follow, until a task says otherwise:
+The contract is **implemented**, behind private modules that the public surface
+does not name. Two rules follow, and they are not conditional on that:
 
 - **Do not add a public item the contract does not name.** Where the contract
   under-specifies a type, the inferred shape and the open questions it leaves are
@@ -35,8 +33,22 @@ than pretending. Two rules follow, until a task says otherwise:
   decisions that came from the user.
 - **Do not resolve a contract conflict by changing the interface.** Report it.
 
-Implementation lands per-seam as separate tasks; when one does, its real journey
-lands with it and the corresponding stub disappears.
+`Error::NotImplemented` (exit code `70`) survives for a seam that has none yet —
+a second `RemoteHost`, say. Nothing produces it today.
+
+## Where the state lives
+
+One root, `ONEVCS_HOME` (otherwise `~/.onevcs`), holding the registry document,
+the advisory locks and merge-queue state, the per-session workspaces, and the
+event streams with their artifacts. A journey points it at a scratch directory,
+which is what lets the suite drive the real binary without touching an operator's
+own state.
+
+Two environment seams exist for the same reason and nothing else: `ONEVCS_GH`
+names the program that answers as `gh`, and the bounds (`ONEVCS_GIT_TIMEOUT`,
+`ONEVCS_GIT_HOOK_TIMEOUT`, `ONEVCS_LOCK_TIMEOUT_SECONDS`, `ONEVCS_CHECKS_*`) are
+operator knobs a journey turns down so a bound can be *proved* rather than waited
+out.
 
 ## Two standing goals on every task
 
@@ -120,7 +132,9 @@ values live in the secret store, never in the tree.
 - The gate is strict. No warnings-only mode: a diagnostic is an error, or it is
   suppressed at its site with a written reason.
 - **Coverage is enforced at 95% line coverage.** Lower it only with a documented
-  reason here.
+  reason here. It is met by the journeys alone — this crate carries no `#[cfg(test)]`
+  module, and a path only an in-process test could reach is a path to delete rather
+  than one to unit-test.
 - **Tests are realistic, not mocked**, and complete rather than minimal: drive
   the real binary the way a user does, over every journey, happy path *and*
   failure. Coverage is the floor, never the target.
@@ -129,8 +143,16 @@ values live in the secret store, never in the tree.
 - Security is gate-level: no secrets in the tree, least-privilege CI tokens, and
   a narrow agent allowlist in `.claude/settings.json`.
 - **`70` is this repo's own exit code**, and the only one the contract does not
-  fix: the command parsed but is not implemented. The whole CLI answers it while
-  this repo is interface-only.
+  fix: the command parsed but the seam behind it is not implemented. Nothing
+  answers it today; it is reserved for a seam that arrives without a body.
+- **Emitting an event cannot fail a command.** The stream is the record of what
+  happened, and a publication that reached its base is not undone by the record of
+  it failing to be written. A failed write says so on stderr.
+- **The lifecycle journeys are Unix-only** (`crates/onevcs/tests/e2e/world.rs`):
+  the substituted host and the `pre-push` hooks they install are POSIX shell, and
+  the bound that fires takes a process *group*, which has no portable spelling.
+  Windows CI still builds the crate and runs the contract, boundary, and packaging
+  suites.
 
 ## Scripts and output are context
 

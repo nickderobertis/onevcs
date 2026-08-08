@@ -563,9 +563,20 @@ fn stack_metadata_is_host_neutral() {
     assert_eq!(value["provenance"], json!("incomplete-step"));
 }
 
+/// The two declared implementations satisfy the two declared traits.
+///
+/// A compile-time assertion on purpose: what the contract fixes here is the seam,
+/// not what either side does behind it. The behaviour is driven through the real
+/// binary in `tests/e2e`, against real git and a real origin.
 #[test]
-fn every_vcs_method_refuses_while_the_crate_is_interface_only() {
-    let git = Git;
+fn the_declared_implementations_satisfy_the_declared_traits() {
+    fn repository<T: Vcs>(_: &T) {}
+    fn host<T: RemoteHost>(_: &T) {}
+    repository(&Git);
+    host(&GitHub::new("nickderobertis/onevcs"));
+
+    // The values every method signature names are constructible from outside the
+    // crate, which is what makes the seam usable by a second implementation.
     let session = Session {
         token: SessionToken("s-7f3a".to_owned()),
         worktree: PathBuf::from("/run/onevcs/s-7f3a/worktree"),
@@ -578,33 +589,6 @@ fn every_vcs_method_refuses_while_the_crate_is_interface_only() {
         base: None,
         execution_checkout: None,
     };
-
-    let refusals = [
-        refusal(git.resolve_identity("nickderobertis/onevcs")),
-        refusal(git.open_session(request)),
-        refusal(git.adopt_session(SessionToken("s-7f3a".to_owned()))),
-        refusal(git.preserve(&session, Provenance::Complete)),
-        refusal(git.recoverable(Scope::All)),
-    ];
-    assert_eq!(
-        refusals,
-        [
-            "Vcs::resolve_identity",
-            "Vcs::open_session",
-            "Vcs::adopt_session",
-            "Vcs::preserve",
-            "Vcs::recoverable",
-        ]
-    );
-    assert_eq!(
-        refusal(git.recoverable(Scope::Repo("x".to_owned()))),
-        "Vcs::recoverable"
-    );
-}
-
-#[test]
-fn every_remote_host_method_refuses_while_the_crate_is_interface_only() {
-    let host = GitHub;
     let change = ChangeRequest {
         id: ChangeId("42".to_owned()),
         url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a valid URL"),
@@ -623,34 +607,17 @@ fn every_remote_host_method_refuses_while_the_crate_is_interface_only() {
         title: "feat: add the seam".to_owned(),
         body: None,
     };
-
-    let refusals = [
-        refusal(host.authenticated_user()),
-        refusal(host.open_change(spec)),
-        refusal(host.find_changes("feature", "main")),
-        refusal(host.change_checks(&change)),
-        refusal(host.check_log(&change, &check)),
-        refusal(host.merge(&change, MergePolicy::ChangeAuto)),
-    ];
+    assert_eq!(session.branch, "feature");
+    assert_eq!(request.repo, "nickderobertis/onevcs");
+    assert_eq!(change.base, spec.base);
+    assert!(check.required);
+    assert_eq!(Provenance::Complete, Provenance::Complete);
+    assert_eq!(Scope::All, Scope::All);
+    assert_ne!(Scope::All, Scope::Repo("x".to_owned()));
     assert_eq!(
-        refusals,
-        [
-            "RemoteHost::authenticated_user",
-            "RemoteHost::open_change",
-            "RemoteHost::find_changes",
-            "RemoteHost::change_checks",
-            "RemoteHost::check_log",
-            "RemoteHost::merge",
-        ]
+        MergeOutcome::Merged(Sha("abc".to_owned())),
+        MergeOutcome::Merged(Sha("abc".to_owned()))
     );
-}
-
-/// The operation a refusal names, or a panic saying what came back instead.
-fn refusal<T: std::fmt::Debug>(result: onevcs::Result<T>) -> &'static str {
-    match result {
-        Err(Error::NotImplemented { operation }) => operation,
-        other => panic!("an interface-only build must refuse, but returned {other:?}"),
-    }
 }
 
 #[test]

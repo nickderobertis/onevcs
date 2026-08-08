@@ -35,6 +35,21 @@ thiserror = "2"
 # A change request's URL is parsed at the boundary rather than carried as a
 # string, so an unparseable one is rejected where it enters.
 url = { version = "2", features = ["serde"] }
+# Process-shared advisory file locks. The registry, the occupancy leases, and the
+# merge queue are coordinated between separate `onevcs` processes, and the OS lock
+# is the only one of those that survives a holder being killed. Cross-platform so
+# the coordination is not a Unix-only feature of the same binary.
+fs4 = { version = "0.13", default-features = false, features = ["sync"] }
+# A lock file is named by a digest of the identity it guards, because that identity
+# is a filesystem path and a path is not a filename.
+sha2 = "0.10"
+# The envelope's `ts` is RFC3339 with millisecond precision in UTC. Civil-calendar
+# arithmetic is not a thing to hand-roll into an event stream's ordering key.
+time = { version = "0.3", features = ["formatting", "macros"] }
+# Terminating a timed-out git takes its whole process group, and that call has no
+# portable spelling. Depended on for Unix only; Windows gets the bound without the
+# group teardown.
+libc = "0.2"
 
 assert_cmd = "2"
 predicates = "3"

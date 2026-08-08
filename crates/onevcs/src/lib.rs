@@ -8,24 +8,47 @@
 //! verifies it. Everything a process does along the way is emitted as an
 //! [`Envelope`].
 //!
-//! # This crate is interface-only
+//! # The shape of one change
 //!
-//! The public surface here is the approved contract in `docs/contract.md`,
-//! compiled. Nothing behind it is implemented yet: every trait method returns
-//! [`Error::NotImplemented`], and the CLI refuses with exit code 70. Types,
-//! traits, config schemas, and the argument surface are final; behaviour lands
-//! per-seam.
+//! ```text
+//! session open  →  a per-run --shared clone and one worktree, occupancy-leased
+//!    →  work happens in the worktree
+//!    →  publish   →  fetch and merge the current base  (bounded resolve-and-requeue)
+//!                 →  the gate: a command, the pre-push hook, or the host's checks
+//!                 →  local-direct squash, or a change request the host lands
+//!    →  session close  →  the worktree goes; the branch is copied out and stays
+//! ```
+//!
+//! Everything durable lives under one state root (`ONEVCS_HOME`, otherwise
+//! `~/.onevcs`): the registry document, the advisory locks and merge-queue state,
+//! the per-session workspaces, the event streams, and their artifacts.
 
 #![warn(missing_docs)]
 
+mod app;
 pub mod cli;
 mod error;
 mod event;
+mod gate;
+mod gh;
+mod git;
+mod home;
 mod host;
+mod ids;
+mod integrate;
+mod lock;
+mod policy;
+mod provenance;
+mod publish;
+mod queue;
+mod recover;
 pub mod registry;
 pub mod rules;
 mod session;
+mod store;
+mod stream;
 mod vcs;
+mod workspace;
 
 pub use error::{Error, Result};
 pub use event::{ArtifactId, ArtifactRef, Envelope, EventKind, Labels, Source};
@@ -40,3 +63,11 @@ pub use vcs::{Git, Vcs};
 /// A parsed absolute URL, re-exported so a caller needs no direct dependency on
 /// the parser this crate validates change-request URLs with.
 pub use url::Url;
+
+/// Run one parsed command line, returning the process exit code.
+///
+/// The binary is a thin shell over this, so a journey that drives `onevcs` and a
+/// caller that embeds it take the same path and cannot disagree about an exit code.
+pub fn run(cli: &cli::Cli) -> u8 {
+    app::run(&cli.command)
+}

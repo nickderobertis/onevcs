@@ -65,12 +65,11 @@ impl Fixture {
 }
 
 /// A rules default that publishes locally and verifies with one command.
-fn local_direct(gate: &str) -> String {
+pub fn local_direct(gate: &str) -> String {
     format!("{{publication: local-direct, approvals: none, gate: {{command: {gate}}}}}")
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/one"]);
@@ -89,7 +88,7 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
     // The clone borrows the lender's object store rather than copying it, which is
     // what makes one of these per session affordable.
     let clone = worktree.parent().expect("a run root").join("clone");
-    let alternates = clone.join("objects/info/alternates");
+    let alternates = clone.join(".git/objects/info/alternates");
     assert!(alternates.is_file(), "the clone must borrow, not copy");
     assert!(
         String::from_utf8_lossy(&std::fs::read(&alternates).expect("an alternates file"))
@@ -121,7 +120,6 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_checkout() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/adds"]);
@@ -195,7 +193,6 @@ fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_che
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_failing_gate_stops_the_publication_and_leaves_the_work_where_it_can_be_found() {
     let fixture = Fixture::local(&local_direct(
         "[\"sh\", \"-c\", \"echo the gate rejected this; exit 1\"]",
@@ -251,7 +248,6 @@ fn a_failing_gate_stops_the_publication_and_leaves_the_work_where_it_can_be_foun
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_branch_that_adds_nothing_publishes_nothing() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, _worktree) = fixture.open(&["--branch", "feature/empty"]);
@@ -267,7 +263,6 @@ fn a_branch_that_adds_nothing_publishes_nothing() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_name() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/unnameable"]);
@@ -299,7 +294,6 @@ fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_na
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_dirty_adoption_commits_incomplete_provenance_that_only_recovery_may_publish() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/interrupted"]);
@@ -374,7 +368,6 @@ fn a_dirty_adoption_commits_incomplete_provenance_that_only_recovery_may_publish
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn recovery_hands_a_complete_branch_over_to_the_verb_that_publishes_one() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/complete"]);
@@ -408,7 +401,6 @@ fn recovery_hands_a_complete_branch_over_to_the_verb_that_publishes_one() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
 
@@ -476,7 +468,6 @@ fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_branch_the_base_already_carries_drops_out_of_the_recoverable_view() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/landed"]);
@@ -508,7 +499,6 @@ fn a_branch_the_base_already_carries_drops_out_of_the_recoverable_view() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn the_integrate_train_keeps_going_past_a_failure_and_lands_one_commit_each() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let checkout = fixture.checkout.clone();
@@ -568,7 +558,6 @@ fn the_integrate_train_keeps_going_past_a_failure_and_lands_one_commit_each() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
     let world = World::new();
     let origin = world.bare_origin("reviewed");
@@ -598,7 +587,6 @@ fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let other = fixture.world.clone_of(&fixture.origin, "elsewhere");
@@ -643,7 +631,6 @@ fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_publication_checkout_that_is_not_on_its_base_is_refused() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/blocked"]);
@@ -668,7 +655,6 @@ fn a_publication_checkout_that_is_not_on_its_base_is_refused() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn the_publishing_push_hands_its_hook_the_base_it_publishes_onto() {
     let log = "comparison.log";
     let fixture =
@@ -708,7 +694,6 @@ fn the_publishing_push_hands_its_hook_the_base_it_publishes_onto() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_pre_push_gate_that_rejects_the_push_is_reported_as_the_gate_failing() {
     let fixture =
         Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
@@ -747,7 +732,6 @@ fn a_pre_push_gate_that_rejects_the_push_is_reported_as_the_gate_failing() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_gate_that_echoes_a_credential_records_only_that_it_had_one() {
     let fixture = Fixture::local(&local_direct(
         "[\"sh\", \"-c\", \"echo GITHUB_TOKEN=$GITHUB_TOKEN; echo ghp_0123456789abcdefghij; exit 1\"]",
@@ -788,7 +772,6 @@ fn a_gate_that_echoes_a_credential_records_only_that_it_had_one() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn every_event_carries_the_envelope_the_contract_declares() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/observed"]);
@@ -831,7 +814,6 @@ fn every_event_carries_the_envelope_the_contract_declares() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
     let fixture = Fixture::local(&local_direct(
         // Well past the 4096-byte bound the contract fixes.
@@ -873,7 +855,6 @@ fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn an_artifact_nobody_stored_is_a_usage_error() {
     let world = World::new();
     world
@@ -887,7 +868,6 @@ fn an_artifact_nobody_stored_is_a_usage_error() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_wedged_gate_is_stopped_by_the_bound_and_left_running_by_nothing() {
     let fixture =
         Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
@@ -932,7 +912,6 @@ fn a_wedged_gate_is_stopped_by_the_bound_and_left_running_by_nothing() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     for (value, expected) in [
@@ -954,7 +933,6 @@ fn an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn an_unusable_lock_bound_stops_the_command_by_name() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/locked"]);
@@ -976,7 +954,6 @@ fn an_unusable_lock_bound_stops_the_command_by_name() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn two_publications_of_one_identity_queue_rather_than_race() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let mut sessions = Vec::new();
@@ -1040,7 +1017,6 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/conflicting"]);
@@ -1083,7 +1059,6 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn closing_a_session_hands_its_branch_back_before_the_worktree_goes() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/handed-back"]);
@@ -1112,7 +1087,6 @@ fn closing_a_session_hands_its_branch_back_before_the_worktree_goes() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn an_execution_checkout_of_another_identity_is_refused() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let other_origin = fixture.world.bare_origin("unrelated");
@@ -1140,7 +1114,6 @@ fn an_execution_checkout_of_another_identity_is_refused() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn only_the_newest_abandoned_run_roots_holding_work_are_retained() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let mut worktrees = Vec::new();
@@ -1179,7 +1152,6 @@ fn only_the_newest_abandoned_run_roots_holding_work_are_retained() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_per_run_policy_may_narrow_the_rules_but_never_widen_them() {
     let world = World::new();
     let origin = world.bare_origin("narrowed");

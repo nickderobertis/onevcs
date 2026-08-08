@@ -65,6 +65,13 @@ impl World {
             .env("ONEVCS_GH", self.path("bin/gh"))
             .env("ONEVCS_FAKE_GH_STATE", self.path("gh-state"))
             .current_dir(self.directory.path());
+        // The one inherited variable: a coverage run tells the instrumented binary
+        // where to write its profile. Cleared, it falls back to the working
+        // directory — which for the commands that run inside a checkout is a stray
+        // file in a tree these journeys assert is clean.
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         assert_cmd::Command::from_std(command)
     }
 
@@ -175,7 +182,9 @@ impl World {
 
     /// What the substituted host reports as a change request's checks.
     ///
-    /// One row per check: name, status, conclusion, and whether it is required.
+    /// One `|`-separated row per check: name, status, conclusion, and whether it
+    /// is required. Not a tab — bash's `read` collapses runs of IFS *whitespace*
+    /// however IFS is set, which silently eats a check with no conclusion yet.
     /// The host renders its rollup from this and decides whether a merge may
     /// proceed from the same rows, so what it reports and what it acts on cannot
     /// disagree.
@@ -184,7 +193,7 @@ impl World {
             .iter()
             .map(|check| {
                 format!(
-                    "{}\t{}\t{}\t{}\n",
+                    "{}|{}|{}|{}\n",
                     check.name,
                     check.status,
                     check.conclusion.unwrap_or(""),
@@ -194,6 +203,17 @@ impl World {
             .collect();
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
         std::fs::write(self.path("gh-state/checks.tsv"), rows).expect("a check rollup");
+    }
+
+    /// Make the substituted host accept a merge and then not perform it.
+    pub fn accept_merges_without_performing_them(&self) {
+        std::fs::write(self.path("gh-state/refuse-merge"), "")
+            .expect("a host that says yes and does nothing");
+    }
+
+    /// Make the substituted host unable to hand over a check's log.
+    pub fn refuse_check_logs(&self) {
+        std::fs::write(self.path("gh-state/no-logs"), "").expect("a host that keeps its logs");
     }
 
     /// Every event a session's stream carries, as parsed JSON.
@@ -287,6 +307,10 @@ case "$command" in
         *) shift ;;
       esac
     done
+    if [ -f "$STATE/no-logs" ]; then
+      printf 'this repository keeps its check logs to itself\n' >&2
+      exit 1
+    fi
     if [ -f "$STATE/log-$name.txt" ]; then
       cat "$STATE/log-$name.txt"
     else
@@ -327,7 +351,7 @@ done
 rollup() {
   printf '['
   local separator="" name status conclusion required entry
-  while IFS=$'\t' read -r name status conclusion required; do
+  while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
     if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
     printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"isRequired":%s}' \
@@ -340,7 +364,7 @@ rollup() {
 verdict() {
   local name status conclusion required total settled red
   total=0; settled=0; red=0
-  while IFS=$'\t' read -r name status conclusion required; do
+  while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
     [ "$required" = "true" ] || continue
     total=$((total + 1))
@@ -408,6 +432,11 @@ case "$subcommand" in
     if [ "$auto" = "1" ] && [ "$(verdict)" != "green" ]; then
       # Native auto-merge: the host holds the change and lands it when its own
       # required checks pass. Nothing merges now.
+      exit 0
+    fi
+    if [ -f "$STATE/refuse-merge" ]; then
+      # Accepted, and then nothing happens — the shape a caller cannot tell from a
+      # merge that worked without asking the host again.
       exit 0
     fi
     work="$STATE/merge-$PR_NUMBER"

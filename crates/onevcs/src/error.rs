@@ -50,3 +50,23 @@ pub enum Error {
 
 /// The result type every fallible entry point in this crate returns.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Reject something, naming what was wrong with it.
+pub(crate) fn invalid(reason: impl Into<String>) -> Error {
+    Error::Invalid {
+        reason: reason.into(),
+    }
+}
+
+/// An operation on a path that the filesystem refused, as the rejection a caller
+/// reads: what was being done, where, and what the system said.
+///
+/// One helper rather than a closure at each site, so the message every one of them
+/// produces has the same shape — and so a path that cannot be written reads the
+/// same whether it was the registry, a session record, or an artifact.
+pub(crate) fn at<'a, E: std::fmt::Display>(
+    action: &'static str,
+    path: &'a std::path::Path,
+) -> impl FnOnce(E) -> Error + 'a {
+    move |error| invalid(format!("cannot {action} {}: {error}", path.display()))
+}

@@ -10,7 +10,6 @@ use predicates::prelude::*;
 use crate::world::World;
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn registering_a_checkout_reports_the_identity_its_origin_normalizes_to() {
     let world = World::new();
     let origin = world.bare_origin("widgets");
@@ -48,7 +47,6 @@ fn registering_a_checkout_reports_the_identity_its_origin_normalizes_to() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn every_spelling_of_one_hosted_origin_is_one_identity() {
     let world = World::new();
     let origin = world.bare_origin("shared");
@@ -95,7 +93,6 @@ fn every_spelling_of_one_hosted_origin_is_one_identity() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn the_gate_audit_reports_what_runs_on_each_identitys_merge_path() {
     let world = World::new();
     let origin = world.bare_origin("audited");
@@ -130,7 +127,6 @@ fn the_gate_audit_reports_what_runs_on_each_identitys_merge_path() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_version_4_registry_migrates_lazily_on_the_first_read() {
     let world = World::new();
     let origin = world.bare_origin("legacy");
@@ -175,7 +171,6 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_version_2_registry_infers_the_type_its_workflow_is_evidence_for() {
     let world = World::new();
     let origin = world.bare_origin("v2");
@@ -206,7 +201,6 @@ fn a_version_2_registry_infers_the_type_its_workflow_is_evidence_for() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
     let world = World::new();
     write_registry(
@@ -231,7 +225,6 @@ fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn an_unregistered_repository_names_what_is_registered() {
     let world = World::new();
     let origin = world.bare_origin("known");
@@ -252,7 +245,6 @@ fn an_unregistered_repository_names_what_is_registered() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
     let world = World::new();
     let origin = world.bare_origin("ruled");
@@ -302,7 +294,6 @@ fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_repository_no_rule_matches_falls_through_to_the_default() {
     let world = World::new();
     let origin = world.bare_origin("unmatched");
@@ -342,7 +333,6 @@ fn a_repository_no_rule_matches_falls_through_to_the_default() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
     let world = World::new();
     let origin = world.bare_origin("contradictory");
@@ -374,7 +364,6 @@ fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
     let world = World::new();
     let origin = world.bare_origin("future");
@@ -402,7 +391,6 @@ fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_path_rule_matches_the_checkout_rather_than_the_origin() {
     let world = World::new();
     let origin = world.bare_origin("by-path");

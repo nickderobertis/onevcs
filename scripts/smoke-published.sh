@@ -11,7 +11,7 @@
 #
 # What it asserts, while this repository is interface-only: the binary reports the
 # version the registry says it serves, prints its whole command surface for
-# `--help`, refuses a parsed-but-unimplemented command with exit 70 on stderr, and
+# `--help`, reads its own state root, refuses an unregistered repository with exit 2, and
 # still rejects a malformed invocation with clap's usage error (exit 2). When a
 # seam is implemented, its journey is added here so every install surface is held
 # to it.
@@ -84,16 +84,21 @@ for command in register repos resolve session publish recover recoverable integr
   esac
 done
 
-# A parsed-but-unimplemented command must refuse loudly rather than exit 0. `|| status=$?`
-# keeps `set -e` from aborting on the expected failure.
+# A command that reads the host's own state must actually run. `repos` is the
+# read-only one: it creates nothing and reports whatever this machine has.
+onevcs repos >/dev/null || fail "'onevcs repos' failed on a working installation" \
+  "the installed binary cannot read its own state root"
+
+# A repository nobody registered is refused at the trust boundary, naming the
+# problem. `|| status=$?` keeps `set -e` from aborting on the expected failure.
 status=0
-message="$(onevcs resolve some-repo 2>&1 >/dev/null | strip_cr)" || status=$?
-[ "$status" -eq 70 ] || fail "'onevcs resolve' exited $status, not 70" \
-  "an interface-only build must refuse an unimplemented command with exit 70"
+message="$(onevcs resolve definitely-not-a-registered-repository 2>&1 >/dev/null | strip_cr)" || status=$?
+[ "$status" -eq 2 ] || fail "'onevcs resolve' exited $status, not 2" \
+  "an unregistered repository must be rejected where it enters"
 case "$message" in
-  *"not implemented"*) ;;
+  *"not a registered repository"*) ;;
   *) fail "'onevcs resolve' refused without saying why: '$message'" \
-       "the refusal must name what is not implemented and where the contract lives" ;;
+       "the refusal must name the problem and the command that fixes it" ;;
 esac
 
 # The boundary still rejects nonsense: a usage error is exit 2, not a refusal.

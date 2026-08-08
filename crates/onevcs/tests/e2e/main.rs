@@ -6,6 +6,8 @@
 //! here calls into the library.
 
 mod cli;
+#[cfg(unix)]
+mod edges;
 // Unix only: these drive a substituted `gh` and real `pre-push` hooks, both POSIX
 // shell. See `world.rs`.
 #[cfg(unix)]

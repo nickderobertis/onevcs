@@ -76,7 +76,6 @@ const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {k
 const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_reviewed_change_is_pushed_and_left_open() {
     let hosted = Hosted::new(REVIEWED);
     let token = hosted.change("feature/reviewed", "feat: add the reviewed thing");
@@ -114,7 +113,6 @@ fn a_reviewed_change_is_pushed_and_left_open() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn an_automated_change_merges_once_every_required_check_is_green() {
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[
@@ -187,7 +185,6 @@ fn an_automated_change_merges_once_every_required_check_is_green() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_failing_required_check_stops_the_publication_and_names_it() {
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[Check {
@@ -230,7 +227,6 @@ fn a_failing_required_check_stops_the_publication_and_names_it() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_required_check_that_never_settles_is_bounded_rather_than_waited_on_forever() {
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[Check {
@@ -253,7 +249,6 @@ fn a_required_check_that_never_settles_is_bounded_rather_than_waited_on_forever(
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_change_that_is_already_open_is_adopted_rather_than_duplicated() {
     let hosted = Hosted::new(REVIEWED);
     let token = hosted.change("feature/twice", "feat: add the thing once");
@@ -280,7 +275,6 @@ fn a_change_that_is_already_open_is_adopted_rather_than_duplicated() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn native_auto_merge_leaves_the_change_queued_while_a_required_check_is_pending() {
     let hosted = Hosted::new(
         // `pre-push` rather than `checks`, so the publication does not itself wait
@@ -314,7 +308,6 @@ fn native_auto_merge_leaves_the_change_queued_while_a_required_check_is_pending(
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_repository_that_disallows_auto_merge_reports_the_hosts_refusal() {
     let hosted =
         Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
@@ -334,7 +327,6 @@ fn a_repository_that_disallows_auto_merge_reports_the_hosts_refusal() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_branch_the_hooks_gate_rejects_never_reaches_a_change_request() {
     let hosted =
         Hosted::new("{publication: change-open, approvals: required, gate: {kind: pre-push}}");
@@ -367,7 +359,6 @@ fn a_branch_the_hooks_gate_rejects_never_reaches_a_change_request() {
 }
 
 #[test]
-#[ignore = "red-listed: the seam this drives is not implemented yet"]
 fn a_local_identity_cannot_be_asked_to_open_a_change_request() {
     let world = World::new();
     let origin = world.bare_origin("localish");
