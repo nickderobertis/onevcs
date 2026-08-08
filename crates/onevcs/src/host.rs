@@ -9,7 +9,7 @@ use url::Url;
 use crate::error::{invalid, Error, Result};
 use crate::event::ArtifactId;
 use crate::rules::MergePolicy;
-use crate::{gh, stream};
+use crate::{gh, git, stream};
 
 /// Everything `onevcs` asks of a repository's remote host.
 pub trait RemoteHost {
@@ -189,6 +189,7 @@ impl GitHub {
     }
 
     fn view(&self, id: &str) -> Result<serde_json::Value> {
+        addressable(id, "change request id")?;
         let raw = gh::invoke(&[
             "pr",
             "view",
@@ -205,6 +206,33 @@ impl GitHub {
     }
 }
 
+/// One value bound for `gh`'s argument vector, checked before it gets there.
+///
+/// Every string in these methods arrives from outside — off a caller embedding this
+/// crate, or out of the host's own answer — and each becomes a positional or an
+/// option's value. `gh` reads a leading `-` as an option of its own and an empty
+/// string as a present-but-blank value, so a name shaped like either is refused
+/// here rather than silently addressing something other than what it names.
+fn addressable(value: &str, what: &str) -> Result<()> {
+    if value.is_empty() || value.starts_with('-') || value.contains(char::is_whitespace) {
+        return Err(invalid(format!(
+            "{what} {value:?} cannot address anything on the host: it must be non-empty, must \
+             not begin with '-', and must carry no whitespace"
+        )));
+    }
+    Ok(())
+}
+
+/// A branch name a caller supplied, checked by the parser that decides branch names.
+fn addressable_branch(value: &str, what: &str) -> Result<()> {
+    if !git::is_valid_branch_name(value) {
+        return Err(invalid(format!(
+            "{what} {value:?} is a name git would not accept"
+        )));
+    }
+    Ok(())
+}
+
 impl RemoteHost for GitHub {
     fn authenticated_user(&self) -> Result<String> {
         let login = gh::invoke(&["api", "user", "--jq", ".login"])?
@@ -219,6 +247,8 @@ impl RemoteHost for GitHub {
     }
 
     fn open_change(&self, req: ChangeSpec) -> Result<ChangeRequest> {
+        addressable_branch(&req.head, "the head branch")?;
+        addressable_branch(&req.base, "the base branch")?;
         let body = req.body.unwrap_or_default();
         let raw = gh::invoke(&[
             "pr", "create", "--repo", &self.repo, "--head", &req.head, "--base", &req.base,
@@ -254,6 +284,8 @@ impl RemoteHost for GitHub {
     }
 
     fn find_changes(&self, head: &str, base: &str) -> Result<Vec<ChangeRequest>> {
+        addressable_branch(head, "the head branch")?;
+        addressable_branch(base, "the base branch")?;
         let raw = gh::invoke(&[
             "pr",
             "list",
@@ -310,21 +342,27 @@ impl RemoteHost for GitHub {
     }
 
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
-        let log = gh::invoke(&[
-            "run",
-            "view",
-            "--repo",
-            &self.repo,
-            "--log",
-            "--job",
-            &check.name,
-        ])
-        .unwrap_or_else(|error| {
-            format!(
-                "the host could not produce a log for check {:?} on {}: {error}\n",
-                check.name, cr.url
-            )
-        });
+        // A name that cannot address a job is the same kind of event as a job whose
+        // log the host declined to produce, and is recorded the same way: as the
+        // artifact's content. Raising it would undo a publication over a log.
+        let log = addressable(&check.name, "check name")
+            .and_then(|()| {
+                gh::invoke(&[
+                    "run",
+                    "view",
+                    "--repo",
+                    &self.repo,
+                    "--log",
+                    "--job",
+                    &check.name,
+                ])
+            })
+            .unwrap_or_else(|error| {
+                format!(
+                    "the host could not produce a log for check {:?} on {}: {error}\n",
+                    check.name, cr.url
+                )
+            });
         Ok(stream::store_artifact("log", &log)?.id)
     }
 
@@ -332,6 +370,7 @@ impl RemoteHost for GitHub {
         match policy {
             MergePolicy::LocalDirect | MergePolicy::ChangeOpen => Ok(MergeOutcome::Open),
             MergePolicy::ChangeAuto => {
+                addressable(&cr.id.0, "change request id")?;
                 gh::invoke(&[
                     "pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash", "--auto",
                 ])?;
@@ -342,6 +381,7 @@ impl RemoteHost for GitHub {
                 })
             }
             MergePolicy::ChangeDirect => {
+                addressable(&cr.id.0, "change request id")?;
                 gh::invoke(&["pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash"])?;
                 let view = self.view(&cr.id.0)?;
                 match merged_sha(&view, cr)? {

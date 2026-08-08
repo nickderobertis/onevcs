@@ -406,3 +406,45 @@ fn a_local_identity_cannot_be_asked_to_open_a_change_request() {
             "local identity publishes with local-direct",
         ));
 }
+
+#[test]
+fn a_check_whose_name_cannot_address_a_job_is_recorded_not_run() {
+    let hosted = Hosted::new(AUTOMATED);
+    // A host is free to name a check anything, and `-x` would be read by the program
+    // that fetches its log as an option of that program rather than as a job.
+    hosted.world.host_checks(&[Check {
+        name: "-x",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/oddly-named", "feat: add the oddly gated thing");
+
+    // The publication is not undone over a log it could not read.
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let checks = hosted.world.events_of(&token, "change-check");
+    let reported = checks
+        .iter()
+        .find(|event| event["payload"]["name"] == "-x")
+        .expect("the oddly named check is still reported");
+    let id = reported["artifacts"][0]["id"]
+        .as_str()
+        .expect("a settled check carries an artifact whatever its name");
+    hosted
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "could not produce a log for check \"-x\"",
+        ))
+        .stdout(predicate::str::contains("must not begin with '-'"));
+}
