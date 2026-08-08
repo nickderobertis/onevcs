@@ -1,0 +1,46 @@
+# The Cargo workspace. One member today (`crates/onevcs`, the published crate and
+# its binary); the workspace exists because the contract's seams — a second host
+# implementation, an events reader — are expected to arrive as their own crates,
+# and retrofitting a workspace later moves every path in the tree.
+#
+# Shared metadata lives in `[workspace.package]` and shared version requirements
+# in `[workspace.dependencies]`, so a member never pins its own copy of either.
+# The published *version* is deliberately NOT inherited: release-plz maintains it
+# in the member manifest, which is the one place `scripts/npm-build.mjs` and
+# maturin read it from.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+authors = ["Nick DeRobertis"]
+repository = "https://github.com/nickderobertis/onevcs"
+homepage = "https://github.com/nickderobertis/onevcs"
+
+[workspace.dependencies]
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` keeps JSON object keys in insertion order, so an envelope
+# re-serializes in the field order docs/contract.md declares rather than in
+# whatever order a hash map happened to yield.
+serde_json = { version = "1", features = ["preserve_order"] }
+# The maintained fork of serde_yaml, which its author archived. The rules file is
+# YAML, so the crate needs a YAML reader; this one is the drop-in that is still
+# receiving fixes (and does not trip `cargo deny`'s unmaintained advisory).
+serde_yaml_ng = "0.10"
+thiserror = "2"
+# A change request's URL is parsed at the boundary rather than carried as a
+# string, so an unparseable one is rejected where it enters.
+url = { version = "2", features = ["serde"] }
+
+assert_cmd = "2"
+predicates = "3"
+
+# A CLI binary: optimize for a small, fast-starting artifact.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

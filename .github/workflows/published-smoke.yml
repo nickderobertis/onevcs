@@ -1,0 +1,153 @@
+name: Published smoke
+
+# Install what the registries are serving *right now* and run it.
+#
+# `release.yml`'s verify jobs prove a version at the moment it is published, and
+# then never look again. Everything that can break afterwards — a yanked platform
+# package, an npm dist-tag moved to a build that never shipped, a wheel PyPI
+# stopped serving for one platform — is invisible until a user hits it, because
+# nothing else in this repository installs from a registry between releases.
+#
+# So this runs the identical `scripts/smoke-published.sh` those jobs run, against
+# `latest` rather than a tag, on Linux, both macOS architectures, and Windows,
+# once a week. The registry's own idea of the version (`pip show`, `npm view`) is
+# what the binary is held to, so a package whose metadata and payload disagree
+# fails here rather than confusing someone reading `--version`.
+#
+# The third install surface is `cargo install onevcs`, which resolves from
+# crates.io and is proven on all three platforms by ci.yml's `install` job on every
+# pull request. Nothing here downloads a GitHub Release asset by constructed name,
+# so there is no asset-naming contract that could rot unnoticed between releases.
+#
+# Deliberately cheap: a checkout, the language runtime that owns the installer,
+# `pip install` / `npm install -g`, and bash. No Rust toolchain, no build, no cache
+# — a sweep that took ten minutes a platform would be the first thing switched off,
+# and this one has to keep running while nobody is looking.
+#
+# NOT a required check, and it cannot become one: branch protection lists contexts
+# a *pull request* reports, and nothing here runs on one. See AGENTS.md.
+#
+# llmlint: ignore-file[changed_behavior_has_e2e] this workflow is a schedule, two
+# registry installs, and a call to scripts/smoke-published.sh. The script is what holds
+# the behaviour, and it is driven for real by crates/onevcs/tests/e2e/smoke.rs over the
+# compiled binary — same file, same assertions. What is left here is the trigger and the
+# two installs, which only a hosted runner and a live registry can exercise; simulating
+# either would put the simulation under test.
+#
+# llmlint: ignore-file[live_tier_compiles_and_requires_credential] there is no credential
+# to require: every step reads a public registry anonymously, and the jobs are switched by
+# the same PYPI_PUBLISH / NPM_PUBLISH repository variables that decide whether this
+# project publishes to those registries at all. A repo that publishes nowhere has nothing
+# to smoke, and a weekly red run for an absent package is how a sweep gets switched off.
+
+on:
+  schedule:
+    # Mondays, early UTC: a break found at the start of the week gets a week to be
+    # fixed in, and an off-the-hour minute keeps this out of the queue every other
+    # cron job on GitHub is in.
+    - cron: "23 6 * * 1"
+  # The manual entry point — after a registry incident, or to confirm a fix
+  # without waiting for Monday.
+  workflow_dispatch:
+
+# Nothing by default. Each job asks for `contents: read` because it checks out the
+# smoke script; nothing here writes anything.
+permissions: {}
+
+concurrency:
+  group: published-smoke
+  cancel-in-progress: false
+
+jobs:
+  # `pip install onevcs-cli`, on each OS, as a user runs it.
+  pypi:
+    name: pypi (${{ matrix.os }})
+    if: ${{ vars.PYPI_PUBLISH == 'true' }}
+    permissions:
+      contents: read
+    strategy:
+      # Every platform reports: the first red leg must not hide a second.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # main's script, on purpose: this sweep asks whether the *current*
+      # definition of "it works" still describes what the registry serves.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the latest published wheel
+        id: install
+        run: |
+          if ! pip install --upgrade onevcs-cli; then
+            echo "::error::PyPI on $RUNNER_OS/$RUNNER_ARCH: pip install onevcs-cli failed"
+            echo "ACTION: check https://pypi.org/project/onevcs-cli/ for a yanked or missing wheel for this platform" >&2
+            exit 1
+          fi
+          version="$(pip show onevcs-cli | sed -n 's/^Version: //p' | tr -d '\r')"
+          if [ -z "$version" ]; then
+            echo "::error::PyPI on $RUNNER_OS/$RUNNER_ARCH: onevcs-cli installed but reports no version"
+            echo "ACTION: inspect the wheel's metadata — pip show found no Version field" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      # The registry's version against the binary's own: a wheel whose metadata
+      # says one thing and whose payload is another installs and runs perfectly.
+      - name: Smoke-test what PyPI served
+        env:
+          VERSION: ${{ steps.install.outputs.version }}
+        run: |
+          bash scripts/smoke-published.sh \
+            --expect-version "$VERSION" \
+            --label "PyPI onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
+
+  # `npm install -g onevcs-cli`, on each OS, as a user runs it.
+  npm:
+    name: npm (${{ matrix.os }})
+    if: ${{ vars.NPM_PUBLISH == 'true' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the latest published package
+        id: install
+        run: |
+          version="$(npm view onevcs-cli version 2>/dev/null | tr -d '\r')"
+          if [ -z "$version" ]; then
+            echo "::error::npm on $RUNNER_OS/$RUNNER_ARCH: the registry serves no version of onevcs-cli"
+            echo "ACTION: check https://www.npmjs.com/package/onevcs-cli — the latest dist-tag may be unset or the package unpublished" >&2
+            exit 1
+          fi
+          # Pinned to what `npm view` just reported so the version asserted below is
+          # the one that was installed, even if latest moves mid-run. That pin is
+          # also why this install retries: `npm view` and the install resolve
+          # independently, so a version published minutes ago can be on the edge one
+          # read and not the other.
+          bash scripts/retry-install.sh \
+            --label "npm onevcs-cli $version on $RUNNER_OS/$RUNNER_ARCH" \
+            --action "the platform package for this runner is missing or unpublished; check the onevcs-cli-* packages" \
+            -- npm install -g --prefer-online "onevcs-cli@${version}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Smoke-test what npm served
+        env:
+          VERSION: ${{ steps.install.outputs.version }}
+        run: |
+          bash scripts/smoke-published.sh \
+            --expect-version "$VERSION" \
+            --label "npm onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"

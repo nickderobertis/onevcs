@@ -1,0 +1,19 @@
+{
+  "name": "onevcs",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "crates/onevcs/src",
+  "tags": ["scope:cli", "lang:rust"],
+  "targets": {
+    "bootstrap": { "command": "just _crate-bootstrap" },
+    "format": { "command": "just _crate-format" },
+    "format-check": { "command": "just _crate-fmt-check" },
+    "lint": { "command": "just _crate-lint" },
+    "test": { "command": "just _crate-test" },
+    "doc": { "command": "just _crate-doc" },
+    "check": {
+      "executor": "nx:noop",
+      "dependsOn": ["format-check", "lint", "test", "doc"]
+    }
+  }
+}

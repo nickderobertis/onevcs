@@ -1,0 +1,37 @@
+{
+  "name": "onevcs-cli",
+  "version": "0.0.0-managed",
+  "description": "Version control and remote-host abstraction for agent workflows: host-neutral change requests, sessions, and a rules system.",
+  "keywords": [
+    "cli",
+    "git",
+    "github",
+    "vcs",
+    "pull-request",
+    "agent"
+  ],
+  "homepage": "https://github.com/nickderobertis/onevcs",
+  "bugs": "https://github.com/nickderobertis/onevcs/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickderobertis/onevcs.git"
+  },
+  "license": "MIT",
+  "author": "Nick DeRobertis",
+  "bin": {
+    "onevcs": "bin/onevcs.js"
+  },
+  "files": [
+    "bin/onevcs.js"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "onevcs-cli-linux-x64": "0.0.0-managed",
+    "onevcs-cli-linux-arm64": "0.0.0-managed",
+    "onevcs-cli-darwin-x64": "0.0.0-managed",
+    "onevcs-cli-darwin-arm64": "0.0.0-managed",
+    "onevcs-cli-win32-x64": "0.0.0-managed"
+  }
+}

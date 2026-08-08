@@ -1,0 +1,9 @@
+{
+  "name": "onevcs-workspace",
+  "private": true,
+  "description": "Nx project graph for the onevcs monorepo. Not published; it carries the orchestrator and nothing else. Every deliverable's version comes from crates/onevcs/Cargo.toml.",
+  "license": "MIT",
+  "devDependencies": {
+    "nx": "^23.1.1"
+  }
+}
