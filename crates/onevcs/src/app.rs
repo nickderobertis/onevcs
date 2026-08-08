@@ -325,11 +325,15 @@ fn sync(args: &SyncArgs) -> Result<u8> {
     let registry = store::load()?;
     let resolution = resolve_here(&registry)?;
     let checkout = &resolution.publication;
-    let branch = match args.branch.as_deref() {
-        Some(branch) => branch.to_owned(),
-        None => git::default_branch(checkout, "origin")?,
+    // The name goes on to spell a ref, so an unusable one is refused here rather
+    // than by whichever git command met it first.
+    let branch = match args.branch.clone() {
+        Some(branch) => workspace::Ref::try_from(branch).map_err(|reason| Error::Invalid {
+            reason: format!("{reason}: it is not a valid branch name"),
+        })?,
+        None => workspace::Ref::from_git(git::default_branch(checkout, "origin")?),
     };
-    if git::current_branch(checkout)? != branch {
+    if git::current_branch(checkout)? != *branch {
         return Err(Error::Invalid {
             reason: format!(
                 "{} does not have {branch:?} checked out; sync only ever fast-forwards the \

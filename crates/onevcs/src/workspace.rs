@@ -90,9 +90,18 @@ impl std::fmt::Display for Token {
 ///
 /// Every one of these is handed to git afterwards, so the parser that decides is
 /// git's rather than this crate's idea of one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Ref(String);
+
+/// The name itself, quoted — never the wrapper. Half the refusals this crate
+/// writes name a branch with `{:?}`, and a derived `Debug` would spell every one of
+/// them `Ref("main")` at the operator rather than the branch they are about.
+impl std::fmt::Debug for Ref {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
 
 impl TryFrom<String> for Ref {
     type Error = String;

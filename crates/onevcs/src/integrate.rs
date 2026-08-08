@@ -129,6 +129,11 @@ pub fn run(
         });
     }
     for branch in candidates {
+        if !git::is_valid_branch_name(branch) {
+            return Err(Error::Invalid {
+                reason: format!("{branch:?} is not a valid branch name"),
+            });
+        }
         if branch == &base {
             return Err(Error::Invalid {
                 reason: format!("the base branch {base:?} cannot also be a candidate"),

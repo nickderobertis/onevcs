@@ -160,7 +160,12 @@ pub fn publication_subject(
     explicit: Option<&str>,
 ) -> Result<std::result::Result<String, String>> {
     if let Some(title) = explicit {
-        return Ok(if title.len() <= SUBJECT_LIMIT {
+        // Blank before long: a title that is only spacing would publish a commit with
+        // no subject at all, which is the one shape a length check reads as fine.
+        let title = title.trim();
+        return Ok(if title.is_empty() {
+            Err("the explicit title is blank".to_owned())
+        } else if title.len() <= SUBJECT_LIMIT {
             Ok(title.to_owned())
         } else {
             Err(format!(

@@ -288,6 +288,16 @@ fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_na
         .stderr(predicate::str::contains("fits the 72-character limit"))
         .stderr(predicate::str::contains("--title"));
 
+    // A title that is only spacing is no more of a subject than none at all, and a
+    // length check is exactly what reads it as fine.
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token, "--title", "   "])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("the explicit title is blank"));
+
     // Given a title that does fit, the same branch publishes unchanged.
     fixture
         .world
@@ -617,6 +627,16 @@ fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
         fixture.world.git(&fixture.checkout, &["rev-parse", "HEAD"]),
         fixture.world.git(&fixture.origin, &["rev-parse", "main"])
     );
+
+    // A name git would not accept is refused before it spells a ref.
+    fixture
+        .world
+        .onevcs()
+        .args(["sync", "not a branch"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not a valid branch name"));
 
     // A checkout sitting on something else is refused rather than being moved.
     fixture.world.git(

@@ -561,6 +561,17 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
     let checkout = fixture.checkout.clone();
 
+    // A name git would not accept is refused as the name it is, rather than as a
+    // branch the checkout happens not to have.
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "not a branch"])
+        .current_dir(&checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not a valid branch name"));
+
     fixture
         .world
         .onevcs()
