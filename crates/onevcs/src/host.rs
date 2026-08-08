@@ -74,13 +74,16 @@ pub struct Check {
     /// The check's name, as branch protection lists it.
     pub name: String,
     /// Where the check is: the host's own status vocabulary, passed through.
-    // llmlint: ignore[invalid_states_unrepresentable] the contract fixes these two field
-    // names and enumerates no value set for either, and the vocabulary differs per host —
-    // which is the thing this crate exists to abstract. Inventing an enum here would add a
-    // public item the contract does not name. Recorded as open question 1 in
+    // llmlint: ignore[invalid_states_unrepresentable] the contract fixes this field name
+    // and enumerates no value set for it, and the vocabulary differs per host — which is
+    // the thing this crate exists to abstract. Inventing an enum here would add a public
+    // item the contract does not name. Recorded as open question 1 in
     // docs/inferred-surface.md for the planner to settle across the three repositories.
     pub status: String,
     /// How it ended, once it has. Absent while it is still running.
+    // llmlint: ignore[invalid_states_unrepresentable] `conclusion` is the other half of the
+    // same open question as `status` above, for the same reason: the contract names the
+    // field and enumerates no conclusion vocabulary, and each host spells its own.
     pub conclusion: Option<String>,
     /// Whether it blocks the merge.
     pub required: bool,

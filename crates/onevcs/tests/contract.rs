@@ -839,13 +839,13 @@ fn the_release_smoke_script_asserts_the_whole_command_surface() {
         .expect("smoke-published.sh iterates a command list");
     let asserted: BTreeSet<String> = listed.split_whitespace().map(str::to_owned).collect();
 
-    let implemented: BTreeSet<String> = Cli::command()
+    let parsed_commands: BTreeSet<String> = Cli::command()
         .get_subcommands()
         .map(|c| c.get_name().to_owned())
         .filter(|name| name != "help")
         .collect();
     assert_eq!(
-        asserted, implemented,
+        asserted, parsed_commands,
         "scripts/smoke-published.sh and the parser disagree about the command surface"
     );
 }
