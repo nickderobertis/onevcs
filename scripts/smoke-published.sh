@@ -62,7 +62,10 @@ fi
 # everywhere rather than let a line ending decide the verdict.
 strip_cr() { tr -d '\r'; }
 
-reported="$(onevcs --version | strip_cr)"
+# `|| fail` rather than bare assignment: under `set -e` a binary that cannot even
+# report its version would abort the script with no line saying which install broke.
+reported="$(onevcs --version | strip_cr)" || fail "'onevcs --version' exited non-zero" \
+  "the installed binary cannot run at all; reinstall it from the registry named above"
 case "$reported" in
   "onevcs "*) ;;
   *) fail "--version printed '$reported'" \
@@ -74,7 +77,8 @@ if [ -n "$expect_version" ] && [ "$reported" != "onevcs $expect_version" ]; then
     "the package metadata and its payload disagree; re-run the release for this platform"
 fi
 
-help="$(onevcs --help | strip_cr)"
+help="$(onevcs --help | strip_cr)" || fail "'onevcs --help' exited non-zero" \
+  "the installed binary cannot print its own command surface; reinstall it from the registry named above"
 # The list is spelled here because an installed binary is smoke-tested without this
 # repository beside it. It cannot drift from the parser:
 # tests/contract.rs::the_release_smoke_script_asserts_the_whole_command_surface

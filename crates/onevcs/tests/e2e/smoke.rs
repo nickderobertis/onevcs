@@ -13,6 +13,7 @@
 //! surface each platform actually uses.
 
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt;
 
 use crate::support::{binary_dir, workspace_root};
 
@@ -46,6 +47,66 @@ fn the_release_smoke_script_passes_against_this_build() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[test]
+fn the_smoke_script_names_an_install_that_cannot_run_rather_than_dying_quietly() {
+    let root = workspace_root();
+    // A published artifact that unpacked wrong answers nothing at all. Under
+    // `set -e` that is the one failure a script can report by saying nothing, which
+    // is exactly the release job whose log has to name the platform that broke.
+    for broken in ["--version", "--help"] {
+        let install = tempfile::tempdir().expect("a scratch install directory");
+        let stub = install.path().join("onevcs");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/usr/bin/env bash\n\
+                 if [ \"$1\" = '{broken}' ]; then exit 3; fi\n\
+                 case \"$1\" in\n\
+                 --version) echo 'onevcs {version}' ;;\n\
+                 esac\n",
+                version = env!("CARGO_PKG_VERSION"),
+            ),
+        )
+        .expect("a stub install");
+        let mut permissions = std::fs::metadata(&stub)
+            .expect("a written stub")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&stub, permissions).expect("an executable stub");
+
+        let mut path = OsString::from(install.path());
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+
+        let output = std::process::Command::new("bash")
+            .arg(root.join("scripts/smoke-published.sh"))
+            .arg("--expect-version")
+            .arg(env!("CARGO_PKG_VERSION"))
+            .arg("--label")
+            .arg("an install that unpacked wrong")
+            .env("PATH", path)
+            .current_dir(&root)
+            .output()
+            .expect("bash must be available to run the release smoke script");
+
+        assert!(
+            !output.status.success(),
+            "an install that cannot answer {broken} must fail the smoke test"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "an install that unpacked wrong: 'onevcs {broken}' exited non-zero"
+            )),
+            "the failure must name the install and the call that broke:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("ACTION:"),
+            "the failure must carry a next action:\n{stderr}"
+        );
+    }
 }
 
 #[test]
