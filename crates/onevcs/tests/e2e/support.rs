@@ -29,14 +29,38 @@ pub fn workspace_root() -> PathBuf {
         .expect("the crate lives inside the workspace")
 }
 
-/// Every command the CLI offers, read from the parser rather than restated — a
-/// hand-kept list here would let a command be added to the contract and the
-/// parser while the journeys below kept passing without it.
+/// Every command a user is promised, read out of `docs/contract.md`'s usage block.
+///
+/// Deliberately not read from the parser: these journeys assert what the *user*
+/// was told the CLI does, and a list taken from the thing under test would agree
+/// with it however wrong both were. `tests/contract.rs` is what holds the parser
+/// to this same block.
 pub fn commands() -> Vec<String> {
-    use clap::CommandFactory;
-    onevcs::cli::Cli::command()
-        .get_subcommands()
-        .map(|c| c.get_name().to_owned())
-        .filter(|name| name != "help")
-        .collect()
+    let usage = std::fs::read_to_string(workspace_root().join("docs/contract.md"))
+        .expect("the contract must be readable");
+    let block = usage
+        .split("\n```\n")
+        .find(|block| {
+            block
+                .lines()
+                .next()
+                .is_some_and(|l| l.starts_with("onevcs "))
+        })
+        .expect("the contract spells the command surface in a bare code block");
+
+    let mut names: Vec<String> = block
+        .lines()
+        .flat_map(|line| line.split('|'))
+        .filter_map(|alternative| {
+            let segment = alternative.trim();
+            let segment = segment.strip_prefix("onevcs ").unwrap_or(segment);
+            segment.split_whitespace().next()
+        })
+        .filter(|name| name.chars().all(|c| c.is_ascii_lowercase()))
+        .map(str::to_owned)
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    assert!(!names.is_empty(), "no commands parsed out of the contract");
+    names
 }
