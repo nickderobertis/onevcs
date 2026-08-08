@@ -4,10 +4,9 @@ Rules that apply inside this crate and nowhere else.
 
 ## What may be `pub`
 
-Only what `docs/contract.md` names, plus the error type and the clap argument
-surface it authorises. Three helper types exist because a named item could not be
-written without them (`Policy`, `GateKind`, `Approvals`); adding a fourth is a
-contract amendment, recorded in `docs/inferred-surface.md` before it is written.
+Three helper types exist here because a named item could not be written without
+them: `Policy`, `GateKind`, and `Approvals`. A fourth is a contract amendment,
+never a local decision.
 
 The module layout is not part of the contract — `lib.rs` re-exports the flat
 surface a consumer sees, and modules are private except `cli`, `registry`, and
@@ -15,13 +14,13 @@ surface a consumer sees, and modules are private except `cli`, `registry`, and
 
 ## Where the contract is under-specified
 
-Some of the contract's types are deliberately loose: `Check.status` and
-`Check.conclusion` are strings because the contract enumerates no value set, and
-schema `version` fields are accepted as written because validating them is
-implementation. Those sites carry a **line-scoped `llmlint: ignore`** naming the
-reason, not a widened rule. Adding another such site means adding another entry to
-`docs/inferred-surface.md`'s open questions — a suppression without a recorded
-question is a shortcut, not a decision.
+Three sites here are deliberately loose, and each carries a **line-scoped
+`llmlint: ignore`** naming its own reason rather than a widened rule:
+`Check.status` and `Check.conclusion` are strings because the contract enumerates
+no value set for either, and both schemas' `version` is accepted as written
+because deciding which versions are acceptable is implementation. A fourth needs
+its open question recorded first — a suppression nobody has to answer for is a
+shortcut, not a decision.
 
 ## Tests
 

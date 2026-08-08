@@ -8,8 +8,7 @@
 # A single post-publish install attempt therefore fails with "No matching
 # distribution found for onevcs-cli==X.Y.Z (from versions: … X.Y.Z-1)" while the
 # publish itself succeeded — the attempt simply raced an index the JSON API says
-# nothing about. This pattern is carried over from a sibling project where three
-# consecutive releases went red exactly that way.
+# nothing about.
 #
 # So the install *is* the probe: this retries the exact command a user runs,
 # against the exact resolver a user hits, instead of waiting on a second
