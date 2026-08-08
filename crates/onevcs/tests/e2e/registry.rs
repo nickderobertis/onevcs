@@ -5,6 +5,14 @@
 //! read out of the commands a user actually runs — `register`, `repos`, `resolve`,
 //! `rules check` — rather than out of the document they happen to be stored in.
 
+// llmlint: ignore-file[tests_mirror_real_usage] two setup shapes here are deliberate
+// and have no user-facing alternative. Writing a version 2, 3, or 4 registry document
+// is the only way to drive the lazy migration — the older `onevcs` that would have
+// written one does not exist — and the contract's command surface has no verb that
+// edits a stored identity, so a journey that needs one classified differently writes
+// it. Scripting the substituted host is likewise how a test says what GitHub reports;
+// it is the external boundary, not an internal being reached around. Every assertion
+// below still drives the real binary.
 use predicates::prelude::*;
 
 use crate::world::World;
@@ -259,15 +267,12 @@ fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp, name: \"*\"}\n\
          \x20   publication: change-open\n    approvals: required\ndefault: {publication: \
          change-auto, approvals: none, gate: {kind: pre-push}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     world
         .onevcs()
@@ -308,15 +313,12 @@ fn a_repository_no_rule_matches_falls_through_to_the_default() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp}\n\
          \x20   publication: local-direct\n    approvals: none\n\
          default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     world
         .onevcs()
@@ -342,14 +344,11 @@ fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: local-direct, approvals: required, gate: {kind: pre-push}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     // The failure this prevents is silent: the change lands, and nothing later
     // reports that the approval the repository asked for was never sought.
@@ -373,14 +372,11 @@ fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 7\nrules: []\ndefault: {publication: change-open, approvals: required, \
          gate: {kind: checks}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     world
         .onevcs()
@@ -400,17 +396,14 @@ fn a_path_rule_matches_the_checkout_rather_than_the_origin() {
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         format!(
             "version: 1\nrules:\n  - match: {{path: \"{}/*\"}}\n    publication: local-direct\n\
              default: {{publication: change-open, approvals: none, gate: {{kind: checks}}}}\n",
             world.path("").to_string_lossy().trim_end_matches('/')
         ),
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     world
         .onevcs()
@@ -431,7 +424,16 @@ fn write_registry(world: &World, value: &serde_json::Value) {
     .expect("a registry");
 }
 
-/// Point the registry at a rules file, the way a host's own configuration does.
+/// Configure this host's rules the way an operator does: the conventional file
+/// under the state root, which needs no edit to the document `onevcs` maintains
+/// for itself.
+pub fn configure_rules(world: &World, body: impl AsRef<str>) {
+    std::fs::create_dir_all(world.home()).expect("a state root");
+    std::fs::write(world.home().join("rules.yml"), body.as_ref()).expect("a rules file");
+}
+
+/// Point the registry at a rules file somewhere else, which is the other way a
+/// host names one.
 pub fn point_at_rules(world: &World, rules: &std::path::Path) {
     let path = world.home().join("registry.json");
     let mut value: serde_json::Value =

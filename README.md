@@ -48,9 +48,8 @@ the archives and their `.sha256` checksums for a direct download.
 onevcs --help
 ```
 
-The whole command surface, and the exit codes `publish` reserves (`1` gate or
-checks failed, `2` invalid, `3` sync conflict), are declared in
-[`docs/contract.md`](docs/contract.md).
+`--help` is the command surface, and `publish` reserves its own exit codes for a
+gate that failed, a request that was invalid, and a base that moved under it.
 
 ## Develop
 
@@ -60,9 +59,7 @@ just check       # the deterministic gate: format, clippy, tests, coverage, docs
 just gate        # check, plus the diff-scoped LLM-judge tier — the pre-push bar
 ```
 
-`just --list` is the full index. [`AGENTS.md`](AGENTS.md) holds the durable
-instructions: what the gate enforces, how releases work, and the rules that govern
-a change to the approved contract.
+`just --list` is the full index.
 
 ## License
 

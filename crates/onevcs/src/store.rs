@@ -24,18 +24,25 @@ pub const VERSION: u32 = 5;
 /// What an identity's gate is recorded as when nothing could be detected.
 pub const NOOP_GATE: &str = "<no-op>";
 
+/// The three parts a hosted origin has, which it has together or not at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hosted {
+    /// The host, e.g. `github.com`.
+    pub host: String,
+    /// The owner.
+    pub owner: String,
+    /// The repository name.
+    pub name: String,
+}
+
 /// The parts of an identity a rule matches on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Normalized {
     /// The identity key: `github.com/owner/name`, or the origin path for a local
     /// repository.
     pub key: String,
-    /// The host, for a hosted origin.
-    pub host: Option<String>,
-    /// The owner, for a hosted origin.
-    pub owner: Option<String>,
-    /// The repository name, for a hosted origin.
-    pub name: Option<String>,
+    /// Where it is hosted, when it is hosted anywhere.
+    pub hosted: Option<Hosted>,
 }
 
 /// Normalize an origin URL or a local path into the identity every spelling of it
@@ -54,9 +61,7 @@ pub fn normalize(origin: &str) -> Normalized {
     let key = std::fs::canonicalize(&path).unwrap_or(path);
     Normalized {
         key: key.to_string_lossy().trim_end_matches(".git").to_owned(),
-        host: None,
-        owner: None,
-        name: None,
+        hosted: None,
     }
 }
 
@@ -70,9 +75,11 @@ fn hosted(origin: &str) -> Option<Normalized> {
             if host.contains('.') && !owner.is_empty() && !name.is_empty() {
                 return Some(Normalized {
                     key: origin.to_owned(),
-                    host: Some(host.to_owned()),
-                    owner: Some(owner.to_owned()),
-                    name: Some(name.to_owned()),
+                    hosted: Some(Hosted {
+                        host: host.to_owned(),
+                        owner: owner.to_owned(),
+                        name: name.to_owned(),
+                    }),
                 });
             }
         }
@@ -105,9 +112,7 @@ fn hosted(origin: &str) -> Option<Normalized> {
     }
     Some(Normalized {
         key: format!("{host}/{owner}/{name}"),
-        host: Some(host),
-        owner: Some(owner),
-        name: Some(name),
+        hosted: Some(Hosted { host, owner, name }),
     })
 }
 
@@ -191,9 +196,14 @@ fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
         VERSION_5 => {
             let registry: Registry = serde_json::from_value(value.clone())
                 .map_err(error::at("read the registry at", path))?;
+            coherent(path, &registry)?;
             Ok((registry, false))
         }
-        2..=4 => Ok((legacy(path, object, version as u32)?, true)),
+        2..=4 => {
+            let migrated = legacy(path, object, version as u32)?;
+            coherent(path, &migrated)?;
+            Ok((migrated, true))
+        }
         other => Err(Error::Invalid {
             reason: format!(
                 "the registry at {} declares version {other}; this build reads 2 to {VERSION}",
@@ -204,6 +214,41 @@ fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
 }
 
 const VERSION_5: u64 = VERSION as u64;
+
+/// Reject a document whose records disagree with each other.
+///
+/// Serde proves the *shape*, and stops there: a checkout naming an identity the
+/// document does not hold, or an identity combining a team with a workflow that
+/// opens no change request, are both well-formed JSON and neither is a repository
+/// this can act on. Checked on every read, whatever version it arrived as.
+fn coherent(path: &Path, registry: &Registry) -> Result<()> {
+    for (key, identity) in &registry.identities {
+        if identity.repo_type == RepoType::Team && identity.workflow == Workflow::Local {
+            return Err(error::invalid(format!(
+                "the registry at {} has identity {key:?} combining repo_type=team with \
+                 workflow=local, which no publication policy can honour",
+                path.display()
+            )));
+        }
+    }
+    for (alias, checkout) in &registry.checkouts {
+        if !registry.identities.contains_key(&checkout.identity) {
+            return Err(error::invalid(format!(
+                "the registry at {} has checkout {alias:?} referencing unknown identity {:?}",
+                path.display(),
+                checkout.identity
+            )));
+        }
+        if !checkout.path.is_absolute() {
+            return Err(error::invalid(format!(
+                "the registry at {} has checkout {alias:?} at {}, which is not an absolute path",
+                path.display(),
+                checkout.path.display()
+            )));
+        }
+    }
+    Ok(())
+}
 
 /// Read a version 2, 3, or 4 document into the version 5 shape.
 ///
@@ -443,12 +488,12 @@ pub fn register(path: &Path, origin_override: Option<&str>) -> Result<Resolution
                 // otherwise; the narrower classification is the safe default,
                 // because widening it is a decision and narrowing it silently is a
                 // defect.
-                workflow: if normalized.host.is_some() {
+                workflow: if normalized.hosted.is_some() {
                     Workflow::Remote
                 } else {
                     Workflow::Local
                 },
-                repo_type: if normalized.host.is_some() {
+                repo_type: if normalized.hosted.is_some() {
                     RepoType::Team
                 } else {
                     RepoType::SingleOwner

@@ -91,13 +91,20 @@ fn seconds(name: &str, default: f64) -> Result<f64> {
     Ok(value)
 }
 
-/// The GitHub `owner/name` slug an identity key spells.
+/// The host this implementation speaks for.
+pub const HOST: &str = "github.com";
+
+/// The `owner/name` slug an identity key spells, when it is a GitHub one.
+///
+/// The host is checked rather than assumed: a GitLab origin has the same three
+/// segments, and handing one to `gh` would address a repository that is not there
+/// under credentials that do not apply to it.
 pub fn slug(identity: &str) -> Option<String> {
     let mut parts = identity.split('/');
     let host = parts.next()?;
     let owner = parts.next()?;
     let name = parts.next()?;
-    if parts.next().is_some() || host.is_empty() || owner.is_empty() || name.is_empty() {
+    if parts.next().is_some() || host != HOST || owner.is_empty() || name.is_empty() {
         return None;
     }
     Some(format!("{owner}/{name}"))

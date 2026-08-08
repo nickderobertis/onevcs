@@ -5,10 +5,26 @@
 //! and they cover the paths that only exist because something went wrong — which
 //! is exactly where a suite that only drives the happy path has nothing to say.
 
+// llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which
+// change requests exist, what their checks say, whether a merge is allowed — is the
+// one boundary an offline, credential-free gate cannot drive. `world.rs` installs a
+// program that answers it as `gh`, and substitutes nothing else: origins are real
+// bare repositories, checkouts are real clones, hooks are real files git runs, every
+// publication is a real `git push`, and when that program merges a change it does so
+// with real git against the same bare origin. An assertion here that a change reached
+// its base is therefore an assertion about git.
+// llmlint: ignore-file[tests_mirror_real_usage] two setup shapes here are deliberate
+// and have no user-facing alternative. Writing a version 2, 3, or 4 registry document
+// is the only way to drive the lazy migration — the older `onevcs` that would have
+// written one does not exist — and the contract's command surface has no verb that
+// edits a stored identity, so a journey that needs one classified differently writes
+// it. Scripting the substituted host is likewise how a test says what GitHub reports;
+// it is the external boundary, not an internal being reached around. Every assertion
+// below still drives the real binary.
 use predicates::prelude::*;
 
 use crate::lifecycle::Fixture;
-use crate::registry::point_at_rules;
+use crate::registry::{configure_rules, point_at_rules};
 use crate::world::{token_of, worktree_of, World};
 
 #[test]
@@ -647,14 +663,11 @@ fn a_host_bound_that_cannot_be_read_is_refused_at_the_boundary() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
     world.install_fake_host(&origin);
 
     let assert = world
@@ -695,14 +708,11 @@ fn a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: change-direct, approvals: none, gate: {kind: pre-push}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
 
@@ -743,14 +753,11 @@ fn a_host_that_cannot_produce_a_checks_log_says_so_in_the_artifact() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
     world.install_fake_host(&origin);
     world.host_checks(&[crate::world::Check {
         name: "unreachable",
@@ -1129,14 +1136,11 @@ fn a_safety_clone_executes_the_work_while_the_canonical_checkout_publishes_it() 
             .assert()
             .success();
     }
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: local-direct, approvals: none, gate: {command: [\"true\"]}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     // Two decisions, deliberately separated: the repository argument selects the
     // publication checkout, and `--execution-checkout` selects the clone the work
@@ -1239,15 +1243,12 @@ fn a_rules_pattern_with_more_than_one_star_matches_around_each_of_them() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules:\n  - match: {name: \"service-*-*i\"}\n\
          \x20   publication: change-open\n    gate: {command: [\"just\", \"gate\"]}\n\
          default: {publication: change-auto, approvals: none, gate: {kind: checks}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     world
         .onevcs()
@@ -1262,13 +1263,12 @@ fn a_rules_pattern_with_more_than_one_star_matches_around_each_of_them() {
         ));
 
     // …and the literal between the stars has to be there.
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules:\n  - match: {name: \"service-*-worker\"}\n\
          \x20   publication: change-open\ndefault: {publication: change-auto, approvals: none, \
          gate: {kind: checks}}\n",
-    )
-    .expect("a rules file");
+    );
     world
         .onevcs()
         .args(["rules", "check", "starry"])
@@ -1516,14 +1516,11 @@ fn a_recovery_of_an_identity_that_cannot_name_its_bar_refuses_to_attest_anything
         .success()
         // Nothing in the checkout names a complete bar.
         .stdout(predicate::str::contains("gate: <no-op>"));
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: local-direct, approvals: none, gate: {kind: pre-push}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     let assert = world
         .onevcs()
@@ -1674,14 +1671,11 @@ fn a_repository_with_no_remote_still_opens_and_closes_a_session() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: local-direct, approvals: none, gate: {command: [\"true\"]}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     let assert = world
         .onevcs()
@@ -1725,14 +1719,11 @@ fn a_recovered_change_request_carries_its_attestation_in_the_body_it_opens_with(
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: change-open, approvals: required, gate: {kind: pre-push}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
 
@@ -1913,14 +1904,11 @@ fn a_host_that_accepts_a_merge_and_does_not_perform_it_is_not_reported_as_merged
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: change-direct, approvals: none, gate: {kind: pre-push}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
     world.accept_merges_without_performing_them();
@@ -1986,4 +1974,453 @@ fn a_checkout_that_can_name_no_base_at_all_says_which_it_considered() {
             "plausible remote branches are none",
         ))
         .stderr(predicate::str::contains("pass an explicit --base"));
+}
+
+#[test]
+fn an_identifier_that_is_not_one_never_reaches_a_path_join() {
+    let world = World::new();
+    // A token and an artifact id both name a file under the state root, and both
+    // arrive from outside — off a command line, out of a stream somebody pasted.
+    for argv in [
+        vec!["session", "adopt", "../../etc/passwd"],
+        vec!["session", "close", "../../etc/passwd"],
+        vec!["publish", "../../etc/passwd"],
+    ] {
+        world
+            .onevcs()
+            .args(&argv)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("is not a session token"));
+    }
+    world
+        .onevcs()
+        .args(["events", "../../etc/passwd"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not a session token"));
+    world
+        .onevcs()
+        .args(["artifact", "cat", "../../etc/passwd"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not an artifact id"));
+}
+
+#[test]
+fn a_rules_file_the_registry_names_wins_over_the_conventional_one() {
+    let world = World::new();
+    let origin = world.bare_origin("two-sources");
+    let checkout = world.clone_of(&origin, "two-sources");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        "version: 1\nrules: []\n\
+         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+    );
+    world
+        .onevcs()
+        .args(["rules", "check", "two-sources"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publication: change-open"));
+
+    // A host that names its own file is answered by that file, wherever it is.
+    let elsewhere = world.path("policy/elsewhere.yml");
+    std::fs::create_dir_all(elsewhere.parent().expect("a directory")).expect("a directory");
+    std::fs::write(
+        &elsewhere,
+        "version: 1\nrules: []\n\
+         default: {publication: local-direct, approvals: none, gate: {kind: pre-push}}\n",
+    )
+    .expect("a rules file somewhere else");
+    point_at_rules(&world, &elsewhere);
+    world
+        .onevcs()
+        .args(["rules", "check", "two-sources"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publication: local-direct"))
+        .stdout(predicate::str::contains(
+            elsewhere.to_string_lossy().into_owned(),
+        ));
+}
+
+#[test]
+fn a_host_that_will_not_say_whether_a_check_blocks_the_merge_is_not_guessed_at() {
+    let world = World::new();
+    let origin = world.bare_origin("partial");
+    let checkout = world.clone_of(&origin, "partial");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/partial.git",
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        "version: 1\nrules: []\n\
+         default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
+    );
+    world.install_fake_host(&origin);
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    world.report_checks_that_do_not_say_if_they_block();
+
+    let assert = world
+        .onevcs()
+        .args(["session", "open", "partial", "--branch", "feature/partial"])
+        .assert()
+        .success();
+    let token = token_of(&assert.get_output().stdout);
+    let worktree = worktree_of(&assert.get_output().stdout);
+    world.commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    // Defaulting the missing field is the one inference that must never be made:
+    // it is the difference between a merge that was gated and one that only looked
+    // like it.
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "does not say whether it blocks the merge",
+        ));
+    assert_eq!(
+        world
+            .git(&origin, &["log", "--format=%s", "main"])
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_host_this_build_does_not_speak_for_is_refused_rather_than_addressed_as_github() {
+    let world = World::new();
+    let origin = world.bare_origin("elsewhere");
+    let checkout = world.clone_of(&origin, "elsewhere");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://gitlab.com/acme-corp/elsewhere.git",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gitlab.com/acme-corp/elsewhere"));
+    configure_rules(
+        &world,
+        "version: 1\nrules: []\n\
+         default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
+    );
+    world.install_fake_host(&origin);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "elsewhere",
+            "--branch",
+            "feature/elsewhere",
+        ])
+        .assert()
+        .success();
+    let token = token_of(&assert.get_output().stdout);
+    let worktree = worktree_of(&assert.get_output().stdout);
+    world.commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    // A GitLab origin has the same three segments a GitHub one does. Handing it to
+    // `gh` would address a repository that is not there, under credentials that do
+    // not apply to it — so the seam says it has no body rather than guessing.
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(70)
+        .stderr(predicate::str::contains(
+            "RemoteHost for a host other than github.com is not implemented yet",
+        ));
+    assert_eq!(
+        world
+            .git(&origin, &["log", "--format=%s", "main"])
+            .lines()
+            .count(),
+        1
+    );
+    // The branch reached the origin — the push is not what is missing.
+    assert_eq!(
+        world.git(&origin, &["log", "-1", "--format=%s", "feature/elsewhere"]),
+        "feat: add the thing"
+    );
+}
+
+#[test]
+fn a_host_that_opens_something_other_than_a_change_request_is_not_followed() {
+    for (shape, expected) in [
+        ("no-url", "printed no URL"),
+        ("url-names-no-change", "which names no change"),
+    ] {
+        let world = World::new();
+        let origin = world.bare_origin("wrong-url");
+        let checkout = world.clone_of(&origin, "wrong-url");
+        world
+            .onevcs()
+            .args([
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/wrong-url.git",
+            ])
+            .assert()
+            .success();
+        configure_rules(
+            &world,
+            "version: 1\nrules: []\n\
+             default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
+        );
+        world.install_fake_host(&origin);
+        world.answer_malformed(shape);
+
+        let assert = world
+            .onevcs()
+            .args([
+                "session",
+                "open",
+                "wrong-url",
+                "--branch",
+                "feature/wrong-url",
+            ])
+            .assert()
+            .success();
+        let token = token_of(&assert.get_output().stdout);
+        let worktree = worktree_of(&assert.get_output().stdout);
+        world.commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+        // Whatever `gh` printed, it is not an identifier to go on addressing a
+        // change request by — so nothing is reported as opened.
+        world
+            .onevcs()
+            .args(["publish", &token])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(expected));
+        assert!(
+            world.events_of(&token, "change-opened").is_empty(),
+            "{shape}"
+        );
+    }
+}
+
+#[test]
+fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
+    for (shape, expected) in [
+        ("no-head", "returned a change request with no head"),
+        ("no-number", "gh pr list returned no number"),
+        ("rollup-not-a-list", "returned a non-list rollup"),
+    ] {
+        let world = World::new();
+        let origin = world.bare_origin("malformed");
+        let checkout = world.clone_of(&origin, "malformed");
+        world
+            .onevcs()
+            .args([
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/malformed.git",
+            ])
+            .assert()
+            .success();
+        configure_rules(
+            &world,
+            "version: 1\nrules: []\n\
+             default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
+        );
+        world.install_fake_host(&origin);
+        world.host_checks(&[crate::world::Check {
+            name: "gate",
+            status: "in_progress",
+            conclusion: None,
+            required: true,
+        }]);
+
+        let assert = world
+            .onevcs()
+            .args([
+                "session",
+                "open",
+                "malformed",
+                "--branch",
+                "feature/malformed",
+            ])
+            .assert()
+            .success();
+        let token = token_of(&assert.get_output().stdout);
+        let worktree = worktree_of(&assert.get_output().stdout);
+        world.commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+        // One clean publication first, so the change request exists and the second
+        // attempt reaches the host's answers *about* it — which is where a real
+        // host's partial answer arrives.
+        world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+            .args(["publish", &token])
+            .assert()
+            .code(1);
+        world.answer_malformed(shape);
+
+        world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+            .args(["publish", &token])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(expected));
+        assert_eq!(
+            world
+                .git(&origin, &["log", "--format=%s", "main"])
+                .lines()
+                .count(),
+            1,
+            "{shape}: nothing may have merged"
+        );
+    }
+}
+
+#[test]
+fn a_stored_record_that_disagrees_with_itself_is_rejected_where_it_is_read() {
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let (token, _worktree) = fixture.open(&["--branch", "feature/recorded"]);
+    let path = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+    let original: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("a session record"))
+            .expect("the record is JSON");
+
+    // Serde proves the shape and stops there, and every field here is handed
+    // straight to git or the filesystem afterwards.
+    for (field, value, expected) in [
+        ("token", serde_json::json!("s-somebody-else"), "is for"),
+        (
+            "branch",
+            serde_json::json!("not a branch"),
+            "which git would not accept",
+        ),
+        (
+            "clone",
+            serde_json::json!("relative/clone"),
+            "not an absolute path",
+        ),
+    ] {
+        let mut broken = original.clone();
+        broken[field] = value;
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&broken).expect("a record"),
+        )
+        .expect("a session record");
+        fixture
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(expected));
+    }
+}
+
+#[test]
+fn a_registry_whose_records_disagree_is_rejected_however_it_was_versioned() {
+    let world = World::new();
+    let origin = world.bare_origin("incoherent");
+    let checkout = world.clone_of(&origin, "incoherent");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let path = world.home().join("registry.json");
+    let original: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("a registry"))
+            .expect("the registry is JSON");
+
+    // A version 5 document gets the same reading a migrated one does: a checkout
+    // naming an identity nobody holds, a relative path, and a team that publishes
+    // locally are all well-formed JSON and none is a repository to act on.
+    for (broken, expected) in [
+        (
+            {
+                let mut value = original.clone();
+                for checkout in value["checkouts"]
+                    .as_object_mut()
+                    .expect("checkouts")
+                    .values_mut()
+                {
+                    checkout["identity"] = serde_json::json!("nobody/holds/this");
+                }
+                value
+            },
+            "referencing unknown identity",
+        ),
+        (
+            {
+                let mut value = original.clone();
+                for checkout in value["checkouts"]
+                    .as_object_mut()
+                    .expect("checkouts")
+                    .values_mut()
+                {
+                    checkout["path"] = serde_json::json!("relative/checkout");
+                }
+                value
+            },
+            "not an absolute path",
+        ),
+        (
+            {
+                let mut value = original.clone();
+                for identity in value["identities"]
+                    .as_object_mut()
+                    .expect("identities")
+                    .values_mut()
+                {
+                    identity["repo_type"] = serde_json::json!("team");
+                }
+                value
+            },
+            "combining repo_type=team with workflow=local",
+        ),
+    ] {
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&broken).expect("a document"),
+        )
+        .expect("a registry");
+        world
+            .onevcs()
+            .arg("repos")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(expected));
+    }
 }

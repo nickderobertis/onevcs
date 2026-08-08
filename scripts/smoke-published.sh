@@ -9,12 +9,11 @@
 # the binary that actually ships — a `--version | grep` inlined in a workflow keeps
 # passing after the surface around it changes shape.
 #
-# What it asserts, while this repository is interface-only: the binary reports the
-# version the registry says it serves, prints its whole command surface for
-# `--help`, reads its own state root, refuses an unregistered repository with exit 2, and
-# still rejects a malformed invocation with clap's usage error (exit 2). When a
-# seam is implemented, its journey is added here so every install surface is held
-# to it.
+# What it asserts: the binary reports the version the registry says it serves,
+# prints its whole command surface for `--help`, reads its own state root, refuses
+# an unregistered repository with exit 2, and rejects a malformed invocation with
+# clap's usage error (also 2). Deliberately read-only — an installed binary is
+# smoke-tested, not handed a repository to publish.
 #
 # Deliberately toolchain-free: bash and the installed binary. The scheduled sweep
 # runs this every week on every OS, for both registries, and anything it had to
@@ -76,6 +75,10 @@ if [ -n "$expect_version" ] && [ "$reported" != "onevcs $expect_version" ]; then
 fi
 
 help="$(onevcs --help | strip_cr)"
+# The list is spelled here because an installed binary is smoke-tested without this
+# repository beside it. It cannot drift from the parser:
+# tests/contract.rs::the_release_smoke_script_asserts_the_whole_command_surface
+# reconciles the two, and tests/contract.rs holds the parser to docs/contract.md.
 for command in register repos resolve session publish recover recoverable integrate sync events artifact rules; do
   case "$help" in
     *"$command"*) ;;

@@ -16,7 +16,9 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
-use crate::host::{ChangeRequest, ChangeSpec, Check, GitHub, MergeOutcome, RemoteHost};
+use url::Url;
+
+use crate::host::{ChangeRequest, ChangeSpec, Check, GitHub, MergeOutcome, RemoteHost, Sha};
 use crate::rules::{Gate, GateKind, MergePolicy, Policy};
 use crate::store::Resolution;
 use crate::stream::{self, Stream};
@@ -32,11 +34,11 @@ pub const SYNC_ATTEMPTS: usize = 3;
 #[derive(Debug, Clone)]
 pub enum Outcome {
     /// The change reached its base, at this commit.
-    Merged(String),
+    Merged(Sha),
     /// A change request is open, which the policy asked for.
-    Open(String),
+    Open(Url),
     /// The host queued the merge and will land it once its checks pass.
-    Queued(String),
+    Queued(Url),
     /// The branch had nothing the base did not already carry.
     NothingToPublish,
 }
@@ -45,7 +47,7 @@ impl Outcome {
     /// How the publication is reported to a human.
     pub fn describe(&self) -> String {
         match self {
-            Outcome::Merged(sha) => format!("merged at {sha}"),
+            Outcome::Merged(sha) => format!("merged at {}", sha.0),
             Outcome::Open(url) => format!("change request open at {url}"),
             Outcome::Queued(url) => format!("merge queued for {url}"),
             Outcome::NothingToPublish => {
@@ -290,7 +292,7 @@ fn publish_locally(
                 EventKind::MergeCompleted,
                 object(json!({"identity": identity, "sha": sha, "base": context.base})),
             );
-            Ok(Outcome::Merged(sha))
+            Ok(Outcome::Merged(Sha(sha)))
         })();
         git::worktree_remove(&context.repo, &scratch)?;
         let _ = std::fs::remove_dir_all(&scratch_parent);
@@ -319,13 +321,7 @@ fn publish_as_change(
         ),
     })?;
 
-    let slug = gh::slug(&context.resolution.key).ok_or_else(|| Error::Invalid {
-        reason: format!(
-            "identity {:?} is not a hosted repository, so it cannot publish a change request; \
-             a local identity publishes with local-direct",
-            context.resolution.key
-        ),
-    })?;
+    let slug = change_host(&context.resolution.key)?;
     let host = GitHub::new(slug);
     // Who the host believes is calling travels with the change: a change request
     // opened by an identity nobody expected is the thing an operator reads this to
@@ -354,7 +350,7 @@ fn publish_as_change(
     );
 
     if context.effective == MergePolicy::ChangeOpen {
-        return Ok(Outcome::Open(change.url.to_string()));
+        return Ok(Outcome::Open(change.url.clone()));
     }
 
     // Everything automated is serialized against the identity, so two sessions of
@@ -402,10 +398,10 @@ fn publish_as_change(
                     object(json!({"identity": identity, "sha": sha.0})),
                 );
                 fast_forward_publication(&context.resolution.publication, &context.base)?;
-                Ok(Outcome::Merged(sha.0))
+                Ok(Outcome::Merged(sha))
             }
-            MergeOutcome::Queued => Ok(Outcome::Queued(change.url.to_string())),
-            MergeOutcome::Open => Ok(Outcome::Open(change.url.to_string())),
+            MergeOutcome::Queued => Ok(Outcome::Queued(change.url.clone())),
+            MergeOutcome::Open => Ok(Outcome::Open(change.url.clone())),
         }
     })();
     drop(turn);
@@ -560,6 +556,30 @@ pub fn fast_forward_publication(publication: &Path, base: &str) -> Result<()> {
         return Ok(());
     }
     git::merge_ff_only(publication, &format!("origin/{base}"))
+}
+
+/// The host slug a change request is opened against, or the reason there is none.
+///
+/// Two different failures, deliberately not collapsed: a local identity has no
+/// host at all and is asking for the wrong policy, while a hosted identity on a
+/// host this build does not speak for is asking for an implementation that has not
+/// arrived. The second is the seam `Error::NotImplemented` exists for.
+fn change_host(identity: &str) -> Result<String> {
+    if let Some(slug) = gh::slug(identity) {
+        return Ok(slug);
+    }
+    let hosted = identity.split('/').count() == 3;
+    if hosted {
+        return Err(Error::NotImplemented {
+            operation: "RemoteHost for a host other than github.com",
+        });
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "identity {identity:?} is not a hosted repository, so it cannot publish a change \
+             request; a local identity publishes with local-direct"
+        ),
+    })
 }
 
 /// One publication commit message: the subject, then whatever it must carry

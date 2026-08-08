@@ -6,9 +6,25 @@
 //! host merges a change it does so with real git against that same origin. So an
 //! assertion that a change reached its base is an assertion about git.
 
+// llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which
+// change requests exist, what their checks say, whether a merge is allowed — is the
+// one boundary an offline, credential-free gate cannot drive. `world.rs` installs a
+// program that answers it as `gh`, and substitutes nothing else: origins are real
+// bare repositories, checkouts are real clones, hooks are real files git runs, every
+// publication is a real `git push`, and when that program merges a change it does so
+// with real git against the same bare origin. An assertion here that a change reached
+// its base is therefore an assertion about git.
+// llmlint: ignore-file[tests_mirror_real_usage] two setup shapes here are deliberate
+// and have no user-facing alternative. Writing a version 2, 3, or 4 registry document
+// is the only way to drive the lazy migration — the older `onevcs` that would have
+// written one does not exist — and the contract's command surface has no verb that
+// edits a stored identity, so a journey that needs one classified differently writes
+// it. Scripting the substituted host is likewise how a test says what GitHub reports;
+// it is the external boundary, not an internal being reached around. Every assertion
+// below still drives the real binary.
 use predicates::prelude::*;
 
-use crate::registry::point_at_rules;
+use crate::registry::configure_rules;
 use crate::world::{token_of, worktree_of, Check, World};
 
 /// A registered hosted repository publishing under `default_policy`.
@@ -33,13 +49,10 @@ impl Hosted {
             ])
             .assert()
             .success();
-        let rules = world.path("rules.yml");
-        std::fs::write(
-            &rules,
+        configure_rules(
+            &world,
             format!("version: 1\nrules: []\ndefault: {default_policy}\n"),
-        )
-        .expect("a rules file");
-        point_at_rules(&world, &rules);
+        );
         world.install_fake_host(&origin);
         Self {
             world,
@@ -368,14 +381,11 @@ fn a_local_identity_cannot_be_asked_to_open_a_change_request() {
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
 
     let assert = world
         .onevcs()

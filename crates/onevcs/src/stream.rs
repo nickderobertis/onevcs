@@ -65,7 +65,7 @@ impl Stream {
     /// by a second process keeps one monotonic series rather than restarting it and
     /// making every later event look like a replay.
     pub fn open(token: &str) -> Result<Self> {
-        let path = home::streams_dir()?.join(format!("{token}.ndjson"));
+        let path = path_for(token)?;
         home::ensure_dir(path.parent().expect("a stream lives in a directory"))?;
         let seq = std::fs::read_to_string(&path)
             .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count() as u64)
@@ -139,6 +139,9 @@ impl Stream {
 
 /// The file one session's stream lives in.
 pub fn path_for(token: &str) -> Result<PathBuf> {
+    if !ids::is_safe_name(token) {
+        return Err(error::invalid(format!("{token:?} is not a session token")));
+    }
     Ok(home::streams_dir()?.join(format!("{token}.ndjson")))
 }
 
@@ -226,6 +229,9 @@ pub fn store_artifact(kind: &str, contents: &str) -> Result<ArtifactRef> {
 
 /// Read a stored artifact back, for `onevcs artifact cat`.
 pub fn read_artifact(id: &str) -> Result<String> {
+    if !ids::is_safe_name(id) {
+        return Err(error::invalid(format!("{id:?} is not an artifact id")));
+    }
     let path = home::artifacts_dir()?.join(id);
     std::fs::read_to_string(&path)
         .map_err(|_| error::invalid(format!("no artifact {id:?} is stored")))

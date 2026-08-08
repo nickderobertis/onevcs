@@ -5,11 +5,19 @@
 //! exit status decides. Nothing on this side is substituted — the remote host's
 //! decisioning is the only thing that is, and it lives in `host.rs`.
 
-use std::path::{Path, PathBuf};
+// llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which
+// change requests exist, what their checks say, whether a merge is allowed — is the
+// one boundary an offline, credential-free gate cannot drive. `world.rs` installs a
+// program that answers it as `gh`, and substitutes nothing else: origins are real
+// bare repositories, checkouts are real clones, hooks are real files git runs, every
+// publication is a real `git push`, and when that program merges a change it does so
+// with real git against the same bare origin. An assertion here that a change reached
+// its base is therefore an assertion about git.
+use std::path::PathBuf;
 
 use predicates::prelude::*;
 
-use crate::registry::point_at_rules;
+use crate::registry::configure_rules;
 use crate::world::{token_of, worktree_of, World};
 
 /// A registered repository: its origin, its checkout, and the policy it publishes
@@ -31,13 +39,10 @@ impl Fixture {
             .args(["register", &checkout.to_string_lossy()])
             .assert()
             .success();
-        let rules = world.path("rules.yml");
-        std::fs::write(
-            &rules,
+        configure_rules(
+            &world,
             format!("version: 1\nrules: []\ndefault: {default_policy}\n"),
-        )
-        .expect("a rules file");
-        point_at_rules(&world, &rules);
+        );
         Self {
             world,
             origin,
@@ -1114,9 +1119,9 @@ fn an_execution_checkout_of_another_identity_is_refused() {
 }
 
 #[test]
-fn only_the_newest_abandoned_run_roots_holding_work_are_retained() {
+fn only_the_newest_abandoned_sessions_holding_work_can_still_be_resumed() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
-    let mut worktrees = Vec::new();
+    let mut tokens = Vec::new();
     for index in 0..5 {
         let (token, worktree) = fixture.open(&["--branch", &format!("feature/dead-{index}")]);
         fixture.world.commit_file(
@@ -1125,30 +1130,54 @@ fn only_the_newest_abandoned_run_roots_holding_work_are_retained() {
             &format!("{index}\n"),
             &format!("feat: unpublished work {index}"),
         );
-        // Closing releases the worktree but keeps the run root and its clone, which
-        // is what still holds the branch nothing has published.
+        // Closing releases the worktree but keeps the session, which is what still
+        // holds the branch nothing has published.
         fixture
             .world
             .onevcs()
             .args(["session", "close", &token])
             .assert()
             .success();
-        worktrees.push(worktree);
+        tokens.push(token);
     }
     // The next session on this identity reclaims what it may.
     fixture.open(&["--branch", "feature/live"]);
 
-    let runs = worktrees[0]
-        .parent()
-        .and_then(Path::parent)
-        .expect("the runs directory");
-    let retained = std::fs::read_dir(runs)
-        .expect("the runs directory is readable")
-        .flatten()
-        .count();
-    // The newest three dead roots plus the live one: a bounded failure history, not
-    // an archive nobody prunes.
-    assert_eq!(retained, 4, "the retention bound must hold");
+    // A bounded failure history: the newest three abandoned sessions can still be
+    // picked up, and the two before them cannot. Keeping every one of them would
+    // turn a scratch root into an archive nobody prunes.
+    for token in &tokens[..2] {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "adopt", token])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("has been reclaimed"));
+    }
+    for token in &tokens[2..] {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "adopt", token])
+            .assert()
+            .success();
+    }
+
+    // Nothing that was reclaimed lost its work: every branch reached the execution
+    // checkout before its worktree went.
+    for index in 0..5 {
+        assert!(
+            fixture
+                .world
+                .git(
+                    &fixture.checkout,
+                    &["branch", "--list", &format!("feature/dead-{index}")]
+                )
+                .contains(&format!("feature/dead-{index}")),
+            "the reclaimed sessions' work is still on their branches"
+        );
+    }
 }
 
 #[test]
@@ -1166,14 +1195,11 @@ fn a_per_run_policy_may_narrow_the_rules_but_never_widen_them() {
         ])
         .assert()
         .success();
-    let rules = world.path("rules.yml");
-    std::fs::write(
-        &rules,
+    configure_rules(
+        &world,
         "version: 1\nrules: []\n\
          default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
-    )
-    .expect("a rules file");
-    point_at_rules(&world, &rules);
+    );
     world.install_fake_host(&origin);
 
     let assert = world

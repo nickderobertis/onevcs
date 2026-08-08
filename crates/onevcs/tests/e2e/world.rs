@@ -10,6 +10,15 @@
 //! Unix only. The substituted host and the hooks the gate journeys install are
 //! POSIX shell, which is what the repositories this tool drives actually carry.
 
+// llmlint: ignore-file[e2e_not_mocked] the one boundary an offline gate cannot drive
+// is the remote host's own decisioning — which change requests exist, what their
+// checks say, whether a merge is allowed. That is what the program installed here as
+// `gh` answers, and nothing else is substituted: origins are real bare repositories,
+// checkouts are real clones, hooks are real files git runs, every publication is a
+// real `git push`, and when this program merges a change it does so with real git
+// against the same bare origin. A journey asserting that a change reached its base
+// is therefore asserting about git, not about this fixture.
+
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -205,6 +214,25 @@ impl World {
         std::fs::write(self.path("gh-state/checks.tsv"), rows).expect("a check rollup");
     }
 
+    /// Make the substituted host answer in a shape it has no business answering in.
+    ///
+    /// `no-head` drops the commit a change request's checks are reported against,
+    /// `no-number` drops its identifier, `rollup-not-a-list` answers about its
+    /// checks with something that is not a list of them, and `no-url` /
+    /// `url-names-no-change` print something other than a change request's URL
+    /// when one is opened.
+    pub fn answer_malformed(&self, shape: &str) {
+        std::fs::write(self.path("gh-state/malformed"), shape)
+            .expect("a host that answers in the wrong shape");
+    }
+
+    /// Make the substituted host answer about a check without saying whether it
+    /// blocks the merge.
+    pub fn report_checks_that_do_not_say_if_they_block(&self) {
+        std::fs::write(self.path("gh-state/partial-checks"), "")
+            .expect("a host that answers partially");
+    }
+
     /// Make the substituted host accept a merge and then not perform it.
     pub fn accept_merges_without_performing_them(&self) {
         std::fs::write(self.path("gh-state/refuse-merge"), "")
@@ -216,14 +244,22 @@ impl World {
         std::fs::write(self.path("gh-state/no-logs"), "").expect("a host that keeps its logs");
     }
 
-    /// Every event a session's stream carries, as parsed JSON.
+    /// Every event a session's stream carries, read the way a consumer reads it.
     pub fn events(&self, token: &str) -> Vec<serde_json::Value> {
-        let path = self.home().join("streams").join(format!("{token}.ndjson"));
-        let raw = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("no stream at {}: {e}", path.display()));
-        raw.lines()
+        let output = self
+            .onevcs()
+            .args(["events", token])
+            .output()
+            .expect("the binary runs");
+        assert!(
+            output.status.success(),
+            "`onevcs events {token}` failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).expect("every event is JSON"))
+            .map(|line| serde_json::from_str(line).expect("every event is one JSON object"))
             .collect()
     }
 
@@ -291,6 +327,7 @@ STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
 mkdir -p "$STATE"
 ORIGIN="$(cat "$STATE/origin")"
 CHECKS="$STATE/checks.tsv"
+malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
 
 command="${1:-}"; shift || true
 
@@ -354,8 +391,13 @@ rollup() {
   while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
     if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
-    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"isRequired":%s}' \
-      "$separator" "$name" "$status" "$entry" "$required"
+    if [ -f "$STATE/partial-checks" ]; then
+      printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s}' \
+        "$separator" "$name" "$status" "$entry"
+    else
+      printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"isRequired":%s}' \
+        "$separator" "$name" "$status" "$entry" "$required"
+    fi
     separator=","
   done <"$CHECKS" 2>/dev/null || true
   printf ']'
@@ -386,11 +428,22 @@ case "$subcommand" in
     separator=""
     for record in "$STATE"/pr-*.env; do
       [ -e "$record" ] || continue
-      # shellcheck disable=SC1090
       . "$record"
       [ "$PR_STATE" = "OPEN" ] || continue
       [ "$PR_HEAD" = "$head" ] || continue
       [ "$PR_BASE" = "$base" ] || continue
+      case "$malformed" in
+        no-number)
+          printf '%s{"url":"%s","state":"%s","headRefOid":"%s"}' \
+            "$separator" "$PR_URL" "$PR_STATE" "$PR_HEAD_SHA"
+          separator=","
+          continue ;;
+        no-head)
+          printf '%s{"number":%s,"url":"%s","state":"%s"}' \
+            "$separator" "$PR_NUMBER" "$PR_URL" "$PR_STATE"
+          separator=","
+          continue ;;
+      esac
       printf '%s{"number":%s,"url":"%s","state":"%s","headRefOid":"%s"}' \
         "$separator" "$PR_NUMBER" "$PR_URL" "$PR_STATE" "$PR_HEAD_SHA"
       separator=","
@@ -398,6 +451,14 @@ case "$subcommand" in
     printf ']\n'
     ;;
   create)
+    case "$malformed" in
+      no-url)
+        printf 'created something, somewhere\n'
+        exit 0 ;;
+      url-names-no-change)
+        printf 'https://github.com/%s/pulls\n' "$repo"
+        exit 0 ;;
+    esac
     next=1
     while [ -f "$STATE/pr-$next.env" ]; do next=$((next + 1)); done
     head_sha="$(git --git-dir "$ORIGIN" rev-parse "refs/heads/$head" 2>/dev/null || printf 'unknown')"
@@ -415,15 +476,23 @@ case "$subcommand" in
     printf 'https://github.com/%s/pull/%s\n' "$repo" "$next"
     ;;
   view)
-    # shellcheck disable=SC1090
     . "$STATE/pr-$number.env"
     merge_commit=null
     if [ -n "$PR_MERGE_COMMIT" ]; then merge_commit="{\"oid\":\"$PR_MERGE_COMMIT\"}"; fi
+    case "$malformed" in
+      no-head)
+        printf '{"number":%s,"state":"%s","mergeCommit":null,"statusCheckRollup":[]}\n' \
+          "$PR_NUMBER" "$PR_STATE"
+        exit 0 ;;
+      rollup-not-a-list)
+        printf '{"number":%s,"state":"%s","headRefOid":"%s","mergeCommit":null,"statusCheckRollup":"soon"}\n' \
+          "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA"
+        exit 0 ;;
+    esac
     printf '{"number":%s,"state":"%s","mergeStateStatus":"CLEAN","headRefOid":"%s","mergeCommit":%s,"statusCheckRollup":%s}\n' \
       "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA" "$merge_commit" "$(rollup)"
     ;;
   merge)
-    # shellcheck disable=SC1090
     . "$STATE/pr-$number.env"
     if [ "$auto" = "1" ] && [ -f "$STATE/auto-merge-unavailable" ]; then
       printf 'Auto-merge is not enabled for this repository\n' >&2

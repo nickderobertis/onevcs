@@ -301,10 +301,6 @@ fn terminate_group(child: &Child) {
     let _ = child;
 }
 
-// ---------------------------------------------------------------------------
-// The operations the rest of the crate performs.
-// ---------------------------------------------------------------------------
-
 /// Whether `path` is inside the working tree of a non-bare repository.
 pub fn is_repo(path: &Path) -> bool {
     run(&["rev-parse", "--is-inside-work-tree"], Some(path))

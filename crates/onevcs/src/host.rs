@@ -59,11 +59,22 @@ pub struct ChangeRequest {
 }
 
 /// A host's identifier for a change request.
+// llmlint: ignore[invalid_states_unrepresentable] the contract declares this as
+// `id: ChangeId` and fixes nothing about its content — GitHub numbers its pull
+// requests, and another host may not. Every one this crate constructs is read out of
+// a host response that is required to carry it: `find_changes` rejects an entry with
+// no number, and `open_change` rejects output that printed no URL to take one from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct ChangeId(pub String);
 
 /// A commit hash.
+// llmlint: ignore[invalid_states_unrepresentable] the contract declares this field as
+// `head_sha: Sha` and fixes nothing about its content, and a hash's shape is the host's
+// to state — a SHA-1 hex string today, something else on a repository that has moved.
+// Every one this crate constructs is validated where it enters: `head_sha` and
+// `merged_sha` below both reject a response that names no commit rather than
+// constructing an empty one, so no code path here can produce a blank `Sha`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Sha(pub String);
@@ -77,13 +88,18 @@ pub struct Check {
     // llmlint: ignore[invalid_states_unrepresentable] the contract fixes this field name
     // and enumerates no value set for it, and the vocabulary differs per host — which is
     // the thing this crate exists to abstract. Inventing an enum here would add a public
-    // item the contract does not name. Recorded as open question 1 in
+    // item the contract does not name. The one word this build reads out of it —
+    // `completed` — is read in `settled` below and nowhere else, so a host that spells
+    // its states differently is understood by a second implementation of that predicate
+    // rather than by a new variant here. Recorded as open question 1 in
     // docs/inferred-surface.md for the planner to settle across the three repositories.
     pub status: String,
     /// How it ended, once it has. Absent while it is still running.
     // llmlint: ignore[invalid_states_unrepresentable] `conclusion` is the other half of the
     // same open question as `status` above, for the same reason: the contract names the
-    // field and enumerates no conclusion vocabulary, and each host spells its own.
+    // field and enumerates no conclusion vocabulary, and each host spells its own. The
+    // three this build treats as not blocking a merge are read in `green` below, which is
+    // the one place a second host's vocabulary would be taught.
     pub conclusion: Option<String>,
     /// Whether it blocks the merge.
     pub required: bool,
@@ -141,11 +157,11 @@ impl GitHub {
         Self { repo: repo.into() }
     }
 
-    fn view(&self, cr: &ChangeRequest) -> Result<serde_json::Value> {
+    fn view(&self, id: &str) -> Result<serde_json::Value> {
         let raw = gh::invoke(&[
             "pr",
             "view",
-            &cr.id.0,
+            id,
             "--repo",
             &self.repo,
             "--json",
@@ -181,20 +197,26 @@ impl RemoteHost for GitHub {
             .ok_or_else(|| invalid(format!("gh pr create printed no URL: {raw:?}")))?;
         let parsed = Url::parse(url)
             .map_err(|e| invalid(format!("gh pr create printed {url:?}, not a URL: {e}")))?;
-        let id = url
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
+        // The host numbers its change requests, and the number is the last segment
+        // of the URL it printed. Anything else in that position is `gh` having
+        // printed something other than a change request's URL, which is not an
+        // identifier to go on addressing it by.
+        let id = parsed
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .filter(|segment| !segment.is_empty() && segment.chars().all(|c| c.is_ascii_digit()))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "gh pr create printed {url:?}, which names no change"
+                ))
+            })?
             .to_owned();
-        let mut change = ChangeRequest {
+        Ok(ChangeRequest {
+            head_sha: head_sha(&self.view(&id)?)?,
             id: ChangeId(id),
             url: parsed,
-            head_sha: Sha(String::new()),
             base: req.base,
-        };
-        change.head_sha = head_sha(&self.view(&change)?).unwrap_or(Sha(String::new()));
-        Ok(change)
+        })
     }
 
     fn find_changes(&self, head: &str, base: &str) -> Result<Vec<ChangeRequest>> {
@@ -229,11 +251,7 @@ impl RemoteHost for GitHub {
             changes.push(ChangeRequest {
                 id: ChangeId(number),
                 url: parsed,
-                head_sha: Sha(item
-                    .get("headRefOid")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned()),
+                head_sha: head_sha(item)?,
                 base: base.to_owned(),
             });
         }
@@ -241,37 +259,20 @@ impl RemoteHost for GitHub {
     }
 
     fn change_checks(&self, cr: &ChangeRequest) -> Result<Vec<Check>> {
-        let value = self.view(cr)?;
-        let rollup = value
-            .get("statusCheckRollup")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(rollup
-            .iter()
-            .map(|entry| Check {
-                name: entry
-                    .get("name")
-                    .or_else(|| entry.get("context"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("check")
-                    .to_owned(),
-                status: entry
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("QUEUED")
-                    .to_ascii_lowercase(),
-                conclusion: entry
-                    .get("conclusion")
-                    .and_then(|v| v.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_ascii_lowercase),
-                required: entry
-                    .get("isRequired")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-            })
-            .collect())
+        let value = self.view(&cr.id.0)?;
+        let reported = value.get("statusCheckRollup").ok_or_else(|| {
+            invalid(format!(
+                "gh pr view reported no checks at all on {}",
+                cr.url
+            ))
+        })?;
+        if reported.is_null() {
+            return Ok(Vec::new());
+        }
+        let rollup = reported
+            .as_array()
+            .ok_or_else(|| invalid(format!("gh pr view returned a non-list rollup: {reported}")))?;
+        rollup.iter().map(|entry| check(entry, cr)).collect()
     }
 
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
@@ -300,16 +301,16 @@ impl RemoteHost for GitHub {
                 gh::invoke(&[
                     "pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash", "--auto",
                 ])?;
-                let view = self.view(cr)?;
-                Ok(match merged_sha(&view) {
+                let view = self.view(&cr.id.0)?;
+                Ok(match merged_sha(&view, cr)? {
                     Some(sha) => MergeOutcome::Merged(sha),
                     None => MergeOutcome::Queued,
                 })
             }
             MergePolicy::ChangeDirect => {
                 gh::invoke(&["pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash"])?;
-                let view = self.view(cr)?;
-                match merged_sha(&view) {
+                let view = self.view(&cr.id.0)?;
+                match merged_sha(&view, cr)? {
                     Some(sha) => Ok(MergeOutcome::Merged(sha)),
                     None => Err(Error::GateFailed {
                         reason: format!(
@@ -323,20 +324,81 @@ impl RemoteHost for GitHub {
     }
 }
 
-fn merged_sha(view: &serde_json::Value) -> Option<Sha> {
-    let state = view.get("state").and_then(|v| v.as_str()).unwrap_or("");
+/// One entry of the host's check rollup, required to say what it is.
+///
+/// Defaulting a missing field here is what would let a host that answered
+/// partially be read as a green, non-blocking check — the one shape that must
+/// never be inferred, because it is the difference between a merge that was gated
+/// and one that only looked like it.
+fn check(entry: &serde_json::Value, cr: &ChangeRequest) -> Result<Check> {
+    let field = |name: &str| -> Result<&str> {
+        entry
+            .get(name)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "gh pr view returned a check on {} with no {name}: {entry}",
+                    cr.url
+                ))
+            })
+    };
+    let name = field("name").or_else(|_| field("context"))?.to_owned();
+    Ok(Check {
+        name,
+        status: field("status")?.to_ascii_lowercase(),
+        // Genuinely absent while a check is still running, which is the one thing
+        // the host cannot yet know.
+        conclusion: entry
+            .get("conclusion")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase),
+        required: entry
+            .get("isRequired")
+            .and_then(|value| value.as_bool())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "gh pr view returned a check on {} that does not say whether it blocks \
+                     the merge: {entry}",
+                    cr.url
+                ))
+            })?,
+    })
+}
+
+/// The commit a merged change request landed as, or `None` while it is still open.
+///
+/// A host reporting `MERGED` without naming the commit is answering wrongly rather
+/// than answering "not yet": the commit is the whole evidence that the change
+/// reached its base, and reporting a merge with no SHA is the one thing that must
+/// not be passed through.
+fn merged_sha(view: &serde_json::Value, cr: &ChangeRequest) -> Result<Option<Sha>> {
+    let state = view
+        .get("state")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| invalid(format!("gh pr view returned no state for {}", cr.url)))?;
     if !state.eq_ignore_ascii_case("merged") {
-        return None;
+        return Ok(None);
     }
     view.get("mergeCommit")
         .and_then(|commit| commit.get("oid"))
-        .and_then(|v| v.as_str())
-        .map(|sha| Sha(sha.to_owned()))
-        .or_else(|| Some(Sha(String::new())))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(|sha| Some(Sha(sha.to_owned())))
+        .ok_or_else(|| {
+            invalid(format!(
+                "gh pr view reports {} merged without naming the commit it merged as",
+                cr.url
+            ))
+        })
 }
 
-fn head_sha(view: &serde_json::Value) -> Option<Sha> {
+/// The commit a change request's checks are reported against.
+fn head_sha(view: &serde_json::Value) -> Result<Sha> {
     view.get("headRefOid")
-        .and_then(|v| v.as_str())
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
         .map(|sha| Sha(sha.to_owned()))
+        .ok_or_else(|| invalid(format!("gh returned a change request with no head: {view}")))
 }

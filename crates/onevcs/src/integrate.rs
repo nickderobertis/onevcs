@@ -25,15 +25,36 @@ use crate::stream::{self, Stream};
 use crate::workspace::object;
 use crate::{gate, git, home, ids, lock, policy, provenance, publish, queue};
 
+/// What happened to one candidate of the train.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    /// It was verified and landed on the base as one commit.
+    Merged,
+    /// Its content was already on the base, so there was nothing to add.
+    AlreadyMerged,
+    /// It was left where it was, for this reason. A skip always has one: it is the
+    /// only thing that tells a reader which of half a dozen refusals happened.
+    Skipped(String),
+}
+
+impl Status {
+    /// How the train reports it.
+    pub fn describe(&self) -> String {
+        match self {
+            Status::Merged => "merged".to_owned(),
+            Status::AlreadyMerged => "already-merged".to_owned(),
+            Status::Skipped(reason) => format!("skipped ({reason})"),
+        }
+    }
+}
+
 /// What one candidate of the train did.
 #[derive(Debug, Clone)]
 pub struct BranchOutcome {
     /// The candidate.
     pub branch: String,
     /// What happened to it.
-    pub status: &'static str,
-    /// Why, when the status alone does not say.
-    pub reason: Option<String>,
+    pub status: Status,
 }
 
 /// What the whole train did.
@@ -161,18 +182,17 @@ fn train(
         .join(ids::unique());
     home::ensure_dir(&workspace)?;
 
+    let train = Train {
+        resolution,
+        base,
+        remote_base: &remote_base,
+        workspace: &workspace,
+        gate_command: gate_command.as_ref(),
+        environment: &environment,
+    };
     let mut branches = Vec::new();
     for branch in candidates {
-        branches.push(one(
-            resolution,
-            base,
-            &remote_base,
-            branch,
-            &workspace,
-            gate_command.as_ref(),
-            &environment,
-            stream,
-        )?);
+        branches.push(one(&train, branch, stream)?);
     }
 
     let advanced = git::head_sha(root)? != initial;
@@ -209,17 +229,30 @@ fn train(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn one(
-    resolution: &Resolution,
-    base: &str,
-    remote_base: &str,
-    branch: &str,
-    workspace: &Path,
-    gate_command: Option<&Vec<String>>,
-    environment: &[(String, String)],
-    stream: &mut Stream,
-) -> Result<BranchOutcome> {
+/// What every candidate of one train is run against.
+struct Train<'a> {
+    resolution: &'a Resolution,
+    /// The local base each candidate lands on, in the order they land.
+    base: &'a str,
+    /// The base the origin currently has, which each candidate syncs with first.
+    remote_base: &'a str,
+    /// Where candidate worktrees and preserved gate logs are put.
+    workspace: &'a Path,
+    /// The gate each candidate is verified by, when the policy names one.
+    gate_command: Option<&'a Vec<String>>,
+    /// The comparison identity every gate run resolves.
+    environment: &'a [(String, String)],
+}
+
+fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome> {
+    let Train {
+        resolution,
+        base,
+        remote_base,
+        workspace,
+        gate_command,
+        environment,
+    } = *train;
     let root = &resolution.publication;
     // Against the *local* base, which is what this candidate adds: the base has
     // already moved under earlier candidates of this train, and judging against the
@@ -228,8 +261,7 @@ fn one(
     if !unattested.is_empty() {
         return Ok(BranchOutcome {
             branch: branch.to_owned(),
-            status: "skipped",
-            reason: Some(format!(
+            status: Status::Skipped(format!(
                 "incomplete provenance ({} unattested commit(s)); this branch belongs to \
                  `onevcs recover {branch} --repo {}`",
                 unattested.len(),
@@ -238,7 +270,7 @@ fn one(
         });
     }
 
-    let parent: PathBuf = workspace.join(policy::gate_slug(branch));
+    let parent: PathBuf = workspace.join(policy::branch_slug(branch));
     home::ensure_dir(&parent)?;
     let worktree = parent.join("worktree");
     git::worktree_add_existing(root, &worktree, branch)?;
@@ -296,18 +328,15 @@ fn one(
         };
         let trailers = provenance::attestation_trailers(&worktree, base, "HEAD")?;
         let message = publish::compose_message(&subject, &trailers);
-        match squash_publish(root, base, branch, &message, workspace)? {
-            true => Ok(BranchOutcome {
-                branch: branch.to_owned(),
-                status: "merged",
-                reason: None,
-            }),
-            false => Ok(BranchOutcome {
-                branch: branch.to_owned(),
-                status: "already-merged",
-                reason: None,
-            }),
-        }
+        let landed = squash_publish(root, base, branch, &message, workspace)?;
+        Ok(BranchOutcome {
+            branch: branch.to_owned(),
+            status: if landed {
+                Status::Merged
+            } else {
+                Status::AlreadyMerged
+            },
+        })
     })();
 
     git::worktree_remove(root, &worktree)?;
@@ -318,8 +347,7 @@ fn one(
 fn skipped(branch: &str, reason: &str) -> BranchOutcome {
     BranchOutcome {
         branch: branch.to_owned(),
-        status: "skipped",
-        reason: Some(reason.to_owned()),
+        status: Status::Skipped(reason.to_owned()),
     }
 }
 

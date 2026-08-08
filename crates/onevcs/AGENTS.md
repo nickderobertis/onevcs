@@ -1,40 +1,47 @@
-# The `onevcs` crate
+# The crate
 
-Rules that apply inside this crate and nowhere else.
+Instructions that are true of `crates/onevcs` and nowhere else.
 
-## What may be `pub`
+> `CLAUDE.md` beside this file is a symlink to it — edit `AGENTS.md` only.
 
-Three helper types exist here because a named item could not be written without
-them: `Policy`, `GateKind`, and `Approvals`. A fourth is a contract amendment,
-never a local decision.
+## The public surface is the contract, and the rest is private
 
-The module layout is not part of the contract — `lib.rs` re-exports the flat
-surface a consumer sees, and modules are private except `cli`, `registry`, and
-`rules`, which a consumer names to reach a config schema.
+`src/lib.rs` exports exactly what the approved contract names. Everything the
+implementation needs beyond that is a private module, so a new seam is added
+behind the surface rather than beside it.
 
-## Where the contract is under-specified
+## Tests are journeys, and there are no unit tests
 
-Three sites here are deliberately loose, and each carries a **line-scoped
-`llmlint: ignore`** naming its own reason rather than a widened rule:
-`Check.status` and `Check.conclusion` are strings because the contract enumerates
-no value set for either, and both schemas' `version` is accepted as written
-because deciding which versions are acceptable is implementation. A fourth needs
-its open question recorded first — a suppression nobody has to answer for is a
-shortcut, not a decision.
+This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the
+approved surface to the contract text it is extracted from; everything else in
+`tests/e2e/` spawns the compiled binary and drives it against real git. A path
+only an in-process test could reach is a path to delete, not one to unit-test —
+which is also how the 95% coverage floor is met.
 
-## Tests
+`tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
+as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
+fired timeout takes a process *group*, which has no portable spelling. Windows CI
+builds the crate and runs the contract, boundary, and packaging suites.
 
-`tests/contract.rs` is the drift gate and `tests/e2e/` is the journeys. The
-non-obvious contracts they hold:
+## Everything durable lives under one state root
 
-- The envelope and rules **fixtures are extracted from `docs/contract.md`**, not
-  copied — so editing the doc without the types, or the reverse, fails the gate.
-- The event-kind list, the command names, the long flags, and the command
-  inventory `scripts/smoke-published.sh` asserts are all reconciled against the
-  parser, so a command added to one place and not the others fails.
-- `tests/e2e/packaging.rs` drives the committed npm launcher against a real
-  assembled platform package, so the shipped resolution and exit-code
-  propagation are proven without a registry.
+`ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory
+locks and merge-queue state, the per-session workspaces, the conventional
+`rules.yml`, and the event streams with their artifacts. A journey points it at a
+scratch directory, which is what lets the suite drive the real binary without
+touching an operator's own state.
 
-Add a journey to the suite as its seam is implemented; the stub it replaces goes
-with it.
+The other environment seams exist for the same reason and nothing else: `ONEVCS_GH`
+names the program that answers as `gh`, and the bounds
+(`ONEVCS_GIT_TIMEOUT`, `ONEVCS_GIT_HOOK_TIMEOUT`, `ONEVCS_LOCK_TIMEOUT_SECONDS`,
+`ONEVCS_CHECKS_TIMEOUT_SECONDS`, `ONEVCS_CHECKS_POLL_SECONDS`) are operator knobs a
+journey turns down so a bound can be *proved* rather than waited out.
+
+## Two rules that are easy to break quietly
+
+- **Emitting an event cannot fail a command.** The stream is the record of what
+  happened, and a publication that reached its base is not undone by the record of
+  it failing to be written. A failed write says so on stderr.
+- **A caller-supplied identifier is checked before it names a file.** A session
+  token and an artifact id both arrive from outside and both are joined under the
+  state root; `ids::is_safe_name` is where that is rejected.

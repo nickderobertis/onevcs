@@ -116,7 +116,7 @@ pub fn own_command(gate: &Gate) -> Option<&Vec<String>> {
 pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<PathBuf> {
     let directory = run_root
         .join(PRESERVED_LOG_DIRNAME)
-        .join(policy::gate_slug(branch));
+        .join(policy::branch_slug(branch));
     home::ensure_dir(&directory)?;
     // From the highest number this branch has ever reached rather than from the
     // first free one: retention removes the oldest files, and starting at the first

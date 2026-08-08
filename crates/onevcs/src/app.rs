@@ -257,7 +257,7 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
 fn recover_branch(args: &RecoverArgs) -> Result<u8> {
     let registry = store::load()?;
     let repo = args.repo.display().to_string();
-    let token = format!("recover-{}", policy::gate_slug(&args.branch));
+    let token = format!("recover-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
     match recover::run(&registry, &repo, &args.branch, &mut stream) {
         Ok(outcome) => {
@@ -309,15 +309,12 @@ fn recoverable(args: &RecoverableArgs) -> Result<u8> {
 fn integrate_branches(args: &IntegrateArgs) -> Result<u8> {
     let registry = store::load()?;
     let resolution = resolve_here(&registry)?;
-    let token = format!("integrate-{}", policy::gate_slug(&resolution.alias));
+    let token = format!("integrate-{}", policy::branch_slug(&resolution.alias));
     let mut stream = Stream::open(&token)?;
     let outcome = integrate::run(&resolution, &args.branches, args.push, None, &mut stream)?;
     println!("Integration train for {}:", outcome.base);
     for branch in &outcome.branches {
-        match &branch.reason {
-            Some(reason) => println!("  {}: {} ({reason})", branch.branch, branch.status),
-            None => println!("  {}: {}", branch.branch, branch.status),
-        }
+        println!("  {}: {}", branch.branch, branch.status.describe());
     }
     println!(
         "Base advanced: {}",
@@ -397,11 +394,13 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
     println!("identity: {}", resolution.key);
     println!("checkout: {}", resolution.publication.display());
     println!("rules: {}", resolved.source);
-    match (&resolved.matched, &resolved.matched_match) {
-        (Some(index), Some(criteria)) => {
-            println!("matched: rule {index} {}", describe_match(criteria));
-        }
-        _ => println!("matched: no rule; the default applies"),
+    match &resolved.matched {
+        Some(matched) => println!(
+            "matched: rule {} {}",
+            matched.index,
+            describe_match(&matched.criteria)
+        ),
+        None => println!("matched: no rule; the default applies"),
     }
     println!(
         "publication: {} (from {})",

@@ -10,7 +10,7 @@
 //! widening is how work reaches a base branch without the review its repository
 //! requires, and there is no later step that notices.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::registry::Registry;
@@ -57,6 +57,15 @@ pub fn spell_gate(gate: &Gate) -> String {
     }
 }
 
+/// The rule a repository matched: which one, and what it says.
+#[derive(Debug, Clone)]
+pub struct Matched {
+    /// Its one-based position in the file, which is the order that decided it.
+    pub index: usize,
+    /// What it matches on, for the explanation.
+    pub criteria: RuleMatch,
+}
+
 /// The policy a repository resolves to, and the reasoning that produced it.
 #[derive(Debug, Clone)]
 pub struct Resolved {
@@ -64,10 +73,8 @@ pub struct Resolved {
     pub policy: Policy,
     /// Where the rules came from: a file, or the built-in default.
     pub source: String,
-    /// The one-based index of the rule that matched, if any did.
-    pub matched: Option<usize>,
-    /// How the matched rule is spelled, for the explanation.
-    pub matched_match: Option<RuleMatch>,
+    /// The rule that matched, if any did.
+    pub matched: Option<Matched>,
     /// Where each field came from: the matched rule, or the default.
     pub publication_from: String,
     /// Where `approvals` came from.
@@ -89,7 +96,14 @@ pub fn built_in_default() -> Policy {
 
 /// Load the rules a registry points at, or the built-in default.
 pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
-    let Some(reference) = registry.rules.as_ref() else {
+    // The registry's own reference wins; otherwise the conventional file under the
+    // state root, which is what a host configures without editing the document
+    // `onevcs` maintains for itself.
+    let path = match registry.rules.as_ref() {
+        Some(reference) => home::expand_tilde(&reference.to_string_lossy()),
+        None => default_path()?,
+    };
+    if registry.rules.is_none() && !path.is_file() {
         return Ok((
             RulesFile {
                 version: VERSION,
@@ -98,8 +112,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
             },
             "the built-in default policy".to_owned(),
         ));
-    };
-    let path = home::expand_tilde(&reference.to_string_lossy());
+    }
     let raw = std::fs::read_to_string(&path).map_err(|e| Error::Invalid {
         reason: format!("cannot read the rules file at {}: {e}", path.display()),
     })?;
@@ -173,8 +186,10 @@ pub fn resolve(file: &RulesFile, source: &str, identity: &Normalized, checkout: 
                     .unwrap_or_else(|| file.default.gate.clone()),
             },
             source: source.to_owned(),
-            matched: Some(index + 1),
-            matched_match: Some(rule.r#match.clone()),
+            matched: Some(Matched {
+                index: index + 1,
+                criteria: rule.r#match.clone(),
+            }),
             publication_from: field_source(&named, rule.publication.is_some()),
             approvals_from: field_source(&named, rule.approvals.is_some()),
             gate_from: field_source(&named, rule.gate.is_some()),
@@ -184,7 +199,6 @@ pub fn resolve(file: &RulesFile, source: &str, identity: &Normalized, checkout: 
         policy: file.default.clone(),
         source: source.to_owned(),
         matched: None,
-        matched_match: None,
         publication_from: "the default".to_owned(),
         approvals_from: "the default".to_owned(),
         gate_from: "the default".to_owned(),
@@ -201,18 +215,24 @@ fn field_source(named: &str, from_rule: bool) -> String {
 
 /// Whether every field a rule sets matches this repository.
 fn matches(criteria: &RuleMatch, identity: &Normalized, checkout: &Path) -> bool {
+    let hosted = |part: fn(&crate::store::Hosted) -> &str, want: &String| {
+        identity
+            .hosted
+            .as_ref()
+            .is_some_and(|hosted| glob(want, part(hosted)))
+    };
     let host = criteria
         .host
         .as_ref()
-        .is_none_or(|want| identity.host.as_deref().is_some_and(|got| glob(want, got)));
+        .is_none_or(|want| hosted(|h| &h.host, want));
     let owner = criteria
         .owner
         .as_ref()
-        .is_none_or(|want| identity.owner.as_deref().is_some_and(|got| glob(want, got)));
+        .is_none_or(|want| hosted(|h| &h.owner, want));
     let name = criteria
         .name
         .as_ref()
-        .is_none_or(|want| identity.name.as_deref().is_some_and(|got| glob(want, got)));
+        .is_none_or(|want| hosted(|h| &h.name, want));
     let path = criteria.path.as_ref().is_none_or(|want| {
         let expanded = home::expand_tilde(want);
         glob(&expanded.to_string_lossy(), &checkout.to_string_lossy())
@@ -264,8 +284,14 @@ pub fn narrow(resolved: &Policy, requested: MergePolicy) -> Result<MergePolicy> 
     Ok(requested)
 }
 
-/// A stable identifier for a gate command, used to name its preserved log.
-pub fn gate_slug(branch: &str) -> String {
+/// Where a host configures its rules without editing the registry document.
+pub fn default_path() -> Result<PathBuf> {
+    Ok(home::root()?.join("rules.yml"))
+}
+
+/// A branch name that is safe to use as a directory name, used to name the place
+/// its preserved gate logs are kept.
+pub fn branch_slug(branch: &str) -> String {
     let flattened: String = branch
         .chars()
         .map(|c| if c == '/' { '-' } else { c })

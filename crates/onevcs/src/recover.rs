@@ -36,7 +36,7 @@ pub fn run(
 
     let run_root = home::workspaces_dir()?.join("recoveries").join(format!(
         "{}-{}",
-        policy::gate_slug(branch),
+        policy::branch_slug(branch),
         ids::unique()
     ));
     home::ensure_dir(&run_root)?;

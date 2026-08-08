@@ -98,11 +98,59 @@ fn record_path(token: &str) -> Result<PathBuf> {
 
 /// Read one session record.
 pub fn load(token: &str) -> Result<Record> {
+    if !ids::is_safe_name(token) {
+        return Err(error::invalid(format!(
+            "{token:?} is not a session token; `onevcs session open` prints one"
+        )));
+    }
     let path = record_path(token)?;
     let raw = std::fs::read_to_string(&path).map_err(|_| Error::Invalid {
         reason: format!("no session {token:?} is open; `onevcs session open` prints a token"),
     })?;
-    serde_json::from_str(&raw).map_err(error::at("read the session record at", &path))
+    let record: Record =
+        serde_json::from_str(&raw).map_err(error::at("read the session record at", &path))?;
+    usable(&path, token, &record)?;
+    Ok(record)
+}
+
+/// Reject a session record that disagrees with itself or with what it is for.
+///
+/// Serde proves the shape and nothing else, and every field here is handed
+/// straight to git or to the filesystem afterwards. A record naming a different
+/// token than the file it was read from, or a branch git would not accept, is one
+/// nothing should act on.
+fn usable(path: &Path, token: &str, record: &Record) -> Result<()> {
+    if record.token != token {
+        return Err(error::invalid(format!(
+            "the session record at {} is for {:?}, not for {token:?}",
+            path.display(),
+            record.token
+        )));
+    }
+    for (what, name) in [("branch", &record.branch), ("base", &record.base)] {
+        if !git::is_valid_branch_name(name) {
+            return Err(error::invalid(format!(
+                "the session record at {} names {what} {name:?}, which git would not accept",
+                path.display()
+            )));
+        }
+    }
+    for (what, value) in [
+        ("worktree", &record.worktree),
+        ("clone", &record.clone),
+        ("run root", &record.run_root),
+        ("execution checkout", &record.execution_checkout),
+        ("publication checkout", &record.publication_checkout),
+    ] {
+        if !value.is_absolute() {
+            return Err(error::invalid(format!(
+                "the session record at {} names a {what} at {}, which is not an absolute path",
+                path.display(),
+                value.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Write one session record.
@@ -120,10 +168,18 @@ pub fn all() -> Result<Vec<Record>> {
     };
     let mut records = Vec::new();
     for entry in entries.flatten() {
-        if let Ok(raw) = std::fs::read_to_string(entry.path()) {
-            if let Ok(record) = serde_json::from_str::<Record>(&raw) {
-                records.push(record);
-            }
+        // By the token the file is named for, so every record collected here has
+        // been through the same check one read by name gets.
+        let Some(token) = entry
+            .file_name()
+            .to_string_lossy()
+            .strip_suffix(".json")
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if let Ok(record) = load(&token) {
+            records.push(record);
         }
     }
     records.sort_by(|a, b| a.token.cmp(&b.token));
@@ -290,6 +346,15 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
         ),
     })?;
 
+    if !record.clone.is_dir() {
+        return Err(error::invalid(format!(
+            "session {token:?} has been reclaimed: only the newest {RETAINED_DEAD_RUNS} \
+             abandoned sessions holding unpublished work are kept. Its branch {:?} was handed \
+             to {} before it went.",
+            record.branch,
+            record.execution_checkout.display()
+        )));
+    }
     if !record.worktree.is_dir() {
         git::worktree_prune(&record.clone)?;
         git::worktree_add_existing(&record.clone, &record.worktree, &record.branch)?;
@@ -346,7 +411,10 @@ fn reclaim(runs: &Path) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(runs) else {
         return Ok(());
     };
-    let mut holding_work: Vec<PathBuf> = Vec::new();
+    // Newest first, by when the directory was last written: a session token is a
+    // digest and sorts arbitrarily, so ordering by name would retain an arbitrary
+    // three rather than the three somebody is most likely to reach for.
+    let mut holding_work: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
         let run_root = entry.path();
         if !run_root.is_dir() {
@@ -367,13 +435,15 @@ fn reclaim(runs: &Path) -> Result<()> {
         if unpublished.is_empty() {
             let _ = std::fs::remove_dir_all(&run_root);
         } else {
-            holding_work.push(run_root);
+            let written = std::fs::metadata(&run_root)
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            holding_work.push((written, run_root));
         }
     }
-    holding_work.sort();
-    while holding_work.len() > RETAINED_DEAD_RUNS {
-        let oldest = holding_work.remove(0);
-        let _ = std::fs::remove_dir_all(&oldest);
+    holding_work.sort_by_key(|(written, _)| std::cmp::Reverse(*written));
+    for (_, reclaimed) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
+        let _ = std::fs::remove_dir_all(&reclaimed);
     }
     Ok(())
 }

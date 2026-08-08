@@ -34,6 +34,21 @@ pub fn artifact_id() -> String {
     format!("a-{}", short_digest(&unique()))
 }
 
+/// Whether a caller-supplied identifier may be used as a filename.
+///
+/// A token and an artifact id both name a file under the state root, and both
+/// arrive from outside — off a command line, out of an event stream somebody
+/// pasted. Anything that is not a plain name could leave the directory it is
+/// looked up in, so the shape is checked here rather than trusted into a join.
+pub fn is_safe_name(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// The first 12 hex characters of a value's SHA-256.
 pub fn short_digest(value: &str) -> String {
     digest(value)[..12].to_owned()
