@@ -21,11 +21,13 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assert_cmd::cargo::CommandCargoExt;
+use fs4::fs_std::FileExt;
 
 /// One scratch host: its own home, its own `onevcs` state root, its own origins.
 pub struct World {
@@ -82,6 +84,35 @@ impl World {
             command.env("LLVM_PROFILE_FILE", profile);
         }
         assert_cmd::Command::from_std(command)
+    }
+
+    /// Every advisory lock file this world's state root holds so far.
+    ///
+    /// A lock is named after a digest of what it guards, so which one guards a
+    /// given run root is read off *when it appears* rather than recomputed here.
+    pub fn locks(&self) -> BTreeSet<PathBuf> {
+        std::fs::read_dir(self.home().join("locks"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    /// Hold one of this world's advisory locks exclusively, exactly as a second
+    /// `onevcs` working inside that run root does. Released when the file is dropped.
+    pub fn occupy(lock: &Path) -> std::fs::File {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock)
+            .unwrap_or_else(|e| panic!("the lock at {} is openable: {e}", lock.display()));
+        assert!(
+            FileExt::try_lock_exclusive(&file).expect("the lock is takeable"),
+            "nothing else may hold {} when a journey occupies it",
+            lock.display()
+        );
+        file
     }
 
     /// Run real git, requiring it to succeed.

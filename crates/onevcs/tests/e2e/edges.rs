@@ -443,6 +443,45 @@ fn a_branch_name_git_would_refuse_is_refused_before_anything_is_cut() {
 }
 
 #[test]
+fn a_session_another_process_is_inside_is_neither_adopted_nor_closed() {
+    let fixture =
+        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let before = fixture.world.locks();
+    let (token, _worktree) = fixture.open(&[]);
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    // Somebody else is in this run root, and occupancy is an answer rather than
+    // something to wait out: re-attaching or tearing down under them would take a
+    // worktree out from beneath live work.
+    let occupant = World::occupy(lease);
+
+    for verb in ["adopt", "close"] {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", verb, &token])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(format!(
+                "session {token:?} is occupied by another process"
+            )));
+    }
+
+    // …and the moment they leave, both are available again.
+    drop(occupant);
+    for verb in ["adopt", "close"] {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", verb, &token])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
 fn a_session_nobody_opened_says_where_a_token_comes_from() {
     let world = World::new();
     for argv in [
