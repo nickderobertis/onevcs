@@ -71,7 +71,8 @@ rationale; the mechanics live in the files named. -->
   drift. **Separate Nx projects for the wheel and the npm package** — both carry
   the same prebuilt binary and are assembled at release time, so they are
   packaging of the one deliverable rather than deliverables of their own.
-<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] the required-artifact scope ends here.
+-->
 
 ## Command surface
 
