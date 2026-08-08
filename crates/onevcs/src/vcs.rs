@@ -119,11 +119,11 @@ pub fn preserve_into(
 
     let base = base_ref(&record.clone, &record.base);
     Ok(PreservedBranch {
-        branch: record.branch.clone(),
-        base: record.base.clone(),
+        branch: record.branch.to_string(),
+        base: record.base.to_string(),
         provenance: provenance::provenance_of(&record.clone, &base, &record.branch)?,
         change_url: None,
-        change_base: record.change_base.clone(),
+        change_base: record.change_base.as_ref().map(ToString::to_string),
     })
 }
 
@@ -205,9 +205,9 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 let change_base = provenance::recorded_change_base(&repo, &compared, &branch)?;
                 let stopped = sessions
                     .iter()
-                    .find(|record| record.branch == branch)
+                    .find(|record| *record.branch == *branch)
                     .map(|record| {
-                        if record.open {
+                        if record.state == crate::workspace::Lifecycle::Open {
                             format!("session {} was left open", record.token)
                         } else {
                             format!("session {} closed without publishing", record.token)

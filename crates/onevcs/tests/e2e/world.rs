@@ -211,16 +211,16 @@ impl World {
             })
             .collect();
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
-        std::fs::write(self.path("gh-state/checks.tsv"), rows).expect("a check rollup");
+        std::fs::write(self.path("gh-state/checks.rows"), rows).expect("a check rollup");
     }
 
     /// Make the substituted host answer in a shape it has no business answering in.
     ///
     /// `no-head` drops the commit a change request's checks are reported against,
     /// `no-number` drops its identifier, `rollup-not-a-list` answers about its
-    /// checks with something that is not a list of them, and `no-url` /
-    /// `url-names-no-change` print something other than a change request's URL
-    /// when one is opened.
+    /// checks with something that is not a list of them, `no-state` will not say
+    /// whether it is open or merged, and `no-url` / `url-names-no-change` print
+    /// something other than a change request's URL when one is opened.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -326,7 +326,7 @@ set -euo pipefail
 STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
 mkdir -p "$STATE"
 ORIGIN="$(cat "$STATE/origin")"
-CHECKS="$STATE/checks.tsv"
+CHECKS="$STATE/checks.rows"
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
 
 command="${1:-}"; shift || true
@@ -368,7 +368,7 @@ case "$subcommand" in
   view|merge) number="${1:-}"; shift || true ;;
 esac
 
-repo=""; head=""; base=""; title=""; body=""; auto=0
+repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}"; shift 2 ;;
@@ -376,7 +376,7 @@ while [ $# -gt 0 ]; do
     --base) base="${2:-}"; shift 2 ;;
     --title) title="${2:-}"; shift 2 ;;
     --body) body="${2:-}"; shift 2 ;;
-    --json) shift 2 ;;
+    --json) json_fields="${2:-}"; shift 2 ;;
     --state) shift 2 ;;
     --auto) auto=1; shift ;;
     *) shift ;;
@@ -477,6 +477,10 @@ case "$subcommand" in
     ;;
   view)
     . "$STATE/pr-$number.env"
+    # `gh` returns exactly the fields it was asked for, and so does this: a caller
+    # that reads a field out of an answer it never requested is a caller that works
+    # here and fails against the real host.
+    wanted() { case ",$json_fields," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
     merge_commit=null
     if [ -n "$PR_MERGE_COMMIT" ]; then merge_commit="{\"oid\":\"$PR_MERGE_COMMIT\"}"; fi
     case "$malformed" in
@@ -488,9 +492,22 @@ case "$subcommand" in
         printf '{"number":%s,"state":"%s","headRefOid":"%s","mergeCommit":null,"statusCheckRollup":"soon"}\n' \
           "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA"
         exit 0 ;;
+      no-state)
+        # Its checks are answered as usual, so the publication reaches the merge —
+        # which is the call that has to know whether the change is already merged.
+        printf '{"number":%s,"headRefOid":"%s","mergeCommit":null,"statusCheckRollup":%s}\n' \
+          "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
+        exit 0 ;;
     esac
-    printf '{"number":%s,"state":"%s","mergeStateStatus":"CLEAN","headRefOid":"%s","mergeCommit":%s,"statusCheckRollup":%s}\n' \
-      "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA" "$merge_commit" "$(rollup)"
+    separator=""
+    printf '{'
+    if wanted number; then printf '%s"number":%s' "$separator" "$PR_NUMBER"; separator=","; fi
+    if wanted state; then printf '%s"state":"%s"' "$separator" "$PR_STATE"; separator=","; fi
+    if wanted mergeStateStatus; then printf '%s"mergeStateStatus":"CLEAN"' "$separator"; separator=","; fi
+    if wanted headRefOid; then printf '%s"headRefOid":"%s"' "$separator" "$PR_HEAD_SHA"; separator=","; fi
+    if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
+    if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
+    printf '}\n'
     ;;
   merge)
     . "$STATE/pr-$number.env"

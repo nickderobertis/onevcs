@@ -41,11 +41,46 @@ pub fn comparison_env(remote: &str, base: &str) -> Vec<(String, String)> {
     ]
 }
 
+/// What a gate said about the change it was handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ruling {
+    /// It verified the change, which is the only thing that lets it be published.
+    Passed,
+    /// It refused the change, or never reached a verdict about it — a gate that was
+    /// stopped, or one whose command this host does not have, said nothing about
+    /// the change and so cannot have cleared it.
+    Rejected,
+}
+
+impl Ruling {
+    /// A gate's own exit status, which is its whole vocabulary.
+    pub fn from_exit(succeeded: bool) -> Self {
+        if succeeded {
+            Ruling::Passed
+        } else {
+            Ruling::Rejected
+        }
+    }
+
+    /// Whether the change may be published.
+    pub fn passed(self) -> bool {
+        self == Ruling::Passed
+    }
+
+    /// How the `gate-verdict` event spells it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Ruling::Passed => "pass",
+            Ruling::Rejected => "fail",
+        }
+    }
+}
+
 /// What one gate invocation said.
 #[derive(Debug, Clone)]
 pub struct Verdict {
-    /// Whether the gate passed.
-    pub ok: bool,
+    /// What it ruled.
+    pub ruling: Ruling,
     /// Everything it wrote, which is the evidence stored as an artifact.
     pub output: String,
     /// The command it ran, for the event that reports it.
@@ -57,7 +92,7 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
     let command = argv.join(" ");
     let Some((program, arguments)) = argv.split_first() else {
         return Verdict {
-            ok: false,
+            ruling: Ruling::Rejected,
             output: "the gate names no command, so it verified nothing\n".to_owned(),
             command,
         };
@@ -74,7 +109,7 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
         Ok(child) => child,
         Err(error) => {
             return Verdict {
-                ok: false,
+                ruling: Ruling::Rejected,
                 output: format!("gate command not found: {program:?} ({error})\n"),
                 command,
             }
@@ -90,7 +125,7 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
     }
     let status = child.wait();
     Verdict {
-        ok: status.map(|s| s.success()).unwrap_or(false),
+        ruling: Ruling::from_exit(status.map(|status| status.success()).unwrap_or(false)),
         output: format!("{stdout}{stderr}"),
         command,
     }

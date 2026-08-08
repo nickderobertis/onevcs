@@ -33,8 +33,10 @@ does not name. Two rules follow, and they are not conditional on that:
   decisions that came from the user.
 - **Do not resolve a contract conflict by changing the interface.** Report it.
 
-`Error::NotImplemented` (exit code `70`) survives for a seam that has none yet —
-a second `RemoteHost`, say. Nothing produces it today.
+`Error::NotImplemented` (exit code `70`) is what a seam with no body answers.
+Publishing a change request for a hosted origin that is not GitHub reaches one:
+the identity is well-formed and the policy is honourable, and this build simply
+has no implementation for that host.
 
 ## Two standing goals on every task
 
@@ -127,8 +129,9 @@ values live in the secret store, never in the tree.
 - Security is gate-level: no secrets in the tree, least-privilege CI tokens, and
   a narrow agent allowlist in `.claude/settings.json`.
 - **`70` is this repo's own exit code**, and the only one the contract does not
-  fix: the command parsed but the seam behind it is not implemented. Nothing
-  answers it today; it is reserved for a seam that arrives without a body.
+  fix: the command parsed but the seam behind it is not implemented. A hosted
+  origin that is not GitHub answers it today; anything else that reaches it is a
+  seam that arrived without a body.
 
 ## Scripts and output are context
 

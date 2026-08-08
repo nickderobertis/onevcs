@@ -147,14 +147,35 @@ pub enum MergeOutcome {
 /// the git underneath it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHub {
-    /// The `owner/name` slug every call is addressed to.
-    pub repo: String,
+    /// The `owner/name` slug every call is addressed to. Private, so the only way
+    /// to hold one is to have had it accepted by [`GitHub::new`] — every `gh`
+    /// invocation below trusts it as the repository it addresses.
+    repo: String,
 }
 
 impl GitHub {
-    /// Address this host at one repository.
-    pub fn new(repo: impl Into<String>) -> Self {
-        Self { repo: repo.into() }
+    /// Address this host at one repository, named `owner/name`.
+    ///
+    /// Checked here rather than at each call: the slug is interpolated into every
+    /// `gh --repo` invocation, and a value that is not one repository is a value
+    /// that addresses something nobody asked for.
+    pub fn new(repo: impl Into<String>) -> Result<Self> {
+        let repo = repo.into();
+        let mut parts = repo.split('/');
+        let named = matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(owner), Some(name), None)
+                if !owner.is_empty()
+                    && !name.is_empty()
+                    && !repo.starts_with('-')
+                    && !repo.contains(char::is_whitespace)
+        );
+        if !named {
+            return Err(invalid(format!(
+                "{repo:?} does not name one repository as owner/name"
+            )));
+        }
+        Ok(Self { repo })
     }
 
     fn view(&self, id: &str) -> Result<serde_json::Value> {
@@ -165,7 +186,10 @@ impl GitHub {
             "--repo",
             &self.repo,
             "--json",
-            "number,state,mergeStateStatus,mergeCommit,statusCheckRollup",
+            // `headRefOid` is load-bearing: `open_change` reads the commit the new
+            // change request's checks will be reported against out of this answer,
+            // and `gh` returns exactly the fields it was asked for.
+            "number,state,mergeStateStatus,headRefOid,mergeCommit,statusCheckRollup",
         ])?;
         gh::json(&raw)
     }

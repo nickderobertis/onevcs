@@ -213,8 +213,8 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
         effective,
         repo: record.clone.clone(),
         worktree: record.worktree.clone(),
-        branch: record.branch.clone(),
-        base: record.base.clone(),
+        branch: record.branch.to_string(),
+        base: record.base.to_string(),
         change_base,
         run_root: record.run_root.clone(),
         title: args.title.clone(),
@@ -223,7 +223,7 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
     match publish::run(&context, &mut stream) {
         Ok(outcome) => {
             println!("{}", outcome.describe());
-            record.open = false;
+            record.state = workspace::Lifecycle::Closed;
             workspace::save(&record)?;
             Ok(0)
         }
@@ -316,11 +316,8 @@ fn integrate_branches(args: &IntegrateArgs) -> Result<u8> {
     for branch in &outcome.branches {
         println!("  {}: {}", branch.branch, branch.status.describe());
     }
-    println!(
-        "Base advanced: {}",
-        if outcome.base_advanced { "yes" } else { "no" }
-    );
-    println!("Pushed: {}", if outcome.pushed { "yes" } else { "no" });
+    println!("Base advanced: {}", yes_or_no(outcome.ending.advanced()));
+    println!("Pushed: {}", yes_or_no(outcome.ending.pushed()));
     Ok(0)
 }
 
@@ -369,7 +366,7 @@ fn events(token: &str, follow: bool) -> Result<u8> {
         // `--follow` on a session that has already closed would otherwise never
         // return, and a reader asking to follow finished work wants its tail.
         if workspace::load(token)
-            .map(|record| !record.open)
+            .map(|record| record.state == workspace::Lifecycle::Closed)
             .unwrap_or(true)
         {
             return Ok(0);
@@ -460,6 +457,15 @@ fn resolve_here(registry: &Registry) -> Result<Resolution> {
             canonical.display()
         ),
     })
+}
+
+/// How a report answers a question a reader asked in the plural.
+fn yes_or_no(answer: bool) -> &'static str {
+    if answer {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 fn serialization(failure: serde_json::Error) -> Error {

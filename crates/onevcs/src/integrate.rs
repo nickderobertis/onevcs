@@ -57,6 +57,33 @@ pub struct BranchOutcome {
     pub status: Status,
 }
 
+/// Where the train left the base.
+///
+/// One value rather than two flags, because a base that never moved cannot have
+/// been pushed: `--push` updates the remote only when the base advanced, and
+/// "pushed an unchanged base" is a state the train has no way to produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// Every candidate was skipped or was already on the base.
+    Unchanged,
+    /// At least one candidate landed, and the base was left local.
+    Advanced,
+    /// At least one candidate landed, and the advanced base reached the remote.
+    AdvancedAndPushed,
+}
+
+impl Ending {
+    /// Whether the base moved at all.
+    pub fn advanced(self) -> bool {
+        self != Ending::Unchanged
+    }
+
+    /// Whether the advanced base reached the remote.
+    pub fn pushed(self) -> bool {
+        self == Ending::AdvancedAndPushed
+    }
+}
+
 /// What the whole train did.
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -64,10 +91,8 @@ pub struct Outcome {
     pub base: String,
     /// Each candidate, in the order it was offered.
     pub branches: Vec<BranchOutcome>,
-    /// Whether the base moved at all.
-    pub base_advanced: bool,
-    /// Whether the advanced base was pushed.
-    pub pushed: bool,
+    /// Where it left the base.
+    pub ending: Ending,
 }
 
 /// Run the train against a registered local identity.
@@ -195,9 +220,12 @@ fn train(
         branches.push(one(&train, branch, stream)?);
     }
 
-    let advanced = git::head_sha(root)? != initial;
-    let mut pushed = false;
-    if push && advanced {
+    let mut ending = if git::head_sha(root)? == initial {
+        Ending::Unchanged
+    } else {
+        Ending::Advanced
+    };
+    if push && ending.advanced() {
         if !has_remote {
             return Err(Error::Invalid {
                 reason: format!("{} has no origin to push to", root.display()),
@@ -218,14 +246,13 @@ fn train(
                 output.lines().next_back().unwrap_or("").trim()
             ),
         })?;
-        pushed = true;
+        ending = Ending::AdvancedAndPushed;
     }
     let _ = std::fs::remove_dir_all(&workspace);
     Ok(Outcome {
         base: base.to_owned(),
         branches,
-        base_advanced: advanced,
-        pushed,
+        ending,
     })
 }
 
@@ -301,14 +328,14 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
             stream.emit_with(
                 EventKind::GateVerdict,
                 object(json!({
-                    "verdict": if verdict.ok { "pass" } else { "fail" },
+                    "verdict": verdict.ruling.describe(),
                     "command": verdict.command,
                     "branch": branch,
                     "preserved_log": preserved.display().to_string(),
                 })),
                 vec![artifact],
             );
-            if !verdict.ok {
+            if !verdict.ruling.passed() {
                 return Ok(skipped(branch, "gate-failed"));
             }
         }

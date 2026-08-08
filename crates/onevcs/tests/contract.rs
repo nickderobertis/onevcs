@@ -573,7 +573,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
     fn repository<T: Vcs>(_: &T) {}
     fn host<T: RemoteHost>(_: &T) {}
     repository(&Git);
-    host(&GitHub::new("nickderobertis/onevcs"));
+    host(&GitHub::new("nickderobertis/onevcs").expect("a repository named owner/name"));
 
     // The values every method signature names are constructible from outside the
     // crate, which is what makes the seam usable by a second implementation.

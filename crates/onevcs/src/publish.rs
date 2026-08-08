@@ -168,14 +168,14 @@ fn verify(context: &Context, stream: &mut Stream, environment: &[(String, String
     stream.emit_with(
         EventKind::GateVerdict,
         object(json!({
-            "verdict": if verdict.ok { "pass" } else { "fail" },
+            "verdict": verdict.ruling.describe(),
             "command": verdict.command,
             "output": verdict.output,
             "preserved_log": preserved.display().to_string(),
         })),
         vec![artifact],
     );
-    if verdict.ok {
+    if verdict.ruling.passed() {
         return Ok(());
     }
     Err(Error::GateFailed {
@@ -322,7 +322,7 @@ fn publish_as_change(
     })?;
 
     let slug = change_host(&context.resolution.key)?;
-    let host = GitHub::new(slug);
+    let host = GitHub::new(slug)?;
     // Who the host believes is calling travels with the change: a change request
     // opened by an identity nobody expected is the thing an operator reads this to
     // find out.
@@ -483,16 +483,16 @@ fn record_push(
     stream: &mut Stream,
     pushed: &std::result::Result<String, String>,
 ) -> Result<()> {
-    let (ok, output) = match pushed {
-        Ok(output) => (true, output),
-        Err(output) => (false, output),
+    let (ruling, output) = match pushed {
+        Ok(output) => (gate::Ruling::Passed, output),
+        Err(output) => (gate::Ruling::Rejected, output),
     };
     stream.emit(
         EventKind::Push,
         object(json!({
             "branch": context.branch,
             "remote": "origin",
-            "accepted": ok,
+            "accepted": ruling.passed(),
         })),
     );
     // A `pre-push` gate's verdict arrives as push output and nowhere else, so it is
@@ -510,7 +510,7 @@ fn record_push(
         stream.emit_with(
             EventKind::GateVerdict,
             object(json!({
-                "verdict": if ok { "pass" } else { "fail" },
+                "verdict": ruling.describe(),
                 "command": "the repository's pre-push hook",
                 "output": output,
                 "preserved_log": preserved.display().to_string(),

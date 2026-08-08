@@ -38,22 +38,123 @@ use crate::{git, home, ids, lock};
 /// nobody prunes.
 pub const RETAINED_DEAD_RUNS: usize = 3;
 
+/// The version of the session record this build writes and reads.
+///
+/// A record outlives the command that wrote it and is read by the next one, so it
+/// is a stored contract like the registry document — and like that document, an
+/// unreadable version is refused by name rather than guessed at.
+pub const RECORD_VERSION: u32 = 1;
+
+/// A session token that has been checked before it names a file.
+///
+/// The check is in the conversion, so a record carrying an unusable token cannot
+/// be deserialized at all — an invalid one is unrepresentable rather than
+/// representable-and-rejected-later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Token(String);
+
+impl TryFrom<String> for Token {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        if ids::is_safe_name(&value) {
+            Ok(Token(value))
+        } else {
+            Err(format!("{value:?} is not a session token"))
+        }
+    }
+}
+
+impl From<Token> for String {
+    fn from(token: Token) -> Self {
+        token.0
+    }
+}
+
+impl std::ops::Deref for Token {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A branch name git's own parser has accepted.
+///
+/// Every one of these is handed to git afterwards, so the parser that decides is
+/// git's rather than this crate's idea of one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Ref(String);
+
+impl TryFrom<String> for Ref {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        if git::is_valid_branch_name(&value) {
+            Ok(Ref(value))
+        } else {
+            Err(format!("{value:?} is a name git would not accept"))
+        }
+    }
+}
+
+impl From<Ref> for String {
+    fn from(name: Ref) -> Self {
+        name.0
+    }
+}
+
+impl std::ops::Deref for Ref {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Ref {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Where a session is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Lifecycle {
+    /// It has a worktree and its work has not been published or released.
+    Open,
+    /// Its worktree is gone and its branch has been handed back. The record stays,
+    /// because the branch it names is still the only record of the work.
+    Closed,
+}
+
 /// What one session records about itself, so a later command can pick it up.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
+    /// The schema version this record was written at.
+    pub version: u32,
     /// The token this session is addressed by.
-    pub token: String,
+    pub token: Token,
     /// The identity key the session belongs to.
     pub identity: String,
     /// The registered alias the repository argument selected.
     pub alias: String,
     /// The branch the worktree has checked out.
-    pub branch: String,
+    pub branch: Ref,
     /// The base that branch was cut from.
-    pub base: String,
+    pub base: Ref,
     /// The change-request base, which for a stacked change is the branch below it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change_base: Option<String>,
+    pub change_base: Option<Ref>,
     /// The worktree the change is made in.
     pub worktree: PathBuf,
     /// The per-session clone the worktree was cut from.
@@ -64,8 +165,8 @@ pub struct Record {
     pub execution_checkout: PathBuf,
     /// The checkout publication fast-forwards, never worked in.
     pub publication_checkout: PathBuf,
-    /// Whether the session is still open.
-    pub open: bool,
+    /// Where the session is in its life.
+    pub state: Lifecycle,
     /// The process that opened it, for a diagnostic naming who to look for.
     pub owner_pid: u32,
 }
@@ -74,10 +175,10 @@ impl Record {
     /// The session as the contract's [`Session`] type spells it.
     pub fn session(&self) -> Session {
         Session {
-            token: SessionToken(self.token.clone()),
+            token: SessionToken(self.token.to_string()),
             worktree: self.worktree.clone(),
-            branch: self.branch.clone(),
-            base: self.base.clone(),
+            branch: self.branch.to_string(),
+            base: self.base.to_string(),
         }
     }
 
@@ -120,20 +221,20 @@ pub fn load(token: &str) -> Result<Record> {
 /// token than the file it was read from, or a branch git would not accept, is one
 /// nothing should act on.
 fn usable(path: &Path, token: &str, record: &Record) -> Result<()> {
-    if record.token != token {
+    if record.version != RECORD_VERSION {
+        return Err(error::invalid(format!(
+            "the session record at {} declares version {}; this build reads version \
+             {RECORD_VERSION}",
+            path.display(),
+            record.version
+        )));
+    }
+    if *record.token != *token {
         return Err(error::invalid(format!(
             "the session record at {} is for {:?}, not for {token:?}",
             path.display(),
-            record.token
+            record.token.to_string()
         )));
-    }
-    for (what, name) in [("branch", &record.branch), ("base", &record.base)] {
-        if !git::is_valid_branch_name(name) {
-            return Err(error::invalid(format!(
-                "the session record at {} names {what} {name:?}, which git would not accept",
-                path.display()
-            )));
-        }
     }
     for (what, value) in [
         ("worktree", &record.worktree),
@@ -227,24 +328,21 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     }
     git::retain_objects_for_borrowers(&execution)?;
 
-    let base = match request.base.as_deref() {
+    // Both names go through the one conversion git's own parser decides, so an
+    // unusable one is refused here rather than by whichever git command met it first.
+    let named = |value: String| -> Result<Ref> {
+        Ref::try_from(value).map_err(|reason| Error::Invalid {
+            reason: format!("{reason}: it is not a valid branch name"),
+        })
+    };
+    let base = named(match request.base.as_deref() {
         Some(base) => base.to_owned(),
         None => git::default_branch(&execution, "origin")?,
-    };
-    if !git::is_valid_branch_name(&base) {
-        return Err(Error::Invalid {
-            reason: format!("{base:?} is not a valid branch name"),
-        });
-    }
-    let branch = match request.branch.as_deref() {
+    })?;
+    let branch = named(match request.branch.as_deref() {
         Some(branch) => branch.to_owned(),
         None => format!("onevcs/{token}"),
-    };
-    if !git::is_valid_branch_name(&branch) {
-        return Err(Error::Invalid {
-            reason: format!("{branch:?} is not a valid branch name"),
-        });
-    }
+    })?;
 
     let identity_root = identity_dir(&resolution.key)?;
     let runs = identity_root.join("runs");
@@ -267,12 +365,13 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     let start = if git::ref_exists(&clone, &format!("refs/remotes/origin/{base}")) {
         format!("origin/{base}")
     } else {
-        base.clone()
+        base.to_string()
     };
     git::worktree_add(&clone, &worktree, &branch, &start)?;
 
     let record = Record {
-        token: token.clone(),
+        version: RECORD_VERSION,
+        token: Token::try_from(token.clone()).map_err(error::invalid)?,
         identity: resolution.key.clone(),
         alias: resolution.alias.clone(),
         branch,
@@ -283,7 +382,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         run_root,
         execution_checkout: execution,
         publication_checkout: resolution.publication.clone(),
-        open: true,
+        state: Lifecycle::Open,
         owner_pid: std::process::id(),
     };
     save(&record)?;
@@ -374,7 +473,7 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
         preserved = Some(branch.branch);
     }
 
-    record.open = true;
+    record.state = Lifecycle::Open;
     record.owner_pid = std::process::id();
     save(&record)?;
     drop(lease);
@@ -396,7 +495,7 @@ pub fn close(token: &str) -> Result<Record> {
             git::worktree_remove(&record.clone, &record.worktree)?;
         }
     }
-    record.open = false;
+    record.state = Lifecycle::Closed;
     save(&record)?;
     drop(lease);
     Ok(record)

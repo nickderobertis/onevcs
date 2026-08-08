@@ -2230,10 +2230,14 @@ fn a_host_that_opens_something_other_than_a_change_request_is_not_followed() {
 
 #[test]
 fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
-    for (shape, expected) in [
-        ("no-head", "returned a change request with no head"),
-        ("no-number", "gh pr list returned no number"),
-        ("rollup-not-a-list", "returned a non-list rollup"),
+    // `no-state` is answered at the merge, so by the time the host refuses to say
+    // what became of the change it has already landed one — and the command is
+    // right to refuse to report a merge it was never told about.
+    for (shape, expected, landed) in [
+        ("no-head", "returned a change request with no head", 1),
+        ("no-number", "gh pr list returned no number", 1),
+        ("rollup-not-a-list", "returned a non-list rollup", 1),
+        ("no-state", "returned no state for", 2),
     ] {
         let world = World::new();
         let origin = world.bare_origin("malformed");
@@ -2285,6 +2289,16 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
             .assert()
             .code(1);
         world.answer_malformed(shape);
+        if shape == "no-state" {
+            // Only this one is answered at the merge, so its checks have to settle
+            // for the publication to get that far.
+            world.host_checks(&[crate::world::Check {
+                name: "gate",
+                status: "completed",
+                conclusion: Some("success"),
+                required: true,
+            }]);
+        }
 
         world
             .onevcs()
@@ -2298,8 +2312,8 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
                 .git(&origin, &["log", "--format=%s", "main"])
                 .lines()
                 .count(),
-            1,
-            "{shape}: nothing may have merged"
+            landed,
+            "{shape}: the base is not where this shape leaves it"
         );
     }
 }
@@ -2321,15 +2335,29 @@ fn a_stored_record_that_disagrees_with_itself_is_rejected_where_it_is_read() {
     // straight to git or the filesystem afterwards.
     for (field, value, expected) in [
         ("token", serde_json::json!("s-somebody-else"), "is for"),
+        // Refused by the conversion the field goes through, so a record naming a
+        // branch git would reject cannot even be read into memory.
         (
             "branch",
             serde_json::json!("not a branch"),
-            "which git would not accept",
+            "is a name git would not accept",
+        ),
+        (
+            "token",
+            serde_json::json!("../../etc/passwd"),
+            "is not a session token",
         ),
         (
             "clone",
             serde_json::json!("relative/clone"),
             "not an absolute path",
+        ),
+        // A record outlives the command that wrote it, so its schema is a stored
+        // contract like the registry document's.
+        (
+            "version",
+            serde_json::json!(99),
+            "declares version 99; this build reads version 1",
         ),
     ] {
         let mut broken = original.clone();
@@ -2423,4 +2451,90 @@ fn a_registry_whose_records_disagree_is_rejected_however_it_was_versioned() {
             .code(2)
             .stderr(predicate::str::contains(expected));
     }
+}
+
+#[test]
+fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/stateful"]);
+    let path = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+    let stored = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("a session record"))
+            .expect("the record is JSON")
+    };
+
+    // Written as the state it names, not as a flag whose meaning a reader has to
+    // remember — and stamped with the schema it was written at.
+    let opened = stored();
+    assert_eq!(opened["version"], 1, "{opened}");
+    assert_eq!(opened["state"], "open", "{opened}");
+
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert_eq!(stored()["state"], "closed");
+
+    // …and back, because adoption is what re-opens one.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "adopt", &token])
+        .assert()
+        .success();
+    assert_eq!(stored()["state"], "open");
+
+    // Publishing releases it, which is the other way a session reaches `closed`.
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    assert_eq!(stored()["state"], "closed");
+}
+
+#[test]
+fn a_train_that_lands_without_pushing_says_so_in_both_answers() {
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let checkout = fixture.checkout.clone();
+    fixture.world.git(
+        &checkout,
+        &["checkout", "-q", "-b", "claude/local-only", "main"],
+    );
+    fixture
+        .world
+        .commit_file(&checkout, "one.txt", "one\n", "feat: land it locally");
+    fixture.world.git(&checkout, &["checkout", "-q", "main"]);
+
+    // Without `--push` the base advances and stays local: the two answers a reader
+    // gets are one state, so "pushed a base that never moved" cannot be reported.
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "claude/local-only"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude/local-only: merged"))
+        .stdout(predicate::str::contains("Base advanced: yes"))
+        .stdout(predicate::str::contains("Pushed: no"));
+    assert_eq!(
+        fixture.origin_log().len(),
+        1,
+        "the origin is untouched without --push"
+    );
+    assert_ne!(
+        fixture.world.git(&checkout, &["rev-parse", "HEAD"]),
+        fixture.world.git(&fixture.origin, &["rev-parse", "main"])
+    );
 }
