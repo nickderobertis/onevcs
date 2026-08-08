@@ -11,14 +11,9 @@
 # a speed optimisation, and a speed optimisation that can silently skip a check
 # is a correctness hole.
 #
-# llmlint: ignore-file[tool_output_is_signal] the stderr lines on the fail-closed paths
-# below are the exception this script exists for, not noise on success. Each one reports
-# that the requested *scope* was not the scope that ran, which no other output carries:
-# stdout is a bare `true`/`false` or Nx's own output, and a reader who cannot tell a
-# scoped pass from a full one has been handed the correctness hole the header describes.
-# They are already one line each, carrying the fact and the lever together; the previous
-# two-line form was collapsed for exactly this rule. Everything else here is silent on
-# success.
+# llmlint: ignore-file[tool_output_is_signal] the one line each fail-closed path prints is
+# the correctness hole above, reported: nothing else says the scope that ran was not the
+# scope asked for.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -115,11 +115,8 @@ while :; do
   # One line per attempt, not two: a run that goes on to succeed owes the reader
   # the events that happened, not a running commentary on each of them.
   #
-  # llmlint: ignore[tool_output_is_signal] a failed attempt is an event, not progress
-  # chatter: it is the only record that a publish raced its own index, which is the
-  # failure this script was written for and the thing anyone reading a slow release job
-  # needs to see while it is still running. A run that installs first time prints nothing
-  # here at all.
+  # llmlint: ignore[tool_output_is_signal] a failed attempt is the event this script was
+  # written to record; an install that works first time prints none of these.
   echo "  attempt $attempt failed after ${SECONDS}s (exit $status): $summary; the registry may not serve it on this edge yet, retrying in ${delay}s" >&2
   sleep "$delay"
   delay=$((delay * 2))

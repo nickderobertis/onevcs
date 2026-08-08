@@ -1,27 +1,33 @@
-//! The npm distribution, driven the way a user's `npm install -g onevcs-cli`
-//! drives it.
+//! The npm distribution, installed with npm and run as the installed command.
 //!
 //! `npm/onevcs/bin/onevcs.js` is committed source that ships to every npm
 //! consumer: it resolves the per-platform package carrying the prebuilt binary,
-//! execs it with the caller's argv, and propagates its exit status. Nothing about
-//! that is exercised by installing the crate, so it is exercised here.
+//! execs it with the caller's argv, and propagates its exit status. Installing
+//! the crate exercises none of that, so these journeys do — through npm itself.
 //!
-//! What a test can have of `npm install` is the tree it produces, not the
-//! registry it fetches from — a real `npm install -g onevcs-cli` needs versions
-//! that are published, which a pull request's build is not. So both journeys
-//! below assemble the real `node_modules` layout npm writes, with
-//! `scripts/npm-build.mjs` building the packages exactly as the release job does,
-//! and then run the installed launcher from inside it. Node's resolution from
-//! there is the same resolution it performs after an install; the only thing
-//! skipped is the download.
+//! `scripts/npm-build.mjs` assembles the packages exactly as the release job
+//! does, `npm pack` turns each into the tarball the registry would serve, and
+//! `npm install` unpacks them into a project. What runs afterwards is
+//! `node_modules/.bin/onevcs`, the command npm put on the caller's path. The only
+//! thing a pull request cannot have is the registry the tarballs would have come
+//! from — installing from a published version needs a published version.
 //!
-//! The failure journey is the tree `npm install --omit=optional` produces: the
-//! launcher present, its platform package absent.
+//! The tarballs matter: npm *symlinks* a local directory dependency, so
+//! installing the package directories would resolve from the source tree instead
+//! of the installed one, and the failure journey below would silently pass by
+//! finding a sibling package that a real install never had.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::support::workspace_root;
+
+/// The command npm writes into `node_modules/.bin` for this platform.
+const INSTALLED_COMMAND: &str = if cfg!(windows) {
+    "onevcs.cmd"
+} else {
+    "onevcs"
+};
 
 /// The Rust target triple this test is running on, as `scripts/npm-build.mjs`
 /// spells it.
@@ -59,53 +65,104 @@ fn npm_build(args: &[&std::ffi::OsStr]) -> PathBuf {
     )
 }
 
-/// Build the `node_modules` tree an install leaves behind, under `into`.
-///
-/// With `with_platform_package` false this is what `npm install --omit=optional`
-/// produces: the launcher, and nothing for it to resolve.
-fn install_tree(into: &Path, with_platform_package: bool) -> PathBuf {
-    let node_modules = into.join("node_modules");
-    std::fs::create_dir_all(&node_modules).expect("a node_modules directory");
-    let modules: &std::ffi::OsStr = node_modules.as_ref();
+/// Run npm, failing the test with its own output when it fails.
+fn npm(cwd: &Path, args: &[&std::ffi::OsStr]) {
+    let output = Command::new(if cfg!(windows) { "npm.cmd" } else { "npm" })
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("npm must be on PATH to install the packages a user installs");
+    assert!(
+        output.status.success(),
+        "npm {args:?} failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
+/// Pack the launcher, and the platform package when asked, into `scratch`, then
+/// install them into a fresh project and answer that project's directory.
+///
+/// Without the platform package this is `npm install --omit=optional`: the
+/// launcher installed and nothing for it to resolve.
+fn npm_install(scratch: &Path, with_platform_package: bool) -> PathBuf {
+    let tarballs = scratch.join("tarballs");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&tarballs).expect("a tarball directory");
+    std::fs::create_dir_all(&project).expect("a project directory");
+
+    let mut packages = Vec::new();
     if with_platform_package {
         let binary = assert_cmd::cargo::cargo_bin("onevcs");
-        npm_build(&[
+        packages.push(npm_build(&[
             "platform".as_ref(),
             "--target".as_ref(),
             host_target().as_ref(),
             "--binary".as_ref(),
             binary.as_ref(),
             "--out".as_ref(),
-            modules,
-        ]);
+            scratch.join("packages").as_ref(),
+        ]));
     }
-    npm_build(&["launcher".as_ref(), "--out".as_ref(), modules])
+    packages.push(npm_build(&[
+        "launcher".as_ref(),
+        "--out".as_ref(),
+        scratch.join("packages").as_ref(),
+    ]));
+
+    for package in &packages {
+        npm(
+            package,
+            &[
+                "pack".as_ref(),
+                "--pack-destination".as_ref(),
+                tarballs.as_ref(),
+            ],
+        );
+    }
+
+    npm(&project, &["init".as_ref(), "--yes".as_ref()]);
+    let mut install: Vec<&std::ffi::OsStr> = vec![
+        "install".as_ref(),
+        "--no-audit".as_ref(),
+        "--no-fund".as_ref(),
+    ];
+    if !with_platform_package {
+        install.push("--omit=optional".as_ref());
+    }
+    let tarball_paths: Vec<PathBuf> = std::fs::read_dir(&tarballs)
+        .expect("the packed tarballs")
+        .map(|entry| entry.expect("a directory entry").path())
+        .collect();
+    assert_eq!(tarball_paths.len(), packages.len());
+    install.extend(
+        tarball_paths
+            .iter()
+            .map(|path| path.as_os_str())
+            .collect::<Vec<&std::ffi::OsStr>>(),
+    );
+    npm(&project, &install);
+
+    project
 }
 
-/// Run the installed `onevcs` command from inside that tree.
-fn run_installed(launcher: &Path, argv: &[&str]) -> std::process::Output {
-    Command::new("node")
-        .arg(launcher.join("bin/onevcs.js"))
+/// Run the `onevcs` command npm installed, the way its caller does.
+fn run_installed(project: &Path, argv: &[&str]) -> std::process::Output {
+    Command::new(project.join("node_modules/.bin").join(INSTALLED_COMMAND))
         .args(argv)
-        // A caller runs the command from wherever they are, not from the tree it
-        // was installed into.
+        // A caller runs the command from wherever they are, not from the project
+        // it was installed into.
         .current_dir(workspace_root())
         .output()
-        .expect("node must be on PATH to run the installed launcher")
+        .expect("npm must have put the onevcs command on the project's path")
 }
 
 #[test]
 fn the_installed_npm_command_runs_the_binary_its_platform_package_carries() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
-    let launcher = install_tree(scratch.path(), true);
-    assert!(
-        launcher.join("package.json").is_file(),
-        "no launcher manifest at {}",
-        launcher.display()
-    );
+    let project = npm_install(scratch.path(), true);
 
-    let version = run_installed(&launcher, &["--version"]);
+    let version = run_installed(&project, &["--version"]);
     assert!(version.status.success(), "{version:?}");
     assert_eq!(
         String::from_utf8_lossy(&version.stdout).trim(),
@@ -114,7 +171,7 @@ fn the_installed_npm_command_runs_the_binary_its_platform_package_carries() {
     );
 
     // The exit code a caller depends on has to survive the launcher's spawn.
-    let refused = run_installed(&launcher, &["resolve", "onevcs"]);
+    let refused = run_installed(&project, &["resolve", "onevcs"]);
     assert_eq!(refused.status.code(), Some(70), "{refused:?}");
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("not implemented"),
@@ -122,16 +179,16 @@ fn the_installed_npm_command_runs_the_binary_its_platform_package_carries() {
     );
 
     // And so does a usage error, which is a different code from a different layer.
-    let misused = run_installed(&launcher, &["teleport"]);
+    let misused = run_installed(&project, &["teleport"]);
     assert_eq!(misused.status.code(), Some(2), "{misused:?}");
 }
 
 #[test]
 fn an_install_that_omitted_optional_dependencies_says_what_to_do() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
-    let launcher = install_tree(scratch.path(), false);
+    let project = npm_install(scratch.path(), false);
 
-    let missing = run_installed(&launcher, &["--version"]);
+    let missing = run_installed(&project, &["--version"]);
     assert_eq!(missing.status.code(), Some(1), "{missing:?}");
 
     let stderr = String::from_utf8_lossy(&missing.stderr);
@@ -152,11 +209,12 @@ fn an_install_that_omitted_optional_dependencies_says_what_to_do() {
 #[test]
 fn the_installed_manifest_is_stamped_from_the_one_version_source() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
-    let launcher = install_tree(scratch.path(), false);
+    let project = npm_install(scratch.path(), false);
     let manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(launcher.join("package.json")).expect("the stamped manifest"),
+        &std::fs::read_to_string(project.join("node_modules/onevcs-cli/package.json"))
+            .expect("the installed manifest"),
     )
-    .expect("the stamped manifest is JSON");
+    .expect("the installed manifest is JSON");
 
     let version = env!("CARGO_PKG_VERSION");
     assert_eq!(manifest["version"], serde_json::json!(version));
