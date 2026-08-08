@@ -235,8 +235,6 @@ echo "Successfully installed onevcs-cli-9.9.9"
     (dir, script)
 }
 
-// --- scripts/nx-affected.sh -------------------------------------------------
-
 #[test]
 fn a_build_with_no_base_branch_counts_every_project_as_affected() {
     // A push build is *on* the base branch, so there is no base to scope against
@@ -274,6 +272,10 @@ fn a_project_counts_as_affected_when_nx_cannot_answer() {
     // stub breaks the one interpreter Nx runs on, which is how a broken install
     // presents.
     let base = TrackingRef::at_head("e2e-nx-cannot-answer");
+    // llmlint: ignore[e2e_not_mocked] the layer under test is nx-affected.sh's decision,
+    // and it is driven for real; Nx is the dependency whose failure is this branch's
+    // precondition. A working Nx cannot be asked to fail, and the alternative — breaking
+    // the checkout's own node_modules — would take every other journey down with it.
     let broken_node = stub("node", "#!/bin/sh\nexit 1\n");
 
     Run::script("scripts/nx-affected.sh")
@@ -312,10 +314,12 @@ fn affected_selection_needs_something_to_select() {
         .said("--affects needs a project name");
 }
 
-// --- scripts/retry-install.sh -----------------------------------------------
-
 #[test]
 fn an_install_that_needed_a_second_attempt_reports_the_first_one() {
+    // llmlint: ignore[e2e_not_mocked] `-- COMMAND` is this script's documented interface,
+    // not a collaborator standing in for one: the retry loop, its budget arithmetic, and
+    // its reporting all run for real. No registry can be asked to withhold a version and
+    // then serve it, which is the race the loop exists for.
     let (_dir, script) = flaky_command(1);
 
     Run::script("scripts/retry-install.sh")
@@ -334,6 +338,9 @@ fn an_install_that_needed_a_second_attempt_reports_the_first_one() {
 
 #[test]
 fn an_install_the_registry_never_serves_fails_with_the_last_attempt_in_full() {
+    // llmlint: ignore[e2e_not_mocked] same as the journey above: the command is the
+    // script's own operand, and a real install that never converges would spend the
+    // ten-minute production budget to prove it.
     let (_dir, script) = flaky_command(u32::MAX);
 
     Run::script("scripts/retry-install.sh")

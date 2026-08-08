@@ -44,7 +44,6 @@ fn host_target() -> String {
         .to_owned()
 }
 
-/// Run `scripts/npm-build.mjs` and answer the package directory it wrote.
 fn npm_build(args: &[&std::ffi::OsStr]) -> PathBuf {
     let root = workspace_root();
     let output = Command::new("node")
@@ -65,7 +64,6 @@ fn npm_build(args: &[&std::ffi::OsStr]) -> PathBuf {
     )
 }
 
-/// Run npm, failing the test with its own output when it fails.
 fn npm(cwd: &Path, args: &[&std::ffi::OsStr]) {
     let output = Command::new(if cfg!(windows) { "npm.cmd" } else { "npm" })
         .args(args)

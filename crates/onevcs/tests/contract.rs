@@ -806,7 +806,6 @@ fn every_flag_the_contract_spells_exists_on_the_command_that_takes_it() {
     }
 }
 
-/// Every long flag any command in the tree takes.
 fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     for arg in command.get_arguments() {
         if let Some(long) = arg.get_long() {
@@ -818,7 +817,6 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     }
 }
 
-/// A file in the repository, read relative to the workspace root.
 fn repo_file(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
