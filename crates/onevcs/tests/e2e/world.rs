@@ -31,14 +31,25 @@ use fs4::fs_std::FileExt;
 
 /// One scratch host: its own home, its own `onevcs` state root, its own origins.
 pub struct World {
-    directory: tempfile::TempDir,
+    /// Held for its lifetime: dropping it removes the scratch host.
+    _directory: tempfile::TempDir,
+    root: PathBuf,
 }
 
 impl World {
     /// A host with git configured and an empty `onevcs` state root.
     pub fn new() -> Self {
         let directory = tempfile::tempdir().expect("a scratch directory");
-        let world = Self { directory };
+        // Canonical, because `register` records a checkout by its real path and a
+        // path rule is matched against that. On a host whose temporary directory is
+        // reached through a symlink — macOS's `/var` is one — a journey built on the
+        // uncanonical name would write a rule that silently matches nothing, which
+        // is the fixture disagreeing with the tool rather than a finding.
+        let root = std::fs::canonicalize(directory.path()).expect("a canonical scratch root");
+        let world = Self {
+            _directory: directory,
+            root,
+        };
         std::fs::write(
             world.path(".gitconfig"),
             "[user]\n\tname = Journey\n\temail = journey@example.invalid\n\
@@ -51,7 +62,7 @@ impl World {
 
     /// A path under this host's scratch root.
     pub fn path(&self, relative: impl AsRef<Path>) -> PathBuf {
-        self.directory.path().join(relative)
+        self.root.join(relative)
     }
 
     /// The state root every `onevcs` invocation in this world shares.
@@ -66,7 +77,7 @@ impl World {
         command
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", self.directory.path())
+            .env("HOME", &self.root)
             .env("ONEVCS_HOME", self.home())
             // Journeys must not wait out a production bound when something is
             // genuinely stuck; each one that tests a bound sets its own.
@@ -75,7 +86,7 @@ impl World {
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20")
             .env("ONEVCS_GH", self.path("bin/gh"))
             .env("ONEVCS_FAKE_GH_STATE", self.path("gh-state"))
-            .current_dir(self.directory.path());
+            .current_dir(&self.root);
         // The one inherited variable: a coverage run tells the instrumented binary
         // where to write its profile. Cleared, it falls back to the working
         // directory — which for the commands that run inside a checkout is a stray
@@ -136,7 +147,7 @@ impl World {
             .current_dir(cwd)
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", self.directory.path())
+            .env("HOME", &self.root)
             .output()
             .expect("git must be installed")
     }
@@ -152,7 +163,7 @@ impl World {
 
         let origin = self.path(format!("{name}.git"));
         self.git(
-            self.directory.path(),
+            &self.root,
             &["init", "-q", "--bare", &origin.to_string_lossy()],
         );
         self.git(
@@ -170,7 +181,7 @@ impl World {
     pub fn clone_of(&self, origin: &Path, name: &str) -> PathBuf {
         let checkout = self.path(name);
         self.git(
-            self.directory.path(),
+            &self.root,
             &[
                 "clone",
                 "-q",
