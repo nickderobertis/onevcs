@@ -22,11 +22,29 @@ pub fn binary_dir() -> PathBuf {
 }
 
 /// The workspace root, so a journey can reach the scripts a release also runs.
+///
+/// Plain, never verbatim: Windows' `canonicalize` answers `\\?\D:\...`, which
+/// Node's module resolver cannot walk (`EISDIR: lstat 'D:'`). `packaging.rs` is
+/// the coverage — it runs `node` from here on every platform.
 pub fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
-        .expect("the crate lives inside the workspace")
+        .expect("the crate lives inside the workspace");
+    plain_path(root)
+}
+
+#[cfg(windows)]
+fn plain_path(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(plain) => PathBuf::from(plain),
+        None => path,
+    }
+}
+
+#[cfg(not(windows))]
+fn plain_path(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// Every command a user is promised, read out of `docs/contract.md`'s usage block.
