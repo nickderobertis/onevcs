@@ -428,21 +428,18 @@ pub fn fetch(cwd: &Path, remote: &str) -> Result<()> {
 }
 
 /// The remote's default branch, refusing to guess when the answer is ambiguous.
+///
+/// `<remote>/HEAD` is a cache of the answer and not the answer itself: a remote
+/// added by hand never has one, and only git 2.49 and later restore it during a
+/// fetch. Asking the remote what it advertises is what makes this the same answer
+/// on every git rather than one that depends on the operator's version, and a
+/// guess is only reached when the remote itself declines to say.
 pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
-    let head = run(
-        &[
-            "symbolic-ref",
-            "--short",
-            &format!("refs/remotes/{remote}/HEAD"),
-        ],
-        Some(cwd),
-    )?;
-    let prefix = format!("{remote}/");
-    let named = head.trimmed();
-    if let Some(branch) = named.strip_prefix(&prefix) {
-        if ref_exists(cwd, &format!("refs/remotes/{named}")) {
-            return Ok(branch.to_owned());
-        }
+    if let Some(branch) = tracked_head(cwd, remote)? {
+        return Ok(branch);
+    }
+    if let Some(branch) = advertised_head(cwd, remote)? {
+        return Ok(branch);
     }
     let mut candidates: Vec<String> = checked(
         &[
@@ -476,9 +473,47 @@ pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
     Err(Error::Invalid {
         reason: format!(
             "cannot determine the default branch of remote {remote:?}: {remote}/HEAD is missing \
-             or stale and the plausible remote branches are {detail}; pass an explicit --base"
+             or stale, the remote advertises no HEAD of its own, and the plausible remote \
+             branches are {detail}; pass an explicit --base"
         ),
     })
+}
+
+/// The branch `<remote>/HEAD` names, when it names one that is still there.
+fn tracked_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
+    let named = run(
+        &[
+            "symbolic-ref",
+            "--short",
+            &format!("refs/remotes/{remote}/HEAD"),
+        ],
+        Some(cwd),
+    )?
+    .trimmed();
+    let Some(branch) = named.strip_prefix(&format!("{remote}/")) else {
+        return Ok(None);
+    };
+    Ok(ref_exists(cwd, &format!("refs/remotes/{named}")).then(|| branch.to_owned()))
+}
+
+/// The branch the remote itself says its HEAD is.
+///
+/// A remote whose HEAD dangles — the default branch renamed or deleted out from
+/// under it — advertises no symref at all, which is exactly the case that must
+/// fall through to asking for an explicit base rather than picking a branch. An
+/// unreachable remote falls through too: local knowledge is worse than the
+/// remote's own answer but better than failing where a guess would have done.
+fn advertised_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
+    let listing = run(&["ls-remote", "--symref", remote, "HEAD"], Some(cwd))?;
+    if !listing.ok() {
+        return Ok(None);
+    }
+    Ok(listing.stdout.lines().find_map(|line| {
+        line.strip_prefix("ref: refs/heads/")
+            .and_then(|rest| rest.split('\t').next())
+            .filter(|branch| !branch.is_empty())
+            .map(str::to_owned)
+    }))
 }
 
 /// Whether a fully spelled ref exists.

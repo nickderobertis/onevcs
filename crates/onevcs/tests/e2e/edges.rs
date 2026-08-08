@@ -331,6 +331,11 @@ fn a_branch_that_re_pushes_through_a_red_gate_cannot_grow_its_log_directory_fore
 fn a_checkout_with_no_remote_head_falls_back_to_its_one_remote_branch() {
     let fixture =
         Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    // Nobody has a HEAD to offer: the origin's dangles and the tracking ref is gone.
+    fixture.world.git(
+        &fixture.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/retired"],
+    );
     fixture.world.git(
         &fixture.checkout,
         &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
@@ -354,6 +359,14 @@ fn a_checkout_whose_remote_head_is_ambiguous_asks_for_an_explicit_base() {
     fixture
         .world
         .git(&fixture.checkout, &["fetch", "-q", "origin"]);
+    // The origin's own HEAD is what makes this ambiguous rather than merely
+    // uncached: pointed at a branch nobody kept, it advertises no HEAD at all, so
+    // no git version can restore the tracking ref deleted below and two branches
+    // are all the evidence there is.
+    fixture.world.git(
+        &fixture.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/retired"],
+    );
     fixture.world.git(
         &fixture.checkout,
         &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
@@ -377,6 +390,41 @@ fn a_checkout_whose_remote_head_is_ambiguous_asks_for_an_explicit_base() {
         .args(["session", "open", "project", "--base", "main"])
         .assert()
         .success();
+}
+
+#[test]
+fn a_checkout_with_no_cached_remote_head_asks_the_remote_rather_than_guessing() {
+    let fixture =
+        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    fixture
+        .world
+        .git(&fixture.checkout, &["branch", "release", "main"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "-q", "origin", "release"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["fetch", "-q", "origin"]);
+    // A remote added by hand never has a cached `origin/HEAD`, and only git 2.49
+    // and later put one back during a fetch. Holding git to the older behaviour is
+    // what makes this journey assert the same thing on every version of it.
+    fixture.world.git(
+        &fixture.checkout,
+        &["config", "remote.origin.followRemoteHEAD", "never"],
+    );
+    fixture.world.git(
+        &fixture.checkout,
+        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+    );
+
+    // Two plausible branches, and the remote itself says which one is the default.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"base\":\"main\""));
 }
 
 #[test]

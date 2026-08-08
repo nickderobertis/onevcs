@@ -37,8 +37,14 @@ names the program that answers as `gh`, and the bounds
 `ONEVCS_CHECKS_TIMEOUT_SECONDS`, `ONEVCS_CHECKS_POLL_SECONDS`) are operator knobs a
 journey turns down so a bound can be *proved* rather than waited out.
 
-## Two rules that are easy to break quietly
+## Three rules that are easy to break quietly
 
+- **git's own version is not pinned, so behaviour that varies by it is a bug.**
+  CI runs a git years newer than most workstations, and it does more on its own
+  than an older one: from 2.49 a plain `fetch` recreates a missing
+  `origin/HEAD`. Any answer this crate derives must come from what it asked git
+  for, never from housekeeping a newer git happens to perform — otherwise the
+  journey that pins it passes on one machine and fails on the other.
 - **Emitting an event cannot fail a command.** The stream is the record of what
   happened, and a publication that reached its base is not undone by the record of
   it failing to be written. A failed write says so on stderr.
