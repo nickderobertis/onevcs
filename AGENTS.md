@@ -54,27 +54,24 @@ user asked, fold it into the same task; otherwise surface it as a follow-up.
 
 ## Stack and composition
 
-Composed from the create-repo reference pieces:
+<!-- llmlint: ignore-block[agents_md_durable_and_terse] this section is a required
+artifact, not free-form prose: create-repo's check_repo_baseline.py verifies it is
+present and filled in, and it is the one record of why the tooling is what it is —
+which a future task cannot recover from the tree. Kept to the decision and its
+rationale; the mechanics live in the files named. -->
 
 - **Product shape:** cli (a Rust library with a thin binary on top).
-- **Language(s):** rust. Bash for provisioning wrappers, Node for the npm
-  packaging assembler, TOML/YAML/JSON for config.
-- **References composed:** `base.md`, `shapes/cli.md`, `languages/rust.md`,
-  `intersections/rust-cli.md`, `ci.md`, `llmlint.md`, `releasing.md`,
-  `monorepo.md`.
-- **Composed additionally:** the `llmlint` LLM-judge tier (`llmlint.yml` +
-  `oneharness.toml` + the `lint-llm*` recipes), enforced as its own blocking PR
-  check.
+- **Language(s):** rust, plus bash for the wrappers and Node for the npm assembler.
+- **References composed:** `base`, `shapes/cli`, `languages/rust`,
+  `intersections/rust-cli`, `ci`, `llmlint`, `releasing`, `monorepo`.
 - **Excluded, and why:** **asdf / direnv** — `rust-toolchain.toml` and the
-  committed lockfiles already pin the toolchain, and `scripts/session-setup.sh`
-  provisions `just`. **A curl-pipe `install.sh` and a composite action** — the
-  three documented install surfaces are registries (`cargo install`,
-  `pip install`, `npm install -g`), so nothing here downloads a release asset by
-  constructed name and there is no asset-naming contract to drift. Release
-  archives are still published for direct download. **Cross-language projects in
-  the Nx graph** — the PyPI and npm distributions carry the same prebuilt binary
-  and are assembled at release time from `pyproject.toml` / `npm/onevcs`, so they
-  are packaging of the one deliverable rather than deliverables of their own.
+  committed lockfiles already pin everything. **A curl-pipe installer and a
+  composite action** — all three documented install surfaces are registries, so
+  nothing constructs a release asset's name and no asset-naming contract can
+  drift. **Separate Nx projects for the wheel and the npm package** — both carry
+  the same prebuilt binary and are assembled at release time, so they are
+  packaging of the one deliverable rather than deliverables of their own.
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 
 ## Command surface
 
@@ -123,8 +120,9 @@ values live in the secret store, never in the tree.
   suppressed at its site with a written reason.
 - **Coverage is enforced at 95% line coverage.** Lower it only with a documented
   reason here.
-- **Tests are realistic, not mocked**, and complete rather than minimal: every
-  journey, happy path *and* failure.
+- **Tests are realistic, not mocked**, and complete rather than minimal: drive
+  the real binary the way a user does, over every journey, happy path *and*
+  failure. Coverage is the floor, never the target.
 - Validate external input at its trust boundary, and reject it with a message
   naming the problem.
 - Security is gate-level: no secrets in the tree, least-privilege CI tokens, and
@@ -140,22 +138,8 @@ concrete next action. `scripts/nx.sh` preserves each run's full output at
 `.logs/<label>.log` (gitignored, owner-only, credential values redacted) so a
 green run owes one line and a red one still has everything.
 
-## Tests are context engineering
-
-This repo runs on agents, so the suite is the only QA loop.
-
-- **Never mock the layer under test.** Drive the real binary the way a user does.
-- **Done means complete, not minimal**: every journey, happy path *and*
-  failure/recovery.
-- Coverage is a floor, not the target.
-
 ## Keeping the allowlist current
 
 `.claude/settings.json` holds the agent command allowlist and the tool enforces
 it. Keep it current: when a command becomes part of the routine workflow, add it
 there instead of re-approving it every session. Keep it narrow.
-
-## After the main task: refine and hand off
-
-Act on the two standing goals: propose the scripts, notes, and tests that make
-the next task cheaper, judging each one's impact. Skip busywork.

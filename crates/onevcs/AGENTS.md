@@ -1,7 +1,6 @@
 # The `onevcs` crate
 
-Rules for working inside this crate. The repo-wide constraints — the
-interface-only rule, the gate, the release model — live in the root `AGENTS.md`.
+Rules that apply inside this crate and nowhere else.
 
 ## What may be `pub`
 

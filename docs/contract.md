@@ -12,8 +12,7 @@ reported, not resolved by editing.
 
 Scope note: the task that approved this also carried a packaging section naming a
 host-local reference checkout. That section governs how this repository is built
-and released rather than what the crate exposes, so it lives in AGENTS.md and the
-release configuration instead of here.
+and released rather than what the crate exposes, so it is not reproduced here.
 -->
 
 ---

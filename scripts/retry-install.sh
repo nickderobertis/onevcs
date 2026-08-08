@@ -108,11 +108,13 @@ while :; do
   fi
   # Windows ships the same bytes with CRLF once anything touches them.
   summary="$(tail -n 1 "$out" | tr -d '\r')"
-  echo "  attempt $attempt failed after ${SECONDS}s (exit $status): $summary" >&2
   if [ "$((SECONDS + delay))" -ge "$budget" ]; then
+    echo "  attempt $attempt failed after ${SECONDS}s (exit $status): $summary" >&2
     break
   fi
-  echo "  the registry may not serve it on this edge yet; retrying in ${delay}s..." >&2
+  # One line per attempt, not two: a run that goes on to succeed owes the reader
+  # the events that happened, not a running commentary on each of them.
+  echo "  attempt $attempt failed after ${SECONDS}s (exit $status): $summary; the registry may not serve it on this edge yet, retrying in ${delay}s" >&2
   sleep "$delay"
   delay=$((delay * 2))
   if [ "$delay" -gt "$max_delay" ]; then
