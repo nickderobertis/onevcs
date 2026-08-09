@@ -37,7 +37,7 @@ names the program that answers as `gh`, and the bounds
 `ONEVCS_CHECKS_TIMEOUT_SECONDS`, `ONEVCS_CHECKS_POLL_SECONDS`) are operator knobs a
 journey turns down so a bound can be *proved* rather than waited out.
 
-## Three rules that are easy to break quietly
+## Four rules that are easy to break quietly
 
 - **git's own version is not pinned, so behaviour that varies by it is a bug.**
   CI runs a git years newer than most workstations, and it does more on its own
@@ -51,3 +51,11 @@ journey turns down so a bound can be *proved* rather than waited out.
 - **A caller-supplied identifier is checked before it names a file.** A session
   token and an artifact id both arrive from outside and both are joined under the
   state root; `ids::is_safe_name` is where that is rejected.
+- **A provenance trailer is written and read under one prefix, and the crate knows
+  no particular value of it.** Every reader takes the `provenance::Trailers` the
+  writer used — an asymmetry here is silent, and its cost is an incomplete branch
+  published as complete. That is also why a marker under an *unconfigured* prefix
+  is refused rather than ignored: `provenance::unrecognized` matches the marker's
+  own shape, never a particular consumer's spelling, and `recoverable`,
+  `integrate`, and `recover` each name what they found. Special-casing a prefix
+  value would be this crate learning a consumer's vocabulary, which it must not.

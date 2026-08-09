@@ -15,6 +15,7 @@
 // below still drives the real binary.
 use predicates::prelude::*;
 
+use crate::support::documented_default_prefix;
 use crate::world::World;
 
 #[test]
@@ -363,6 +364,115 @@ fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
 }
 
 #[test]
+fn a_trailer_prefix_that_spells_no_git_trailer_key_is_refused_by_name() {
+    let world = World::new();
+    let origin = world.bare_origin("prefixed");
+    let checkout = world.clone_of(&origin, "prefixed");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+
+    // A prefix git's own trailer parser would not read back is the failure this
+    // check exists for: the marker would be written and never found again.
+    for (prefix, named) in [
+        ("\"Not A Key\"", "' ' is not a character"),
+        ("\"-leading\"", "starts with a letter or a digit"),
+        ("\"\"", "it is empty"),
+    ] {
+        configure_rules(
+            &world,
+            format!(
+                "version: 2\ntrailer_prefix: {prefix}\nrules: []\n\
+                 default: {{publication: change-open, approvals: required, gate: {{kind: checks}}}}\n"
+            ),
+        );
+        world
+            .onevcs()
+            .args(["rules", "check", "prefixed"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("cannot spell a git trailer key"))
+            .stderr(predicate::str::contains(named));
+    }
+
+    // One it would read back is reported as configured.
+    configure_rules(
+        &world,
+        "version: 2\ntrailer_prefix: Zzz-\nrules: []\n\
+         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+    );
+    world
+        .onevcs()
+        .args(["rules", "check", "prefixed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "trailer_prefix: Zzz- (from the rules file)",
+        ));
+}
+
+#[test]
+fn a_rules_file_written_before_the_trailer_prefix_existed_still_reads_and_means_the_default() {
+    let world = World::new();
+    let origin = world.bare_origin("legacy");
+    let checkout = world.clone_of(&origin, "legacy");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let policy = "default: {publication: change-open, approvals: required, gate: {kind: checks}}";
+
+    // The file every host already has. It keeps working, and it means the keys this
+    // crate has always written — which value that is comes from the contract, so
+    // changing one without the other fails here.
+    configure_rules(&world, format!("version: 1\nrules: []\n{policy}\n"));
+    world
+        .onevcs()
+        .args(["rules", "check", "legacy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publication: change-open"))
+        .stdout(predicate::str::contains(format!(
+            "trailer_prefix: {} (from the default)",
+            documented_default_prefix()
+        )));
+
+    // Declaring the new version and configuring nothing is the same answer: the
+    // version carries the key, it does not impose a value.
+    configure_rules(&world, format!("version: 2\nrules: []\n{policy}\n"));
+    world
+        .onevcs()
+        .args(["rules", "check", "legacy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "trailer_prefix: {} (from the default)",
+            documented_default_prefix()
+        )));
+
+    // What must never pass quietly: a prefix set in a file that declares the version
+    // before the key existed. Such a file reads one way here and another wherever
+    // its version is trusted, and for this key that is provenance written under one
+    // prefix and searched for under another — so it is refused, naming the version
+    // that has the key.
+    configure_rules(
+        &world,
+        format!("version: 1\ntrailer_prefix: Zzz-\nrules: []\n{policy}\n"),
+    );
+    world
+        .onevcs()
+        .args(["rules", "check", "legacy"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "declares version 1 and names a trailer_prefix, which version 2 added",
+        ));
+}
+
+#[test]
 fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
     let world = World::new();
     let origin = world.bare_origin("future");
@@ -383,7 +493,10 @@ fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
         .args(["rules", "check", "future"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("declares version 7"));
+        .stderr(predicate::str::contains("declares version 7"))
+        // Naming the range rather than one version, because more than one is
+        // readable now and an operator downgrading a file needs to know which.
+        .stderr(predicate::str::contains("reads versions 1 to 2"));
 }
 
 #[test]

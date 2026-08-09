@@ -47,6 +47,60 @@ fn plain_path(path: PathBuf) -> PathBuf {
     path
 }
 
+/// The approved contract, which is what a user was promised.
+fn contract() -> String {
+    std::fs::read_to_string(workspace_root().join("docs/contract.md"))
+        .expect("the contract must be readable")
+}
+
+/// The default provenance trailer prefix the contract documents.
+///
+/// The value every existing checkout inherits when nothing is configured is the
+/// one promise this hook makes to them, so it is read from the contract rather
+/// than repeated here: changing it in the code alone fails the journey that asserts
+/// what `onevcs rules check` reports.
+#[cfg(unix)]
+pub fn documented_default_prefix() -> String {
+    let contract = contract();
+    let line = contract
+        .lines()
+        .find(|line| line.starts_with("The prefix is the rules file's"))
+        .expect("the contract documents the trailer prefix and its default");
+    line.split('`')
+        .nth(3)
+        .expect("the documented default is written in backticks")
+        .to_owned()
+}
+
+/// One provenance trailer the contract documents as `<prefix>NAME…`, spelled under
+/// `prefix`.
+///
+/// Same reason as [`commands`]: the amendment tells a user exactly which keys
+/// `onevcs` writes and reads, and a journey that took them from the code under test
+/// would agree with it however wrong both were.
+#[cfg(unix)]
+pub fn documented_trailer(name: &str, prefix: &str) -> String {
+    const OPENS: &str = "`<prefix>";
+    let contract = contract();
+    let mut rest = contract.as_str();
+    let mut found: Vec<&str> = Vec::new();
+    while let Some(at) = rest.find(OPENS) {
+        rest = &rest[at + 1..];
+        let end = rest.find('`').expect("a backtick span must be closed");
+        let span = &rest[..end];
+        if span.contains(name) && !found.contains(&span) {
+            found.push(span);
+        }
+        rest = &rest[end + 1..];
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "the contract must document exactly one {name} trailer; found {found:?}"
+    );
+    found[0].replace("<prefix>", prefix)
+}
+
 /// Every command a user is promised, read out of `docs/contract.md`'s usage block.
 ///
 /// Deliberately not read from the parser: these journeys assert what the *user*
@@ -54,8 +108,7 @@ fn plain_path(path: PathBuf) -> PathBuf {
 /// with it however wrong both were. `tests/contract.rs` is what holds the parser
 /// to this same block.
 pub fn commands() -> Vec<String> {
-    let usage = std::fs::read_to_string(workspace_root().join("docs/contract.md"))
-        .expect("the contract must be readable");
+    let usage = contract();
     let block = usage
         .split("\n```\n")
         .find(|block| {

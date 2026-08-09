@@ -27,6 +27,8 @@ pub fn run(
     stream: &mut Stream,
 ) -> Result<publish::Outcome> {
     let resolution = store::resolve(registry, repo)?;
+    let (file, source_name) = policy::load(registry)?;
+    let trailers = provenance::from_rules(&file);
     if !git::is_valid_branch_name(branch) {
         return Err(Error::Invalid {
             reason: format!("{branch:?} is not a valid branch name"),
@@ -57,17 +59,29 @@ pub fn run(
     let compared = crate::vcs::base_ref(&clone, &base);
     // A recorded base is read back out of a commit the repository carries, so it is
     // input to be checked rather than a name this process already decided.
-    let change_base = match provenance::recorded_change_base(&clone, &compared, branch)? {
+    let change_base = match provenance::recorded_change_base(&clone, &compared, branch, &trailers)?
+    {
         Some(recorded) => Ref::try_from(recorded).map_err(error::invalid)?,
         None => base.clone(),
     };
     let compared_change_base = crate::vcs::base_ref(&clone, &change_base);
 
-    let unattested = provenance::unattested(&clone, &compared_change_base, branch)?;
+    let unattested = provenance::unattested(&clone, &compared_change_base, branch, &trailers)?;
     if unattested.is_empty() {
         let ahead = git::log_messages(&clone, &compared_change_base, branch)?;
+        let unrecognized =
+            provenance::unrecognized(&clone, &compared_change_base, branch, &trailers)?;
         return Err(Error::Invalid {
-            reason: if ahead.is_empty() {
+            reason: if let Some(prefix) = unrecognized.first() {
+                // Not "all of them are complete": they are markers this host cannot
+                // read, and the branch is interrupted work whatever wrote it.
+                format!(
+                    "branch {branch:?} carries provenance under the trailer prefix {prefix:?}, \
+                     which this host is not configured to read. Set trailer_prefix to {prefix:?} \
+                     in the rules file to recover it; until then nothing may publish it as \
+                     though it were complete"
+                )
+            } else if ahead.is_empty() {
                 format!(
                     "branch {branch:?} has nothing ahead of {change_base}; there is no preserved \
                      work to recover"
@@ -83,7 +97,6 @@ pub fn run(
         });
     }
 
-    let (file, source_name) = policy::load(registry)?;
     let normalized = store::normalize(&resolution.identity.origin);
     let resolved = policy::resolve(&file, &source_name, &normalized, &resolution.publication);
     if resolution.identity.gate == store::NOOP_GATE
@@ -126,7 +139,7 @@ pub fn run(
     }
     let _ = environment;
 
-    let attested = provenance::attest(&worktree, &compared_change_base)?;
+    let attested = provenance::attest(&worktree, &compared_change_base, &trailers)?;
     stream.emit(
         EventKind::RecoveryAttested,
         object(json!({
@@ -148,6 +161,7 @@ pub fn run(
         run_root,
         title: None,
         trailers: Vec::new(),
+        provenance: trailers,
     };
     let outcome = publish::run(&context, stream);
     if outcome.is_err() {

@@ -50,7 +50,9 @@ contract suite.
 
 ## Open questions for the planner
 
-These are reported rather than resolved:
+These are reported rather than resolved. One that has since been resolved is kept
+here, struck through and answered, so a reader meets the decision where the
+question was:
 
 1. **`Check.status` and `Check.conclusion` are untyped.** The contract fixes the
    field names and says `required: bool`, but enumerates no value set for the
@@ -71,14 +73,13 @@ These are reported rather than resolved:
    fixes truncation at 4096 bytes with `"truncated": true`, and the envelope at
    `v: 1`. Neither is a public item the contract names, so neither is exported. An
    implementer will want both; exporting them is a one-line amendment.
-4. **The provenance trailers are spelled by this crate and named by nothing.** The
-   contract requires `Recovered-Incomplete` trailers and an incomplete-step
-   commit, but fixes neither key. This build writes `Onevcs-Status: incomplete`,
-   `Onevcs-Change-Base:`, and `Onevcs-Recovered-Incomplete:` — host-neutral, and
-   prefixed so a repository's own trailers cannot be mistaken for them. A branch
-   preserved by ai-orchestrator carries `Orchestrator-`-prefixed trailers instead
-   and is *not* recognized; whether onevcs must read those too is a decision for
-   the planner, not for this crate.
+4. ~~**The provenance trailers are spelled by this crate and named by nothing.**~~
+   **Resolved: the prefix is configurable, and the keys are no longer an
+   inference.** They are an approved amendment, so they are written into the
+   contract and nowhere else, and this entry deliberately repeats none of it. What
+   belongs here is only why it left this list: a spelling nothing named is not a
+   question a *reader* of this crate can answer, and the answer that generalizes is
+   a hook rather than a second spelling this crate knows about.
 5. **`Scope::Repo` is reached by where a command is run.** `onevcs recoverable`
    takes no repository operand, and the contract documents the view both across
    every identity and for one repository. Run inside a registered checkout it

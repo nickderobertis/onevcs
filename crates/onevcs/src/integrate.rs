@@ -202,6 +202,7 @@ fn train(
     let (file, source) = policy::load(&registry)?;
     let normalized = store::normalize(&resolution.identity.origin);
     let resolved = policy::resolve(&file, &source, &normalized, root);
+    let trailers = provenance::from_rules(&file);
     let gate_command = gate_override
         .cloned()
         .or_else(|| gate::own_command(&resolved.policy.gate).cloned());
@@ -219,6 +220,7 @@ fn train(
         workspace: &workspace,
         gate_command: gate_command.as_ref(),
         environment: &environment,
+        trailers: &trailers,
     };
     let mut branches = Vec::new();
     for branch in candidates {
@@ -274,6 +276,8 @@ struct Train<'a> {
     gate_command: Option<&'a Vec<String>>,
     /// The comparison identity every gate run resolves.
     environment: &'a [(String, String)],
+    /// The provenance trailer keys this host reads.
+    trailers: &'a provenance::Trailers,
 }
 
 fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome> {
@@ -284,12 +288,27 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
         workspace,
         gate_command,
         environment,
+        trailers,
     } = *train;
     let root = &resolution.publication;
+    // A marker written under a prefix this host does not read is the one shape that
+    // would otherwise land here as finished work: nothing recognizes it, so nothing
+    // refuses it. It is named rather than merged.
+    if let Some(prefix) = provenance::unrecognized(root, base, branch, trailers)?.first() {
+        return Ok(skipped(
+            branch,
+            &format!(
+                "provenance under the trailer prefix {prefix:?}, which this host is not \
+                 configured to read; set trailer_prefix to {prefix:?} in the rules file, then \
+                 land it with `onevcs recover {branch} --repo {}`",
+                root.display()
+            ),
+        ));
+    }
     // Against the *local* base, which is what this candidate adds: the base has
     // already moved under earlier candidates of this train, and judging against the
     // remote would fold their commits into this one's provenance and subject.
-    let unattested = provenance::unattested(root, base, branch)?;
+    let unattested = provenance::unattested(root, base, branch, trailers)?;
     if !unattested.is_empty() {
         return Ok(BranchOutcome {
             branch: Ref::from_git(branch),
@@ -354,12 +373,13 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
                 "not-ready: the base advanced during the gate run",
             ));
         }
-        let subject = match provenance::publication_subject(&worktree, base, "HEAD", None)? {
-            Ok(subject) => subject,
-            Err(reason) => return Ok(skipped(branch, &reason)),
-        };
-        let trailers = provenance::attestation_trailers(&worktree, base, "HEAD")?;
-        let message = publish::compose_message(&subject, &trailers);
+        let subject =
+            match provenance::publication_subject(&worktree, base, "HEAD", None, trailers)? {
+                Ok(subject) => subject,
+                Err(reason) => return Ok(skipped(branch, &reason)),
+            };
+        let attested = provenance::attestation_trailers(&worktree, base, "HEAD", trailers)?;
+        let message = publish::compose_message(&subject, &attested);
         let landed = squash_publish(root, base, branch, &message, workspace)?;
         Ok(BranchOutcome {
             branch: Ref::from_git(branch),
