@@ -21,12 +21,39 @@ The contract below is committed verbatim and is never edited. An approved
 extension to it is written here instead, and the suite reconciles it with the code
 the same way it reconciles the text below.
 
-**The provenance trailer prefix is configurable.** The contract requires
-`Recovered-Incomplete` trailers and an incomplete-step commit but fixes no keys, so
-this crate spells them `<prefix>Status: incomplete`, `<prefix>Change-Base:`,
+**The provenance trailer prefix is configurable, and the rules file is at
+version 2.** The contract requires `Recovered-Incomplete` trailers and an
+incomplete-step commit but fixes no keys, so this crate spells them
+`<prefix>Status: incomplete`, `<prefix>Change-Base:`,
 `<prefix>Recovered-Incomplete:`, and `<prefix>Change-Url:`.
 
 The prefix is the rules file's optional `trailer_prefix` key, unset `Onevcs-`.
+
+Version 2 is that key and nothing else, so the version below is the whole schema
+otherwise. A `version: 1` file still loads and still means the default prefix —
+there is no field to migrate, only one that is absent — and a `version: 1` file
+that *names* a `trailer_prefix` is refused rather than obeyed or ignored: a file
+whose key is not in the version it declares reads one way here and another wherever
+that version is trusted, and for this key those two readings are provenance written
+under one prefix and searched for under another. Version 2 in full:
+
+```yaml
+version: 2
+trailer_prefix: Onevcs-
+rules:
+  - match: {host: github.com, owner: acme-corp, name: "*"}
+    publication: change-open          # local-direct | change-open | change-auto | change-direct
+    approvals: required               # required | none
+    gate: {kind: checks}              # checks | pre-push | command: [...]
+  - match: {path: "~/projects/*"}
+    publication: local-direct
+    gate: {kind: pre-push}
+default: {publication: change-open, approvals: required, gate: {kind: checks}}
+```
+
+`trailer_prefix` is omitted when it is unset, so a version 2 file that configures
+nothing is byte-for-byte the version 1 file the contract spells below, with one
+number changed.
 
 That default is the value this crate has always written, so a host that configures
 nothing sees no change. One prefix is used for writing *and* reading, so a branch

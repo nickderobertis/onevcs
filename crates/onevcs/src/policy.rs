@@ -18,8 +18,24 @@ use crate::rules::{Approvals, Gate, GateKind, MergePolicy, Policy, RuleMatch, Ru
 use crate::store::Normalized;
 use crate::{home, ids};
 
-/// The version of the rules file this build reads.
-pub const VERSION: u32 = 1;
+/// The version of the rules file this build writes, and the newest it reads.
+///
+/// `2` added `trailer_prefix`. Nothing else about the shape moved, so a file that
+/// declares an older version is read as it always was rather than migrated: there
+/// is no field to fill in, only one that is absent.
+pub const VERSION: u32 = 2;
+
+/// The oldest version this build still reads.
+pub const OLDEST_VERSION: u32 = 1;
+
+/// The version at which the rules file gained a configurable trailer prefix.
+///
+/// The bump is what keeps that configuration honest. A file naming a key its own
+/// version does not have reads one way here and another wherever the version is
+/// trusted — an older build rejects the key outright — and for *this* key the two
+/// readings are provenance written under one prefix and searched for under another.
+/// So it is refused rather than either obeyed or ignored.
+const TRAILER_PREFIX_VERSION: u32 = 2;
 
 /// How much review a publication policy leaves in the path.
 ///
@@ -120,10 +136,11 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
     let file: RulesFile = serde_yaml_ng::from_str(&raw).map_err(|e| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {e}", path.display()),
     })?;
-    if file.version != VERSION {
+    if !(OLDEST_VERSION..=VERSION).contains(&file.version) {
         return Err(Error::Invalid {
             reason: format!(
-                "the rules file at {} declares version {}; this build reads version {VERSION}",
+                "the rules file at {} declares version {}; this build reads versions \
+                 {OLDEST_VERSION} to {VERSION}",
                 path.display(),
                 file.version
             ),
@@ -140,10 +157,25 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
 /// silent: the change lands, and nothing later reports that the approval the
 /// repository asked for was never sought.
 ///
-/// Only what a *combination* of fields makes impossible belongs here; a field that
-/// is wrong on its own is refused by its own type, which is why nothing checks the
-/// trailer prefix twice.
+/// Only what a *combination* of fields makes impossible belongs here — a field
+/// that is wrong on its own is refused by its own type, which is why nothing checks
+/// the trailer prefix's spelling twice. A field the declared version does not have
+/// is such a combination.
 fn validate(path: &Path, file: &RulesFile) -> Result<()> {
+    if file.version < TRAILER_PREFIX_VERSION && file.trailer_prefix.is_some() {
+        return Err(Error::Invalid {
+            reason: format!(
+                "the rules file at {} declares version {} and names a trailer_prefix, which \
+                 version {TRAILER_PREFIX_VERSION} added; declare version \
+                 {TRAILER_PREFIX_VERSION} to configure one. A file whose key is not in the \
+                 version it declares reads one way here and another wherever that version is \
+                 trusted, and for this key those two readings are provenance written under one \
+                 prefix and searched for under another",
+                path.display(),
+                file.version
+            ),
+        });
+    }
     let mut checked: Vec<(String, MergePolicy, Approvals)> = vec![(
         "default".to_owned(),
         file.default.publication,

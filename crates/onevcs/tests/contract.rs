@@ -67,10 +67,32 @@ fn fenced_blocks(doc: &str) -> Vec<(String, String)> {
     blocks
 }
 
-/// The single block written in `language`.
-fn block(language: &str) -> String {
+/// The two regions of the contract file: the amendments recorded above the
+/// horizontal rule, and the approved text committed verbatim below it.
+///
+/// Every fixture says which region it comes from, so an amendment that has to
+/// spell a fixture of its own — a later schema version, say — cannot silently
+/// become the one an assertion about the approved text reads.
+fn regions() -> (String, String) {
     let doc = contract();
-    let matching: Vec<String> = fenced_blocks(&doc)
+    let (amendments, approved) = doc
+        .split_once("\n---\n")
+        .expect("the contract separates its amendments from the approved text with a rule");
+    (amendments.to_owned(), approved.to_owned())
+}
+
+/// The single block written in `language` in the approved text.
+fn block(language: &str) -> String {
+    only_block(language, &regions().1, "the approved contract")
+}
+
+/// The single block written in `language` in the amendments above the rule.
+fn amendment_block(language: &str) -> String {
+    only_block(language, &regions().0, "the contract's amendments")
+}
+
+fn only_block(language: &str, region: &str, named: &str) -> String {
+    let matching: Vec<String> = fenced_blocks(region)
         .into_iter()
         .filter(|(found, _)| found == language)
         .map(|(_, body)| body)
@@ -78,7 +100,7 @@ fn block(language: &str) -> String {
     assert_eq!(
         matching.len(),
         1,
-        "the contract must hold exactly one `{language}` block; found {}",
+        "{named} must hold exactly one `{language}` block; found {}",
         matching.len()
     );
     matching.into_iter().next().expect("checked above")
@@ -309,6 +331,10 @@ fn the_rules_fixture_round_trips() {
         serde_yaml_ng::from_str(&fixture).expect("the rules fixture must deserialize");
 
     assert_eq!(rules.version, 1);
+    // The version this file predates the trailer prefix, so it names none — and
+    // must serialize back without one, or every rules file on disk grows a key it
+    // never wrote the moment it is read.
+    assert_eq!(rules.trailer_prefix, None);
     assert_eq!(
         rules.rules,
         vec![
@@ -371,24 +397,57 @@ fn documented_trailer_prefix() -> (String, String) {
 }
 
 #[test]
-fn the_rules_file_takes_the_trailer_prefix_key_the_contract_documents() {
+fn the_version_2_fixture_round_trips_with_the_prefix_the_amendment_documents() {
     let (key, default) = documented_trailer_prefix();
-    let policy = "default: {publication: change-open, approvals: required, gate: {kind: checks}}";
+    let fixture = amendment_block("yaml");
+    let rules: RulesFile =
+        serde_yaml_ng::from_str(&fixture).expect("the version 2 fixture must deserialize");
 
-    let configured: RulesFile = serde_yaml_ng::from_str(&format!(
-        "version: 1\n{key}: {default}\nrules: []\n{policy}\n"
-    ))
-    .expect("the documented key and default must be a rules file this build reads");
-    assert_eq!(configured.trailer_prefix.as_deref(), Some(default.as_str()));
+    assert_eq!(rules.version, 2);
+    assert_eq!(rules.trailer_prefix.as_deref(), Some(default.as_str()));
+    assert!(
+        fixture.contains(&format!("{key}: {default}")),
+        "the documented key and default must be the ones the fixture spells:\n{fixture}"
+    );
+    // Version 2 is the prefix and nothing else, so everything the approved fixture
+    // declares must survive the bump unchanged.
+    let version_1: RulesFile =
+        serde_yaml_ng::from_str(&block("yaml")).expect("the approved fixture deserializes");
+    assert_eq!(rules.rules, version_1.rules);
+    assert_eq!(rules.default, version_1.default);
 
-    // Omitted is the shape every existing rules file has, and it must round-trip
-    // unchanged: an old file that grew a key it never wrote is a changed contract.
-    let fixture = block("yaml");
-    let unset: RulesFile = serde_yaml_ng::from_str(&fixture).expect("the fixture deserializes");
-    assert_eq!(unset.trailer_prefix, None);
+    let expected: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&fixture).expect("the fixture is YAML");
+    let round_tripped =
+        serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(
-        serde_yaml_ng::to_value(&unset).expect("a rules file serializes"),
-        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&fixture).expect("the fixture is YAML")
+        round_tripped, expected,
+        "the version 2 rules file lost or added a field"
+    );
+}
+
+#[test]
+fn a_version_2_file_that_configures_no_prefix_omits_the_key_entirely() {
+    // What an existing file becomes when it declares the new version and configures
+    // nothing: the same document with one number changed. A key serialized as null
+    // would make every reader of an old file meet a value it was never given.
+    let (key, _default) = documented_trailer_prefix();
+    let unset = block("yaml").replacen("version: 1", "version: 2", 1);
+    let rules: RulesFile = serde_yaml_ng::from_str(&unset).expect("version 2 deserializes");
+    assert_eq!(rules.version, 2);
+    assert_eq!(rules.trailer_prefix, None);
+
+    let round_tripped =
+        serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
+    assert_eq!(
+        round_tripped,
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&unset).expect("the fixture is YAML")
+    );
+    assert!(
+        !serde_yaml_ng::to_string(&rules)
+            .expect("a rules file serializes")
+            .contains(key.as_str()),
+        "an unset prefix must be omitted, not written out"
     );
 }
 

@@ -31,13 +31,24 @@ pub struct Fixture {
 
 impl Fixture {
     /// A registered local repository whose rules file is `default_policy`.
+    ///
+    /// Version 1, which is what every rules file written before the trailer prefix
+    /// existed declares — so the whole suite below is also the assertion that those
+    /// files still work.
     pub fn local(default_policy: &str) -> Self {
-        Self::configured(default_policy, "")
+        Self::with_rules(&format!(
+            "version: 1\nrules: []\ndefault: {default_policy}\n"
+        ))
     }
 
-    /// The same, with `extra` top-level lines in the rules file — the provenance
-    /// trailer prefix, for the journeys that configure one.
-    pub fn configured(default_policy: &str, extra: &str) -> Self {
+    /// The same at the version that configures a provenance trailer prefix.
+    pub fn with_trailer_prefix(default_policy: &str, prefix: &str) -> Self {
+        Self::with_rules(&format!(
+            "version: 2\ntrailer_prefix: {prefix}\nrules: []\ndefault: {default_policy}\n"
+        ))
+    }
+
+    fn with_rules(rules: &str) -> Self {
         let world = World::new();
         let origin = world.bare_origin("project");
         let checkout = world.clone_of(&origin, "project");
@@ -46,10 +57,7 @@ impl Fixture {
             .args(["register", &checkout.to_string_lossy()])
             .assert()
             .success();
-        configure_rules(
-            &world,
-            format!("version: 1\n{extra}rules: []\ndefault: {default_policy}\n"),
-        );
+        configure_rules(&world, rules);
         Self {
             world,
             origin,
@@ -393,7 +401,7 @@ fn a_dirty_adoption_commits_incomplete_provenance_that_only_recovery_may_publish
 fn a_configured_trailer_prefix_is_written_and_read_by_every_verb_that_touches_provenance() {
     // The same journey as above under a prefix this crate has never written, which
     // is what a host whose branches were preserved by something else configures.
-    let fixture = Fixture::configured(&local_direct("[\"true\"]"), "trailer_prefix: Zzz-\n");
+    let fixture = Fixture::with_trailer_prefix(&local_direct("[\"true\"]"), "Zzz-");
     let (token, worktree) = fixture.open(&["--branch", "feature/interrupted"]);
     fixture
         .world
@@ -483,7 +491,7 @@ fn an_ordinary_publication_under_a_configured_prefix_records_no_provenance_at_al
     // work that finished. Publication preserves the uncommitted remainder as
     // *complete*, so neither the branch nor the base may end up carrying a marker
     // under the configured prefix — or under the one it replaced.
-    let fixture = Fixture::configured(&local_direct("[\"true\"]"), "trailer_prefix: Zzz-\n");
+    let fixture = Fixture::with_trailer_prefix(&local_direct("[\"true\"]"), "Zzz-");
     let (token, worktree) = fixture.open(&["--branch", "feature/finished"]);
     fixture
         .world
@@ -519,7 +527,7 @@ fn the_stack_metadata_a_preserved_branch_carries_is_read_under_the_configured_pr
     // A branch preserved on top of another one: the change-request base and the
     // change it was opened as travel as trailers, and both are spelled under the
     // configured prefix like everything else here.
-    let fixture = Fixture::configured(&local_direct("[\"true\"]"), "trailer_prefix: Zzz-\n");
+    let fixture = Fixture::with_trailer_prefix(&local_direct("[\"true\"]"), "Zzz-");
     let checkout = fixture.checkout.clone();
     let change = "https://example.invalid/changes/7";
     fixture
@@ -651,11 +659,12 @@ fn a_branch_whose_provenance_prefix_is_not_configured_is_never_published_as_comp
     assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
 
     // Configuring the prefix the branch already carries is the whole migration: the
-    // same command then recovers it, and the base records the attestation.
+    // rules file moves to the version that has the key, and the same command then
+    // recovers it and the base records the attestation.
     configure_rules(
         &fixture.world,
         format!(
-            "version: 1\ntrailer_prefix: Qqq-\nrules: []\ndefault: {}\n",
+            "version: 2\ntrailer_prefix: Qqq-\nrules: []\ndefault: {}\n",
             local_direct("[\"true\"]")
         ),
     );
