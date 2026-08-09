@@ -478,6 +478,43 @@ fn a_configured_trailer_prefix_is_written_and_read_by_every_verb_that_touches_pr
 }
 
 #[test]
+fn an_ordinary_publication_under_a_configured_prefix_records_no_provenance_at_all() {
+    // The other half of the hook: configuring a prefix must change nothing about
+    // work that finished. Publication preserves the uncommitted remainder as
+    // *complete*, so neither the branch nor the base may end up carrying a marker
+    // under the configured prefix — or under the one it replaced.
+    let fixture = Fixture::configured(&local_direct("[\"true\"]"), "trailer_prefix: Zzz-\n");
+    let (token, worktree) = fixture.open(&["--branch", "feature/finished"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+    std::fs::write(worktree.join("two.txt"), "two\n").expect("the last of the work");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let preserved = fixture.world.git(&worktree, &["log", "-1", "--format=%B"]);
+    assert!(preserved.contains("chore: preserve work"), "{preserved}");
+    for prefix in ["Zzz-", "Onevcs-"] {
+        assert!(!preserved.contains(prefix), "{preserved}");
+    }
+
+    let subjects = fixture.origin_log();
+    assert_eq!(subjects[0], "feat: add the thing", "{subjects:?}");
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    for prefix in ["Zzz-", "Onevcs-"] {
+        assert!(!published.contains(prefix), "{published}");
+    }
+}
+
+#[test]
 fn the_stack_metadata_a_preserved_branch_carries_is_read_under_the_configured_prefix() {
     // A branch preserved on top of another one: the change-request base and the
     // change it was opened as travel as trailers, and both are spelled under the

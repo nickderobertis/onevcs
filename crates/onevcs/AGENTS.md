@@ -52,8 +52,7 @@ journey turns down so a bound can be *proved* rather than waited out.
   token and an artifact id both arrive from outside and both are joined under the
   state root; `ids::is_safe_name` is where that is rejected.
 - **A provenance trailer is written and read under one prefix, and the crate knows
-  no particular value of it.** `provenance::Trailers` carries the rules file's
-  `trailer_prefix` (unset, `Onevcs-`), and every reader takes the same value the
+  no particular value of it.** Every reader takes the `provenance::Trailers` the
   writer used — an asymmetry here is silent, and its cost is an incomplete branch
   published as complete. That is also why a marker under an *unconfigured* prefix
   is refused rather than ignored: `provenance::unrecognized` matches the marker's

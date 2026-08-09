@@ -20,18 +20,67 @@ pub struct RulesFile {
     pub version: u32,
     /// The prefix every provenance trailer key carries, written and read.
     ///
-    /// Unset is `Onevcs-`, which is what this crate has always written. A host
-    /// whose branches were preserved by something spelling those keys differently
-    /// sets the prefix it already wrote, and this build then recognizes, lists, and
-    /// recovers that work — the prefix is the whole hook, and no particular value
-    /// of it means anything here. Checked when the file is loaded: a value that
-    /// cannot spell a git trailer key is refused by name.
+    /// Unset is [`TrailerPrefix::default`], which is what this crate has always
+    /// written. A host whose branches were preserved by something spelling those
+    /// keys differently sets the prefix it already wrote, and this build then
+    /// recognizes, lists, and recovers that work — the prefix is the whole hook,
+    /// and no particular value of it means anything here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trailer_prefix: Option<String>,
+    pub trailer_prefix: Option<TrailerPrefix>,
     /// The rules, in priority order: the first one that matches wins.
     pub rules: Vec<Rule>,
     /// The policy for a repository no rule matches.
     pub default: Policy,
+}
+
+/// The prefix every provenance trailer key is spelled under.
+///
+/// The check is in the conversion, so a rules file naming a prefix that could not
+/// spell a git trailer key does not deserialize at all — the marker is written and
+/// read from one value, and a value neither side can find again is unrepresentable
+/// rather than representable-and-noticed-later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TrailerPrefix(String);
+
+impl Default for TrailerPrefix {
+    /// The prefix this crate has always written, for a host that configures none.
+    fn default() -> Self {
+        TrailerPrefix(crate::provenance::DEFAULT_PREFIX.to_owned())
+    }
+}
+
+impl TryFrom<String> for TrailerPrefix {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        match crate::provenance::validate_prefix(&value) {
+            Ok(()) => Ok(TrailerPrefix(value)),
+            Err(reason) => Err(format!(
+                "{value:?} cannot spell a git trailer key: {reason}"
+            )),
+        }
+    }
+}
+
+impl From<TrailerPrefix> for String {
+    fn from(prefix: TrailerPrefix) -> Self {
+        prefix.0
+    }
+}
+
+impl std::ops::Deref for TrailerPrefix {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TrailerPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// One rule: what it matches, and which parts of the policy it sets.

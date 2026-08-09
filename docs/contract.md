@@ -34,7 +34,9 @@ preserved under a prefix is recognized, listed by `recoverable`, and published b
 `recover` under that same prefix. A prefix that could not spell a git trailer key
 — anything outside letters, digits and `-`, one that does not start with a letter
 or a digit, or an empty one — is refused when the rules file is loaded, naming what
-was wrong.
+was wrong. The key's type is `rules::TrailerPrefix`, which is the one public item
+this amendment adds: the check is in its conversion, so an unusable prefix does not
+deserialize rather than being caught somewhere later.
 
 A branch whose incomplete marker is written under a prefix this host is *not*
 configured with is reported and refused rather than read as complete: `recoverable`

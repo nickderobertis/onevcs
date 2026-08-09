@@ -23,9 +23,9 @@
 
 use std::path::Path;
 
-use crate::error::{self, Result};
+use crate::error::Result;
 use crate::git;
-use crate::rules::RulesFile;
+use crate::rules::{RulesFile, TrailerPrefix};
 use crate::session::Provenance;
 
 /// The prefix every provenance trailer key carries when nothing configures one.
@@ -57,21 +57,20 @@ pub struct Trailers {
 
 impl Default for Trailers {
     fn default() -> Self {
-        Self::new(DEFAULT_PREFIX).expect("the default prefix spells a trailer key")
+        Self::new(&TrailerPrefix::default())
     }
 }
 
 impl Trailers {
-    /// The keys under one prefix, or the reason that prefix names none.
-    pub fn new(prefix: &str) -> std::result::Result<Self, String> {
-        validate_prefix(prefix)?;
-        Ok(Self {
-            prefix: prefix.to_owned(),
+    /// The keys under one checked prefix.
+    pub fn new(prefix: &TrailerPrefix) -> Self {
+        Self {
+            prefix: prefix.to_string(),
             incomplete: format!("{prefix}{STATUS}: {INCOMPLETE}"),
             change_base: format!("{prefix}Change-Base:"),
             recovered: format!("{prefix}Recovered-Incomplete:"),
             change_url: format!("{prefix}Change-Url:"),
-        })
+        }
     }
 
     /// The prefix itself, for a refusal that names it.
@@ -109,7 +108,11 @@ impl Trailers {
 /// prefix is refused for a different reason: it is far more likely a value that
 /// failed to expand than a deliberate choice, and it is the prefix that keeps a
 /// repository's own trailers from being mistaken for these.
-fn validate_prefix(prefix: &str) -> std::result::Result<(), String> {
+///
+/// [`TrailerPrefix`] is where a configured one meets this; [`marker_prefix`] is
+/// where one read back out of a commit does, which is what keeps a line of prose
+/// from being read as somebody else's marker.
+pub fn validate_prefix(prefix: &str) -> std::result::Result<(), String> {
     if prefix.is_empty() {
         return Err(
             "it is empty, and the prefix is what keeps a repository's own trailers from being \
@@ -133,16 +136,12 @@ fn validate_prefix(prefix: &str) -> std::result::Result<(), String> {
 
 /// The trailers a rules file names, or the default when it names none.
 ///
-/// The one place a configured prefix is turned into keys, so the refusal a bad one
-/// earns is written once: [`crate::policy`] runs this when the file is loaded and
-/// adds the path, and every later caller is reading a value that has already been
-/// through it.
-pub fn from_rules(file: &RulesFile) -> std::result::Result<Trailers, String> {
-    match file.trailer_prefix.as_deref() {
-        Some(prefix) => Trailers::new(prefix).map_err(|reason| {
-            format!("trailer_prefix {prefix:?} cannot spell a git trailer key: {reason}")
-        }),
-        None => Ok(Trailers::default()),
+/// Infallible: the file could not have loaded carrying a prefix that spells no
+/// trailer key, so there is no second place for that refusal to be written.
+pub fn from_rules(file: &RulesFile) -> Trailers {
+    match file.trailer_prefix.as_ref() {
+        Some(prefix) => Trailers::new(prefix),
+        None => Trailers::default(),
     }
 }
 
@@ -154,7 +153,7 @@ pub fn from_rules(file: &RulesFile) -> std::result::Result<Trailers, String> {
 pub fn configured() -> Result<Trailers> {
     let registry = crate::store::load()?;
     let (file, _source) = crate::policy::load(&registry)?;
-    from_rules(&file).map_err(error::invalid)
+    Ok(from_rules(&file))
 }
 
 /// Whether a commit message marks a step as having been left incomplete.

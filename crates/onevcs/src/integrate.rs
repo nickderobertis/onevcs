@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::event::EventKind;
 use crate::registry::{RepoType, Workflow};
 use crate::store::{self, Resolution};
@@ -202,7 +202,7 @@ fn train(
     let (file, source) = policy::load(&registry)?;
     let normalized = store::normalize(&resolution.identity.origin);
     let resolved = policy::resolve(&file, &source, &normalized, root);
-    let trailers = provenance::from_rules(&file).map_err(error::invalid)?;
+    let trailers = provenance::from_rules(&file);
     let gate_command = gate_override
         .cloned()
         .or_else(|| gate::own_command(&resolved.policy.gate).cloned());

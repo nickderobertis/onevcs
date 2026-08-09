@@ -220,7 +220,7 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
         run_root: record.run_root.clone(),
         title: args.title.clone(),
         trailers: Vec::new(),
-        provenance: provenance::from_rules(&file).map_err(error::invalid)?,
+        provenance: provenance::from_rules(&file),
     };
     match publish::run(&context, &mut stream) {
         Ok(outcome) => {
@@ -427,9 +427,7 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
     // repository's provenance, so it is reported once, from the file or the default.
     println!(
         "trailer_prefix: {} (from {})",
-        provenance::from_rules(&file)
-            .map_err(error::invalid)?
-            .prefix(),
+        provenance::from_rules(&file).prefix(),
         if file.trailer_prefix.is_some() {
             "the rules file"
         } else {

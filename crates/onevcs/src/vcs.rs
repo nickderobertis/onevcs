@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{self, Error, Result};
+use crate::error::{Error, Result};
 use crate::event::EventKind;
 use crate::registry::Identity;
 use crate::session::{
@@ -156,7 +156,7 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
 pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
     let registry = store::load()?;
     let (rules, _source) = crate::policy::load(&registry)?;
-    let trailers = provenance::from_rules(&rules).map_err(error::invalid)?;
+    let trailers = provenance::from_rules(&rules);
     let sessions = workspace::all()?;
     let wanted = match scope {
         Scope::All => None,

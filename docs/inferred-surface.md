@@ -74,18 +74,12 @@ question was:
    `v: 1`. Neither is a public item the contract names, so neither is exported. An
    implementer will want both; exporting them is a one-line amendment.
 4. ~~**The provenance trailers are spelled by this crate and named by nothing.**~~
-   **Resolved — the prefix is configurable.** The contract requires
-   `Recovered-Incomplete` trailers and an incomplete-step commit but fixes neither
-   key, so every key this build writes and reads is `<prefix>Status: incomplete`,
-   `<prefix>Change-Base:`, `<prefix>Recovered-Incomplete:` and
-   `<prefix>Change-Url:`, under the rules file's optional `trailer_prefix`. Unset
-   it is `Onevcs-`, which is what this build always wrote, so nothing configured
-   behaves as before. One prefix serves writing and reading, and a marker under a
-   prefix this host is not configured with is refused rather than read as
-   complete. The amendment is recorded in
-   [`docs/contract.md`](contract.md#amendments-recorded-outside-the-approved-text);
-   no particular prefix value means anything to this crate, which is what keeps
-   the hook general.
+   **Resolved: the prefix is configurable, and the keys are no longer an
+   inference.** They are an approved amendment, so they are written into the
+   contract and nowhere else, and this entry deliberately repeats none of it. What
+   belongs here is only why it left this list: a spelling nothing named is not a
+   question a *reader* of this crate can answer, and the answer that generalizes is
+   a hook rather than a second spelling this crate knows about.
 5. **`Scope::Repo` is reached by where a command is run.** `onevcs recoverable`
    takes no repository operand, and the contract documents the view both across
    every identity and for one repository. Run inside a registered checkout it

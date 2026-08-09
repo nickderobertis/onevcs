@@ -28,7 +28,7 @@ pub fn run(
 ) -> Result<publish::Outcome> {
     let resolution = store::resolve(registry, repo)?;
     let (file, source_name) = policy::load(registry)?;
-    let trailers = provenance::from_rules(&file).map_err(error::invalid)?;
+    let trailers = provenance::from_rules(&file);
     if !git::is_valid_branch_name(branch) {
         return Err(Error::Invalid {
             reason: format!("{branch:?} is not a valid branch name"),
