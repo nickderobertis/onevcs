@@ -15,6 +15,34 @@ host-local reference checkout. That section governs how this repository is built
 and released rather than what the crate exposes, so it is not reproduced here.
 -->
 
+## Amendments, recorded outside the approved text
+
+The contract below is committed verbatim and is never edited. An approved
+extension to it is written here instead, and the suite reconciles it with the code
+the same way it reconciles the text below.
+
+**The provenance trailer prefix is configurable.** The contract requires
+`Recovered-Incomplete` trailers and an incomplete-step commit but fixes no keys, so
+this crate spells them `<prefix>Status: incomplete`, `<prefix>Change-Base:`,
+`<prefix>Recovered-Incomplete:`, and `<prefix>Change-Url:`.
+
+The prefix is the rules file's optional `trailer_prefix` key, unset `Onevcs-`.
+
+That default is the value this crate has always written, so a host that configures
+nothing sees no change. One prefix is used for writing *and* reading, so a branch
+preserved under a prefix is recognized, listed by `recoverable`, and published by
+`recover` under that same prefix. A prefix that could not spell a git trailer key
+— anything outside letters, digits and `-`, one that does not start with a letter
+or a digit, or an empty one — is refused when the rules file is loaded, naming what
+was wrong.
+
+A branch whose incomplete marker is written under a prefix this host is *not*
+configured with is reported and refused rather than read as complete: `recoverable`
+lists it as an incomplete step naming the prefix it found, `integrate` skips it, and
+`recover` refuses it and says which prefix to configure. Nothing here knows any
+particular prefix — the shape recognized is the marker's own, under whatever prefix
+it carries.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

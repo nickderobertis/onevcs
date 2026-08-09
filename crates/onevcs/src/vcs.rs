@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
+use crate::error::{self, Error, Result};
 use crate::event::EventKind;
 use crate::registry::Identity;
 use crate::session::{
@@ -85,6 +85,7 @@ pub fn preserve_into(
     stream: &mut Stream,
     kind: Provenance,
 ) -> Result<PreservedBranch> {
+    let trailers = provenance::configured()?;
     if git::is_dirty(&record.worktree)? {
         git::add_all(&record.worktree)?;
         let message = match kind {
@@ -92,6 +93,7 @@ pub fn preserve_into(
             Provenance::IncompleteStep => provenance::incomplete_message(
                 &format!("work on {}", record.branch),
                 record.change_base.as_deref(),
+                &trailers,
             ),
         };
         let sha = git::commit(&record.worktree, &message)?;
@@ -121,7 +123,7 @@ pub fn preserve_into(
     Ok(PreservedBranch {
         branch: record.branch.to_string(),
         base: record.base.to_string(),
-        provenance: provenance::provenance_of(&record.clone, &base, &record.branch)?,
+        provenance: provenance::provenance_of(&record.clone, &base, &record.branch, &trailers)?,
         change_url: None,
         change_base: record.change_base.as_ref().map(ToString::to_string),
     })
@@ -153,6 +155,8 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
 /// exactly when somebody reaches for it.
 pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
     let registry = store::load()?;
+    let (rules, _source) = crate::policy::load(&registry)?;
+    let trailers = provenance::from_rules(&rules).map_err(error::invalid)?;
     let sessions = workspace::all()?;
     let wanted = match scope {
         Scope::All => None,
@@ -200,10 +204,18 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 if !git::trees_differ(&repo, &compared, &branch)? {
                     continue;
                 }
-                let kind = provenance::provenance_of(&repo, &compared, &branch)?;
+                // A marker under a prefix this host does not read is still a marker:
+                // reporting the branch as complete is what would let somebody hand
+                // interrupted work to the verb that publishes a finished one.
+                let unrecognized = provenance::unrecognized(&repo, &compared, &branch, &trailers)?;
+                let kind = match unrecognized.first() {
+                    Some(_) => Provenance::IncompleteStep,
+                    None => provenance::provenance_of(&repo, &compared, &branch, &trailers)?,
+                };
                 let incomplete = kind == Provenance::IncompleteStep;
-                let change_base = provenance::recorded_change_base(&repo, &compared, &branch)?;
-                let stopped = sessions
+                let change_base =
+                    provenance::recorded_change_base(&repo, &compared, &branch, &trailers)?;
+                let mut stopped = sessions
                     .iter()
                     .find(|record| *record.branch == *branch)
                     .map(|record| {
@@ -217,6 +229,13 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                         "no session record names this branch; it stopped before recording one"
                             .to_owned()
                     });
+                if let Some(prefix) = unrecognized.first() {
+                    stopped.push_str(&format!(
+                        ". Its provenance is written under the trailer prefix {prefix:?}, which \
+                         this host is not configured to read: set trailer_prefix in the rules \
+                         file to {prefix:?} before publishing it"
+                    ));
+                }
                 let recover_command = if incomplete {
                     vec![
                         "onevcs".to_owned(),
@@ -236,7 +255,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                             branch: branch.clone(),
                             base: base.clone(),
                             provenance: kind,
-                            change_url: change_url_of(&repo, &compared, &branch),
+                            change_url: change_url_of(&repo, &compared, &branch, &trailers),
                             change_base,
                         },
                         checkout: repo.clone(),
@@ -258,12 +277,17 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
 }
 
 /// The change request a preserved branch recorded, when one was opened for it.
-fn change_url_of(repo: &Path, base: &str, branch: &str) -> Option<Url> {
+fn change_url_of(
+    repo: &Path,
+    base: &str,
+    branch: &str,
+    trailers: &provenance::Trailers,
+) -> Option<Url> {
     let commits = git::log_messages(repo, base, branch).ok()?;
     commits
         .iter()
         .rev()
         .flat_map(|commit| commit.message.lines())
-        .filter_map(|line| line.trim().strip_prefix("Onevcs-Change-Url:"))
+        .filter_map(|line| line.trim().strip_prefix(trailers.change_url()))
         .find_map(|value| Url::parse(value.trim()).ok())
 }

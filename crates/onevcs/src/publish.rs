@@ -82,6 +82,9 @@ pub struct Context {
     pub title: Option<String>,
     /// Trailers the publication commit or change body must carry.
     pub trailers: Vec<String>,
+    /// The provenance trailer keys this host reads and writes, which decide which
+    /// of the branch's commits describe the change and which record the session.
+    pub provenance: provenance::Trailers,
 }
 
 /// Verify and publish a branch.
@@ -124,6 +127,7 @@ fn describe(context: &Context, compared: &str) -> Result<(String, Vec<String>)> 
         compared,
         &context.branch,
         context.title.as_deref(),
+        &context.provenance,
     )? {
         Ok(subject) => subject,
         Err(reason) => {
@@ -141,6 +145,7 @@ fn describe(context: &Context, compared: &str) -> Result<(String, Vec<String>)> 
         &context.repo,
         compared,
         &context.branch,
+        &context.provenance,
     )?);
     Ok((subject, trailers))
 }

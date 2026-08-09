@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::rules::{Approvals, Gate, GateKind, MergePolicy, Policy, RuleMatch, RulesFile};
 use crate::store::Normalized;
-use crate::{home, ids};
+use crate::{home, ids, provenance};
 
 /// The version of the rules file this build reads.
 pub const VERSION: u32 = 1;
@@ -107,6 +107,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
         return Ok((
             RulesFile {
                 version: VERSION,
+                trailer_prefix: None,
                 rules: Vec::new(),
                 default: built_in_default(),
             },
@@ -137,8 +138,12 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
 /// `approvals: required` and a publication that merges without the host ever
 /// evaluating an approval are a contradiction, and the failure it causes is
 /// silent: the change lands, and nothing later reports that the approval the
-/// repository asked for was never sought.
+/// repository asked for was never sought. A trailer prefix that spells no git
+/// trailer key fails the same way: the marker is written and never read back.
 fn validate(path: &Path, file: &RulesFile) -> Result<()> {
+    provenance::from_rules(file).map_err(|reason| Error::Invalid {
+        reason: format!("the rules file at {} has {reason}", path.display()),
+    })?;
     let mut checked: Vec<(String, MergePolicy, Approvals)> = vec![(
         "default".to_owned(),
         file.default.publication,

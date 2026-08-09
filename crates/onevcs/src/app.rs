@@ -168,7 +168,8 @@ fn session_adopt(args: &SessionTokenArgs) -> Result<u8> {
     );
     let record = workspace::load(&args.token)?;
     let base = vcs::base_ref(&record.clone, &record.base);
-    if provenance::provenance_of(&record.clone, &base, &record.branch)?
+    let trailers = provenance::configured()?;
+    if provenance::provenance_of(&record.clone, &base, &record.branch, &trailers)?
         == Provenance::IncompleteStep
     {
         eprintln!(
@@ -219,6 +220,7 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
         run_root: record.run_root.clone(),
         title: args.title.clone(),
         trailers: Vec::new(),
+        provenance: provenance::from_rules(&file).map_err(error::invalid)?,
     };
     match publish::run(&context, &mut stream) {
         Ok(outcome) => {
@@ -420,6 +422,19 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
         "gate: {} (from {})",
         policy::spell_gate(&resolved.policy.gate),
         resolved.gate_from
+    );
+    // Not part of the matched policy: one vocabulary reads and writes every
+    // repository's provenance, so it is reported once, from the file or the default.
+    println!(
+        "trailer_prefix: {} (from {})",
+        provenance::from_rules(&file)
+            .map_err(error::invalid)?
+            .prefix(),
+        if file.trailer_prefix.is_some() {
+            "the rules file"
+        } else {
+            "the default"
+        }
     );
     Ok(0)
 }

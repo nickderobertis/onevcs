@@ -360,6 +360,38 @@ fn the_rules_fixture_round_trips() {
     );
 }
 
+/// The rules-file key the documented provenance-prefix amendment names, and the
+/// default it documents, read out of the amendment rather than repeated here.
+fn documented_trailer_prefix() -> (String, String) {
+    let spans = backticked_on_line("The prefix is the rules file's");
+    let mut spans = spans.into_iter();
+    let key = spans.next().expect("the amendment names the key");
+    let default = spans.next().expect("the amendment names the default");
+    (key, default)
+}
+
+#[test]
+fn the_rules_file_takes_the_trailer_prefix_key_the_contract_documents() {
+    let (key, default) = documented_trailer_prefix();
+    let policy = "default: {publication: change-open, approvals: required, gate: {kind: checks}}";
+
+    let configured: RulesFile = serde_yaml_ng::from_str(&format!(
+        "version: 1\n{key}: {default}\nrules: []\n{policy}\n"
+    ))
+    .expect("the documented key and default must be a rules file this build reads");
+    assert_eq!(configured.trailer_prefix.as_deref(), Some(default.as_str()));
+
+    // Omitted is the shape every existing rules file has, and it must round-trip
+    // unchanged: an old file that grew a key it never wrote is a changed contract.
+    let fixture = block("yaml");
+    let unset: RulesFile = serde_yaml_ng::from_str(&fixture).expect("the fixture deserializes");
+    assert_eq!(unset.trailer_prefix, None);
+    assert_eq!(
+        serde_yaml_ng::to_value(&unset).expect("a rules file serializes"),
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&fixture).expect("the fixture is YAML")
+    );
+}
+
 #[test]
 fn a_gate_may_be_an_explicit_command() {
     let rules: RulesFile = serde_yaml_ng::from_str(

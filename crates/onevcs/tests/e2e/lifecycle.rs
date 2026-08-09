@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use predicates::prelude::*;
 
 use crate::registry::configure_rules;
+use crate::support::documented_trailer;
 use crate::world::{token_of, worktree_of, World};
 
 /// A registered repository: its origin, its checkout, and the policy it publishes
@@ -31,6 +32,12 @@ pub struct Fixture {
 impl Fixture {
     /// A registered local repository whose rules file is `default_policy`.
     pub fn local(default_policy: &str) -> Self {
+        Self::configured(default_policy, "")
+    }
+
+    /// The same, with `extra` top-level lines in the rules file — the provenance
+    /// trailer prefix, for the journeys that configure one.
+    pub fn configured(default_policy: &str, extra: &str) -> Self {
         let world = World::new();
         let origin = world.bare_origin("project");
         let checkout = world.clone_of(&origin, "project");
@@ -41,7 +48,7 @@ impl Fixture {
             .success();
         configure_rules(
             &world,
-            format!("version: 1\nrules: []\ndefault: {default_policy}\n"),
+            format!("version: 1\n{extra}rules: []\ndefault: {default_policy}\n"),
         );
         Self {
             world,
@@ -380,6 +387,261 @@ fn a_dirty_adoption_commits_incomplete_provenance_that_only_recovery_may_publish
     let subjects = fixture.origin_log();
     assert_eq!(subjects[0], "feat: add the first half", "{subjects:?}");
     assert_eq!(subjects.len(), 2, "one publication commit: {subjects:?}");
+}
+
+#[test]
+fn a_configured_trailer_prefix_is_written_and_read_by_every_verb_that_touches_provenance() {
+    // The same journey as above under a prefix this crate has never written, which
+    // is what a host whose branches were preserved by something else configures.
+    let fixture = Fixture::configured(&local_direct("[\"true\"]"), "trailer_prefix: Zzz-\n");
+    let (token, worktree) = fixture.open(&["--branch", "feature/interrupted"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the first half");
+    std::fs::write(worktree.join("two.txt"), "two\n").expect("uncommitted work");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "adopt", &token])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("incomplete-step provenance"));
+
+    // Written under the configured prefix, spelled the way the contract documents
+    // it, and under no other prefix: a marker this host spells one way and reads
+    // another is one nothing ever finds.
+    let marker = fixture.world.git(&worktree, &["log", "-1", "--format=%B"]);
+    assert!(
+        marker.contains(&documented_trailer("Status", "Zzz-")),
+        "{marker}"
+    );
+    assert!(!marker.contains("Onevcs-"), "{marker}");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // Read back by the report an operator reaches for, which names the verb that
+    // lands it rather than the one that publishes finished work.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature/interrupted"))
+        .stdout(predicate::str::contains("incomplete step"))
+        .stdout(predicate::str::contains(
+            "onevcs recover feature/interrupted",
+        ));
+
+    // …and by the train, which refuses it for the same reason it would under the
+    // default prefix.
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "feature/interrupted"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("incomplete provenance"));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/interrupted",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    // The attestation the base carries is spelled under the same prefix, so the
+    // round trip closes where it opened.
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        published.contains(&documented_trailer("Recovered-Incomplete", "Zzz-")),
+        "the base must carry the recovery forward under the configured prefix:\n{published}"
+    );
+    assert!(!published.contains("Onevcs-"), "{published}");
+}
+
+#[test]
+fn the_stack_metadata_a_preserved_branch_carries_is_read_under_the_configured_prefix() {
+    // A branch preserved on top of another one: the change-request base and the
+    // change it was opened as travel as trailers, and both are spelled under the
+    // configured prefix like everything else here.
+    let fixture = Fixture::configured(&local_direct("[\"true\"]"), "trailer_prefix: Zzz-\n");
+    let checkout = fixture.checkout.clone();
+    let change = "https://example.invalid/changes/7";
+    fixture
+        .world
+        .git(&checkout, &["checkout", "-q", "-b", "feature/below"]);
+    fixture.world.commit_file(
+        &checkout,
+        "below.txt",
+        "below\n",
+        "feat: add the lower half",
+    );
+    fixture
+        .world
+        .git(&checkout, &["checkout", "-q", "-b", "feature/stacked"]);
+    fixture.world.commit_file(
+        &checkout,
+        "upper.txt",
+        "upper\n",
+        "feat: add the upper half",
+    );
+    fixture.world.git(
+        &checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/stacked\n\n{}\n{} feature/below\n{} {change}",
+                documented_trailer("Status", "Zzz-"),
+                documented_trailer("Change-Base", "Zzz-"),
+                documented_trailer("Change-Url", "Zzz-"),
+            ),
+        ],
+    );
+    fixture.world.git(&checkout, &["checkout", "-q", "main"]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .current_dir(&checkout)
+        .assert()
+        .success();
+    let rows: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("`recoverable --json` prints one JSON document");
+    let stacked = rows
+        .as_array()
+        .expect("an array of rows")
+        .iter()
+        .find(|row| row["branch"]["branch"] == "feature/stacked")
+        .expect("the preserved branch is listed");
+    assert_eq!(stacked["branch"]["provenance"], "incomplete-step");
+    assert_eq!(stacked["branch"]["change_base"], "feature/below");
+    assert_eq!(stacked["branch"]["change_url"], change);
+}
+
+#[test]
+fn a_branch_whose_provenance_prefix_is_not_configured_is_never_published_as_complete() {
+    // The branch a different consumer preserved: its subject says nothing about
+    // being unfinished, and only the trailer marks the step — under a prefix this
+    // host is not configured to read.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let checkout = fixture.checkout.clone();
+    fixture
+        .world
+        .git(&checkout, &["checkout", "-q", "-b", "feature/elsewhere"]);
+    fixture
+        .world
+        .commit_file(&checkout, "one.txt", "one\n", "feat: add the thing");
+    std::fs::write(checkout.join("two.txt"), "two\n").expect("the half that never finished");
+    fixture.world.git(&checkout, &["add", "-A"]);
+    fixture.world.git(
+        &checkout,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/elsewhere\n\n{}",
+                // The marker's own shape, under a prefix this host never wrote.
+                documented_trailer("Status", "Qqq-")
+            ),
+        ],
+    );
+    fixture.world.git(&checkout, &["checkout", "-q", "main"]);
+
+    // Not reported as complete, and not offered to the verb that publishes one.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature/elsewhere"))
+        .stdout(predicate::str::contains("incomplete step"))
+        .stdout(predicate::str::contains("trailer prefix \"Qqq-\""));
+
+    // The train is where the loss would happen: unrecognized provenance would be
+    // no provenance, and the branch would land as finished work.
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "feature/elsewhere"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trailer prefix \"Qqq-\""));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    // Recovery refuses it too, and says what to configure rather than claiming the
+    // branch is complete.
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/elsewhere",
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "carries provenance under the trailer prefix \"Qqq-\"",
+        ))
+        .stderr(predicate::str::contains("Set trailer_prefix"));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    // Configuring the prefix the branch already carries is the whole migration: the
+    // same command then recovers it, and the base records the attestation.
+    configure_rules(
+        &fixture.world,
+        format!(
+            "version: 1\ntrailer_prefix: Qqq-\nrules: []\ndefault: {}\n",
+            local_direct("[\"true\"]")
+        ),
+    );
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/elsewhere",
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        published.contains("Qqq-Recovered-Incomplete:"),
+        "{published}"
+    );
+    assert_eq!(fixture.origin_log()[0], "feat: add the thing");
 }
 
 #[test]

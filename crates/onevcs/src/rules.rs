@@ -18,6 +18,16 @@ pub struct RulesFile {
     // kind, a missing default, or a stray key is rejected here and asserted in
     // tests/contract.rs.
     pub version: u32,
+    /// The prefix every provenance trailer key carries, written and read.
+    ///
+    /// Unset is `Onevcs-`, which is what this crate has always written. A host
+    /// whose branches were preserved by something spelling those keys differently
+    /// sets the prefix it already wrote, and this build then recognizes, lists, and
+    /// recovers that work — the prefix is the whole hook, and no particular value
+    /// of it means anything here. Checked when the file is loaded: a value that
+    /// cannot spell a git trailer key is refused by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trailer_prefix: Option<String>,
     /// The rules, in priority order: the first one that matches wins.
     pub rules: Vec<Rule>,
     /// The policy for a repository no rule matches.
