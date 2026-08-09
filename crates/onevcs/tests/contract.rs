@@ -12,9 +12,14 @@
 //! * the CLI usage block and clap's parser name the same commands and flags;
 //! * the declared struct fields and trait methods exist with those names; and
 //! * malformed input is rejected at the boundary rather than silently accepted.
+//!
+//! Alongside them, the reconciliations that hold the *release* to what the crate
+//! is: the smoke script and the platform-target table below, and the packaging
+//! inputs — every path the release archive and the npm launcher name has to be a
+//! path this repository has.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use clap::CommandFactory;
 use onevcs::cli::Cli;
@@ -784,10 +789,15 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     }
 }
 
+/// The repository root — the directory a workflow step runs in, and the one every
+/// path below is resolved from.
+fn repo_root() -> PathBuf {
+    // `crates/onevcs` -> the workspace root.
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 fn repo_file(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative);
+    let path = repo_root().join(relative);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
@@ -898,5 +908,193 @@ fn every_copy_of_the_platform_target_table_agrees() {
     assert_eq!(
         from_assembler, from_release,
         "scripts/npm-build.mjs and the release matrices build different targets"
+    );
+}
+
+/// The action that builds the release archive. Its `include` input is a
+/// comma-separated list of extra paths, each copied out of the directory the step
+/// runs in — the checkout root, since no step sets a `working-directory`.
+const ARCHIVE_ACTION: &str = "taiki-e/upload-rust-binary-action";
+
+/// Every path this workflow's archive steps pass as `include`, parsed out of the
+/// workflow itself.
+///
+/// Parsed rather than listed here on purpose: a file added to `include` tomorrow
+/// has to arrive already checked, or this only ever covers the three that
+/// happened to be there when it was written.
+fn archive_include_paths(workflow: &str) -> Vec<String> {
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
+    let jobs = doc.get("jobs").and_then(serde_yaml_ng::Value::as_mapping);
+    let mut named = Vec::new();
+    for job in jobs.into_iter().flat_map(serde_yaml_ng::Mapping::values) {
+        let steps = job.get("steps").and_then(serde_yaml_ng::Value::as_sequence);
+        for step in steps.into_iter().flatten() {
+            let uses = step
+                .get("uses")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .unwrap_or_default();
+            if !uses.starts_with(ARCHIVE_ACTION) {
+                continue;
+            }
+            let include = step
+                .get("with")
+                .and_then(|with| with.get("include"))
+                .and_then(serde_yaml_ng::Value::as_str)
+                .unwrap_or_default();
+            named.extend(
+                include
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+    }
+    named
+}
+
+/// The named paths that do not resolve to something inside `base` — either
+/// because they are not there, or because they never pointed into it.
+///
+/// A packaging input is copied out of one directory, so `/etc/hostname` or
+/// `../secrets` is as broken as a missing file — and joining either onto `base`
+/// would answer for a path outside it, which is how an existence check quietly
+/// passes on a value that would ship nothing.
+fn unresolved_under<'a>(base: &Path, named: &'a [String]) -> Vec<&'a str> {
+    named
+        .iter()
+        .filter(|path| {
+            let candidate = Path::new(path.as_str());
+            let inside = candidate
+                .components()
+                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir));
+            !inside || !base.join(candidate).exists()
+        })
+        .map(String::as_str)
+        .collect()
+}
+
+/// Every workflow that builds a release archive, with the paths that archive
+/// `include`s. Read from the directory rather than by filename, so a second
+/// workflow that ships an archive one day is covered the moment it lands.
+fn archive_include_paths_by_workflow() -> Vec<(String, Vec<String>)> {
+    let dir = repo_root().join(".github/workflows");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("the workflows directory must be readable") {
+        let path = entry.expect("a workflow directory entry").path();
+        if !matches!(
+            path.extension().and_then(std::ffi::OsStr::to_str),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let named = archive_include_paths(&text);
+        if !named.is_empty() {
+            let name = path.file_name().expect("a workflow has a file name");
+            found.push((name.to_string_lossy().into_owned(), named));
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn every_file_a_release_archive_names_is_in_this_repository() {
+    // The archive step `cp`s each `include` path out of the checkout root, so one
+    // that is not there kills every upload leg *after* a successful compile — which
+    // is how v0.1.0 and v0.1.1 shipped no binary for any platform and no npm
+    // package at all, while crates.io and PyPI (a separate job) both looked
+    // healthy. Nothing outside a release run exercises that step; this is what
+    // stands in for it.
+    let by_workflow = archive_include_paths_by_workflow();
+    assert!(
+        !by_workflow.is_empty(),
+        "no workflow names an archive for {ARCHIVE_ACTION} — if the archive is built by \
+         something else now, point ARCHIVE_ACTION at it, because this check is covering \
+         nothing"
+    );
+    for (workflow, named) in by_workflow {
+        let unresolved = unresolved_under(&repo_root(), &named);
+        assert!(
+            unresolved.is_empty(),
+            "{workflow}'s release archive includes {unresolved:?}, which does not resolve in the \
+             repository root the archive step copies from — add the file, or name the path it \
+             actually lives at"
+        );
+    }
+}
+
+#[test]
+fn an_archive_input_that_names_no_file_in_the_repository_is_caught() {
+    // The check above is only worth its place if it fails on the shape that shipped
+    // two empty releases. This is that shape, in the same YAML the workflow is
+    // written in, through the same parse and the same resolution — plus the other
+    // way an input names nothing the checkout has, an absolute path, which exists
+    // on the runner and would still archive a file this repository never shipped.
+    let workflow = "\
+jobs:
+  upload:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: onevcs
+          archive: $bin-$tag-$target
+          include: README.md, CHANGELOG-that-is-not-here.md, /etc/hostname
+";
+    let named = archive_include_paths(workflow);
+    assert_eq!(
+        named,
+        [
+            "README.md",
+            "CHANGELOG-that-is-not-here.md",
+            "/etc/hostname"
+        ]
+    );
+    assert_eq!(
+        unresolved_under(&repo_root(), &named),
+        ["CHANGELOG-that-is-not-here.md", "/etc/hostname"]
+    );
+}
+
+#[test]
+fn every_file_the_npm_launcher_names_is_in_its_package() {
+    // The same failure at the other packaging boundary: npm ships only what `files`
+    // lists and links `bin` into the caller's path, both resolved from the package
+    // directory — so a path either names that is not there publishes a launcher
+    // with nothing to run. The *platform* packages need no equivalent: their
+    // manifests are generated by scripts/npm-build.mjs around a binary it has just
+    // copied in, and tests/e2e/packaging.rs installs and runs one.
+    let manifest: Value =
+        serde_json::from_str(&repo_file("npm/onevcs/package.json")).expect("the launcher is JSON");
+    let string = |value: &Value| {
+        value
+            .as_str()
+            .expect("a launcher path is a string")
+            .to_owned()
+    };
+    let mut named: Vec<String> = manifest["files"]
+        .as_array()
+        .expect("the launcher lists the files it ships")
+        .iter()
+        .map(string)
+        .collect();
+    named.extend(
+        manifest["bin"]
+            .as_object()
+            .expect("the launcher names the commands it installs")
+            .values()
+            .map(string),
+    );
+    assert!(!named.is_empty(), "the launcher manifest names no paths");
+
+    let package = repo_root().join("npm/onevcs");
+    let unresolved = unresolved_under(&package, &named);
+    assert!(
+        unresolved.is_empty(),
+        "npm/onevcs/package.json names {unresolved:?}, which does not resolve inside npm/onevcs"
     );
 }

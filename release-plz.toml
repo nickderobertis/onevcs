@@ -45,3 +45,17 @@ commit_parsers = [
   { message = "^style", skip = true },
   { body = ".*", group = "Other" },
 ]
+
+# The changelog lives at the repository root, not beside the crate's Cargo.toml
+# where release-plz would otherwise write it. Two things read it there: the
+# release archive's `include` in release.yml, whose paths resolve from the
+# checkout root — a root changelog is what keeps that step from failing every
+# upload leg with `cp: cannot stat 'CHANGELOG.md'` — and a reader arriving at the
+# repository, who looks in one place. It is also the shape the sibling repos
+# have, so that workflow line stays literally identical across all of them.
+#
+# `changelog_path` can only be set per package, and is itself relative to the
+# root Cargo.toml, so this whole table exists to move that one file.
+[[package]]
+name = "onevcs"
+changelog_path = "CHANGELOG.md"

@@ -99,7 +99,8 @@ not tell you:
   `pr-title`, and `llmlint`. `published-smoke.yml` is a schedule, never a PR
   check, so it cannot be required.
 - **PRs follow `.github/pull_request_template.md`** — terse **What** and **Why**;
-  it becomes the squash body.
+  it becomes the squash body. `.github/CODEOWNERS` routes the review by subtree,
+  so a packaging or workflow change is not reviewed as if it were a crate change.
 - **Releases are fully automated; the only human action is merging a PR.**
   release-plz is the single version driver: it computes the version from
   conventional commits, opens a release PR, and on merge tags `vX.Y.Z` and cuts
@@ -111,6 +112,17 @@ not tell you:
 - **One version source.** Cargo.toml is it. The wheel takes it via maturin's
   `dynamic = ["version"]` and the npm packages via `scripts/npm-build.mjs`.
   Never write a version into `pyproject.toml` or `npm/onevcs/package.json`.
+- **A packaging input is a path, and the gate checks it resolves.** The release
+  archive's `include` and the npm launcher's `files`/`bin` are copied from the
+  checkout root and the package directory respectively, and a path that is not
+  there fails *after* a green compile, on a release nobody re-runs. That is how
+  v0.1.0 and v0.1.1 shipped no binaries and no npm package while crates.io and
+  PyPI looked healthy. `tests/contract.rs` parses those paths out of the
+  workflow and the manifest and asserts each one exists — so add a file to
+  `include` freely, but add the file too. It is also why the changelog lives at
+  the repository root (`changelog_path` in `release-plz.toml`) rather than beside
+  the crate: that is where the archive step looks, and where the sibling repos
+  keep theirs.
 
 `gh-secrets.json` names the secrets a fork or a fresh clone must provision;
 values live in the secret store, never in the tree.

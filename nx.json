@@ -19,10 +19,12 @@
       "{workspaceRoot}/Cargo.lock",
       "sharedGlobals"
     ],
-    "crateAndContract": [
+    "crateAndSuiteInputs": [
       "crateSource",
       "{workspaceRoot}/docs/contract.md",
-      "{workspaceRoot}/scripts/smoke-published.sh"
+      "{workspaceRoot}/scripts/**/*",
+      "{workspaceRoot}/npm/**/*",
+      "{workspaceRoot}/.github/workflows/*"
     ]
   },
   "targetDefaults": {
@@ -31,7 +33,7 @@
     "format-check": { "cache": true, "inputs": ["crateSource"] },
     "lint": { "cache": true, "inputs": ["crateSource"] },
     "doc": { "cache": true, "inputs": ["crateSource"] },
-    "test": { "cache": true, "inputs": ["crateAndContract"] },
+    "test": { "cache": true, "inputs": ["crateAndSuiteInputs"] },
     "check": {
       "cache": false,
       "dependsOn": ["format-check", "lint", "test", "doc"]

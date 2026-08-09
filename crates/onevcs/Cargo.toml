@@ -53,6 +53,9 @@ predicates = { workspace = true }
 # The journeys read the binary's own NDJSON stream back, which is the surface a
 # consumer meets rather than an internal the suite could reach around.
 serde_json = { workspace = true }
+# The release workflow, parsed as the YAML Actions reads rather than grepped, so
+# the paths a release archive names are the ones the suite checks exist.
+serde_yaml_ng = { workspace = true }
 tempfile = { workspace = true }
 
 # The end-to-end journeys: they spawn the compiled binary as a subprocess, so they
