@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesFile {
-    /// The schema version. `1` is the shape declared here.
-    // llmlint: ignore[boundary_inputs_validated] rejecting a version this build cannot read
-    // belongs to the loader, which is implementation this interface-only crate does not
-    // carry yet. The shape is enforced: an undeclared publication, approvals, or gate
-    // kind, a missing default, or a stray key is rejected here and asserted in
+    /// The schema version: `1` is this shape without `trailer_prefix`, `2` with it.
+    // llmlint: ignore[boundary_inputs_validated] which versions this build can read is the
+    // loader's question rather than this type's, and it answers it: it refuses one outside
+    // the range it reads, and refuses a trailer_prefix in a version that predates the key.
+    // The shape is enforced here — an undeclared publication, approvals, or gate kind, a
+    // missing default, or a stray key is rejected at this boundary and asserted in
     // tests/contract.rs.
     pub version: u32,
     /// The prefix every provenance trailer key carries, written and read.
@@ -39,9 +40,18 @@ pub struct RulesFile {
 /// spell a git trailer key does not deserialize at all — the marker is written and
 /// read from one value, and a value neither side can find again is unrepresentable
 /// rather than representable-and-noticed-later.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct TrailerPrefix(String);
+
+/// The prefix itself, quoted — never the wrapper. Every refusal that names one
+/// writes it with `{:?}`, and a derived `Debug` would spell each of them
+/// `TrailerPrefix("Onevcs-")` at an operator rather than the value they configured.
+impl std::fmt::Debug for TrailerPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
 
 impl Default for TrailerPrefix {
     /// The prefix this crate has always written, for a host that configures none.

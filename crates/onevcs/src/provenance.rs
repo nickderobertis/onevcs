@@ -48,7 +48,7 @@ const INCOMPLETE: &str = "incomplete";
 /// command met it first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trailers {
-    prefix: String,
+    prefix: TrailerPrefix,
     incomplete: String,
     change_base: String,
     recovered: String,
@@ -65,7 +65,7 @@ impl Trailers {
     /// The keys under one checked prefix.
     pub fn new(prefix: &TrailerPrefix) -> Self {
         Self {
-            prefix: prefix.to_string(),
+            prefix: prefix.clone(),
             incomplete: format!("{prefix}{STATUS}: {INCOMPLETE}"),
             change_base: format!("{prefix}Change-Base:"),
             recovered: format!("{prefix}Recovered-Incomplete:"),
@@ -74,7 +74,7 @@ impl Trailers {
     }
 
     /// The prefix itself, for a refusal that names it.
-    pub fn prefix(&self) -> &str {
+    pub fn prefix(&self) -> &TrailerPrefix {
         &self.prefix
     }
 
@@ -215,15 +215,15 @@ pub fn unrecognized(
     base: &str,
     branch: &str,
     trailers: &Trailers,
-) -> Result<Vec<String>> {
+) -> Result<Vec<TrailerPrefix>> {
     let commits = git::log_messages(repo, base, branch)?;
-    let mut found: Vec<String> = Vec::new();
+    let mut found: Vec<TrailerPrefix> = Vec::new();
     for line in commits.iter().flat_map(|commit| commit.message.lines()) {
         let Some(prefix) = marker_prefix(line) else {
             continue;
         };
-        if prefix != trailers.prefix() && !found.iter().any(|seen| seen == prefix) {
-            found.push(prefix.to_owned());
+        if &prefix != trailers.prefix() && !found.contains(&prefix) {
+            found.push(prefix);
         }
     }
     Ok(found)
@@ -231,16 +231,16 @@ pub fn unrecognized(
 
 /// The prefix of a line shaped like an incomplete marker, under any prefix.
 ///
-/// The extracted prefix is held to the same check a configured one is, so a line of
-/// prose that happens to end in `Status: incomplete` is not read as a trailer.
-fn marker_prefix(line: &str) -> Option<&str> {
+/// Read back through the same conversion a configured prefix goes through, so what
+/// comes out is a prefix rather than the part of a line that sat where one would —
+/// which is also what keeps prose that happens to end in `Status: incomplete` from
+/// being taken for somebody else's marker.
+fn marker_prefix(line: &str) -> Option<TrailerPrefix> {
     let (key, value) = line.trim().split_once(':')?;
     if value.trim() != INCOMPLETE {
         return None;
     }
-    let prefix = key.strip_suffix(STATUS)?;
-    validate_prefix(prefix).ok()?;
-    Some(prefix)
+    TrailerPrefix::try_from(key.strip_suffix(STATUS)?.to_owned()).ok()
 }
 
 /// One trailer per attested incomplete marker, in marker history order.

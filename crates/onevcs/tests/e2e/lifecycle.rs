@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use predicates::prelude::*;
 
 use crate::registry::configure_rules;
-use crate::support::documented_trailer;
+use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, World};
 
 /// A registered repository: its origin, its checkout, and the policy it publishes
@@ -483,6 +483,74 @@ fn a_configured_trailer_prefix_is_written_and_read_by_every_verb_that_touches_pr
         "the base must carry the recovery forward under the configured prefix:\n{published}"
     );
     assert!(!published.contains("Onevcs-"), "{published}");
+}
+
+#[test]
+fn a_legacy_marker_is_recovered_by_its_subject_even_when_its_trailer_is_unreadable() {
+    // The awkward middle case: a branch preserved by a build old enough to mark the
+    // step in the *subject*, carrying a trailer under a prefix this host does not
+    // read. The subject is what recognizes it — that is what the suffix is for — so
+    // recovery still runs the gate and attests, under the prefix this host writes.
+    // The train, which knows only that it found provenance it cannot read, refuses
+    // it and points at the verb that can. Both refuse to publish it as finished.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let checkout = fixture.checkout.clone();
+    fixture
+        .world
+        .git(&checkout, &["checkout", "-q", "-b", "feature/legacy"]);
+    fixture
+        .world
+        .commit_file(&checkout, "one.txt", "one\n", "feat: add the thing");
+    fixture.world.git(
+        &checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/legacy (incomplete step)\n\n{}",
+                documented_trailer("Status", "Qqq-")
+            ),
+        ],
+    );
+    fixture.world.git(&checkout, &["checkout", "-q", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "feature/legacy"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skipped"))
+        .stdout(predicate::str::contains("onevcs recover feature/legacy"));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/legacy",
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        published.contains(&documented_trailer(
+            "Recovered-Incomplete",
+            &documented_default_prefix()
+        )),
+        "the attestation is written under the prefix this host writes:\n{published}"
+    );
+    assert_eq!(fixture.origin_log()[0], "feat: add the thing");
 }
 
 #[test]
