@@ -36,12 +36,12 @@ usage: publish-crates.sh CRATE [CRATE...]
 USAGE
 }
 
-# A crate name, checked before it is interpolated anywhere.
+# A crate name, checked before it is used anywhere.
 #
-# It becomes part of a `sed` expression below, and Cargo's package-name grammar —
-# letters, digits, `-` and `_` — has no character `sed` reads as anything but
-# itself. A name outside it is refused here rather than quietly matching another
-# package's metadata.
+# It becomes an argument to `cargo` and a segment of an index URL, and Cargo's
+# package-name grammar — letters, digits, `-` and `_` — has no character that is a
+# path separator, a `.` that could climb out of a shard, or a leading `-` that a
+# command would read as an option. A name outside it is refused here.
 named_crate() {
     case "$1" in
     "") refuse "a crate name cannot be empty" \
@@ -72,50 +72,97 @@ index_path() {
 # The version the workspace manifest declares for a crate, which is the one
 # release-plz maintains and the only one this script will publish.
 #
-# `cargo metadata` is read in its own step rather than piped straight into `sed`:
-# under `set -e` a failing pipeline would end the script with cargo's diagnostic
-# and none of this one's, which is the shape an operator cannot act on.
+# Asked of cargo for one named package rather than pattern-matched out of a
+# `cargo metadata` document: `cargo pkgid` answers about the package it was given
+# and refuses an unknown one itself, so a name that resolves to nothing cannot
+# silently pick up a sibling's version. What comes back is then checked to be a
+# version before it is used as one.
 declared_version() {
-    local crate="$1" metadata version
-    if ! metadata="$(cargo metadata --no-deps --format-version 1)"; then
-        refuse "cargo metadata failed, so no version could be read for '$crate'" \
-            "run 'cargo metadata --no-deps' here and fix what it names; nothing was published"
-    fi
-    version="$(printf '%s' "$metadata" |
-        sed -n "s/.*\"name\":\"$crate\",\"version\":\"\([^\"]*\)\".*/\1/p")"
-    if [ -z "$version" ]; then
-        refuse "cargo metadata names no version for '$crate'" \
+    local crate="$1" pkgid version
+    if ! pkgid="$(cargo pkgid --package "$crate" 2>/dev/null)"; then
+        refuse "cargo names no package '$crate' in this workspace" \
             "check the crate is a member of this workspace and is spelled as its [package] name"
     fi
+    # `<source>#<version>`, or `<source>#<name>@<version>` when the package name and
+    # its directory differ. Both spellings end in the version.
+    version="${pkgid##*#}"
+    version="${version##*@}"
+    # A version starts with a number and is otherwise a semver's alphabet. Anything
+    # else is cargo saying something this script does not understand, which must not
+    # become the version a publish is decided against.
+    case "$version" in
+    "" | [!0-9]* | *[!0-9A-Za-z.+-]*)
+        refuse "cargo answered '$pkgid' for '$crate', which names no version this script can read" \
+            "run 'cargo pkgid --package $crate' here and fix what it names; nothing was published"
+        ;;
+    esac
     printf '%s\n' "$version"
 }
 
 # Whether the index already serves this version, or the reason it could not say.
 #
-# A registry that did not answer is *not* an absent version: treating a timeout or
-# a 500 as "not published yet" is what would send a live version back to crates.io
-# on every re-run. Only a 404 — the index has no such crate — means absent.
+# A registry that did not answer is *not* an absent version: treating a timeout, a
+# 500, or a 200 carrying something that is not an index document as "not published
+# yet" is what would send a live version back to crates.io on every re-run. Only a
+# 404 — the index has no such crate — means absent.
+#
+# The body is the sparse index's own format: one JSON record per line, each naming
+# the crate and carrying exactly one `vers`. It is checked to be that before any
+# version is read out of it, and the decision is made on the `vers` value taken from
+# a record rather than on text matched anywhere in the body — a proxy's error page
+# that happened to contain the version string is not an answer about the registry.
+# (`vers` appears once per record: a record's dependencies carry `req`, never `vers`.)
 already_live() {
-    local url="$1" version body status
+    local url="$1" version="$2" body status line field found records=0
     body="$(mktemp)"
     status="$(curl -sSL -o "$body" -w '%{http_code}' "$url" 2>/dev/null)" || status="000"
-    version="$2"
     case "$status" in
-    200)
-        if grep -q "\"vers\":\"$version\"" "$body"; then
-            rm -f "$body"
-            return 0
-        fi
+    200) ;;
+    404)
+        rm -f "$body"
+        return 1
         ;;
-    404) ;;
     *)
         rm -f "$body"
         refuse "the crates.io index answered $status for $url, so it cannot say whether $version is live" \
             "re-run this job once the registry answers; nothing was published"
         ;;
     esac
+
+    found=1
+    # `|| [ -n "$line" ]` because a body need not end in a newline, and a last line
+    # the loop dropped would read as one fewer record than the registry sent.
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        field="$(printf '%s' "$line" | grep -o '"vers":"[^"]*"' || true)"
+        case "$line" in
+        "{"*"}") ;;
+        *)
+            rm -f "$body"
+            refuse "the crates.io index answered 200 for $url with something that is not an index document" \
+                "re-run this job once the registry answers; nothing was published"
+            ;;
+        esac
+        if [ -z "$field" ] ||
+            [ "$(printf '%s\n' "$field" | wc -l)" -ne 1 ] ||
+            ! printf '%s' "$line" | grep -q '"name":"'; then
+            rm -f "$body"
+            refuse "the crates.io index answered 200 for $url with something that is not an index document" \
+                "re-run this job once the registry answers; nothing was published"
+        fi
+        records=$((records + 1))
+        field="${field#\"vers\":\"}"
+        if [ "${field%\"}" = "$version" ]; then
+            found=0
+        fi
+    done <"$body"
     rm -f "$body"
-    return 1
+
+    if [ "$records" -eq 0 ]; then
+        refuse "the crates.io index answered 200 for $url with an empty document" \
+            "re-run this job once the registry answers; nothing was published"
+    fi
+    return "$found"
 }
 
 if [ "${1:-}" = "--index-path" ]; then

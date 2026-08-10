@@ -276,10 +276,11 @@ fn a_project_counts_as_affected_when_nx_cannot_answer() {
     // stub breaks the one interpreter Nx runs on, which is how a broken install
     // presents.
     let base = TrackingRef::at_head("e2e-nx-cannot-answer");
-    // llmlint: ignore[e2e_not_mocked] the layer under test is nx-affected.sh's decision,
-    // and it is driven for real; Nx is the dependency whose failure is this branch's
-    // precondition. A working Nx cannot be asked to fail, and the alternative — breaking
-    // the checkout's own node_modules — would take every other journey down with it.
+    // The layer under test is nx-affected.sh's decision, and it is driven for real; Nx
+    // is the dependency whose failure is this branch's precondition. A working Nx cannot
+    // be asked to fail, and the alternative — breaking the checkout's own node_modules —
+    // would take every other journey down with it.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let broken_node = stub("node", "#!/bin/sh\nexit 1\n");
 
     Run::script("scripts/nx-affected.sh")
@@ -320,10 +321,11 @@ fn affected_selection_needs_something_to_select() {
 
 #[test]
 fn an_install_that_needed_a_second_attempt_reports_the_first_one() {
-    // llmlint: ignore[e2e_not_mocked] `-- COMMAND` is this script's documented interface,
-    // not a collaborator standing in for one: the retry loop, its budget arithmetic, and
-    // its reporting all run for real. No registry can be asked to withhold a version and
-    // then serve it, which is the race the loop exists for.
+    // `-- COMMAND` is this script's documented interface, not a collaborator standing in
+    // for one: the retry loop, its budget arithmetic, and its reporting all run for real.
+    // No registry can be asked to withhold a version and then serve it, which is the race
+    // the loop exists for.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let (_dir, script) = flaky_command(1);
 
     Run::script("scripts/retry-install.sh")
@@ -342,9 +344,10 @@ fn an_install_that_needed_a_second_attempt_reports_the_first_one() {
 
 #[test]
 fn an_install_the_registry_never_serves_fails_with_the_last_attempt_in_full() {
-    // llmlint: ignore[e2e_not_mocked] same as the journey above: the command is the
-    // script's own operand, and a real install that never converges would spend the
-    // ten-minute production budget to prove it.
+    // Same as the journey above: the command is the script's own operand, and a real
+    // install that never converges would spend the ten-minute production budget to prove
+    // it.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let (_dir, script) = flaky_command(u32::MAX);
 
     Run::script("scripts/retry-install.sh")
@@ -401,6 +404,11 @@ impl Registry {
         let dir = tempfile::tempdir().expect("a temporary directory for the stubs");
         let asked = dir.path().join("asked");
         let published = dir.path().join("published");
+        // The body goes through a file rather than into the stub's text: an index
+        // document is one JSON record per *line*, and a body embedded in a shell
+        // string cannot carry a newline the script would read as one.
+        let served = dir.path().join("served");
+        std::fs::write(&served, body).expect("a body the stub registry can serve");
         write_stub(
             &dir.path().join("curl"),
             &format!(
@@ -414,9 +422,10 @@ impl Registry {
                  \x20   *) shift ;;\n\
                  \x20 esac\n\
                  done\n\
-                 [ -z \"$out\" ] || printf '%s' {body:?} >\"$out\"\n\
+                 [ -z \"$out\" ] || cat \"{served}\" >\"$out\"\n\
                  printf '%s' {status:?}\n",
                 asked = asked.display(),
+                served = served.display(),
             ),
         );
         write_stub(
@@ -424,8 +433,12 @@ impl Registry {
             &format!(
                 "#!/usr/bin/env bash\n\
                  set -eu\n\
-                 if [ \"${{1:-}}\" = \"metadata\" ]; then\n\
-                 \x20 printf '%s\\n' '{METADATA}'\n\
+                 if [ \"${{1:-}}\" = \"pkgid\" ]; then\n\
+                 \x20 case \"${{3:-}}\" in\n\
+                 \x20   {PKGID}\n\
+                 \x20   *) echo \"error: package ID specification \\`${{3:-}}\\` did not \
+                 match any packages\" >&2; exit 101 ;;\n\
+                 \x20 esac\n\
                  \x20 exit 0\n\
                  fi\n\
                  printf '%s\\n' \"$*\" >>\"{published}\"\n",
@@ -453,9 +466,37 @@ impl Registry {
     }
 }
 
-/// What the stub `cargo metadata` answers: this workspace's two published crates,
+/// A sparse-index document in the registry's own shape: one JSON record per line,
+/// oldest first, each carrying the crate's `name`, its `vers`, and dependencies that
+/// state a `req` rather than a `vers` of their own.
+///
+/// The last line is the version the journeys declare, so this is a crate the index
+/// already serves.
+const INDEX_SERVING_9_9_9: &str = concat!(
+    r#"{"name":"onevcs","vers":"9.9.8","deps":[{"name":"serde","req":"^9.9.9"}],"yanked":false}"#,
+    "\n",
+    r#"{"name":"onevcs","vers":"9.9.9","deps":[],"yanked":false}"#,
+    "\n",
+);
+
+/// The same document one release earlier: every record is a version other than the
+/// one being published, and one of them names `9.9.9` as a dependency's `req`.
+const INDEX_WITHOUT_9_9_9: &str = concat!(
+    r#"{"name":"onevcs","vers":"9.9.7","deps":[],"yanked":true}"#,
+    "\n",
+    r#"{"name":"onevcs","vers":"9.9.8","deps":[{"name":"serde","req":"=9.9.9"}],"yanked":false}"#,
+    "\n",
+);
+
+/// What the stub `cargo pkgid` answers for this workspace's two published crates,
 /// at versions no release has ever cut, so nothing here can match a real one.
-const METADATA: &str = r#"{"packages":[{"name":"onevcs","version":"9.9.9"},{"name":"onevcs-testing","version":"8.8.8"}]}"#;
+///
+/// Cargo spells a package id two ways — `<source>#<version>` when the package name
+/// is its directory's, and `<source>#<name>@<version>` when it is not — so one crate
+/// here is each, and both parses are driven by the journeys below.
+const PKGID: &str = "onevcs) printf 'path+file:///w/crates/onevcs#9.9.9\\n' ;;\n\
+                     \x20   onevcs-testing) \
+                     printf 'path+file:///w/crates/x#onevcs-testing@8.8.8\\n' ;;";
 
 fn read_lines(path: &Path) -> Vec<String> {
     std::fs::read_to_string(path)
@@ -509,12 +550,12 @@ fn the_index_path_a_publish_reads_is_derived_from_the_crates_name() {
 }
 
 #[test]
-// A registry cannot be asked to withhold a version and then serve it, and a `cargo
-// publish` that ran would push this workspace to crates.io from a test. Both are
-// stubbed; the script's own decisions run unstubbed. See the block note on `Registry`.
-// llmlint: ignore[e2e_not_mocked] see the note directly above.
 fn a_version_the_index_already_serves_is_skipped_rather_than_republished() {
-    let registry = Registry::answering("200", r#"{"name":"onevcs","vers":"9.9.9"}"#);
+    // A registry cannot be asked to withhold a version and then serve it, and a `cargo
+    // publish` that ran would push this workspace to crates.io from a test. Both are
+    // stubbed; the script's own decisions run unstubbed. See the note on `Registry`.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
+    let registry = Registry::answering("200", INDEX_SERVING_9_9_9);
 
     registry
         .run()
@@ -535,14 +576,41 @@ fn a_version_the_index_already_serves_is_skipped_rather_than_republished() {
 }
 
 #[test]
-// A registry cannot be asked to withhold a version and then serve it, and a `cargo
-// publish` that ran would push this workspace to crates.io from a test. Both are
-// stubbed; the script's own decisions run unstubbed. See the block note on `Registry`.
-// llmlint: ignore[e2e_not_mocked] see the note directly above.
+fn a_crate_the_index_knows_at_other_versions_is_published_at_this_one() {
+    // The index answers for the crate, in full, and this version is simply not among
+    // the records — which is what it looks like the moment before a release. The
+    // decision is per record, so a `req` of `9.9.9` on some *other* version's
+    // dependency cannot be read as `9.9.9` itself being live.
+    //
+    // The index and `cargo publish` are stubbed because neither can be asked for this
+    // from a test, and a publish that ran would push this workspace to crates.io. The
+    // script's own decisions run unstubbed. See the note on `Registry`.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
+    let registry = Registry::answering("200", INDEX_WITHOUT_9_9_9);
+
+    registry
+        .run()
+        .arg("onevcs")
+        .output()
+        .succeeded()
+        .printed("onevcs 9.9.9 published to crates.io.");
+
+    assert_eq!(
+        registry.published(),
+        vec!["publish --quiet --locked --package onevcs"]
+    );
+}
+
+#[test]
 fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
     // The index answers nothing for either crate, which is what it does before a
     // release: both are published, and in the order the caller asked for, because
     // one names a version of the other.
+    //
+    // A registry cannot be asked to withhold a version and then serve it, and a `cargo
+    // publish` that ran would push this workspace to crates.io from a test. Both are
+    // stubbed; the script's own decisions run unstubbed. See the note on `Registry`.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let registry = Registry::serving_nothing();
 
     registry
@@ -572,11 +640,11 @@ fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
 }
 
 #[test]
-// A registry cannot be asked to withhold a version and then serve it, and a `cargo
-// publish` that ran would push this workspace to crates.io from a test. Both are
-// stubbed; the script's own decisions run unstubbed. See the block note on `Registry`.
-// llmlint: ignore[e2e_not_mocked] see the note directly above.
 fn a_crate_this_workspace_does_not_hold_is_refused_before_anything_is_published() {
+    // A registry cannot be asked to withhold a version and then serve it, and a `cargo
+    // publish` that ran would push this workspace to crates.io from a test. Both are
+    // stubbed; the script's own decisions run unstubbed. See the note on `Registry`.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let registry = Registry::serving_nothing();
 
     registry
@@ -584,7 +652,7 @@ fn a_crate_this_workspace_does_not_hold_is_refused_before_anything_is_published(
         .arg("onevcs-imaginary")
         .output()
         .failed()
-        .said("cargo metadata names no version for 'onevcs-imaginary'")
+        .said("cargo names no package 'onevcs-imaginary' in this workspace")
         .said("ACTION: check the crate is a member of this workspace");
 
     assert!(registry.published().is_empty());
@@ -606,15 +674,16 @@ fn publish_crates_called_with_nothing_to_publish_says_how_to_call_it() {
 }
 
 #[test]
-// A registry cannot be asked to withhold a version and then serve it, and a `cargo
-// publish` that ran would push this workspace to crates.io from a test. Both are
-// stubbed; the script's own decisions run unstubbed. See the block note on `Registry`.
-// llmlint: ignore[e2e_not_mocked] see the note directly above.
-fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_a_pattern() {
-    // The name is interpolated into a `sed` expression that reads one package's
-    // version out of the workspace metadata. Cargo's grammar has no character
-    // `sed` reads as anything but itself, so anything outside it is refused —
-    // otherwise `one.cs` would quietly answer with `onevcs`'s version.
+fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_cargo_or_the_index() {
+    // The name becomes an argument to cargo and a segment of the index URL this
+    // script reads. Cargo's grammar has no path separator, no `.` that could climb
+    // out of a shard, and no leading `-` a command would read as an option, so
+    // anything outside it is refused before it is either of those things.
+    //
+    // A registry cannot be asked to withhold a version and then serve it, and a `cargo
+    // publish` that ran would push this workspace to crates.io from a test. Both are
+    // stubbed; the script's own decisions run unstubbed. See the note on `Registry`.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let registry = Registry::serving_nothing();
 
     for name in ["one.cs", "onevcs\\|onevcs-testing", ".*", "one vcs", ""] {
@@ -644,14 +713,15 @@ fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_a_pattern() {
 }
 
 #[test]
-// A registry cannot be asked to withhold a version and then serve it, and a `cargo
-// publish` that ran would push this workspace to crates.io from a test. Both are
-// stubbed; the script's own decisions run unstubbed. See the block note on `Registry`.
-// llmlint: ignore[e2e_not_mocked] see the note directly above.
 fn an_index_that_will_not_answer_stops_the_release_rather_than_republishing() {
     // A registry that did not answer is not an absent version. Reading a 500 as
     // "not published yet" is what would send a live version back to crates.io on
     // every re-run of the job.
+    //
+    // The index and `cargo publish` are stubbed because neither can be asked for this
+    // from a test, and a publish that ran would push this workspace to crates.io. The
+    // script's own decisions run unstubbed. See the note on `Registry`.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let registry = Registry::answering("503", "");
 
     registry
@@ -664,4 +734,55 @@ fn an_index_that_will_not_answer_stops_the_release_rather_than_republishing() {
         .said("ACTION: re-run this job once the registry answers; nothing was published");
 
     assert!(registry.published().is_empty());
+}
+
+#[test]
+fn an_index_answering_200_with_something_else_stops_the_release_too() {
+    // The other half of the same decision, and the one a status code cannot catch: a
+    // proxy or a captive portal answers 200 with a page. Deciding on text found
+    // anywhere in that body would read "not published yet" from an error page — and a
+    // page that happened to quote the version would read the opposite. Neither is the
+    // registry answering, so neither may publish.
+    for body in [
+        // An error page, which is what a proxy in front of the index serves.
+        "<html><body>503 Backend unavailable</body></html>",
+        // The page a caching proxy serves, quoting a record verbatim. Deciding on text
+        // found anywhere in the body would read this as "already live" and skip the
+        // publish the release exists to perform.
+        r#"<html><body>cached: {"name":"onevcs","vers":"9.9.9"} (index unavailable)</body></html>"#,
+        // Index-shaped but naming no crate, so nothing says which crate it answers for.
+        r#"{"vers":"9.9.9"}"#,
+    ] {
+        // The index and `cargo publish` are stubbed because neither can be asked for
+        // this from a test, and a publish that ran would push this workspace to
+        // crates.io. The script's own decisions run unstubbed. See the note on
+        // `Registry`.
+        // llmlint: ignore[e2e_not_mocked] see the note directly above.
+        let registry = Registry::answering("200", body);
+
+        registry
+            .run()
+            .arg("onevcs")
+            .output()
+            .failed()
+            .said("with something that is not an index document")
+            .said("ACTION: re-run this job once the registry answers; nothing was published");
+
+        assert!(
+            registry.published().is_empty(),
+            "a body the script cannot read is not a version it may publish over"
+        );
+    }
+
+    // And an empty 200 is the same refusal by its own name, because it is the shape a
+    // truncated response takes rather than a crate the index has never heard of.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
+    let empty = Registry::answering("200", "");
+    empty
+        .run()
+        .arg("onevcs")
+        .output()
+        .failed()
+        .said("with an empty document");
+    assert!(empty.published().is_empty());
 }
