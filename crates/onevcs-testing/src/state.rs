@@ -158,25 +158,31 @@ pub(crate) fn requested_branch(req: &SessionRequest, token: &SessionToken) -> Re
 
 /// A branch name, refused here if git would refuse it.
 ///
-/// The real implementation hands the name to `git check-ref-format`, which is the
-/// parser that decides; a provider with no git carries the same rules instead. It
-/// is deliberately no *stricter* than that list — refusing a name git accepts
-/// would make a journey fail where the real run succeeds, which is the same drift
-/// as accepting one git refuses, pointed the other way.
+/// The real implementation asks `git check-ref-format`, which is the parser that
+/// decides; a provider with no git carries `git-check-ref-format(1)`'s rules
+/// instead. That is a restatement, so it is gated rather than trusted:
+/// `refs.rs` in the suite runs both this and git itself over a table of names
+/// and holds them to each other, because a copy of somebody else's grammar with
+/// no gate is a copy that drifts.
+///
+/// One deliberate difference, and the gate knows about it: a leading `-` is
+/// refused here even though git accepts it as a ref, because such a name reaches
+/// a command line as an option rather than as the branch it spells.
 pub(crate) fn named_branch(value: &str, what: &str) -> Result<()> {
-    let usable = !value.is_empty()
+    // Rule 1 is per slash-separated component; the rest are about the whole name.
+    let components_usable = !value.is_empty()
+        && value.split('/').all(|component| {
+            !component.is_empty() && !component.starts_with('.') && !component.ends_with(".lock")
+        });
+    let usable = components_usable
         && !value.starts_with('-')
-        && !value.starts_with('/')
-        && !value.ends_with('/')
-        && !value.ends_with('.')
-        && !value.ends_with(".lock")
         && !value.contains("..")
-        && !value.contains("//")
         && !value.contains("@{")
-        && value != "@"
-        && !value
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_ascii_control() || "~^:?*[\\".contains(c));
+        && !value.ends_with('.')
+        && !value.ends_with('/')
+        && !value.chars().any(|c| {
+            c.is_whitespace() || c.is_ascii_control() || c == '\u{7f}' || "~^:?*[\\".contains(c)
+        });
     if !usable {
         return Err(Error::Invalid {
             reason: format!("{what} {value:?} is a name git would not accept"),

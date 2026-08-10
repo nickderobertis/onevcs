@@ -8,6 +8,7 @@
 
 mod failures;
 mod host;
+mod refs;
 mod repository;
 mod round_trip;
 mod support;
