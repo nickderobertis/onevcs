@@ -792,11 +792,16 @@ fn an_index_answering_200_with_something_else_stops_the_release_too() {
 
 #[test]
 fn an_index_answering_about_another_crate_stops_the_release_by_saying_so() {
-    // A redirect, or a shard derived wrongly, answers 200 with a perfectly well-formed
-    // index document — for something else. Its versions say nothing about this crate's,
-    // so reading one as this crate's would either skip a publish that must happen or
-    // repeat one that already did. The refusal names the crate that was asked for,
-    // because that is what an operator needs to tell the two apart.
+    // A shard derived wrongly answers 200 with a perfectly well-formed index document —
+    // for something else. Its versions say nothing about this crate's, so reading one as
+    // this crate's would either skip a publish that must happen or repeat one that
+    // already did. The refusal names the crate that was asked for, because that is what
+    // an operator needs to tell the two apart.
+    //
+    // The document served here is this workspace's own sibling, and it names `onevcs` in
+    // its dependencies — which is why the record's *opening* is what identifies it. The
+    // two crates dev-depend on each other, so looking for the name anywhere in the line
+    // would accept each one's index as the other's.
     //
     // The index and `cargo publish` are stubbed because neither can be asked for this
     // from a test, and a publish that ran would push this workspace to crates.io. The
@@ -805,7 +810,8 @@ fn an_index_answering_about_another_crate_stops_the_release_by_saying_so() {
     let registry = Registry::answering(
         "200",
         concat!(
-            r#"{"name":"onevcs-testing","vers":"9.9.9","deps":[],"yanked":false}"#,
+            r#"{"name":"onevcs-testing","vers":"9.9.9","#,
+            r#""deps":[{"name":"onevcs","req":"^9.9.9","kind":"normal"}],"yanked":false}"#,
             "\n",
         ),
     );

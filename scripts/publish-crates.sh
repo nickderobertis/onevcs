@@ -106,23 +106,27 @@ declared_version() {
 # yet" is what would send a live version back to crates.io on every re-run. Only a
 # 404 — the index has no such crate — means absent.
 #
-# The body is the sparse index's own format: one JSON record per line, each an object
-# naming the crate it is a version *of* and carrying exactly one `vers`. Every record
-# is checked to be that, and to be about the crate that was asked for, before any
-# version is read out of it — so the decision comes from a record rather than from
-# text matched anywhere in the body. A proxy's error page that quotes a record, and a
-# redirect that serves some other crate's document, are both answers about something
-# else, and neither may decide whether this version is live.
+# The body is the sparse index's own format: one JSON record per line, each opening
+# with the crate it is a version *of* and that version — `{"name":"<crate>","vers":"…`.
+# A record's version is read from exactly that opening and nowhere else, so nothing
+# nested in the record can be mistaken for it. Matching `"name":"<crate>"` *anywhere*
+# in the line would not do: a record carries its dependencies, and in this workspace
+# each crate is a dev-dependency of the other, so `onevcs-testing`'s records name
+# `onevcs` and vice versa.
 #
-# Two things make the per-record checks sufficient without a JSON parser: `vers`
-# appears once per record, because a record's dependencies state a `req` and never a
-# `vers`; and `"name":"<crate>"` in a record can only be the record's own name,
-# because no crate depends on itself.
+# That opening is the registry's format restated here, so it is held closed rather
+# than trusted: a record that does not begin that way stops the release instead of
+# being read loosely, which is the same bargain `index_path` makes. The journeys in
+# crates/onevcs/tests/e2e/scripts.rs drive each way it can fail to hold.
+#
+# Redirects are not followed, for the same reason: the URL names the crate, so an
+# answer from somewhere else is not an answer about this one.
 already_live() {
-    local url="$1" crate="$2" version="$3" body status line field found records=0
+    local url="$1" crate="$2" version="$3" body status line opening found records=0
     crate="$(printf '%s' "$crate" | tr '[:upper:]' '[:lower:]')"
+    opening="{\"name\":\"$crate\",\"vers\":\""
     body="$(mktemp)"
-    status="$(curl -sSL -o "$body" -w '%{http_code}' "$url" 2>/dev/null)" || status="000"
+    status="$(curl -sS -o "$body" -w '%{http_code}' "$url" 2>/dev/null)" || status="000"
     case "$status" in
     200) ;;
     404)
@@ -141,28 +145,29 @@ already_live() {
     # the loop dropped would read as one fewer record than the registry sent.
     while IFS= read -r line || [ -n "$line" ]; do
         [ -n "$line" ] || continue
-        field="$(printf '%s' "$line" | grep -o '"vers":"[^"]*"' || true)"
         case "$line" in
-        "{"*"}") ;;
-        *) field="" ;;
-        esac
-        # Structure first — an object, one `vers`, and a `name` at all — so a record
-        # that is not a record is not reported as a record about the wrong crate.
-        if [ -z "$field" ] ||
-            [ "$(printf '%s\n' "$field" | wc -l)" -ne 1 ] ||
-            ! printf '%s' "$line" | grep -q '"name":"'; then
+        "$opening"*) ;;
+        # Named this crate but did not go on to a version: a truncated record, which
+        # is a document this script cannot read rather than one about someone else.
+        "{\"name\":\"$crate\","*)
             rm -f "$body"
             refuse "the crates.io index answered 200 for $url with something that is not an index document" \
                 "re-run this job once the registry answers; nothing was published"
-        fi
-        if ! printf '%s' "$line" | grep -qF "\"name\":\"$crate\""; then
+            ;;
+        '{"name":"'*)
             rm -f "$body"
             refuse "the crates.io index answered 200 for $url with a record that is not about $crate" \
                 "re-run this job once the registry answers for the crate that was asked for; nothing was published"
-        fi
+            ;;
+        *)
+            rm -f "$body"
+            refuse "the crates.io index answered 200 for $url with something that is not an index document" \
+                "re-run this job once the registry answers; nothing was published"
+            ;;
+        esac
         records=$((records + 1))
-        field="${field#\"vers\":\"}"
-        if [ "${field%\"}" = "$version" ]; then
+        line="${line#"$opening"}"
+        if [ "${line%%\"*}" = "$version" ]; then
             found=0
         fi
     done <"$body"
