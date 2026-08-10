@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 use crate::event::EventKind;
 use url::Url;
 
-use crate::host::{ChangeRequest, ChangeSpec, Check, GitHub, MergeOutcome, RemoteHost, Sha};
+use crate::host::{ChangeRequest, ChangeSpec, Check, Hosting, MergeOutcome, RemoteHost, Sha};
 use crate::rules::{Gate, GateKind, MergePolicy, Policy};
 use crate::store::Resolution;
 use crate::stream::{self, Stream};
@@ -58,7 +58,7 @@ impl Outcome {
 }
 
 /// Everything one publication needs to know about itself.
-pub struct Context {
+pub struct Context<'a> {
     /// The identity and checkouts the branch belongs to.
     pub resolution: Resolution,
     /// The resolved policy, before any per-run narrowing.
@@ -85,10 +85,14 @@ pub struct Context {
     /// The provenance trailer keys this host reads and writes, which decide which
     /// of the branch's commits describe the change and which record the session.
     pub provenance: provenance::Trailers,
+    /// Where the host that lands a change request comes from. The seam, carried on
+    /// the context rather than reached for at the call site, so every publication —
+    /// a session's and a recovery's — goes through the one a caller supplied.
+    pub hosting: &'a dyn Hosting,
 }
 
 /// Verify and publish a branch.
-pub fn run(context: &Context, stream: &mut Stream) -> Result<Outcome> {
+pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<Outcome> {
     let remote_base = format!("origin/{}", context.change_base);
     if git::has_remote(&context.repo, "origin") {
         // Outside every exclusive section, deliberately.
@@ -121,7 +125,7 @@ pub fn run(context: &Context, stream: &mut Stream) -> Result<Outcome> {
 }
 
 /// The subject one publication commit carries, and what it must carry forward.
-fn describe(context: &Context, compared: &str) -> Result<(String, Vec<String>)> {
+fn describe(context: &Context<'_>, compared: &str) -> Result<(String, Vec<String>)> {
     let subject = match provenance::publication_subject(
         &context.repo,
         compared,
@@ -155,7 +159,7 @@ fn describe(context: &Context, compared: &str) -> Result<(String, Vec<String>)> 
 /// `pre-push` and `checks` are not run here: the first is git's own hook at the
 /// publishing push, and the second is the host's. Both report later, and both are
 /// captured where they actually arrive.
-fn verify(context: &Context, stream: &mut Stream, environment: &[(String, String)]) -> Result<()> {
+fn verify(context: &Context<'_>, stream: &mut Stream, environment: &[(String, String)]) -> Result<()> {
     let Some(command) = gate::own_command(&context.policy.gate) else {
         return Ok(());
     };
@@ -189,7 +193,7 @@ fn verify(context: &Context, stream: &mut Stream, environment: &[(String, String
 }
 
 /// Merge the current base into the branch, bounded, before anything is published.
-fn sync(context: &Context, stream: &mut Stream, compared: &str) -> Result<()> {
+fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()> {
     if !git::ref_exists(&context.repo, &format!("refs/remotes/{compared}"))
         && !git::branch_exists(&context.repo, compared)
     {
@@ -227,7 +231,7 @@ fn sync(context: &Context, stream: &mut Stream, compared: &str) -> Result<()> {
 
 /// Land the branch as one squashed commit on the base, built detached.
 fn publish_locally(
-    context: &Context,
+    context: &Context<'_>,
     stream: &mut Stream,
     compared: &str,
     environment: &[(String, String)],
@@ -310,7 +314,7 @@ fn publish_locally(
 
 /// Push the branch, open or adopt its change request, and ask the host to land it.
 fn publish_as_change(
-    context: &Context,
+    context: &Context<'_>,
     stream: &mut Stream,
     subject: &str,
     trailers: &[String],
@@ -327,7 +331,7 @@ fn publish_as_change(
     })?;
 
     let slug = change_host(&context.resolution.key)?;
-    let host = GitHub::new(slug)?;
+    let host = context.hosting.for_repo(&slug)?;
     // Who the host believes is calling travels with the change: a change request
     // opened by an identity nobody expected is the thing an operator reads this to
     // find out.
@@ -382,7 +386,7 @@ fn publish_as_change(
                 kind: GateKind::Checks
             }
         ) {
-            await_checks(&host, &change, stream)?;
+            await_checks(host.as_ref(), &change, stream)?;
         }
         stream.emit(
             EventKind::MergeQueued,
@@ -417,7 +421,7 @@ fn publish_as_change(
 ///
 /// Only required checks may gate a merge: a non-blocking check never triggers or
 /// holds one, which is the whole reason `required` travels on a [`Check`].
-fn await_checks(host: &GitHub, change: &ChangeRequest, stream: &mut Stream) -> Result<()> {
+fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stream) -> Result<()> {
     let bound = std::time::Duration::from_secs_f64(gh::checks_timeout()?);
     let poll = std::time::Duration::from_secs_f64(gh::checks_poll()?);
     let started = std::time::Instant::now();
@@ -484,7 +488,7 @@ fn await_checks(host: &GitHub, change: &ChangeRequest, stream: &mut Stream) -> R
 }
 
 fn record_push(
-    context: &Context,
+    context: &Context<'_>,
     stream: &mut Stream,
     pushed: &std::result::Result<String, String>,
 ) -> Result<()> {
