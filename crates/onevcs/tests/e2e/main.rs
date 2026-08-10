@@ -11,6 +11,8 @@ mod edges;
 // Unix only: these drive a substituted `gh` and real `pre-push` hooks, both POSIX
 // shell. See `world.rs`.
 #[cfg(unix)]
+mod honesty;
+#[cfg(unix)]
 mod host;
 #[cfg(unix)]
 mod lifecycle;

@@ -233,7 +233,12 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             state.preserved.push(row);
             let emission = Emission {
                 stream: s.token.0.clone(),
-                identity: Some(identity),
+                // No identity label, because the real implementation carries none
+                // here: the label is stamped where a session is opened, and work is
+                // preserved against a stream a later process opened fresh. Claiming
+                // it would be drift in the direction that looks like more
+                // information.
+                identity: None,
                 kind: EventKind::CommitPreserved,
                 payload: object(json!({
                     "branch": s.branch,

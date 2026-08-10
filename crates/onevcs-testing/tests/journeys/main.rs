@@ -6,6 +6,7 @@
 //! cannot reach without a real git repository, on the two traits themselves, which
 //! are the public interface a consumer implements against rather than an internal.
 
+mod failures;
 mod host;
 mod repository;
 mod round_trip;

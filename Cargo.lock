@@ -485,6 +485,7 @@ dependencies = [
  "clap",
  "fs4",
  "libc",
+ "onevcs-testing",
  "predicates",
  "serde",
  "serde_json",
