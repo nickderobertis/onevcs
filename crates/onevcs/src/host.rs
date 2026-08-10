@@ -41,6 +41,11 @@ pub trait RemoteHost {
 /// to, and never names an implementation.
 pub trait Hosting {
     /// The host that answers for the repository named `owner/name`.
+    // llmlint: ignore[invalid_states_unrepresentable] a validated slug newtype would be a
+    // public item beyond the one this seam is specified as, and it would have exactly one
+    // constructor — the check below. That check is where the value is decided: `GitHub::new`
+    // refuses anything that does not name one repository as `owner/name`, before the slug is
+    // interpolated into a single `gh --repo`. A caller cannot reach a host any other way.
     fn for_repo(&self, slug: &str) -> Result<Box<dyn RemoteHost>>;
 }
 

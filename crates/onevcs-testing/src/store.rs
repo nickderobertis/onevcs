@@ -13,6 +13,17 @@ use serde::Serialize;
 
 use onevcs::{Error, Result};
 
+/// A state that can say whether it is one a provider may act on.
+///
+/// Shape is what serde proves, and shape is not enough for a document that came
+/// off a disk: a session token names a file under the state root and a branch name
+/// goes on to spell a ref, so a seeded state that carries an unusable one is
+/// refused where it is read rather than wherever it first happens to be used.
+pub trait Checked {
+    /// Refuse this state, naming what is wrong with it.
+    fn check(&self) -> Result<()>;
+}
+
 /// A provider's state, however it is kept.
 pub trait Store<S> {
     /// Read the state, act on it, and keep whatever the action left.
@@ -90,7 +101,7 @@ impl<S> Clone for FileStore<S> {
     }
 }
 
-impl<S: Serialize + DeserializeOwned> FileStore<S> {
+impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
     /// The store at `path`: whatever is already there, or `fallback` written out.
     ///
     /// Attaching rather than replacing is what makes a second provider over the
@@ -151,7 +162,7 @@ impl<S: Serialize + DeserializeOwned> FileStore<S> {
     }
 }
 
-impl<S: Serialize + DeserializeOwned> Store<S> for FileStore<S> {
+impl<S: Serialize + DeserializeOwned + Checked> Store<S> for FileStore<S> {
     fn with<R, F>(&self, act: F) -> Result<R>
     where
         F: FnOnce(&mut S) -> Result<R>,
@@ -169,11 +180,15 @@ impl<S: Serialize + DeserializeOwned> Store<S> for FileStore<S> {
                 self.path.display()
             ),
         })?;
-        serde_json::from_str(&raw).map_err(|e| Error::Invalid {
+        let state: S = serde_json::from_str(&raw).map_err(|e| Error::Invalid {
             reason: format!(
                 "the provider state at {} is not the shape this crate writes: {e}",
                 self.path.display()
             ),
-        })
+        })?;
+        state.check().map_err(|e| Error::Invalid {
+            reason: format!("the provider state at {}: {e}", self.path.display()),
+        })?;
+        Ok(state)
     }
 }

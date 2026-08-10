@@ -127,6 +127,27 @@ fn auto_merge_waits_for_the_required_checks_and_lands_once_they_are_green() {
         MergeOutcome::Queued,
         "nothing lands while a required check is unsettled"
     );
+
+    // The other half of the same rule: once every required check has settled
+    // green, the same policy lands the change.
+    let mut settled = BTreeMap::new();
+    settled.insert(
+        ChangeId("1".to_owned()),
+        vec![green_check("gate"), green_check("lint")],
+    );
+    let factory = MemoryHost::seeded(HostState {
+        checks: settled,
+        ..HostState::default()
+    });
+    let host = factory.for_repo("acme-corp/widgets").expect("a host");
+    let change = host.open_change(spec("feature/checked")).expect("opened");
+    let landed = host
+        .merge(&change, MergePolicy::ChangeAuto)
+        .expect("the host's answer");
+    assert!(
+        matches!(landed, MergeOutcome::Merged(_)),
+        "every required check is green, so auto-merge lands it: {landed:?}"
+    );
 }
 
 #[test]

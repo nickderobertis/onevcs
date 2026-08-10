@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use onevcs::{ChangeId, ChangeRequest, Check, Error, Identity, MergeOutcome, Recoverable, Result};
 use onevcs::{Session, SessionRequest, SessionToken};
 
+use crate::events;
+use crate::store::Checked;
+
 /// Everything the repository side of a run knows about itself.
 ///
 /// Every field is public and serializable, so a journey both seeds a scenario and
@@ -189,4 +192,44 @@ pub(crate) fn named_branch(value: &str, what: &str) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// A seeded repository side is refused if it holds a session nothing could act on.
+impl Checked for VcsState {
+    fn check(&self) -> Result<()> {
+        for session in &self.sessions {
+            // The token names a file under the state root, and a branch goes on to
+            // spell a ref; both arrive from whoever wrote the document.
+            if !events::is_safe_name(&session.token.0) {
+                return Err(Error::Invalid {
+                    reason: format!("{:?} is not a session token", session.token.0),
+                });
+            }
+            named_branch(&session.branch, "the branch")?;
+            named_branch(&session.base, "the base")?;
+        }
+        for row in &self.preserved {
+            named_branch(&row.branch.branch, "the preserved branch")?;
+            named_branch(&row.branch.base, "the preserved branch's base")?;
+        }
+        Ok(())
+    }
+}
+
+/// A seeded host side is refused if it holds a change nothing could address.
+impl Checked for HostState {
+    fn check(&self) -> Result<()> {
+        for change in &self.changes {
+            named_branch(&change.base, "the base of a seeded change request")?;
+            if change.id.0.is_empty() {
+                return Err(Error::Invalid {
+                    reason: "a seeded change request carries no identifier".to_owned(),
+                });
+            }
+        }
+        for head in self.heads.values() {
+            named_branch(head, "the head of a seeded change request")?;
+        }
+        Ok(())
+    }
 }

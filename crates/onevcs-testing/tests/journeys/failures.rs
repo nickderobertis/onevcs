@@ -189,6 +189,45 @@ fn a_state_document_that_goes_away_is_reported_where_it_is_read() {
 }
 
 #[test]
+fn a_seeded_document_holding_a_session_nothing_could_act_on_is_refused() {
+    let home = Home::new();
+    let path = home.path("vcs.json");
+    // Shape is what serde proves, and shape is not enough: this document parses,
+    // and the token in it would name a file outside the stream directory.
+    std::fs::write(
+        &path,
+        r#"{"sessions": [{"token": "../escaped", "worktree": "/tmp/tree",
+             "branch": "feature/one", "base": "main"}]}"#,
+    )
+    .expect("a written document");
+
+    let refused = FileVcs::create(&path).expect_err("a session nothing could act on");
+    assert!(
+        refused.to_string().contains("is not a session token"),
+        "the refusal names what was unusable: {refused}"
+    );
+
+    std::fs::write(
+        &path,
+        r#"{"sessions": [{"token": "s-1", "worktree": "/tmp/tree",
+             "branch": "feature/..slip", "base": "main"}]}"#,
+    )
+    .expect("a written document");
+    assert!(FileVcs::create(&path)
+        .expect_err("a branch git would not accept")
+        .to_string()
+        .contains("git would not accept"));
+
+    // …and the same for a host document naming a change nothing could address.
+    let host = home.path("host.json");
+    std::fs::write(&host, r#"{"heads": {"1": "two words"}}"#).expect("a written document");
+    assert!(FileHost::create(&host)
+        .expect_err("a head nothing could address")
+        .to_string()
+        .contains("git would not accept"));
+}
+
+#[test]
 fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it() {
     let _home = Home::new();
     let vcs = MemoryVcs::seeded(one_repository());
