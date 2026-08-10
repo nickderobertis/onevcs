@@ -15,6 +15,20 @@ use onevcs::{
 };
 use onevcs_testing::{HostState, VcsState};
 
+/// The variable this platform's home directory is spelled in.
+///
+/// A journey that exercises the *fallback* state root has to relocate the home
+/// directory, and there is no one variable that does it: `onevcs` reads `HOME` on
+/// Unix and `USERPROFILE` on Windows, and the providers here read whichever of
+/// the two `onevcs` does. Writing `HOME` on Windows moves nothing, so the
+/// fallback would resolve to the operator's real profile — the very thing an
+/// override exists to avoid.
+#[cfg(unix)]
+pub const HOME_DIRECTORY_ENV: &str = "HOME";
+/// The variable this platform's home directory is spelled in.
+#[cfg(windows)]
+pub const HOME_DIRECTORY_ENV: &str = "USERPROFILE";
+
 /// A scratch state root this test process writes its streams and artifacts under.
 ///
 /// Held for the test's lifetime: dropping it removes the root.

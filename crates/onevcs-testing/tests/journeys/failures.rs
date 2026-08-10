@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use onevcs::{ChangeId, ChangeSpec, Hosting, MergeOutcome, MergePolicy, Provenance, Scope, Vcs};
 use onevcs_testing::{FileHost, FileVcs, HostState, MemoryHost, MemoryVcs, VcsState};
 
-use crate::support::{one_repository, Home};
+use crate::support::{one_repository, Home, HOME_DIRECTORY_ENV};
 
 #[test]
 fn a_provider_with_nothing_seeded_says_so_when_it_is_asked() {
@@ -121,20 +121,22 @@ fn an_unusable_state_root_is_refused_by_name() {
     );
 
     // Unset: the state root falls back to the home directory, which is where the
-    // real implementation puts it.
+    // real implementation puts it. Which variable names that directory is the
+    // platform's business, not this journey's — see `HOME_DIRECTORY_ENV`.
     let fallback = tempfile::tempdir().expect("a scratch home");
     std::env::remove_var("ONEVCS_HOME");
-    std::env::set_var("HOME", fallback.path());
+    std::env::set_var(HOME_DIRECTORY_ENV, fallback.path());
     let stored = host
         .check_log(&change, &check)
-        .expect("stored under ~/.onevcs");
+        .expect("stored under the home directory's .onevcs");
     assert!(
         fallback
             .path()
-            .join(".onevcs/artifacts")
+            .join(".onevcs")
+            .join("artifacts")
             .join(&stored.0)
             .is_file(),
-        "the fallback root is ~/.onevcs, as onevcs itself spells it"
+        "the fallback root is `.onevcs` under the home directory, as onevcs itself spells it"
     );
     // And an event lands beside it, so a stream written under the fallback is
     // still a stream `onevcs events` reads.
@@ -148,7 +150,8 @@ fn an_unusable_state_root_is_refused_by_name() {
         .expect("a session");
     assert!(fallback
         .path()
-        .join(".onevcs/streams")
+        .join(".onevcs")
+        .join("streams")
         .join(format!("{}.ndjson", session.token.0))
         .is_file());
 }
