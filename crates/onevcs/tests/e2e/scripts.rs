@@ -509,6 +509,10 @@ fn the_index_path_a_publish_reads_is_derived_from_the_crates_name() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] a registry cannot be asked to withhold a version and
+// then serve it, and a `cargo publish` that ran would push this workspace to crates.io from
+// a test. Both are stubbed; the script's own decisions run unstubbed. See the block note on
+// `Registry`.
 fn a_version_the_index_already_serves_is_skipped_rather_than_republished() {
     let registry = Registry::answering("200", r#"{"name":"onevcs","vers":"9.9.9"}"#);
 
@@ -531,6 +535,10 @@ fn a_version_the_index_already_serves_is_skipped_rather_than_republished() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] a registry cannot be asked to withhold a version and
+// then serve it, and a `cargo publish` that ran would push this workspace to crates.io from
+// a test. Both are stubbed; the script's own decisions run unstubbed. See the block note on
+// `Registry`.
 fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
     // The index answers nothing for either crate, which is what it does before a
     // release: both are published, and in the order the caller asked for, because
@@ -564,6 +572,10 @@ fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] a registry cannot be asked to withhold a version and
+// then serve it, and a `cargo publish` that ran would push this workspace to crates.io from
+// a test. Both are stubbed; the script's own decisions run unstubbed. See the block note on
+// `Registry`.
 fn a_crate_this_workspace_does_not_hold_is_refused_before_anything_is_published() {
     let registry = Registry::serving_nothing();
 
@@ -594,6 +606,10 @@ fn publish_crates_called_with_nothing_to_publish_says_how_to_call_it() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] a registry cannot be asked to withhold a version and
+// then serve it, and a `cargo publish` that ran would push this workspace to crates.io from
+// a test. Both are stubbed; the script's own decisions run unstubbed. See the block note on
+// `Registry`.
 fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_a_pattern() {
     // The name is interpolated into a `sed` expression that reads one package's
     // version out of the workspace metadata. Cargo's grammar has no character
@@ -628,6 +644,10 @@ fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_a_pattern() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] a registry cannot be asked to withhold a version and
+// then serve it, and a `cargo publish` that ran would push this workspace to crates.io from
+// a test. Both are stubbed; the script's own decisions run unstubbed. See the block note on
+// `Registry`.
 fn an_index_that_will_not_answer_stops_the_release_rather_than_republishing() {
     // A registry that did not answer is not an absent version. Reading a 500 as
     // "not published yet" is what would send a live version back to crates.io on

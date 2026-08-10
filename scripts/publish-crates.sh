@@ -142,6 +142,11 @@ done
 for crate in "$@"; do
     version="$(declared_version "$crate")"
     if already_live "https://index.crates.io/$(index_path "$crate")" "$version"; then
+        # llmlint: ignore[tool_output_is_signal] one line per crate, deliberately, and it is
+        # the whole signal a release log carries: which crates went and which were already
+        # there. Collapsing a two-crate run into one line would remove exactly the fact an
+        # operator reads this to find — the release that shipped `onevcs` and silently
+        # skipped `onevcs-testing` looks identical to the one that shipped both.
         echo "$crate $version is already on crates.io; nothing to publish."
         continue
     fi
@@ -152,5 +157,7 @@ for crate in "$@"; do
     cargo publish --quiet --locked --package "$crate" || refuse \
         "cargo publish refused $crate $version (its diagnostic is above)" \
         "fix what it named, then re-run this job: a version already live is skipped, so the crates ahead of $crate are not published twice"
+    # llmlint: ignore[tool_output_is_signal] as on the skip above: one line per crate is
+    # the signal, not noise. `--quiet` is what keeps cargo's own progress out of it.
     echo "$crate $version published to crates.io."
 done
