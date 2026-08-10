@@ -106,14 +106,21 @@ declared_version() {
 # yet" is what would send a live version back to crates.io on every re-run. Only a
 # 404 — the index has no such crate — means absent.
 #
-# The body is the sparse index's own format: one JSON record per line, each naming
-# the crate and carrying exactly one `vers`. It is checked to be that before any
-# version is read out of it, and the decision is made on the `vers` value taken from
-# a record rather than on text matched anywhere in the body — a proxy's error page
-# that happened to contain the version string is not an answer about the registry.
-# (`vers` appears once per record: a record's dependencies carry `req`, never `vers`.)
+# The body is the sparse index's own format: one JSON record per line, each an object
+# naming the crate it is a version *of* and carrying exactly one `vers`. Every record
+# is checked to be that, and to be about the crate that was asked for, before any
+# version is read out of it — so the decision comes from a record rather than from
+# text matched anywhere in the body. A proxy's error page that quotes a record, and a
+# redirect that serves some other crate's document, are both answers about something
+# else, and neither may decide whether this version is live.
+#
+# Two things make the per-record checks sufficient without a JSON parser: `vers`
+# appears once per record, because a record's dependencies state a `req` and never a
+# `vers`; and `"name":"<crate>"` in a record can only be the record's own name,
+# because no crate depends on itself.
 already_live() {
-    local url="$1" version="$2" body status line field found records=0
+    local url="$1" crate="$2" version="$3" body status line field found records=0
+    crate="$(printf '%s' "$crate" | tr '[:upper:]' '[:lower:]')"
     body="$(mktemp)"
     status="$(curl -sSL -o "$body" -w '%{http_code}' "$url" 2>/dev/null)" || status="000"
     case "$status" in
@@ -137,18 +144,21 @@ already_live() {
         field="$(printf '%s' "$line" | grep -o '"vers":"[^"]*"' || true)"
         case "$line" in
         "{"*"}") ;;
-        *)
-            rm -f "$body"
-            refuse "the crates.io index answered 200 for $url with something that is not an index document" \
-                "re-run this job once the registry answers; nothing was published"
-            ;;
+        *) field="" ;;
         esac
+        # Structure first — an object, one `vers`, and a `name` at all — so a record
+        # that is not a record is not reported as a record about the wrong crate.
         if [ -z "$field" ] ||
             [ "$(printf '%s\n' "$field" | wc -l)" -ne 1 ] ||
             ! printf '%s' "$line" | grep -q '"name":"'; then
             rm -f "$body"
             refuse "the crates.io index answered 200 for $url with something that is not an index document" \
                 "re-run this job once the registry answers; nothing was published"
+        fi
+        if ! printf '%s' "$line" | grep -qF "\"name\":\"$crate\""; then
+            rm -f "$body"
+            refuse "the crates.io index answered 200 for $url with a record that is not about $crate" \
+                "re-run this job once the registry answers for the crate that was asked for; nothing was published"
         fi
         records=$((records + 1))
         field="${field#\"vers\":\"}"
@@ -188,7 +198,7 @@ done
 
 for crate in "$@"; do
     version="$(declared_version "$crate")"
-    if already_live "https://index.crates.io/$(index_path "$crate")" "$version"; then
+    if already_live "https://index.crates.io/$(index_path "$crate")" "$crate" "$version"; then
         # One line per crate, deliberately: which crates went and which were already
         # there IS the signal a release log carries. Collapsing a two-crate run into one
         # line removes exactly the fact an operator reads this to find — a release that

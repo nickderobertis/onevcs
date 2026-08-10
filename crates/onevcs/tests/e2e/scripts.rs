@@ -1,4 +1,4 @@
-//! The two wrapper scripts whose *diagnostics are the deliverable*.
+//! The wrapper scripts whose *diagnostics are the deliverable*.
 //!
 //! `scripts/nx-affected.sh` fails closed: whenever it cannot derive a merge base
 //! it widens the scope and says so, because affected selection is a speed
@@ -10,10 +10,11 @@
 //! name — crates.io's sharding rule, restated in shell because nothing can be
 //! asked for it. That derivation is gated below, for every class of the rule.
 //!
-//! In both, the line on stderr *is* the behaviour — a run that widened its scope
-//! or retried an install is indistinguishable from one that did not, except for
-//! what it printed. So these journeys assert the message, not merely the exit
-//! status, driving each script through `bash` exactly as CI does.
+//! In all three, the line on stderr *is* the behaviour — a run that widened its
+//! scope, retried an install, or skipped a version already live is
+//! indistinguishable from one that did not, except for what it printed. So these
+//! journeys assert the message, not merely the exit status, driving each script
+//! through `bash` exactly as CI does.
 //!
 //! Unix only, like `smoke.rs` beside it: `nx-affected.sh` runs on the Linux
 //! `changes` and `gate` jobs alone, and the platform-specific half of
@@ -752,6 +753,8 @@ fn an_index_answering_200_with_something_else_stops_the_release_too() {
         r#"<html><body>cached: {"name":"onevcs","vers":"9.9.9"} (index unavailable)</body></html>"#,
         // Index-shaped but naming no crate, so nothing says which crate it answers for.
         r#"{"vers":"9.9.9"}"#,
+        // Two records where one is not an object, which is a body truncated mid-write.
+        "{\"name\":\"onevcs\",\"vers\":\"9.9.8\"}\n{\"name\":\"onevcs\",\"vers\"",
     ] {
         // The index and `cargo publish` are stubbed because neither can be asked for
         // this from a test, and a publish that ran would push this workspace to
@@ -785,4 +788,38 @@ fn an_index_answering_200_with_something_else_stops_the_release_too() {
         .failed()
         .said("with an empty document");
     assert!(empty.published().is_empty());
+}
+
+#[test]
+fn an_index_answering_about_another_crate_stops_the_release_by_saying_so() {
+    // A redirect, or a shard derived wrongly, answers 200 with a perfectly well-formed
+    // index document — for something else. Its versions say nothing about this crate's,
+    // so reading one as this crate's would either skip a publish that must happen or
+    // repeat one that already did. The refusal names the crate that was asked for,
+    // because that is what an operator needs to tell the two apart.
+    //
+    // The index and `cargo publish` are stubbed because neither can be asked for this
+    // from a test, and a publish that ran would push this workspace to crates.io. The
+    // script's own decisions run unstubbed. See the note on `Registry`.
+    // llmlint: ignore[e2e_not_mocked] see the note directly above.
+    let registry = Registry::answering(
+        "200",
+        concat!(
+            r#"{"name":"onevcs-testing","vers":"9.9.9","deps":[],"yanked":false}"#,
+            "\n",
+        ),
+    );
+
+    registry
+        .run()
+        .arg("onevcs")
+        .output()
+        .failed()
+        .said("with a record that is not about onevcs")
+        .said("ACTION: re-run this job once the registry answers for the crate that was asked for");
+
+    assert!(
+        registry.published().is_empty(),
+        "a document about another crate decides nothing about this one"
+    );
 }
