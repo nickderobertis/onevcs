@@ -159,7 +159,11 @@ fn describe(context: &Context<'_>, compared: &str) -> Result<(String, Vec<String
 /// `pre-push` and `checks` are not run here: the first is git's own hook at the
 /// publishing push, and the second is the host's. Both report later, and both are
 /// captured where they actually arrive.
-fn verify(context: &Context<'_>, stream: &mut Stream, environment: &[(String, String)]) -> Result<()> {
+fn verify(
+    context: &Context<'_>,
+    stream: &mut Stream,
+    environment: &[(String, String)],
+) -> Result<()> {
     let Some(command) = gate::own_command(&context.policy.gate) else {
         return Ok(());
     };

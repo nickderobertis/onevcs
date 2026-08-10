@@ -16,11 +16,11 @@ use crate::cli::{
     SessionOpenArgs, SessionTokenArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
+use crate::providers::Providers;
 use crate::registry::{Registry, RepoType, Workflow};
 use crate::session::{Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::providers::Providers;
 use crate::{git, integrate, lock, policy, provenance, publish, recover, stream, vcs, workspace};
 
 /// Run one parsed command, returning its exit code.

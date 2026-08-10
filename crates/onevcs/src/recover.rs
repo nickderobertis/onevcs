@@ -13,10 +13,10 @@ use serde_json::json;
 
 use crate::error::{self, Error, Result};
 use crate::event::EventKind;
+use crate::host::Hosting;
 use crate::registry::Registry;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::host::Hosting;
 use crate::workspace::{object, Ref};
 use crate::{gate, git, home, ids, policy, provenance, publish, rules};
 
