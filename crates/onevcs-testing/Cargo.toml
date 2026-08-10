@@ -25,7 +25,7 @@ path = "src/lib.rs"
 # The interfaces these implement, and the types their states are made of. The
 # version requirement is what `cargo publish` uploads — a bare path resolves to
 # nothing on crates.io — and release-plz keeps it in step with the sibling.
-onevcs = { version = "0.1.3", path = "../onevcs" }
+onevcs = { version = "0.2.0", path = "../onevcs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A change request's head commit and a preserved commit both need a hash-shaped
