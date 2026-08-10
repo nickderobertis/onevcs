@@ -5,6 +5,10 @@
 //! optimisation and one that can silently skip a check is a correctness hole.
 //! `scripts/retry-install.sh` retries a post-publish install until the index a
 //! user resolves from actually serves it, and reports each attempt.
+//! `scripts/publish-crates.sh` decides whether a version is already live before it
+//! publishes anything, and decides it by reading a path derived from the crate's
+//! name — crates.io's sharding rule, restated in shell because nothing can be
+//! asked for it. That derivation is gated below, for every class of the rule.
 //!
 //! In both, the line on stderr *is* the behaviour — a run that widened its scope
 //! or retried an install is indistinguishable from one that did not, except for
@@ -368,4 +372,203 @@ fn a_budget_that_is_not_a_number_of_seconds_is_rejected_before_anything_runs() {
         .failed()
         .said("--budget needs a whole number of seconds, not 'ten minutes'")
         .said("ACTION: run 'retry-install.sh");
+}
+
+/// A directory of stubs put ahead of `PATH`, so a journey can drive
+/// `publish-crates.sh` without a registry and without publishing anything.
+///
+/// `curl` and `cargo` are the script's two collaborators, and both are the
+/// external boundary rather than a step of the script: one is the registry, and
+/// the other is the publish this suite must never actually perform. Everything the
+/// script decides — the index path it reads, whether the version it found is
+/// already live, what it says, and whether it goes on to publish — runs for real.
+struct Registry {
+    dir: tempfile::TempDir,
+}
+
+impl Registry {
+    /// A registry whose index answers `body` for whatever is asked of it, and a
+    /// `cargo` that records what it was asked to do instead of doing it.
+    fn answering(body: &str, found: bool) -> Self {
+        let dir = tempfile::tempdir().expect("a temporary directory for the stubs");
+        let asked = dir.path().join("asked");
+        let published = dir.path().join("published");
+        let answer = if found {
+            format!("printf '%s\\n' {body:?}")
+        } else {
+            "exit 22".to_owned()
+        };
+        write_stub(
+            &dir.path().join("curl"),
+            &format!(
+                "#!/usr/bin/env bash\n\
+                 set -eu\n\
+                 for arg in \"$@\"; do\n\
+                 \x20 case \"$arg\" in https://*) printf '%s\\n' \"$arg\" >>\"{asked}\" ;; esac\n\
+                 done\n\
+                 {answer}\n",
+                asked = asked.display(),
+            ),
+        );
+        write_stub(
+            &dir.path().join("cargo"),
+            &format!(
+                "#!/usr/bin/env bash\n\
+                 set -eu\n\
+                 if [ \"${{1:-}}\" = \"metadata\" ]; then\n\
+                 \x20 printf '%s\\n' '{METADATA}'\n\
+                 \x20 exit 0\n\
+                 fi\n\
+                 printf '%s\\n' \"$*\" >>\"{published}\"\n",
+                published = published.display(),
+            ),
+        );
+        Self { dir }
+    }
+
+    fn run(&self) -> Run {
+        Run::script("scripts/publish-crates.sh").path_prefix(self.dir.path())
+    }
+
+    fn asked(&self) -> Vec<String> {
+        read_lines(&self.dir.path().join("asked"))
+    }
+
+    fn published(&self) -> Vec<String> {
+        read_lines(&self.dir.path().join("published"))
+    }
+}
+
+/// What the stub `cargo metadata` answers: this workspace's two published crates,
+/// at versions no release has ever cut, so nothing here can match a real one.
+const METADATA: &str = r#"{"packages":[{"name":"onevcs","version":"9.9.9"},{"name":"onevcs-testing","version":"8.8.8"}]}"#;
+
+fn read_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn write_stub(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("a stub must be writable");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)
+        .expect("a written stub")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("an executable stub");
+}
+
+#[test]
+fn the_index_path_a_publish_reads_is_derived_from_the_crates_name() {
+    // crates.io shards its sparse index by the length of the name. The rule is the
+    // registry's, restated in shell, so every class of it is driven here — a wrong
+    // shard reads a path that 404s, and a 404 reads as "not published yet", which
+    // would re-publish a live version on every release.
+    for (name, path) in [
+        ("a", "1/a"),
+        ("ab", "2/ab"),
+        ("abc", "3/a/abc"),
+        ("abcd", "ab/cd/abcd"),
+        ("onevcs", "on/ev/onevcs"),
+        ("onevcs-testing", "on/ev/onevcs-testing"),
+        // Asked in whatever case, answered in the one the index is keyed by.
+        ("OneVCS", "on/ev/onevcs"),
+    ] {
+        Run::script("scripts/publish-crates.sh")
+            .args(["--index-path", name])
+            .output()
+            .succeeded()
+            .answered(path);
+    }
+
+    // And the two this workspace publishes are the two the release names.
+    let workflow = std::fs::read_to_string(workspace_root().join(".github/workflows/release.yml"))
+        .expect("the release workflow is readable");
+    assert!(
+        workflow.contains("bash scripts/publish-crates.sh onevcs onevcs-testing"),
+        "the release must publish both crates through this script, in dependency order"
+    );
+}
+
+#[test]
+fn a_version_the_index_already_serves_is_skipped_rather_than_republished() {
+    let registry = Registry::answering(r#"{"name":"onevcs","vers":"9.9.9"}"#, true);
+
+    registry
+        .run()
+        .arg("onevcs")
+        .output()
+        .succeeded()
+        .printed("onevcs 9.9.9 is already on crates.io; nothing to publish.");
+
+    assert_eq!(
+        registry.asked(),
+        vec!["https://index.crates.io/on/ev/onevcs"],
+        "the version is looked for at the path derived from the name"
+    );
+    assert!(
+        registry.published().is_empty(),
+        "a version already live is a no-op, so a re-run after a partial failure is safe"
+    );
+}
+
+#[test]
+fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
+    // The index answers nothing for either crate, which is what it does before a
+    // release: both are published, and in the order the caller asked for, because
+    // one names a version of the other.
+    let registry = Registry::answering("", false);
+
+    registry
+        .run()
+        .args(["onevcs", "onevcs-testing"])
+        .output()
+        .succeeded();
+
+    assert_eq!(
+        registry.asked(),
+        vec![
+            "https://index.crates.io/on/ev/onevcs",
+            "https://index.crates.io/on/ev/onevcs-testing",
+        ]
+    );
+    assert_eq!(
+        registry.published(),
+        vec![
+            "publish --locked --package onevcs",
+            "publish --locked --package onevcs-testing",
+        ],
+        "the crate a sibling names is published before the sibling that names it"
+    );
+}
+
+#[test]
+fn a_crate_this_workspace_does_not_hold_is_refused_before_anything_is_published() {
+    let registry = Registry::answering("", false);
+
+    registry
+        .run()
+        .arg("onevcs-imaginary")
+        .output()
+        .failed()
+        .said("cargo metadata names no version for 'onevcs-imaginary'")
+        .said("ACTION: check the crate is a member of this workspace");
+
+    assert!(registry.published().is_empty());
+}
+
+#[test]
+fn publish_crates_called_with_nothing_to_publish_says_how_to_call_it() {
+    Run::script("scripts/publish-crates.sh")
+        .output()
+        .failed()
+        .said("usage: publish-crates.sh CRATE [CRATE...]");
+    Run::script("scripts/publish-crates.sh")
+        .arg("--index-path")
+        .output()
+        .failed()
+        .said("usage: publish-crates.sh CRATE [CRATE...]");
 }
