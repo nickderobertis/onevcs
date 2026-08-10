@@ -18,6 +18,17 @@ approved surface to the contract text it is extracted from; everything else in
 only an in-process test could reach is a path to delete, not one to unit-test —
 which is also how the 95% coverage floor is met.
 
+`tests/e2e/honesty.rs` is the one module that does not spawn the binary, and the
+reason is the thing it tests: `run_with` is a *library* seam, and the binary
+deliberately has no way to select a backend, so a journey comparing two backends
+can only be in-process. It runs one publication and one session journey twice —
+`Git` + `GitHub` against the providers in `crates/onevcs-testing` — and holds the
+two event streams to each other. That comparison is what keeps every consumer's
+suite honest, so a provider that stops matching fails here rather than downstream.
+It writes `ONEVCS_HOME` and friends into its own process, which is safe only
+because `cargo nextest` gives each test its own process; `cargo test` would race
+them.
+
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI

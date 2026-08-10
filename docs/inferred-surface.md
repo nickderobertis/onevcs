@@ -48,6 +48,54 @@ key and `RemoteHost::merge`'s `policy` argument list the same four values, so th
 are one type. `--policy` and the rules file are held to the same spelling by the
 contract suite.
 
+## Reaching the two interfaces: what the contract declares but does not route
+
+The contract declares `Vcs` and `RemoteHost` "with a trait seam" and names `Git`
+and `GitHub` as the implementations there are now. It says nothing about how a run
+*reaches* either — and for a while nothing did: every call site named the concrete
+type, so a second implementation could not be supplied to the interface it
+satisfied. Three items exist to close that, and each is the smallest thing that
+could:
+
+- **`Hosting`** — `fn for_repo(&self, slug: &str) -> Result<Box<dyn RemoteHost>>`.
+  A host is addressed at a repository, not at an installation: every `gh`
+  invocation carries a slug, and `RemoteHost`'s own methods carry none. So what a
+  caller supplies is the factory rather than one host, and `GitHub::new` stays the
+  only way a `GitHub` is constructed.
+- **`Providers<'a>`** — `{ vcs: &'a dyn Vcs, hosting: &'a dyn Hosting }`, plus
+  `Providers::real()` for `Git` + GitHub. Borrowed rather than owned, because what
+  a supplied implementation recorded is what a caller wants to read afterwards.
+  The GitHub factory behind `real()` is deliberately *not* public: a caller mixing
+  a real GitHub into a run whose repository side is not git is asking for a
+  combination neither half was written for, and exporting it would be a public item
+  with no use.
+- **`run_with(&Cli, Providers)`** — `run` is this with `Providers::real()`, so the
+  contract's `run` is unchanged in signature and in behaviour.
+
+Two consequences worth stating plainly, because they are what the seam does *not*
+reach:
+
+- **A publication's repository side is git, not `Vcs`.** The five methods cover
+  identities, sessions, preserved work, and recovery; the work `onevcs publish`
+  does — fetch, merge, squash, push — is beneath them, in a private module. A
+  supplied `Vcs` is therefore reached by `resolve`, `session open`, `session
+  adopt`, `publish`'s preserve step, and `recoverable`, and a publication still
+  runs on real git. Widening `Vcs` to cover publication is a contract amendment.
+- **A non-GitHub hosted origin still answers `NotImplemented`.** The slug a change
+  request is opened against is derived from a `github.com/...` identity key, and
+  that derivation is upstream of the factory. So supplying a `Hosting` does not
+  make a GitLab origin publishable; it makes GitHub's *behaviour* replaceable.
+  Routing a second host vocabulary through the seam is the next question, not this
+  one.
+
+Every type reachable from a supplied implementation's state also gained
+`Deserialize` beside its `Serialize` — `Session`, `SessionToken`, `Provenance`,
+`PreservedBranch`, `Recoverable`, `Scope`, `SessionRequest`, `ChangeRequest`,
+`ChangeId`, `Sha`, `Check`, `ChangeSpec`, and `MergeOutcome`. Reading a state back
+is what makes a scenario something a test can write down, and `onepipeline` had
+already recorded the two it could not read (`SessionToken`, `MergeOutcome`) as
+mirrors waiting to be deleted.
+
 ## Open questions for the planner
 
 These are reported rather than resolved. One that has since been resolved is kept

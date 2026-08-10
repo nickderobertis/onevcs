@@ -17,6 +17,12 @@ request**, which GitHub maps to a pull request.
 It is consumed as the `onevcs` crate, as the `onevcs` binary (crates.io, PyPI
 `onevcs-cli`, npm `onevcs-cli`), and by `onepipeline`.
 
+`crates/onevcs-testing` is the second published crate: in-memory and file-backed
+implementations of those two traits, which a consumer puts in `dev-dependencies`
+to drive a real `onevcs` without a real GitHub. A separate crate rather than a
+feature, because Cargo features are additive across a dependency graph and a
+feature could switch test implementations on inside somebody's release binary.
+
 ## The contract comes first, and it is not negotiable in passing
 
 [`docs/contract.md`](docs/contract.md) is the approved contract, committed
@@ -36,7 +42,25 @@ does not name. Two rules follow, and they are not conditional on that:
 `Error::NotImplemented` (exit code `70`) is what a seam with no body answers.
 Publishing a change request for a hosted origin that is not GitHub reaches one:
 the identity is well-formed and the policy is honourable, and this build simply
-has no implementation for that host.
+has no implementation for that host. Supplying a `Hosting` does not change that —
+the slug is derived from a `github.com/...` identity *before* the factory is
+asked, so a second host's vocabulary is still a question nobody has answered.
+
+## The two interfaces are reached through `Providers`, never named
+
+Nothing outside `providers.rs` names `Git` or `GitHub`. A command takes its
+implementations off the `Providers` it was handed, `run` is
+`run_with(cli, Providers::real())`, and a publication asks
+`context.hosting.for_repo(slug)` for the host it lands a change with. Reaching for
+a concrete implementation at a call site is what made both traits decorative for
+three releases; `grep 'dyn Vcs'` and `grep 'dyn RemoteHost'` are how you check
+they still are not.
+
+What the seam does **not** cover is a publication's repository side: fetch, merge,
+squash, and push live beneath the five `Vcs` methods, so a supplied `Vcs` is
+reached by `resolve`, `session open`, `session adopt`, `publish`'s preserve step,
+and `recoverable`, and a publication runs on real git whoever supplied it. See
+[`docs/inferred-surface.md`](docs/inferred-surface.md).
 
 ## Two standing goals on every task
 
@@ -84,7 +108,10 @@ not tell you:
   and that is what must be green before pushing.
 - **The repo-wide verbs delegate to Nx** (`scripts/nx.sh`), which fans the uniform
   target names across the graph. A target's *body* belongs to its project, never
-  to a for-each loop here.
+  to a for-each loop here. The `onevcs` project's targets run `--workspace`, so
+  they cover `onevcs-testing` too — which is why `crateSource` in `nx.json` names
+  `crates/**/*` rather than only that project's own root. A second Nx project
+  would run the same `--workspace` commands twice.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.
@@ -109,9 +136,16 @@ not tell you:
   policy: `feat` → minor, `fix`/`perf`/`refactor`/`build` → patch, `!` or
   `BREAKING CHANGE` → minor; `chore`/`docs`/`ci`/`test`/`style` do not release.
   At 1.0 the usual semver regime takes over (`!` → major).
-- **One version source.** Cargo.toml is it. The wheel takes it via maturin's
+- **One version source.** `crates/onevcs/Cargo.toml` is it, for the CLI and
+  everything packaged from it: the wheel takes it via maturin's
   `dynamic = ["version"]` and the npm packages via `scripts/npm-build.mjs`.
   Never write a version into `pyproject.toml` or `npm/onevcs/package.json`.
+- **`onevcs-testing` versions and tags on its own.** It is its own deliverable, so
+  a change to a test provider must not bump the CLI everyone installs. Its tag is
+  `onevcs-testing-vX.Y.Z` (one `git_tag_name` template for two packages would
+  collide) and it cuts no GitHub Release (a Release is what triggers `release.yml`
+  to build the binaries, wheels, and npm packages — none of which it has). Both
+  crates are published by the one `publish-crate` job, in dependency order.
 - **A packaging input is a path, and the gate checks it resolves.** The release
   archive's `include` and the npm launcher's `files`/`bin` are copied from the
   checkout root and the package directory respectively, and a path that is not
