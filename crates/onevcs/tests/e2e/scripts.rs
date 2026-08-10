@@ -394,26 +394,28 @@ struct Registry {
 }
 
 impl Registry {
-    /// A registry whose index answers `body` for whatever is asked of it, and a
-    /// `cargo` that records what it was asked to do instead of doing it.
-    fn answering(body: &str, found: bool) -> Self {
+    /// A registry whose index answers `status` — and, for a 200, `body` — for
+    /// whatever is asked of it, and a `cargo` that records what it was asked to do
+    /// instead of doing it.
+    fn answering(status: &str, body: &str) -> Self {
         let dir = tempfile::tempdir().expect("a temporary directory for the stubs");
         let asked = dir.path().join("asked");
         let published = dir.path().join("published");
-        let answer = if found {
-            format!("printf '%s\\n' {body:?}")
-        } else {
-            "exit 22".to_owned()
-        };
         write_stub(
             &dir.path().join("curl"),
             &format!(
                 "#!/usr/bin/env bash\n\
                  set -eu\n\
-                 for arg in \"$@\"; do\n\
-                 \x20 case \"$arg\" in https://*) printf '%s\\n' \"$arg\" >>\"{asked}\" ;; esac\n\
+                 out=\"\"\n\
+                 while [ $# -gt 0 ]; do\n\
+                 \x20 case \"$1\" in\n\
+                 \x20   -o) out=\"$2\"; shift 2 ;;\n\
+                 \x20   https://*) printf '%s\\n' \"$1\" >>\"{asked}\"; shift ;;\n\
+                 \x20   *) shift ;;\n\
+                 \x20 esac\n\
                  done\n\
-                 {answer}\n",
+                 [ -z \"$out\" ] || printf '%s' {body:?} >\"$out\"\n\
+                 printf '%s' {status:?}\n",
                 asked = asked.display(),
             ),
         );
@@ -431,6 +433,11 @@ impl Registry {
             ),
         );
         Self { dir }
+    }
+
+    /// A registry serving nothing: every crate reads as not yet published.
+    fn serving_nothing() -> Self {
+        Self::answering("404", "")
     }
 
     fn run(&self) -> Run {
@@ -503,7 +510,7 @@ fn the_index_path_a_publish_reads_is_derived_from_the_crates_name() {
 
 #[test]
 fn a_version_the_index_already_serves_is_skipped_rather_than_republished() {
-    let registry = Registry::answering(r#"{"name":"onevcs","vers":"9.9.9"}"#, true);
+    let registry = Registry::answering("200", r#"{"name":"onevcs","vers":"9.9.9"}"#);
 
     registry
         .run()
@@ -528,13 +535,16 @@ fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
     // The index answers nothing for either crate, which is what it does before a
     // release: both are published, and in the order the caller asked for, because
     // one names a version of the other.
-    let registry = Registry::answering("", false);
+    let registry = Registry::serving_nothing();
 
     registry
         .run()
         .args(["onevcs", "onevcs-testing"])
         .output()
-        .succeeded();
+        .succeeded()
+        // Quiet on success: one line per crate, and none of cargo's progress.
+        .printed("onevcs 9.9.9 published to crates.io.")
+        .printed("onevcs-testing 8.8.8 published to crates.io.");
 
     assert_eq!(
         registry.asked(),
@@ -546,8 +556,8 @@ fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
     assert_eq!(
         registry.published(),
         vec![
-            "publish --locked --package onevcs",
-            "publish --locked --package onevcs-testing",
+            "publish --quiet --locked --package onevcs",
+            "publish --quiet --locked --package onevcs-testing",
         ],
         "the crate a sibling names is published before the sibling that names it"
     );
@@ -555,7 +565,7 @@ fn a_version_the_index_does_not_serve_is_published_in_the_order_given() {
 
 #[test]
 fn a_crate_this_workspace_does_not_hold_is_refused_before_anything_is_published() {
-    let registry = Registry::answering("", false);
+    let registry = Registry::serving_nothing();
 
     registry
         .run()
@@ -589,7 +599,7 @@ fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_a_pattern() {
     // version out of the workspace metadata. Cargo's grammar has no character
     // `sed` reads as anything but itself, so anything outside it is refused —
     // otherwise `one.cs` would quietly answer with `onevcs`'s version.
-    let registry = Registry::answering("", false);
+    let registry = Registry::serving_nothing();
 
     for name in ["one.cs", "onevcs\\|onevcs-testing", ".*", "one vcs", ""] {
         registry
@@ -615,4 +625,23 @@ fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_a_pattern() {
         registry.asked().is_empty(),
         "and asks the registry nothing, because it never got that far"
     );
+}
+
+#[test]
+fn an_index_that_will_not_answer_stops_the_release_rather_than_republishing() {
+    // A registry that did not answer is not an absent version. Reading a 500 as
+    // "not published yet" is what would send a live version back to crates.io on
+    // every re-run of the job.
+    let registry = Registry::answering("503", "");
+
+    registry
+        .run()
+        .arg("onevcs")
+        .output()
+        .failed()
+        .said("the crates.io index answered 503")
+        .said("cannot say whether 9.9.9 is live")
+        .said("ACTION: re-run this job once the registry answers; nothing was published");
+
+    assert!(registry.published().is_empty());
 }

@@ -71,15 +71,51 @@ index_path() {
 
 # The version the workspace manifest declares for a crate, which is the one
 # release-plz maintains and the only one this script will publish.
+#
+# `cargo metadata` is read in its own step rather than piped straight into `sed`:
+# under `set -e` a failing pipeline would end the script with cargo's diagnostic
+# and none of this one's, which is the shape an operator cannot act on.
 declared_version() {
-    local crate="$1" version
-    version="$(cargo metadata --no-deps --format-version 1 |
+    local crate="$1" metadata version
+    if ! metadata="$(cargo metadata --no-deps --format-version 1)"; then
+        refuse "cargo metadata failed, so no version could be read for '$crate'" \
+            "run 'cargo metadata --no-deps' here and fix what it names; nothing was published"
+    fi
+    version="$(printf '%s' "$metadata" |
         sed -n "s/.*\"name\":\"$crate\",\"version\":\"\([^\"]*\)\".*/\1/p")"
     if [ -z "$version" ]; then
         refuse "cargo metadata names no version for '$crate'" \
             "check the crate is a member of this workspace and is spelled as its [package] name"
     fi
     printf '%s\n' "$version"
+}
+
+# Whether the index already serves this version, or the reason it could not say.
+#
+# A registry that did not answer is *not* an absent version: treating a timeout or
+# a 500 as "not published yet" is what would send a live version back to crates.io
+# on every re-run. Only a 404 — the index has no such crate — means absent.
+already_live() {
+    local url="$1" version body status
+    body="$(mktemp)"
+    status="$(curl -sSL -o "$body" -w '%{http_code}' "$url" 2>/dev/null)" || status="000"
+    version="$2"
+    case "$status" in
+    200)
+        if grep -q "\"vers\":\"$version\"" "$body"; then
+            rm -f "$body"
+            return 0
+        fi
+        ;;
+    404) ;;
+    *)
+        rm -f "$body"
+        refuse "the crates.io index answered $status for $url, so it cannot say whether $version is live" \
+            "re-run this job once the registry answers; nothing was published"
+        ;;
+    esac
+    rm -f "$body"
+    return 1
 }
 
 if [ "${1:-}" = "--index-path" ]; then
@@ -105,15 +141,16 @@ done
 
 for crate in "$@"; do
     version="$(declared_version "$crate")"
-    url="https://index.crates.io/$(index_path "$crate")"
-    if curl -fsSL "$url" 2>/dev/null | grep -q "\"vers\":\"$version\""; then
+    if already_live "https://index.crates.io/$(index_path "$crate")" "$version"; then
         echo "$crate $version is already on crates.io; nothing to publish."
         continue
     fi
-    # cargo's own diagnostic says what the registry refused; what it cannot say is
-    # what a release operator does next, which differs by where in the order it
-    # stopped — anything already published stays published.
-    cargo publish --locked --package "$crate" || refuse \
+    # Quiet on success, one line: cargo's own progress says nothing a release log
+    # needs, and its diagnostic on failure says everything. What cargo cannot say is
+    # what an operator does next, which differs by where in the order it stopped —
+    # anything already published stays published.
+    cargo publish --quiet --locked --package "$crate" || refuse \
         "cargo publish refused $crate $version (its diagnostic is above)" \
         "fix what it named, then re-run this job: a version already live is skipped, so the crates ahead of $crate are not published twice"
+    echo "$crate $version published to crates.io."
 done
