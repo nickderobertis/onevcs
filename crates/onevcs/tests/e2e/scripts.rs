@@ -755,6 +755,10 @@ fn an_index_answering_200_with_something_else_stops_the_release_too() {
         r#"{"vers":"9.9.9"}"#,
         // Two records where one is not an object, which is a body truncated mid-write.
         "{\"name\":\"onevcs\",\"vers\":\"9.9.8\"}\n{\"name\":\"onevcs\",\"vers\"",
+        // The same truncation one character later, stopping *inside* the version. It
+        // opens exactly like a whole record, and reading it as one would call this
+        // release `9.9` — a version the index does not hold — and publish over `9.9.9`.
+        "{\"name\":\"onevcs\",\"vers\":\"9.9",
     ] {
         // The index and `cargo publish` are stubbed because neither can be asked for
         // this from a test, and a publish that ran would push this workspace to

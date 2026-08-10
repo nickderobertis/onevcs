@@ -146,9 +146,13 @@ already_live() {
     while IFS= read -r line || [ -n "$line" ]; do
         [ -n "$line" ] || continue
         case "$line" in
-        "$opening"*) ;;
-        # Named this crate but did not go on to a version: a truncated record, which
-        # is a document this script cannot read rather than one about someone else.
+        # Opened as this crate's record, closed as an object, and the version between
+        # them terminated. All three, because a body truncated mid-write opens exactly
+        # like a whole record: stopping inside the version would otherwise read as some
+        # *other* version and publish over the one the registry actually holds.
+        "$opening"*'"'*'}') ;;
+        # Named this crate but did not go on to a whole version: a truncated record,
+        # which is a document this script cannot read rather than one about someone else.
         "{\"name\":\"$crate\","*)
             rm -f "$body"
             refuse "the crates.io index answered 200 for $url with something that is not an index document" \
