@@ -225,6 +225,19 @@ fn a_seeded_document_holding_a_session_nothing_could_act_on_is_refused() {
         .expect_err("a head nothing could address")
         .to_string()
         .contains("git would not accept"));
+
+    // A change request that names no commit its checks are reported against is the
+    // one answer the real host implementation refuses to pass through.
+    std::fs::write(
+        &host,
+        r#"{"changes": [{"id": "1", "url": "https://github.com/acme-corp/widgets/pull/1",
+             "head_sha": "", "base": "main"}]}"#,
+    )
+    .expect("a written document");
+    assert!(FileHost::create(&host)
+        .expect_err("a change naming no commit")
+        .to_string()
+        .contains("names no commit"));
 }
 
 #[test]

@@ -226,6 +226,19 @@ impl Checked for HostState {
                     reason: "a seeded change request carries no identifier".to_owned(),
                 });
             }
+            // The commit a change request's checks are reported against is the whole
+            // evidence that a change reached anything, and the real implementation
+            // refuses a host answer that names none rather than passing a blank one
+            // through. A seeded one is refused for the same reason.
+            if change.head_sha.0.trim().is_empty() {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "the seeded change request {:?} names no commit its checks are \
+                         reported against",
+                        change.id.0
+                    ),
+                });
+            }
         }
         for head in self.heads.values() {
             named_branch(head, "the head of a seeded change request")?;
