@@ -39,6 +39,7 @@ mod integrate;
 mod lock;
 mod policy;
 mod provenance;
+mod providers;
 mod publish;
 mod queue;
 mod recover;
@@ -52,7 +53,10 @@ mod workspace;
 
 pub use error::{Error, Result};
 pub use event::{ArtifactId, ArtifactRef, Envelope, EventKind, Labels, Source};
-pub use host::{ChangeId, ChangeRequest, ChangeSpec, Check, GitHub, MergeOutcome, RemoteHost, Sha};
+pub use host::{
+    ChangeId, ChangeRequest, ChangeSpec, Check, GitHub, Hosting, MergeOutcome, RemoteHost, Sha,
+};
+pub use providers::Providers;
 pub use registry::Identity;
 pub use rules::MergePolicy;
 pub use session::{
@@ -69,5 +73,16 @@ pub use url::Url;
 /// The binary is a thin shell over this, so a journey that drives `onevcs` and a
 /// caller that embeds it take the same path and cannot disagree about an exit code.
 pub fn run(cli: &cli::Cli) -> u8 {
-    app::run(&cli.command)
+    run_with(cli, Providers::real())
+}
+
+/// Run one parsed command line against supplied implementations of the two
+/// interfaces, returning the process exit code.
+///
+/// [`run`] is this with [`Providers::real`], so nothing about the command's own
+/// behaviour changes with the implementations behind it: one code path, reached
+/// through [`Vcs`] and [`Hosting`] rather than through the types that satisfy them
+/// by default.
+pub fn run_with(cli: &cli::Cli, providers: Providers<'_>) -> u8 {
+    app::run(&cli.command, &providers)
 }

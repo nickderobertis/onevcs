@@ -16,16 +16,16 @@ use crate::cli::{
     SessionOpenArgs, SessionTokenArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
+use crate::providers::Providers;
 use crate::registry::{Registry, RepoType, Workflow};
 use crate::session::{Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::vcs::{Git, Vcs};
 use crate::{git, integrate, lock, policy, provenance, publish, recover, stream, vcs, workspace};
 
 /// Run one parsed command, returning its exit code.
-pub fn run(command: &Command) -> u8 {
-    match dispatch(command) {
+pub fn run(command: &Command, providers: &Providers<'_>) -> u8 {
+    match dispatch(command, providers) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("onevcs: {error}");
@@ -34,7 +34,7 @@ pub fn run(command: &Command) -> u8 {
     }
 }
 
-fn dispatch(command: &Command) -> Result<u8> {
+fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
     // A misconfigured bound is refused here rather than wherever it first happens
     // to be read: silently reverting to unbounded is the failure both of them exist
     // to prevent, and a command that got halfway first has already done work.
@@ -43,15 +43,15 @@ fn dispatch(command: &Command) -> Result<u8> {
     match command {
         Command::Register(args) => register(args),
         Command::Repos(args) => repos(args),
-        Command::Resolve(args) => resolve(args),
+        Command::Resolve(args) => resolve(args, providers),
         Command::Session { command } => match command {
-            SessionCommand::Open(args) => session_open(args),
-            SessionCommand::Adopt(args) => session_adopt(args),
+            SessionCommand::Open(args) => session_open(args, providers),
+            SessionCommand::Adopt(args) => session_adopt(args, providers),
             SessionCommand::Close(args) => session_close(args),
         },
-        Command::Publish(args) => publish_session(args),
-        Command::Recover(args) => recover_branch(args),
-        Command::Recoverable(args) => recoverable(args),
+        Command::Publish(args) => publish_session(args, providers),
+        Command::Recover(args) => recover_branch(args, providers),
+        Command::Recoverable(args) => recoverable(args, providers),
         Command::Integrate(args) => integrate_branches(args),
         Command::Sync(args) => sync(args),
         Command::Events(args) => events(&args.token, args.follow),
@@ -122,11 +122,11 @@ fn repos(args: &ReposArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn resolve(args: &ResolveArgs) -> Result<u8> {
+fn resolve(args: &ResolveArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, &args.repo)?;
     // Through the trait, which is the seam a second implementation replaces.
-    let identity = Git.resolve_identity(&args.repo)?;
+    let identity = providers.vcs.resolve_identity(&args.repo)?;
     debug_assert_eq!(identity, resolution.identity);
     println!(
         "{}",
@@ -143,7 +143,7 @@ fn resolve(args: &ResolveArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn session_open(args: &SessionOpenArgs) -> Result<u8> {
+fn session_open(args: &SessionOpenArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
     let request = SessionRequest {
         repo: args.repo.clone(),
@@ -152,7 +152,7 @@ fn session_open(args: &SessionOpenArgs) -> Result<u8> {
         execution_checkout: args.execution_checkout.clone(),
     };
     let _ = &registry;
-    let session = Git.open_session(request)?;
+    let session = providers.vcs.open_session(request)?;
     println!(
         "{}",
         serde_json::to_string(&session).map_err(serialization)?
@@ -160,8 +160,10 @@ fn session_open(args: &SessionOpenArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn session_adopt(args: &SessionTokenArgs) -> Result<u8> {
-    let session = Git.adopt_session(SessionToken(args.token.clone()))?;
+fn session_adopt(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u8> {
+    let session = providers
+        .vcs
+        .adopt_session(SessionToken(args.token.clone()))?;
     println!(
         "{}",
         serde_json::to_string(&session).map_err(serialization)?
@@ -191,7 +193,7 @@ fn session_close(args: &SessionTokenArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn publish_session(args: &PublishArgs) -> Result<u8> {
+fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> {
     let mut record = workspace::load(&args.token)?;
     let registry = store::load()?;
     let resolution = store::resolve(&registry, &record.identity)?;
@@ -205,7 +207,9 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
 
     if git::is_dirty(&record.worktree)? {
         // Through the trait: the same call a caller embedding this crate makes.
-        Git.preserve(&record.session(), Provenance::Complete)?;
+        providers
+            .vcs
+            .preserve(&record.session(), Provenance::Complete)?;
     }
     let change_base = publish::preserved_change_base(&record.base, record.change_base.as_ref());
     let context = publish::Context {
@@ -221,6 +225,7 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
         title: args.title.clone(),
         trailers: Vec::new(),
         provenance: provenance::from_rules(&file),
+        hosting: providers.hosting,
     };
     match publish::run(&context, &mut stream) {
         Ok(outcome) => {
@@ -256,12 +261,18 @@ fn publish_session(args: &PublishArgs) -> Result<u8> {
     }
 }
 
-fn recover_branch(args: &RecoverArgs) -> Result<u8> {
+fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
     let repo = args.repo.display().to_string();
     let token = format!("recover-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
-    match recover::run(&registry, &repo, &args.branch, &mut stream) {
+    match recover::run(
+        &registry,
+        &repo,
+        &args.branch,
+        providers.hosting,
+        &mut stream,
+    ) {
         Ok(outcome) => {
             println!("{}", outcome.describe());
             Ok(0)
@@ -273,7 +284,7 @@ fn recover_branch(args: &RecoverArgs) -> Result<u8> {
     }
 }
 
-fn recoverable(args: &RecoverableArgs) -> Result<u8> {
+fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> {
     // Run inside a registered checkout, this answers for that repository; run
     // anywhere else, it answers across every registered identity. Both are
     // documented views, and which one somebody wants is answered by where they ask.
@@ -282,7 +293,7 @@ fn recoverable(args: &RecoverableArgs) -> Result<u8> {
         Ok(resolution) => Scope::Repo(resolution.alias),
         Err(_) => Scope::All,
     };
-    let rows = Git.recoverable(scope)?;
+    let rows = providers.vcs.recoverable(scope)?;
     if args.json {
         println!("{}", serde_json::to_string(&rows).map_err(serialization)?);
         return Ok(0);

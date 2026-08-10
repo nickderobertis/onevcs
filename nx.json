@@ -15,6 +15,7 @@
     "default": ["{projectRoot}/**/*", "sharedGlobals"],
     "crateSource": [
       "{projectRoot}/**/*",
+      "{workspaceRoot}/crates/**/*",
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/Cargo.lock",
       "sharedGlobals"

@@ -10,6 +10,24 @@ Instructions that are true of `crates/onevcs` and nowhere else.
 implementation needs beyond that is a private module, so a new seam is added
 behind the surface rather than beside it.
 
+## The two interfaces are reached through `Providers`, never named
+
+Nothing outside `providers.rs` names `Git` or `GitHub`. A command takes its
+implementations off the `Providers` it was handed, `run` is
+`run_with(cli, Providers::real())`, and a publication asks
+`context.hosting.for_repo(slug)` for the host it lands a change with. Reaching for
+a concrete implementation at a call site is what made both traits decorative for
+three releases; `grep 'dyn Vcs'` and `grep 'dyn RemoteHost'` are how you check
+they still are not.
+
+What the seam does **not** cover is a publication's repository side: fetch, merge,
+squash, and push live beneath the five `Vcs` methods, so a supplied `Vcs` is
+reached by `resolve`, `session open`, `session adopt`, `publish`'s preserve step,
+and `recoverable`, and a publication runs on real git whoever supplied it.
+`tests/e2e/seam.rs` holds each of those commands to the implementation it was
+handed: with a provider that knows the answer it succeeds, with one that does not
+it fails, which cannot happen if the command never asked.
+
 ## Tests are journeys, and there are no unit tests
 
 This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the
@@ -17,6 +35,17 @@ approved surface to the contract text it is extracted from; everything else in
 `tests/e2e/` spawns the compiled binary and drives it against real git. A path
 only an in-process test could reach is a path to delete, not one to unit-test —
 which is also how the 95% coverage floor is met.
+
+`tests/e2e/honesty.rs` is the one module that does not spawn the binary, and the
+reason is the thing it tests: `run_with` is a *library* seam, and the binary
+deliberately has no way to select a backend, so a journey comparing two backends
+can only be in-process. It runs one publication and one session journey twice —
+`Git` + `GitHub` against the providers in `crates/onevcs-testing` — and holds the
+two event streams to each other. That comparison is what keeps every consumer's
+suite honest, so a provider that stops matching fails here rather than downstream.
+It writes `ONEVCS_HOME` and friends into its own process, which is safe only
+because `cargo nextest` gives each test its own process; `cargo test` would race
+them.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a

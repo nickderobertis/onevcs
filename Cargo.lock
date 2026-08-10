@@ -485,6 +485,7 @@ dependencies = [
  "clap",
  "fs4",
  "libc",
+ "onevcs-testing",
  "predicates",
  "serde",
  "serde_json",
@@ -492,6 +493,20 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "time",
+ "url",
+]
+
+[[package]]
+name = "onevcs-testing"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "onevcs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "time",
  "url",
 ]

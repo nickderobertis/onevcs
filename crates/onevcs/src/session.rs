@@ -3,11 +3,11 @@
 
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 /// What to open a session over.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRequest {
     /// The repository: an identity key, a registered alias, or a path.
     pub repo: String,
@@ -21,13 +21,13 @@ pub struct SessionRequest {
 }
 
 /// The handle a session is adopted, published, and closed by.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SessionToken(pub String);
 
 /// An open session: a per-run shared clone plus a worktree, held under an
 /// occupancy lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     /// The handle this session is addressed by.
     pub token: SessionToken,
@@ -40,7 +40,7 @@ pub struct Session {
 }
 
 /// Why a branch was preserved, and therefore what recovering it must do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Provenance {
     /// The step finished; the branch is ready to publish as it stands.
@@ -51,7 +51,7 @@ pub enum Provenance {
 }
 
 /// A branch that holds work outside its session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreservedBranch {
     /// The branch the work is on.
     pub branch: String,
@@ -68,7 +68,7 @@ pub struct PreservedBranch {
 }
 
 /// Which preserved work to look for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scope {
     /// Every registered identity.
@@ -78,7 +78,7 @@ pub enum Scope {
 }
 
 /// Preserved work that has not been published, and what would land it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recoverable {
     /// The identity the work belongs to.
     pub identity: String,

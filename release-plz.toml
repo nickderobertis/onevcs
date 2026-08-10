@@ -59,3 +59,19 @@ commit_parsers = [
 [[package]]
 name = "onevcs"
 changelog_path = "CHANGELOG.md"
+
+# The second published crate: the test implementations of this crate's two
+# interfaces, which a consumer puts in `dev-dependencies`. It is versioned and
+# changelogged on its own, because it is its own deliverable and a change to a
+# test provider must not bump the CLI everyone installs.
+#
+# Two settings, both load-bearing. Its tag is prefixed, because `git_tag_name`
+# above is one template for the whole workspace and two packages cutting `vX.Y.Z`
+# would collide on the first release that moved both. And it cuts no GitHub
+# Release, because a Release is what triggers release.yml to build and publish the
+# binaries, the wheels, and the npm packages — all of which are the *CLI*, and none
+# of which this crate has.
+[[package]]
+name = "onevcs-testing"
+git_tag_name = "onevcs-testing-v{{ version }}"
+git_release_enable = false

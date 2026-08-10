@@ -3,7 +3,7 @@
 //! Host-neutral vocabulary: the review unit is a [`ChangeRequest`]. GitHub maps it
 //! to a pull request; a later host maps it to whatever it calls the same thing.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::error::{invalid, Error, Result};
@@ -32,8 +32,39 @@ pub trait RemoteHost {
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome>;
 }
 
+/// Where a [`RemoteHost`] for one repository comes from.
+///
+/// A host is addressed at a repository rather than at an installation — every
+/// call `gh` makes carries a slug — so the seam a caller supplies is the factory
+/// rather than one host object. This is what makes the interface reachable: a
+/// publication asks the factory it was handed for the repository it is publishing
+/// to, and never names an implementation.
+pub trait Hosting {
+    /// The host that answers for the repository named `owner/name`.
+    // llmlint: ignore[invalid_states_unrepresentable] a validated slug newtype would be a
+    // public item beyond the one this seam is specified as, and it would have exactly one
+    // constructor — the check below. That check is where the value is decided: `GitHub::new`
+    // refuses anything that does not name one repository as `owner/name`, before the slug is
+    // interpolated into a single `gh --repo`. A caller cannot reach a host any other way.
+    fn for_repo(&self, slug: &str) -> Result<Box<dyn RemoteHost>>;
+}
+
+/// The factory that produces [`GitHub`] hosts, which is what a real run uses.
+///
+/// Private: the way to hold one is [`crate::Providers::real`], because a caller
+/// mixing a real GitHub into a run whose repository side is not git is asking for
+/// a combination neither half was written for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct GitHubHosting;
+
+impl Hosting for GitHubHosting {
+    fn for_repo(&self, slug: &str) -> Result<Box<dyn RemoteHost>> {
+        Ok(Box::new(GitHub::new(slug)?))
+    }
+}
+
 /// What to open a change request for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeSpec {
     /// The branch carrying the change.
     // llmlint: ignore[invalid_states_unrepresentable] a validated branch-ref newtype is
@@ -52,7 +83,7 @@ pub struct ChangeSpec {
 }
 
 /// An open change request on the host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeRequest {
     /// The host's identifier for it.
     pub id: ChangeId,
@@ -74,7 +105,7 @@ pub struct ChangeRequest {
 // requests, and another host may not. Every one this crate constructs is read out of
 // a host response that is required to carry it: `find_changes` rejects an entry with
 // no number, and `open_change` rejects output that printed no URL to take one from.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ChangeId(pub String);
 
@@ -85,12 +116,12 @@ pub struct ChangeId(pub String);
 // Every one this crate constructs is validated where it enters: `head_sha` and
 // `merged_sha` below both reject a response that names no commit rather than
 // constructing an empty one, so no code path here can produce a blank `Sha`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Sha(pub String);
 
 /// One check the host reports on a change request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
     /// The check's name, as branch protection lists it.
     pub name: String,
@@ -139,7 +170,7 @@ impl Check {
 }
 
 /// What merging a change request did.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MergeOutcome {
     /// It merged, at this commit.

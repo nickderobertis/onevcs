@@ -51,6 +51,22 @@ onevcs --help
 `--help` is the command surface, and `publish` reserves its own exit codes for a
 gate that failed, a request that was invalid, and a base that moved under it.
 
+## Test against it, without a real GitHub
+
+Embedding the crate, `run_with(&cli, providers)` takes the two implementations a
+run reaches `Vcs` and `RemoteHost` through; `run` is that with `Git` and GitHub.
+[`onevcs-testing`](crates/onevcs-testing) ships in-memory and file-backed
+implementations of both, so a consumer's suite drives a real `onevcs` through a
+real journey against a host it seeded:
+
+```console
+cargo add --dev onevcs-testing
+```
+
+They emit the events the real implementations emit — a claim this repository's
+own suite checks by running one publication journey on both backends and holding
+the two event streams to each other.
+
 ## Develop
 
 ```console

@@ -180,21 +180,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Idempotent: a version already live on crates.io is skipped rather than
       # failing the release, so re-running after a partial failure is safe.
+      # Both published crates, in dependency order: `onevcs-testing` names a
+      # version of `onevcs`, so the one it names has to be on the registry first.
+      # The skip-if-live check and the index path it reads are the script's, and
+      # both are driven by crates/onevcs/tests/e2e/scripts.rs.
       - name: Publish (skip a version already live)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           # `cargo publish` verifies the packaged crate by building it, which is
           # one more compile the gate never sees the output of.
           RUSTFLAGS: "-D warnings"
-        run: |
-          ver="$(cargo metadata --no-deps --format-version 1 \
-                 | sed -n 's/.*"name":"onevcs","version":"\([^"]*\)".*/\1/p')"
-          if curl -fsSL "https://index.crates.io/on/ev/onevcs" 2>/dev/null \
-             | grep -q "\"vers\":\"$ver\""; then
-            echo "onevcs $ver is already on crates.io; nothing to publish."
-            exit 0
-          fi
-          cargo publish --locked --package onevcs
+        run: bash scripts/publish-crates.sh onevcs onevcs-testing
 
   # PyPI wheels: maturin's `bin` bindings wrap the prebuilt binary in per-platform
   # wheels (the ruff/uv pattern), so `pip install onevcs-cli` is a seconds-fast

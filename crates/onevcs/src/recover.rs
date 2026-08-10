@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::error::{self, Error, Result};
 use crate::event::EventKind;
+use crate::host::Hosting;
 use crate::registry::Registry;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
@@ -24,6 +25,7 @@ pub fn run(
     registry: &Registry,
     repo: &str,
     branch: &str,
+    hosting: &dyn Hosting,
     stream: &mut Stream,
 ) -> Result<publish::Outcome> {
     let resolution = store::resolve(registry, repo)?;
@@ -162,6 +164,7 @@ pub fn run(
         title: None,
         trailers: Vec::new(),
         provenance: trailers,
+        hosting,
     };
     let outcome = publish::run(&context, stream);
     if outcome.is_err() {

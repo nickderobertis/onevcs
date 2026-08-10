@@ -29,6 +29,14 @@ exceptions = []
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+# …except for a path dependency inside this workspace, which is how the one
+# dependency cycle here is spelled: `onevcs` dev-depends on `onevcs-testing`, which
+# depends on `onevcs`, so that one publication journey can run against both
+# backends and the two event streams be held to each other. A dev-dependency with
+# no version requirement is the spelling Cargo strips when publishing — giving it
+# one would make each crate's release wait on the other's. An external wildcard is
+# still refused; this narrows to `{ path = ... }`.
+allow-wildcard-paths = true
 allow = []
 deny = []
 skip = []
