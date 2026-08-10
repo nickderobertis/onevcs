@@ -7,6 +7,7 @@
 //! are the public interface a consumer implements against rather than an internal.
 
 mod failures;
+mod golden;
 mod host;
 mod refs;
 mod repository;

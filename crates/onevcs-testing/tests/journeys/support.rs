@@ -85,6 +85,7 @@ pub fn full_vcs_state() -> VcsState {
     let mut session_identities = BTreeMap::new();
     session_identities.insert(token, identity().origin);
     VcsState {
+        version: onevcs_testing::STATE_VERSION,
         identities: vec![identity()],
         sessions: vec![session],
         session_identities,
@@ -135,6 +136,7 @@ pub fn full_host_state() -> HostState {
     let mut merges = BTreeMap::new();
     merges.insert(id.clone(), MergeOutcome::Merged(Sha("abc123".to_owned())));
     HostState {
+        version: onevcs_testing::STATE_VERSION,
         authenticated_user: "seeded-user".to_owned(),
         changes: vec![ChangeRequest {
             id,
