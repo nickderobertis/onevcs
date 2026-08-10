@@ -374,6 +374,13 @@ fn a_budget_that_is_not_a_number_of_seconds_is_rejected_before_anything_runs() {
         .said("ACTION: run 'retry-install.sh");
 }
 
+// llmlint: ignore-block[e2e_not_mocked] the two programs stubbed here are the script's
+// external boundaries, and neither can be driven for real by a suite: no registry can be
+// asked to withhold a version and then serve it, which is the whole decision under test,
+// and a `cargo publish` that ran would push this workspace to crates.io from a test. What
+// the script itself decides — the index path, the skip, the order, the refusals — runs
+// unstubbed, and the derivation is also driven with no stubs at all in
+// `the_index_path_a_publish_reads_is_derived_from_the_crates_name` below.
 /// A directory of stubs put ahead of `PATH`, so a journey can drive
 /// `publish-crates.sh` without a registry and without publishing anything.
 ///
@@ -460,6 +467,7 @@ fn write_stub(path: &Path, body: &str) {
     permissions.set_mode(0o755);
     std::fs::set_permissions(path, permissions).expect("an executable stub");
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn the_index_path_a_publish_reads_is_derived_from_the_crates_name() {
@@ -565,10 +573,46 @@ fn publish_crates_called_with_nothing_to_publish_says_how_to_call_it() {
     Run::script("scripts/publish-crates.sh")
         .output()
         .failed()
-        .said("usage: publish-crates.sh CRATE [CRATE...]");
+        .said("no crate was named, so there is nothing to publish")
+        .said("ACTION: name every crate to publish, in dependency order");
     Run::script("scripts/publish-crates.sh")
         .arg("--index-path")
         .output()
         .failed()
-        .said("usage: publish-crates.sh CRATE [CRATE...]");
+        .said("--index-path takes exactly one crate name, and was given 0")
+        .said("ACTION: run 'publish-crates.sh --index-path NAME'");
+}
+
+#[test]
+fn a_name_that_is_not_a_crate_name_is_refused_before_it_reaches_a_pattern() {
+    // The name is interpolated into a `sed` expression that reads one package's
+    // version out of the workspace metadata. Cargo's grammar has no character
+    // `sed` reads as anything but itself, so anything outside it is refused —
+    // otherwise `one.cs` would quietly answer with `onevcs`'s version.
+    let registry = Registry::answering("", false);
+
+    for name in ["one.cs", "onevcs\\|onevcs-testing", ".*", "one vcs", ""] {
+        registry
+            .run()
+            .arg(name)
+            .output()
+            .failed()
+            .said("ACTION: pass the name as it appears in its Cargo.toml [package]");
+    }
+    // A leading `-` is refused as an option rather than read as one.
+    registry
+        .run()
+        .arg("-onevcs")
+        .output()
+        .failed()
+        .said("names an option rather than a crate");
+
+    assert!(
+        registry.published().is_empty(),
+        "a name nothing could resolve publishes nothing"
+    );
+    assert!(
+        registry.asked().is_empty(),
+        "and asks the registry nothing, because it never got that far"
+    );
 }
