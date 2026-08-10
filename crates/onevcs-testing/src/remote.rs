@@ -38,6 +38,12 @@ pub const DEFAULT_SLUG: &str = "onevcs/testing";
 #[derive(Debug)]
 pub struct Host<T> {
     store: T,
+    // A slug arrives one way only — `Hosting::for_repo`, which takes the `&str` the
+    // contract fixes — and `named_repository` refuses it there; every other
+    // construction here is `DEFAULT_SLUG`. A newtype would have to be public to be
+    // the parameter's type, and the seam is specified without one, which is the same
+    // reason recorded on `Hosting::for_repo` in the crate next door.
+    // llmlint: ignore[invalid_states_unrepresentable] see the note directly above.
     slug: String,
 }
 
