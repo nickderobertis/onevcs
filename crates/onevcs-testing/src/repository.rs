@@ -32,7 +32,17 @@ pub const DEFAULT_BASE: &str = "main";
 pub struct Repository<T> {
     store: T,
     root: PathBuf,
-    materialize: bool,
+    trees: Trees,
+}
+
+/// What a session's worktree path means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trees {
+    /// The path is named and nothing is created there: the in-memory provider
+    /// touches no filesystem beyond the event stream.
+    Named,
+    /// The directory is created, so a journey has somewhere to write work.
+    Created,
 }
 
 /// A repository provider that keeps its state in this process: no disk, no
@@ -61,7 +71,7 @@ impl MemoryVcs {
         Self {
             store: MemoryStore::new(state),
             root: std::env::temp_dir().join("onevcs-testing-memory"),
-            materialize: false,
+            trees: Trees::Named,
         }
     }
 
@@ -106,7 +116,7 @@ impl FileVcs {
         Ok(Self {
             store,
             root,
-            materialize: true,
+            trees: Trees::Created,
         })
     }
 
@@ -181,7 +191,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             };
             Ok((session, emission))
         })?;
-        if self.materialize {
+        if self.trees == Trees::Created {
             std::fs::create_dir_all(&session.worktree).map_err(|e| Error::Invalid {
                 reason: format!("cannot create {}: {e}", session.worktree.display()),
             })?;
@@ -311,7 +321,6 @@ fn spell(provenance: Provenance) -> &'static str {
     }
 }
 
-/// A `serde_json` object literal, as a payload map.
 fn object(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
 }
