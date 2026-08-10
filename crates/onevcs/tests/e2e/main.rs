@@ -19,6 +19,8 @@ mod lifecycle;
 mod packaging;
 #[cfg(unix)]
 mod registry;
+#[cfg(unix)]
+mod seam;
 // Unix only: the scripts these drive are POSIX shell. See each module's own note.
 #[cfg(unix)]
 mod scripts;

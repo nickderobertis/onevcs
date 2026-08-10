@@ -55,7 +55,7 @@ const AUTHOR: &str = "tester";
 ///
 /// Safe as a process-wide write because `cargo nextest` runs each test in its own
 /// process, and the two runs a comparison makes are sequential within it.
-fn inhabit(world: &World) {
+pub fn inhabit(world: &World) {
     std::env::set_var("HOME", world.path(""));
     std::env::set_var("ONEVCS_HOME", world.home());
     std::env::set_var("ONEVCS_LOCK_TIMEOUT_SECONDS", "60");
@@ -66,7 +66,7 @@ fn inhabit(world: &World) {
 }
 
 /// One command line, run against these implementations.
-fn run(args: &[&str], providers: Providers<'_>) -> u8 {
+pub fn run(args: &[&str], providers: Providers<'_>) -> u8 {
     onevcs::run_with(&Cli::parse_from(args), providers)
 }
 

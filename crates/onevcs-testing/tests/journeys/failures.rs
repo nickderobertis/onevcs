@@ -189,6 +189,96 @@ fn a_state_document_that_goes_away_is_reported_where_it_is_read() {
 }
 
 #[test]
+fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it() {
+    let _home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+
+    for name in [
+        "",
+        "-force",
+        "two words",
+        "feature/..slip",
+        "feature/",
+        "/feature",
+        "feature.lock",
+        "feature~1",
+        "feature^",
+        "feature:thing",
+        "feature[0]",
+        "refs@{0}",
+    ] {
+        let refused = vcs
+            .open_session(onevcs::SessionRequest {
+                repo: "widgets".to_owned(),
+                branch: Some(name.to_owned()),
+                base: None,
+                execution_checkout: None,
+            })
+            .err()
+            .unwrap_or_else(|| panic!("{name:?} is a name git would not accept"));
+        assert!(
+            refused.to_string().contains("git would not accept"),
+            "the refusal says who would refuse it: {refused}"
+        );
+    }
+    // …and a base is decided by the same parser as a branch.
+    assert!(vcs
+        .open_session(onevcs::SessionRequest {
+            repo: "widgets".to_owned(),
+            branch: None,
+            base: Some("release branch".to_owned()),
+            execution_checkout: None,
+        })
+        .is_err());
+    assert!(
+        vcs.state().sessions.is_empty(),
+        "a refused name records no session"
+    );
+
+    // The names git does accept are still accepted, so the check has not become
+    // stricter than the parser it stands in for.
+    for name in ["main", "feature/one", "release-1.2", "user/fix_thing.v2"] {
+        vcs.open_session(onevcs::SessionRequest {
+            repo: "widgets".to_owned(),
+            branch: Some(name.to_owned()),
+            base: None,
+            execution_checkout: None,
+        })
+        .unwrap_or_else(|e| panic!("{name:?} is a name git accepts: {e}"));
+    }
+}
+
+#[test]
+fn a_session_whose_token_could_name_another_file_records_no_event_there() {
+    let home = Home::new();
+    // A token off a `Session` a caller built by hand, which is the one that does
+    // not come from this provider. It names a file under the state root, so it is
+    // checked before it is joined — and, an event being a record rather than the
+    // work, the operation itself still succeeds.
+    let stranger = onevcs::Session {
+        token: onevcs::SessionToken("../escaped".to_owned()),
+        worktree: home.path("tree"),
+        branch: "feature/escaping".to_owned(),
+        base: "main".to_owned(),
+    };
+    let mut seeded = one_repository();
+    seeded.sessions.push(stranger.clone());
+    seeded
+        .session_identities
+        .insert(stranger.token.clone(), crate::support::identity().origin);
+    let vcs = MemoryVcs::seeded(seeded);
+
+    vcs.preserve(&stranger, Provenance::Complete)
+        .expect("the work is still preserved");
+
+    assert_eq!(vcs.state().preserved.len(), 1);
+    assert!(
+        !home.path("streams").join("../escaped.ndjson").exists(),
+        "a token that is not a plain name must not name a file outside the stream directory"
+    );
+}
+
+#[test]
 fn a_file_backed_session_needs_somewhere_to_put_its_worktree() {
     let home = Home::new();
     let vcs = FileVcs::seeded(home.path("vcs.json"), one_repository()).expect("a provider");

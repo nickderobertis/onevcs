@@ -4,9 +4,8 @@ Test implementations of the two interfaces [`onevcs`](https://crates.io/crates/o
 is built around, so a consumer can drive a real `onevcs` through a real journey
 without a real GitHub.
 
-```toml
-[dev-dependencies]
-onevcs-testing = "0.1"
+```console
+cargo add --dev onevcs-testing
 ```
 
 A separate crate rather than a feature on `onevcs`, deliberately: Cargo features

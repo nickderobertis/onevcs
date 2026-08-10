@@ -32,6 +32,11 @@ use onevcs::{ArtifactId, Envelope, Error, EventKind, Labels, Result, Source};
 const ENVELOPE_VERSION: u32 = 1;
 
 /// One event a provider is about to record.
+// llmlint: ignore-block[invalid_states_unrepresentable] both fields carry a value the
+// contract next door spells as a `String` — `SessionToken` is a transparent newtype over
+// one and an identity key is one everywhere it appears — and the value that actually
+// matters here, a stream name that could leave the directory it is written in, is refused
+// by `is_safe_name` in `append` below rather than trusted into a join.
 pub(crate) struct Emission {
     /// The stream it belongs to, which is the session token.
     pub stream: String,
@@ -42,6 +47,7 @@ pub(crate) struct Emission {
     /// The event's own fields.
     pub payload: Map<String, Value>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// The state root, resolved the way `onevcs` resolves it.
 pub(crate) fn state_root() -> Result<PathBuf> {
@@ -87,6 +93,15 @@ pub(crate) fn emit(emission: &Emission) {
 }
 
 fn append(emission: &Emission) -> Result<()> {
+    // The token arrives from outside — off a `Session` a caller handed to
+    // `preserve`, or out of a state somebody seeded — and it is about to name a
+    // file under the state root. Checked here, exactly as `onevcs` checks it, so
+    // one that is not a plain name cannot leave the directory it is written in.
+    if !is_safe_name(&emission.stream) {
+        return Err(Error::Invalid {
+            reason: format!("{:?} is not a session token", emission.stream),
+        });
+    }
     let directory = state_root()?.join("streams");
     std::fs::create_dir_all(&directory).map_err(|e| Error::Invalid {
         reason: format!("cannot create {}: {e}", directory.display()),
@@ -134,12 +149,28 @@ fn append(emission: &Emission) -> Result<()> {
     })
 }
 
+/// Whether a caller-supplied identifier may be used as a filename, as `onevcs`
+/// decides it.
+pub(crate) fn is_safe_name(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// Store evidence where `onevcs artifact cat` reads it, and return its id.
 ///
 /// Fallible, unlike an event: an artifact id a caller is handed must name
 /// something readable, and returning one that does not is the shape the real
 /// implementation refuses too.
 pub(crate) fn store_artifact(id: &str, contents: &str) -> Result<ArtifactId> {
+    if !is_safe_name(id) {
+        return Err(Error::Invalid {
+            reason: format!("{id:?} is not an artifact id"),
+        });
+    }
     let directory = state_root()?.join("artifacts");
     std::fs::create_dir_all(&directory).map_err(|e| Error::Invalid {
         reason: format!("cannot create {}: {e}", directory.display()),

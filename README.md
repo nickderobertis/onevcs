@@ -59,9 +59,8 @@ run reaches `Vcs` and `RemoteHost` through; `run` is that with `Git` and GitHub.
 implementations of both, so a consumer's suite drives a real `onevcs` through a
 real journey against a host it seeded:
 
-```toml
-[dev-dependencies]
-onevcs-testing = "0.1"
+```console
+cargo add --dev onevcs-testing
 ```
 
 They emit the events the real implementations emit — a claim this repository's

@@ -10,6 +10,24 @@ Instructions that are true of `crates/onevcs` and nowhere else.
 implementation needs beyond that is a private module, so a new seam is added
 behind the surface rather than beside it.
 
+## The two interfaces are reached through `Providers`, never named
+
+Nothing outside `providers.rs` names `Git` or `GitHub`. A command takes its
+implementations off the `Providers` it was handed, `run` is
+`run_with(cli, Providers::real())`, and a publication asks
+`context.hosting.for_repo(slug)` for the host it lands a change with. Reaching for
+a concrete implementation at a call site is what made both traits decorative for
+three releases; `grep 'dyn Vcs'` and `grep 'dyn RemoteHost'` are how you check
+they still are not.
+
+What the seam does **not** cover is a publication's repository side: fetch, merge,
+squash, and push live beneath the five `Vcs` methods, so a supplied `Vcs` is
+reached by `resolve`, `session open`, `session adopt`, `publish`'s preserve step,
+and `recoverable`, and a publication runs on real git whoever supplied it.
+`tests/e2e/seam.rs` holds each of those commands to the implementation it was
+handed: with a provider that knows the answer it succeeds, with one that does not
+it fails, which cannot happen if the command never asked.
+
 ## Tests are journeys, and there are no unit tests
 
 This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the

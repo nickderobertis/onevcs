@@ -46,22 +46,6 @@ has no implementation for that host. Supplying a `Hosting` does not change that 
 the slug is derived from a `github.com/...` identity *before* the factory is
 asked, so a second host's vocabulary is still a question nobody has answered.
 
-## The two interfaces are reached through `Providers`, never named
-
-Nothing outside `providers.rs` names `Git` or `GitHub`. A command takes its
-implementations off the `Providers` it was handed, `run` is
-`run_with(cli, Providers::real())`, and a publication asks
-`context.hosting.for_repo(slug)` for the host it lands a change with. Reaching for
-a concrete implementation at a call site is what made both traits decorative for
-three releases; `grep 'dyn Vcs'` and `grep 'dyn RemoteHost'` are how you check
-they still are not.
-
-What the seam does **not** cover is a publication's repository side: fetch, merge,
-squash, and push live beneath the five `Vcs` methods, so a supplied `Vcs` is
-reached by `resolve`, `session open`, `session adopt`, `publish`'s preserve step,
-and `recoverable`, and a publication runs on real git whoever supplied it. See
-[`docs/inferred-surface.md`](docs/inferred-surface.md).
-
 ## Two standing goals on every task
 
 The user drives product features and their request is the priority — but carry

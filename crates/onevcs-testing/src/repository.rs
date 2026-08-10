@@ -146,10 +146,16 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             // about to open — the one thing a digest-shaped token takes away.
             let token = SessionToken(format!("s-testing-{}", state.sessions.len() + 1));
             let run_root = root.join(&token.0);
+            // Both names are checked before they are recorded, because both go on to
+            // spell a ref for whoever holds the session — and a provider that
+            // accepted a name git refuses would let a journey pass where the real
+            // run stops.
+            let base = req.base.clone().unwrap_or_else(|| DEFAULT_BASE.to_owned());
+            state::named_branch(&base, "the base")?;
             let session = Session {
                 worktree: run_root.join("worktree"),
-                branch: state::requested_branch(&req, &token),
-                base: req.base.clone().unwrap_or_else(|| DEFAULT_BASE.to_owned()),
+                branch: state::requested_branch(&req, &token)?,
+                base,
                 token: token.clone(),
             };
             state.sessions.push(session.clone());

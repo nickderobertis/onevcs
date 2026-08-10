@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use onevcs::{ChangeId, ChangeRequest, Check, Identity, MergeOutcome, Recoverable, SessionToken};
-use onevcs::{Session, SessionRequest};
+use onevcs::{ChangeId, ChangeRequest, Check, Error, Identity, MergeOutcome, Recoverable, Result};
+use onevcs::{Session, SessionRequest, SessionToken};
 
 /// Everything the repository side of a run knows about itself.
 ///
@@ -30,6 +30,11 @@ pub struct VcsState {
     /// [`Session`] carries no identity, and a [`Recoverable`] must name one — so
     /// preserving a session's branch could not answer the question `recoverable`
     /// asks without this. `open_session` records it; nothing else writes it.
+    // llmlint: ignore[invalid_states_unrepresentable] an identity key is a `String`
+    // everywhere the crate this mirrors spells one — `Recoverable.identity`,
+    // `Identity.origin`, the registry document's own map key — and a newtype here would
+    // make a seeded state disagree with the types it is made of. Every value written to
+    // this map came out of `identity_of`, so it names an identity this provider holds.
     pub session_identities: BTreeMap<SessionToken, String>,
     /// Preserved work, newest last, as `recoverable` reports it.
     ///
@@ -46,6 +51,10 @@ pub struct VcsState {
 pub struct HostState {
     /// Who the host says is calling. Empty is refused, exactly as a `gh` that
     /// reports no authenticated user is.
+    // llmlint: ignore[invalid_states_unrepresentable] the interface this satisfies is
+    // `authenticated_user() -> Result<String>`, so the login is a `String` by contract and
+    // the one unusable value — a host that names nobody — is refused where it is read
+    // rather than made unrepresentable in a state a journey writes by hand.
     pub authenticated_user: String,
     /// Every change request that has been opened or seeded.
     pub changes: Vec<ChangeRequest>,
@@ -53,6 +62,11 @@ pub struct HostState {
     ///
     /// Beyond the sketch, and unavoidable: [`ChangeRequest`] records only the base
     /// it targets, and `find_changes` matches on the head as well.
+    // llmlint: ignore[invalid_states_unrepresentable] the matching `ChangeSpec.head` and
+    // `ChangeRequest.base` are `String` in the contract this mirrors, and a validated ref
+    // type here would disagree with them. Every value written to this map went through
+    // `addressable` in `open_change` first, which is the same refusal the real
+    // implementation makes at the same point.
     pub heads: BTreeMap<ChangeId, String>,
     /// The checks the host reports on each change request. A change with no entry
     /// has no checks, which is what a repository with no CI reports.
@@ -133,8 +147,40 @@ pub(crate) fn session_of<'a>(state: &'a VcsState, token: &SessionToken) -> Optio
 }
 
 /// The branch a request asks for, or the one that is derived from the token.
-pub(crate) fn requested_branch(req: &SessionRequest, token: &SessionToken) -> String {
-    req.branch
+pub(crate) fn requested_branch(req: &SessionRequest, token: &SessionToken) -> Result<String> {
+    let name = req
+        .branch
         .clone()
-        .unwrap_or_else(|| format!("onevcs/{}", token.0))
+        .unwrap_or_else(|| format!("onevcs/{}", token.0));
+    named_branch(&name, "the branch")?;
+    Ok(name)
+}
+
+/// A branch name, refused here if git would refuse it.
+///
+/// The real implementation hands the name to `git check-ref-format`, which is the
+/// parser that decides; a provider with no git carries the same rules instead. It
+/// is deliberately no *stricter* than that list — refusing a name git accepts
+/// would make a journey fail where the real run succeeds, which is the same drift
+/// as accepting one git refuses, pointed the other way.
+pub(crate) fn named_branch(value: &str, what: &str) -> Result<()> {
+    let usable = !value.is_empty()
+        && !value.starts_with('-')
+        && !value.starts_with('/')
+        && !value.ends_with('/')
+        && !value.ends_with('.')
+        && !value.ends_with(".lock")
+        && !value.contains("..")
+        && !value.contains("//")
+        && !value.contains("@{")
+        && value != "@"
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_ascii_control() || "~^:?*[\\".contains(c));
+    if !usable {
+        return Err(Error::Invalid {
+            reason: format!("{what} {value:?} is a name git would not accept"),
+        });
+    }
+    Ok(())
 }
