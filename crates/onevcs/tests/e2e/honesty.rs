@@ -35,7 +35,7 @@ use clap::Parser;
 use serde_json::{Map, Value};
 
 use onevcs::cli::Cli;
-use onevcs::{ChangeId, Check, Git, Provenance, Providers, Scope, SessionRequest, Vcs};
+use onevcs::{ChangeId, Check, Git, Hosting, Provenance, Providers, Scope, SessionRequest, Vcs};
 use onevcs_testing::{FileHost, HostState, MemoryVcs, VcsState};
 
 use crate::registry::configure_rules;
@@ -213,6 +213,71 @@ fn publication_events_match_across_backends() {
         1,
         "the provided host holds the change the publication opened"
     );
+}
+
+#[test]
+fn the_real_commands_read_what_a_provider_wrote() {
+    // The providers keep a copy of one thing this crate owns: where a stream and an
+    // artifact live under the state root, and which identifiers may name one. A copy
+    // with no gate drifts, and this is the gate — the *real binary* is asked to read
+    // what a provider wrote, which is the only reconciliation that means anything.
+    let world = World::new();
+    inhabit(&world);
+    let identity = onevcs::Identity {
+        origin: "github.com/acme-corp/hosted".to_owned(),
+        workflow: onevcs::registry::Workflow::Remote,
+        repo_type: onevcs::registry::RepoType::Team,
+        gate: "just check".to_owned(),
+    };
+    let vcs = MemoryVcs::seeded(VcsState {
+        identities: vec![identity.clone()],
+        ..VcsState::default()
+    });
+    let session = vcs
+        .open_session(SessionRequest {
+            repo: "hosted".to_owned(),
+            branch: Some("feature/written".to_owned()),
+            base: None,
+            execution_checkout: None,
+        })
+        .expect("a session");
+
+    let factory = onevcs_testing::MemoryHost::new();
+    let host = factory.for_repo("acme-corp/hosted").expect("a host");
+    let change = host
+        .open_change(onevcs::ChangeSpec {
+            head: "feature/written".to_owned(),
+            base: "main".to_owned(),
+            title: "feat: the written thing".to_owned(),
+            body: None,
+        })
+        .expect("opened");
+    let artifact = host
+        .check_log(&change, &green_gate())
+        .expect("a stored log");
+
+    // `onevcs events` reads the stream…
+    let events = world.events(&session.token.0);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["kind"], "session-opened");
+    assert_eq!(events[0]["payload"]["branch"], "feature/written");
+
+    // …and `onevcs artifact cat` reads the artifact, by the id the provider handed
+    // back, which is what proves both the layout and the id's shape.
+    world
+        .onevcs()
+        .args(["artifact", "cat", &artifact.0])
+        .assert()
+        .success()
+        .stdout("the host log for check gate\n");
+
+    // And an identifier that is not a plain name is refused by the command too, so
+    // the parser the providers carry cannot become the looser of the two.
+    world
+        .onevcs()
+        .args(["artifact", "cat", "../escaped"])
+        .assert()
+        .code(2);
 }
 
 #[test]
