@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/nickderobertis/onevcs/compare/v0.1.3...v0.2.0) - 2026-08-10
+
+### Added
+
+- [**breaking**] version the file-backed state and check its bytes in ([#9](https://github.com/nickderobertis/onevcs/pull/9))
+
 ## [0.1.3](https://github.com/nickderobertis/onevcs/compare/v0.1.2...v0.1.3) - 2026-08-09
 
 ### Added
