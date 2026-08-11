@@ -27,8 +27,9 @@ use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeId, ChangeRequest, ChangeSpec, Check, Envelope, Error,
-    EventKind, Git, GitHub, Labels, MergeOutcome, MergePolicy, PreservedBranch, Provenance,
-    Recoverable, RemoteHost, Scope, Session, SessionRequest, SessionToken, Sha, Source, Url, Vcs,
+    EventKind, FailureKind, Git, GitHub, Labels, MergeOutcome, MergePolicy, PreservedBranch,
+    Provenance, PublishOutcome, Recoverable, RemoteHost, Retention, Scope, Session, SessionRequest,
+    SessionToken, Sha, Source, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -878,6 +879,63 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     for sub in command.get_subcommands() {
         collect_long_flags(sub, into);
     }
+}
+
+/// Every ending a publication has, proven exhaustive by the match below: adding a
+/// variant without listing it here stops compiling.
+fn all_publish_outcomes() -> Vec<&'static str> {
+    let url = Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a valid URL");
+    let outcomes = [
+        PublishOutcome::Merged(Sha("0f1e2d3".to_owned())),
+        PublishOutcome::ChangeOpen(url.clone()),
+        PublishOutcome::Queued(url),
+        PublishOutcome::NothingToPublish,
+        PublishOutcome::Failed {
+            kind: FailureKind::Gate,
+            reason: "the gate rejected it".to_owned(),
+            retained: Some(Retention::HandedBack(PathBuf::from("/home/agent/onevcs"))),
+        },
+    ];
+    outcomes
+        .iter()
+        .map(|outcome| match outcome {
+            // Exhaustive on purpose: this is what makes the list complete.
+            PublishOutcome::Merged(_) => "Merged",
+            PublishOutcome::ChangeOpen(_) => "ChangeOpen",
+            PublishOutcome::Queued(_) => "Queued",
+            PublishOutcome::NothingToPublish => "NothingToPublish",
+            PublishOutcome::Failed { .. } => "Failed",
+        })
+        .collect()
+}
+
+#[test]
+fn the_readme_shows_a_caller_every_ending_a_publication_has() {
+    // The README teaches a consumer to branch on a publication's outcome, which is
+    // the whole reason the type exists — a consumer that read prose instead is what
+    // it exists *because* of. So an ending added to the enum and not to that example
+    // teaches a match that no longer covers what it is handed, and nothing else
+    // reconciles the two: the example cannot compile, because the caller it shows
+    // has a journal this crate knows nothing about.
+    let readme = repo_file("README.md");
+    let mut shown = BTreeSet::new();
+    let mut rest = readme.as_str();
+    while let Some(at) = rest.find("PublishOutcome::") {
+        rest = &rest[at + "PublishOutcome::".len()..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        shown.insert(rest[..end].to_owned());
+        rest = &rest[end..];
+    }
+    let implemented: BTreeSet<String> = all_publish_outcomes()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        shown, implemented,
+        "README.md and PublishOutcome disagree about how a publication can end"
+    );
 }
 
 /// The repository root — the directory a workflow step runs in, and the one every

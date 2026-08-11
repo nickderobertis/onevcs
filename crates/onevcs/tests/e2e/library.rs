@@ -133,7 +133,7 @@ fn subject(title: &str) -> onevcs::Subject {
     onevcs::Subject::try_from(title.to_owned()).expect("a usable title")
 }
 
-/// A session over `identity`, opened through whichever repository side is supplied.
+/// A session on `branch`, opened through whichever repository side is supplied.
 fn open(vcs: &dyn Vcs, branch: &str) -> Session {
     vcs.open_session(SessionRequest {
         repo: "hosted".to_owned(),
