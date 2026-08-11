@@ -92,7 +92,17 @@ amendment, written into `docs/contract.md`: `Vcs` owns the session record, closi
 a session, and publishing one, so a provider-opened session is a first-class
 session everywhere. What is *inferred* here is only the shape of the four types
 that widening needs, and each is the smallest thing that could answer the question
-it exists for:
+it exists for. The declarations themselves live in `docs/contract.md` and are held
+to the code by `the_amendment_declares_the_types_the_widened_seam_gained` in
+`tests/contract.rs`; the column below records only *why* each shape was chosen,
+which is what this file is for.
+
+<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the table below is a
+reviewer's record of which lines are approved and which are an inference, not a second
+declaration of them: the authoritative one is the amendment in docs/contract.md, and the
+suite reconciles that with the types. Gating a rationale column would hold the reasons to
+the code rather than the shapes, and the pre-existing rows above have the same character
+for the same reason. -->
 
 | Type | Inferred shape | Why |
 | --- | --- | --- |

@@ -27,9 +27,10 @@ use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeId, ChangeRequest, ChangeSpec, Check, Envelope, Error,
-    EventKind, FailureKind, Git, GitHub, Labels, MergeOutcome, MergePolicy, PreservedBranch,
-    Provenance, PublishOutcome, Recoverable, RemoteHost, Retention, Scope, Session, SessionRequest,
-    SessionToken, Sha, Source, Url, Vcs,
+    EventKind, FailureKind, Git, GitHub, Labels, Lifecycle, MergeOutcome, MergePolicy,
+    PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest, Recoverable,
+    RemoteHost, Retention, Scope, Session, SessionRecord, SessionRequest, SessionToken, Sha,
+    Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -879,6 +880,80 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     for sub in command.get_subcommands() {
         collect_long_flags(sub, into);
     }
+}
+
+#[test]
+fn the_amendment_declares_the_types_the_widened_seam_gained() {
+    // The amendments region says the suite reconciles it with the code the way it
+    // reconciles the approved text below the rule — so it has to be reconciled, or
+    // the sentence promising it is the only thing holding the two together.
+    // Constructing each type with every field named is the half a compiler checks;
+    // finding its declaration in the amendment is the half that keeps the text from
+    // drifting from what was built.
+    let record = SessionRecord {
+        session: Session {
+            token: SessionToken("s-7f3a".to_owned()),
+            worktree: PathBuf::from("/run/onevcs/s-7f3a/worktree"),
+            branch: "feature".to_owned(),
+            base: "main".to_owned(),
+        },
+        identity: "github.com/nickderobertis/onevcs".to_owned(),
+        lifecycle: Lifecycle::Open,
+        provenance: Provenance::Complete,
+    };
+    let request = PublishRequest {
+        policy: Some(MergePolicy::ChangeOpen),
+        title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
+    };
+    let publication = Publication {
+        session: record.session.token.clone(),
+        branch: record.session.branch.clone(),
+        policy: MergePolicy::ChangeOpen,
+        outcome: PublishOutcome::NothingToPublish,
+    };
+
+    let declarations = amendment_block("rust");
+    for declared in [
+        "fn session(&self, token: &SessionToken) -> Result<SessionRecord>;",
+        "fn close_session(&self, token: &SessionToken) -> Result<Session>;",
+        "pub struct SessionRecord { pub session: Session, pub identity: String,",
+        "pub lifecycle: Lifecycle, pub provenance: Provenance }",
+        "pub enum Lifecycle { Open, Closed }",
+        "pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<Subject> }",
+        "pub struct Publication { pub session: SessionToken, pub branch: String,",
+        "pub policy: MergePolicy, pub outcome: PublishOutcome }",
+        "pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented }",
+        "pub enum Retention { HandedBack(PathBuf), Refused(PathBuf) }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+
+    // The endings it lists are the ones the type has, by the same reconciliation the
+    // README gets — the amendment is where a consumer reads them first.
+    let listed: BTreeSet<String> = declarations
+        .lines()
+        .find(|line| line.contains("Merged(Sha)"))
+        .expect("the amendment lists the endings")
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty() && word.chars().next().is_some_and(char::is_uppercase))
+        .filter(|word| !matches!(*word, "Sha" | "Url"))
+        .map(str::to_owned)
+        .chain(std::iter::once("Failed".to_owned()))
+        .collect();
+    assert_eq!(
+        listed,
+        all_publish_outcomes()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<String>>(),
+        "the amendment and PublishOutcome disagree about how a publication can end"
+    );
+
+    assert_eq!(publication.session, record.session.token);
+    assert_eq!(request.policy, Some(MergePolicy::ChangeOpen));
 }
 
 /// Every ending a publication has, proven exhaustive by the match below: adding a
