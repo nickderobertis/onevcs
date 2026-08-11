@@ -90,10 +90,12 @@ script written beside them that answered to what they asked.
 - **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
   whose name does not end in `-smoke` is refused before the first mutating call.
   `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.
-- **A whole run is about a minute and about fifty API calls** — measured, on a warm
-  build: 58s wall clock, three pull requests opened and merged, 7 REST and 44
-  GraphQL calls. Most of the GraphQL is the checks journey polling a real Actions
-  job it cannot hurry. That is the number to weigh when deciding whether to make
+- **A whole run is about a minute and under a hundred API calls** — measured twice
+  on a warm build, 58s and 65s wall clock, three pull requests opened and merged
+  each time. The call count varies with how long the real Actions job takes to
+  settle, because the checks journey polls a job it cannot hurry: 7 REST + 44
+  GraphQL on the faster run, 29 REST + 54 GraphQL on the slower. Take the larger
+  pair as the budget. That is the number to weigh when deciding whether to make
   `smoke` a required check, and the reason a journey should cover several methods
   rather than one.
 - **A run is uniquely named** by journey label, process id, and its own scratch
