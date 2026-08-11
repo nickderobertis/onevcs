@@ -162,6 +162,16 @@ impl Reader {
     }
 
     /// The lines appended since the last call, in the order they were written.
+    // llmlint: ignore[boundary_inputs_validated] the boundary this cursor owns is the
+    // *name*: the token arrives from outside and is joined under the state root, and
+    // `path_for` refuses one that is not a plain name before any file is opened. The
+    // envelope shape is checked one layer up, by `EventStream::read`, which refuses a line
+    // it cannot parse and one attributed to another stream, naming the line — that is the
+    // typed surface, and it has a journey for both refusals. `onevcs events` is
+    // deliberately the other rendering: a reader of one file rather than a validator of
+    // it. A line this build cannot parse is the line an operator most needs to see, and
+    // the envelope is versioned, so a command that refused what it could not parse would
+    // stop reading a stream a later build wrote.
     pub fn lines(&mut self) -> Result<Vec<String>> {
         let raw = std::fs::read_to_string(&self.path).map_err(error::at("read", &self.path))?;
         let lines: Vec<&str> = raw.lines().collect();
