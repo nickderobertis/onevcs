@@ -155,7 +155,6 @@ not tell you:
 values live in the secret store, never in the tree. One GitHub resource outside
 this repository belongs to it: `nickderobertis/onevcs-smoke`, the scratch
 repository the `smoke` job publishes to and the only one it is allowed to touch.
-What that tier does there, and why, is `crates/onevcs/AGENTS.md`'s to say.
 
 ## Invariants (non-negotiable)
 

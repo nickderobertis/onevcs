@@ -18,13 +18,29 @@ use crate::{gh, git, stream};
 /// alongside `0` rather than as a failure.
 const CHECKS_PENDING: i32 = 8;
 
-/// What `gh pr checks --required` says when the repository declares no required
-/// check at all — a repository with no branch protection genuinely has none.
-const NO_REQUIRED_CHECKS: &str = "no required checks";
+/// How `gh pr checks --required` opens its stderr when the repository declares no
+/// required check at all — a repository with no branch protection genuinely has
+/// none. The rest of that line names the branch, so only the prefix is fixed.
+const NO_REQUIRED_CHECKS: &str = "no required checks reported on the ";
 
 /// Whether a `gh pr checks` answer is one to read.
 fn usable(answer: &gh::Answer) -> bool {
     matches!(answer.code, Some(0) | Some(CHECKS_PENDING))
+}
+
+/// Whether a failing `gh pr checks --required` failed by *answering* "none".
+///
+/// The whole shape, not a substring anywhere in the output: `gh` exits `1`, writes
+/// nothing to stdout, and opens stderr with [`NO_REQUIRED_CHECKS`]. Measured against
+/// real GitHub — a repository with no branch protection answers exactly that. It is
+/// held to all three because this is the one place a *failed* `gh` call is read as a
+/// meaningful answer, and a looser test would swallow an unrelated failure whose
+/// message happened to contain the phrase, reporting "nothing blocks the merge"
+/// about a host that never said so.
+fn no_required_checks(answer: &gh::Answer) -> bool {
+    answer.code == Some(1)
+        && answer.stdout.trim().is_empty()
+        && answer.stderr.trim_start().starts_with(NO_REQUIRED_CHECKS)
 }
 
 /// Everything `onevcs` asks of a repository's remote host.
@@ -261,7 +277,7 @@ impl GitHub {
             // failing: refusing here would make every unprotected repository
             // unreadable, and "nothing blocks the merge" is what the publication
             // path already knows how to act on.
-            if answer.stderr.contains(NO_REQUIRED_CHECKS) {
+            if no_required_checks(&answer) {
                 return Ok(BTreeSet::new());
             }
             return Err(unsaid(&cr.url, &answer.detail()));
