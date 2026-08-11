@@ -15,12 +15,13 @@ use clap::Parser;
 
 use onevcs::cli::Cli;
 use onevcs::{
-    Check, MergeOutcome, MergePolicy, Providers, PublishOutcome, PublishRequest, SessionRequest,
-    SessionToken, Subject,
+    ChangeRequest, Check, MergeOutcome, MergePolicy, Providers, PublishOutcome, PublishRequest,
+    RemoteHost, SessionRequest, SessionToken, Subject,
 };
 
 use crate::scratch::{
-    authenticated_user, gh_json, inhabit, real_host, scratch_repo, until, World, CHECK_LOG_LINE,
+    authenticated_user, gh_json, gh_try, inhabit, real_host, scratch_repo, until, World,
+    CHECK_LOG_LINE,
 };
 
 /// `change-open`: the pull request is opened and left open, so the checks it
@@ -42,6 +43,47 @@ const RULES: &str = "version: 2\nrules: []\ndefault:\n  publication: change-open
 /// branch protection on it, which would then also gate every merge this tier
 /// depends on.
 const REQUIRED: bool = false;
+
+/// The checks the host reports on a change request, or a refusal that names what
+/// the credential was not allowed to do.
+///
+/// A permission failure is the likeliest way this journey fails and the hardest to
+/// read off what GitHub says about it: a fine-grained token may not resolve a
+/// repository's check runs without that repository's `Checks` permission, and the
+/// way GitHub declines is to name the GraphQL node it would not produce. So the
+/// refusal is restated in the terms an operator can act on, and carries what this
+/// tier's own witness got when it asked the same question a different way — which is
+/// what separates "this credential cannot read checks at all" from "this build asks
+/// for them wrongly". Not waited out: no amount of polling grants a permission.
+fn checks_of(host: &dyn RemoteHost, change: &ChangeRequest, slug: &str) -> Vec<Check> {
+    match host.change_checks(change) {
+        Ok(checks) => checks,
+        Err(error) => {
+            let witness = gh_try(&[
+                "pr",
+                "checks",
+                &change.id.0,
+                "--repo",
+                slug,
+                "--json",
+                "name,state,link",
+            ]);
+            panic!(
+                "the host would not say what checks are on {}: {error}\nThis tier needs a \
+                 credential that {slug} allows to read its check runs. In CI that is the \
+                 RELEASE_PLZ_TOKEN secret; if it is a fine-grained token it needs that \
+                 repository's `Checks: read` permission, which is not implied by the contents \
+                 and pull-requests access the rest of this tier uses. Asked the same question a \
+                 second way, `gh pr checks` answered: {}",
+                change.url,
+                match &witness {
+                    Ok(answer) => format!("{:?}", answer.trim()),
+                    Err(refusal) => refusal.clone(),
+                }
+            )
+        }
+    }
+}
 
 #[test]
 fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
@@ -132,10 +174,9 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
         &format!("the scratch repository's check on {url} to settle"),
         Duration::from_secs(360),
         || {
-            let reported = host
-                .change_checks(change)
-                .expect("the host reports the checks on a change request");
-            reported.into_iter().find(Check::settled)
+            checks_of(host.as_ref(), change, &slug)
+                .into_iter()
+                .find(Check::settled)
         },
     );
     assert_eq!(
