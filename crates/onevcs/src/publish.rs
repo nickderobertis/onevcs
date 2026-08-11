@@ -46,6 +46,25 @@ pub struct PublishRequest {
     pub title: Option<String>,
 }
 
+impl PublishRequest {
+    /// The subject an explicit title would give the publication, or the reason it
+    /// could not be one. `None` when the request names no title.
+    ///
+    /// The rule belongs to publication rather than to any one implementation of
+    /// [`Vcs`](crate::Vcs) — a subject that names no change would make the base
+    /// branch a worse record than a refusal does — so a supplied implementation
+    /// applies this rather than a restatement of it that could accept what the
+    /// real one refuses.
+    pub fn subject(&self) -> Result<Option<String>> {
+        match self.title.as_deref() {
+            None => Ok(None),
+            Some(title) => provenance::checked_subject(title)
+                .map(Some)
+                .map_err(|reason| Error::Invalid { reason }),
+        }
+    }
+}
+
 /// What one publication did.
 ///
 /// The value `onevcs publish` renders and a caller embedding this crate branches
@@ -146,7 +165,13 @@ impl FailureKind {
     }
 
     /// Which failure an error is.
-    pub(crate) fn of(error: &Error) -> Self {
+    ///
+    /// Public because a supplied implementation of [`Vcs`](crate::Vcs) has to
+    /// report the same kind for the same failure — a publication that started and
+    /// did not land is an outcome on every backend, and which one it is cannot be
+    /// left to a restatement of this match.
+    #[must_use]
+    pub fn of(error: &Error) -> Self {
         match error {
             Error::GateFailed { .. } => FailureKind::Gate,
             Error::SyncConflict { .. } => FailureKind::SyncConflict,

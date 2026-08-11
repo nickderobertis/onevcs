@@ -200,16 +200,55 @@ fn a_publication_of_a_session_this_provider_never_opened_is_refused() {
         )
         .expect_err("a session nobody opened cannot be published");
     assert!(refused.to_string().contains("s-testing-9"), "{refused}");
+}
 
-    // A title a journey asked for is the one the host is given, which is the other
-    // half of what a request carries.
-    let session = open(&vcs, "feature/titled");
+#[test]
+fn a_title_this_provider_would_publish_under_is_one_the_real_publication_would_take() {
+    let _home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+
+    // A title arrives from outside and becomes the subject the base branch is read
+    // by, so the two the real publication refuses are refused here too — a provider
+    // that took either would let a journey pass where the real run stops.
+    for (what, title, said) in [
+        ("blank", "   ".to_owned(), "the explicit title is blank"),
+        (
+            "overlong",
+            "feat: ".to_owned() + &"x".repeat(200),
+            "over the 72-character limit",
+        ),
+    ] {
+        let host = MemoryHost::new();
+        let session = open(&vcs, &format!("feature/{what}"));
+        let published = vcs
+            .publish(
+                &session.token,
+                &PublishRequest {
+                    policy: None,
+                    title: Some(title),
+                },
+                &host,
+            )
+            .expect("an unusable title stops the publication rather than the request");
+        let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+            panic!("a {what} title cannot be a subject: {published:?}");
+        };
+        assert_eq!(*kind, FailureKind::Invalid);
+        assert!(reason.contains(said), "a {what} title says so: {reason}");
+        assert!(
+            host.state().changes.is_empty(),
+            "and nothing was opened under it"
+        );
+    }
+
+    // One it would take is the one the host is given.
     let host = MemoryHost::new();
+    let session = open(&vcs, "feature/titled");
     vcs.publish(
         &session.token,
         &PublishRequest {
             policy: None,
-            title: Some("feat: the requested title".to_owned()),
+            title: Some("  feat: the requested title  ".to_owned()),
         },
         &host,
     )

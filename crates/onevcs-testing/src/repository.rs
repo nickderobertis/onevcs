@@ -373,9 +373,15 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 land_locally(&identity, &session, token)
             } else {
                 match slug(&identity) {
-                    Some(slug) => publish_as_change(
+                    Some(slug) => match publish_as_change(
                         hosting, &slug, &identity, &session, policy, request, token,
-                    )?,
+                    ) {
+                        Ok(published) => published,
+                        // Once a publication has started, what stops it is an outcome
+                        // rather than a refusal — the same split the real
+                        // implementation keeps, so a caller reads one shape.
+                        Err(error) => (failed(&error), Vec::new()),
+                    },
                     None => (refusal(&identity), Vec::new()),
                 }
             };
@@ -473,6 +479,11 @@ fn publish_as_change(
     request: &PublishRequest,
     token: &SessionToken,
 ) -> Result<(PublishOutcome, Vec<Emission>)> {
+    // A title arrives from outside and becomes the subject the base branch is read
+    // by, so it is checked here — through the crate's own rule rather than a
+    // restatement of it, which is what keeps this provider from accepting a title
+    // the real publication refuses.
+    let requested = request.subject()?;
     let host = hosting.for_repo(slug)?;
     // Who the host believes is calling travels with the change, as it does in the
     // real publication and for the same reason.
@@ -486,10 +497,7 @@ fn publish_as_change(
             // The real implementation takes the subject from the branch's commits,
             // and refuses a branch whose commits name no change. A provider has no
             // commits to read, so an unrequested title names the branch instead.
-            title: request
-                .title
-                .clone()
-                .unwrap_or_else(|| format!("Publish {}", session.branch)),
+            title: requested.unwrap_or_else(|| format!("Publish {}", session.branch)),
             body: None,
         })?,
     };
@@ -537,26 +545,26 @@ fn publish_as_change(
 /// hosted one on a host this build does not speak for is asking for an
 /// implementation that has not arrived.
 fn refusal(identity: &str) -> PublishOutcome {
-    let (kind, error) = if identity.split('/').count() == 3 {
-        (
-            FailureKind::NotImplemented,
-            Error::NotImplemented {
-                operation: "RemoteHost for a host other than github.com",
-            },
-        )
+    failed(&if identity.split('/').count() == 3 {
+        Error::NotImplemented {
+            operation: "RemoteHost for a host other than github.com",
+        }
     } else {
-        (
-            FailureKind::Invalid,
-            Error::Invalid {
-                reason: format!(
-                    "identity {identity:?} is not a hosted repository, so it cannot publish a \
-                     change request; a local identity publishes with local-direct"
-                ),
-            },
-        )
-    };
+        Error::Invalid {
+            reason: format!(
+                "identity {identity:?} is not a hosted repository, so it cannot publish a \
+                 change request; a local identity publishes with local-direct"
+            ),
+        }
+    })
+}
+
+/// One failure, as the outcome a publication that started and did not land is.
+fn failed(error: &Error) -> PublishOutcome {
     PublishOutcome::Failed {
-        kind,
+        // Through the crate's own mapping, so the kind a caller branches on is the
+        // one the real implementation would report for the same failure.
+        kind: FailureKind::of(error),
         reason: error.to_string(),
         // A provider has no execution checkout, so there is nowhere a branch could
         // have been handed back to and nothing to report about one.

@@ -124,12 +124,15 @@ free function above takes.
 A publication that did not land is a `Failed` outcome rather than an `Err`, exactly
 where the CLI reported a non-zero exit rather than a refusal — so the two surfaces
 cannot disagree about which failures are which. The exit codes the contract fixes
-are unchanged and are now stated once, on `FailureKind::exit_code`.
+are unchanged and are now stated once, on `FailureKind::exit_code`, beside
+`FailureKind::of(&Error)`, which is how any implementation answers with the kind
+this one would.
 
-`MergePolicy::narrow` is the one other public item this adds. A per-run policy may
-narrow the repository's and never widen it; that rule belongs to the rules system
-rather than to any one implementation, so an implementation publishing under a
-policy of its own applies the rule itself rather than a restatement of it.
+Three rules that belong to publication rather than to any one implementation of it
+are public for the same reason, so a supplied `Vcs` applies the rule rather than a
+restatement that could accept what the real one refuses: `MergePolicy::narrow` (a
+per-run policy may narrow the repository's and never widen it), `PublishRequest::
+subject` (an explicit title must be able to be a subject), and `FailureKind::of`.
 
 ---
 
