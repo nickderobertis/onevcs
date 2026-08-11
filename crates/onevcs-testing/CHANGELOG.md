@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.0...onevcs-testing-v0.1.1) - 2026-08-11
+
+### Added
+
+- serve publish, close, and events through the provider seam ([#11](https://github.com/nickderobertis/onevcs/pull/11))
+
 ## [0.1.0](https://github.com/nickderobertis/onevcs/releases/tag/onevcs-testing-v0.1.0) - 2026-08-10
 
 ### Added
