@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use onevcs::{ChangeId, ChangeRequest, Check, Error, Identity, MergeOutcome, Recoverable, Result};
-use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken, Subject};
+use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
 
 use crate::events;
 use crate::store::Checked;
@@ -156,6 +156,13 @@ pub struct HostState {
     /// [`ChangeRequest`] records neither, and the title is what a publication's
     /// commit subject becomes — so a journey asserting that the subject it asked
     /// for is the one the host was given has nowhere else to read it.
+    // llmlint: ignore[invalid_states_unrepresentable] this records the `ChangeSpec.title`
+    // the contract fixes as a `String`, so a validated type here would disagree with the
+    // one it mirrors. `Subject` is not that type: it is `onevcs`'s rule for a *commit
+    // subject*, 72 characters, and a host's own limit is its own — spelling it here would
+    // refuse a seeded title a real host accepts, which is drift in the direction that
+    // looks like rigour. What the host itself refuses is a title that names nothing, and
+    // that is refused below and in `open_change`, at the boundary the value arrives at.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub titles: BTreeMap<ChangeId, String>,
     /// The checks the host reports on each change request. A change with no entry
@@ -353,6 +360,21 @@ impl Checked for VcsState {
     }
 }
 
+/// A change request's title, refused when it names nothing.
+///
+/// The one thing a real host refuses about a title, and the only one this provider
+/// may: how long a title may be is the host's own rule rather than `onevcs`'s
+/// commit-subject rule, and a provider applying the stricter of the two would
+/// refuse what the host it stands in for accepts.
+pub(crate) fn titled(title: &str) -> Result<()> {
+    if title.trim().is_empty() {
+        return Err(Error::Invalid {
+            reason: "a change request's title is blank, so it names no change".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// The session a token names, refused when this state does not hold one.
 fn opened<'a>(state: &'a VcsState, token: &SessionToken, what: &str) -> Result<&'a Session> {
     if !events::is_safe_name(&token.0) {
@@ -396,12 +418,10 @@ impl Checked for HostState {
         for head in self.heads.values() {
             named_branch(head, "the head of a seeded change request")?;
         }
-        // A title becomes a commit subject on the base branch, so one that could not
-        // be a subject is refused here rather than published.
+        // A change request nobody could have opened: the real host refuses a title
+        // that names nothing, so a seeded one is refused for the same reason.
         for title in self.titles.values() {
-            Subject::try_from(title.clone()).map_err(|reason| Error::Invalid {
-                reason: format!("a seeded change request's title cannot be a subject: {reason}"),
-            })?;
+            titled(title)?;
         }
         Ok(())
     }
