@@ -81,6 +81,13 @@ pub struct VcsState {
     ///
     /// One way to say closed rather than two, so a scenario written by hand names
     /// only the sessions whose lifecycle is not the one they were opened in.
+    // llmlint: ignore[invalid_states_unrepresentable] keyed by session token, exactly as
+    // `session_identities` above is and for the same reason: this document is a scenario
+    // somebody writes by hand, and a session is named once under `sessions` with the rest
+    // of the state keyed to it rather than nested inside a shape that could hold only one
+    // arrangement. A token here that names no opened session is refused in
+    // `Checked::check`, where the document is read — the same trust boundary every other
+    // cross-reference in it is checked at.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub closed_sessions: BTreeSet<SessionToken>,
     /// The policy this provider publishes under.
@@ -98,6 +105,13 @@ pub struct VcsState {
     /// published already": a second publication of a session that landed has
     /// nothing the base does not already carry, which is what the real
     /// implementation reports for the same reason.
+    // llmlint: ignore[invalid_states_unrepresentable] this holds `onevcs::Publication`
+    // verbatim — the value `Vcs::publish` handed back, carrying its own session and branch
+    // — so a journey asserts on exactly what a caller would receive. A shape that made
+    // "this publication is of some other session's branch" unrepresentable could not hold
+    // that type, and would be a second spelling of the answer the crate next door already
+    // has. The cross-reference is checked in `Checked::check` instead, where the document
+    // is read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub publications: Vec<Publication>,
 }
@@ -339,6 +353,9 @@ impl Checked for VcsState {
         // from it would be answering from a fiction rather than refusing one.
         for token in &self.closed_sessions {
             opened(self, token, "closed")?;
+        }
+        for token in self.session_identities.keys() {
+            opened(self, token, "given an identity")?;
         }
         for publication in &self.publications {
             let session = opened(self, &publication.session, "published")?;

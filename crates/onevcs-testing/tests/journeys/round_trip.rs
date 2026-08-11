@@ -129,17 +129,25 @@ fn a_document_that_is_not_this_crates_shape_is_refused_when_it_is_attached_to() 
 }
 
 #[test]
-fn a_document_that_closes_or_publishes_a_session_nobody_opened_is_refused_by_name() {
+fn a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_name() {
     let home = Home::new();
     // Every one of these is the right *shape* and describes a run that could not
     // have happened. A provider answering `session` or `recoverable` out of one
     // would be answering from a fiction rather than refusing one, so the document
     // is refused where it is read, naming the session it disagrees about.
-    let cases: [(&str, serde_json::Value, &str); 3] = [
+    let cases: [(&str, serde_json::Value, &str); 4] = [
         (
             "a session closed that was never opened",
             serde_json::json!({"version": 2, "closed_sessions": ["s-testing-4"]}),
             "s-testing-4",
+        ),
+        (
+            "an identity recorded for a session that was never opened",
+            serde_json::json!({
+                "version": 2,
+                "session_identities": {"s-testing-2": "github.com/acme-corp/widgets"},
+            }),
+            "s-testing-2",
         ),
         (
             "a publication of a session that was never opened",

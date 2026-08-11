@@ -129,6 +129,34 @@ fn an_automated_publication_asks_the_host_to_land_it_and_reports_what_it_did() {
 }
 
 #[test]
+fn a_host_that_leaves_an_automated_change_open_is_reported_as_leaving_it_open() {
+    let _home = Home::new();
+    let mut state = one_repository();
+    state.policy = Some(MergePolicy::ChangeDirect);
+    let vcs = MemoryVcs::seeded(state);
+    // A host that answers `open` to a policy that asked it to land the change: the
+    // publication reports what the host did rather than what it asked for, which is
+    // the whole reason a seeded outcome outranks the policy.
+    let mut merges = std::collections::BTreeMap::new();
+    merges.insert(onevcs::ChangeId("1".to_owned()), onevcs::MergeOutcome::Open);
+    let host = MemoryHost::seeded(HostState {
+        merges,
+        ..HostState::default()
+    });
+    let session = open(&vcs, "feature/held-open");
+
+    let published = vcs
+        .publish(&session.token, &PublishRequest::default(), &host)
+        .expect("the publication runs");
+
+    let PublishOutcome::ChangeOpen(url) = &published.outcome else {
+        panic!("a host that did not land it leaves it open: {published:?}");
+    };
+    assert_eq!(published.policy, MergePolicy::ChangeDirect);
+    assert_eq!(*url, host.state().changes[0].url);
+}
+
+#[test]
 fn a_local_direct_publication_records_the_landing_and_reaches_no_host() {
     let home = Home::new();
     let mut state = one_repository();
