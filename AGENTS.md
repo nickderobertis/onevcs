@@ -113,7 +113,11 @@ not tell you:
   branches auto-delete. Admins may bypass in a break-glass.
 - **All gating checks are required**: `gate`, `cross`, `msrv`, `deny`, `install`,
   `pr-title`, and `llmlint`. `published-smoke.yml` is a schedule, never a PR
-  check, so it cannot be required.
+  check, so it cannot be required. `smoke` is deliberately not on that list yet:
+  it runs on `pull_request` only and takes `secrets.RELEASE_PLZ_TOKEN` as
+  `GH_TOKEN`, and requiring a check nobody has watched reach its scratch
+  repository would block every pull request on a credential question. Make it
+  required once a run has proved that token gets there.
 - **PRs follow `.github/pull_request_template.md`** — terse **What** and **Why**;
   it becomes the squash body. `.github/CODEOWNERS` routes the review by subtree,
   so a packaging or workflow change is not reviewed as if it were a crate change.
@@ -148,38 +152,10 @@ not tell you:
   keep theirs.
 
 `gh-secrets.json` names the secrets a fork or a fresh clone must provision;
-values live in the secret store, never in the tree.
-
-## The tier that talks to GitHub
-
-Everything else in this repository is offline, and the cost of that was measured
-rather than hypothetical: `GitHub::change_checks` asked `gh pr view` for an
-`isRequired` field that command has never returned, and `GitHub::check_log` asked
-`gh run view --job` for a job by a check's *name* when it only ever accepted a job
-id. Both shipped green for every release, because the only thing that had ever
-read them was a shell script written beside them that answered to what they asked.
-
-- **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
-  whose name does not end in `-smoke` is refused before the first mutating call.
-  `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.
-- **It never skips.** No `gh`, no credential, no permission — each fails loudly
-  and names what is missing. Nothing falls back to a provider or a stand-in.
-- **A run is uniquely named** by journey label, process id, and its own scratch
-  directory, so two runs at once cannot collide on a branch or a change request.
-  Cleanup is a `Drop`, so a run that fails half way still removes its branch; what
-  it can leave behind is a merged (or, on a failure between opening and merging,
-  an open) pull request, which is deliberate — that is the evidence it ran.
-- **The scratch repository declares no required check.** `gate: {kind: checks}`
-  waits for checks that *block*, so that path cannot go green there and stays
-  covered by the offline tier; the smoke tier proves `change_checks` and
-  `check_log` themselves against the real workflow the repository carries.
-- **The honesty comparison has two legs.** `tests/e2e/honesty.rs` is the offline
-  one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
-  real `Git` + real `GitHub`. Both reduce their streams with
-  `tests/e2e/comparison.rs`, so neither can accept a difference the other rejects.
-- **CI runs it on `pull_request` only**, with `secrets.RELEASE_PLZ_TOKEN` as
-  `GH_TOKEN`. It is not in the required-checks list in this file: make it required
-  once a run has proved that credential reaches the scratch repository.
+values live in the secret store, never in the tree. One GitHub resource outside
+this repository belongs to it: `nickderobertis/onevcs-smoke`, the scratch
+repository the `smoke` job publishes to and the only one it is allowed to touch.
+What that tier does there, and why, is `crates/onevcs/AGENTS.md`'s to say.
 
 ## Invariants (non-negotiable)
 

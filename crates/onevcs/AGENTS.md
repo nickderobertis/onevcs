@@ -78,6 +78,34 @@ as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
 builds the crate and runs the contract, boundary, and packaging suites.
 
+## The tier that talks to GitHub
+
+Every other journey here is offline, and the cost of that was measured rather than
+hypothetical: `GitHub::change_checks` asked `gh pr view` for an `isRequired` field
+that command has never returned, and `GitHub::check_log` asked `gh run view --job`
+for a job by a check's *name* when it only ever accepted a job id. Both shipped
+green for every release, because the only thing that had ever read them was a shell
+script written beside them that answered to what they asked.
+
+- **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
+  whose name does not end in `-smoke` is refused before the first mutating call.
+  `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.
+- **A run is uniquely named** by journey label, process id, and its own scratch
+  directory, so two runs at once cannot collide on a branch or a change request.
+  Cleanup is a `Drop`, so a run that fails half way still removes its branch; what
+  it can leave behind is a merged (or, on a failure between opening and merging,
+  an open) pull request, which is deliberate — that is the evidence it ran.
+- **The scratch repository declares no required check.** `gate: {kind: checks}`
+  waits for checks that *block*, so that path cannot go green there and stays
+  covered by the offline tier; this tier proves `change_checks` and `check_log`
+  themselves against the real workflow the repository carries. Making its check
+  required would need branch protection, which would then also gate every merge
+  this tier depends on.
+- **The honesty comparison has two legs.** `tests/e2e/honesty.rs` is the offline
+  one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
+  real `Git` + real `GitHub`. Both reduce their streams with
+  `tests/e2e/comparison.rs`, so neither can accept a difference the other rejects.
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory
