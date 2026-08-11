@@ -26,8 +26,8 @@ use crate::store::Checked;
 /// `2` is what both sides learned when publishing and closing a session came
 /// through the interface: [`VcsState::policy`], [`VcsState::closed_sessions`],
 /// [`VcsState::publications`], and [`HostState::titles`]. A document at version `1`
-/// is refused by name
-/// rather than read: it describes a provider that could not publish, and every
+/// is refused by name rather than read: it describes a provider that could not
+/// publish, and every
 /// session in it would read back as open — which for a journey asserting on a
 /// session it had closed is a wrong answer rather than a missing one.
 pub const STATE_VERSION: u32 = 2;
@@ -342,6 +342,7 @@ impl Checked for VcsState {
             named_branch(&session.base, "the base")?;
         }
         for row in &self.preserved {
+            known_identity(self, &row.identity, "preserved work")?;
             named_branch(&row.branch.branch, "the preserved branch")?;
             named_branch(&row.branch.base, "the preserved branch's base")?;
         }
@@ -354,8 +355,13 @@ impl Checked for VcsState {
         for token in &self.closed_sessions {
             opened(self, token, "closed")?;
         }
-        for token in self.session_identities.keys() {
+        for (token, origin) in &self.session_identities {
             opened(self, token, "given an identity")?;
+            // The value as well as the key: this is what `identity_for` answers with,
+            // and it goes on to spell the slug a change request is opened against and
+            // the label every one of that session's events carries. An identity this
+            // provider does not know is one it could not have opened the session for.
+            known_identity(self, origin, &format!("session {:?}", token.0))?;
         }
         for publication in &self.publications {
             let session = opened(self, &publication.session, "published")?;
@@ -387,6 +393,23 @@ fn opened_change(state: &HostState, id: &ChangeId, what: &str) -> Result<()> {
             "{what} is recorded for change request {:?}, but no change request by that \
              identifier was opened",
             id.0
+        ),
+    })
+}
+
+/// Refuse an identity key this provider was not seeded with.
+fn known_identity(state: &VcsState, origin: &str, what: &str) -> Result<()> {
+    if state
+        .identities
+        .iter()
+        .any(|identity| identity.origin == origin)
+    {
+        return Ok(());
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "{what} belongs to identity {origin:?}, which this provider does not know; {}",
+            known(state)
         ),
     })
 }
