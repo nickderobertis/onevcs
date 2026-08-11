@@ -43,25 +43,66 @@ pub struct PublishRequest {
     pub policy: Option<MergePolicy>,
     /// An explicit title, which replaces the subject synthesized from the branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    pub title: Option<Subject>,
 }
 
-impl PublishRequest {
-    /// The subject an explicit title would give the publication, or the reason it
-    /// could not be one. `None` when the request names no title.
-    ///
-    /// The rule belongs to publication rather than to any one implementation of
-    /// [`Vcs`](crate::Vcs) — a subject that names no change would make the base
-    /// branch a worse record than a refusal does — so a supplied implementation
-    /// applies this rather than a restatement of it that could accept what the
-    /// real one refuses.
-    pub fn subject(&self) -> Result<Option<String>> {
-        match self.title.as_deref() {
-            None => Ok(None),
-            Some(title) => provenance::checked_subject(title)
-                .map(Some)
-                .map_err(|reason| Error::Invalid { reason }),
-        }
+/// A title that can be the subject of the commit a publication lands.
+///
+/// The check is in the conversion, for the reason every other validated name in
+/// this crate has one there: a publication commits the session's work and merges
+/// its base before it composes a message, so a title rejected where the message is
+/// composed is rejected *after* those. A [`PublishRequest`] carrying an unusable
+/// title is therefore unrepresentable rather than representable-and-refused-later
+/// — and a caller embedding this crate meets the refusal where it built the
+/// request, not after a commit it cannot undo.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Subject(String);
+
+/// The title itself, quoted — never the wrapper. A refusal that names one writes
+/// it with `{:?}`, and a derived `Debug` would spell it `Subject("feat: …")` at
+/// the operator rather than the title they typed.
+impl std::fmt::Debug for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl TryFrom<String> for Subject {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, String> {
+        provenance::checked_subject(&value).map(Subject)
+    }
+}
+
+/// So a title arriving on a command line is checked by the same conversion a title
+/// arriving through the library is.
+impl std::str::FromStr for Subject {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, String> {
+        Subject::try_from(value.to_owned())
+    }
+}
+
+impl From<Subject> for String {
+    fn from(subject: Subject) -> Self {
+        subject.0
+    }
+}
+
+impl std::ops::Deref for Subject {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -295,8 +336,10 @@ pub struct Context<'a> {
     pub change_base: Ref,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
-    /// An explicit title, which replaces the synthesized subject.
-    pub title: Option<String>,
+    /// An explicit title, which replaces the synthesized subject. Checked where it
+    /// was built, so nothing here can compose a message from one that is not a
+    /// subject.
+    pub title: Option<Subject>,
     /// Trailers the publication commit or change body must carry.
     pub trailers: Vec<String>,
     /// The provenance trailer keys this host reads and writes, which decide which

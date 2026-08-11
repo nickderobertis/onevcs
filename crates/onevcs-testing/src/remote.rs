@@ -147,7 +147,8 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
                 base: req.base.clone(),
                 id: id.clone(),
             };
-            state.heads.insert(id, req.head.clone());
+            state.heads.insert(id.clone(), req.head.clone());
+            state.titles.insert(id, req.title.clone());
             state.changes.push(change.clone());
             Ok(change)
         })

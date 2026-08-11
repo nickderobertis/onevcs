@@ -36,7 +36,14 @@ const VCS_OPTIONAL: &[&str] = &[
     "publications",
 ];
 /// Every optional key of a host state, as the document spells it.
-const HOST_OPTIONAL: &[&str] = &["changes", "heads", "checks", "check_logs", "merges"];
+const HOST_OPTIONAL: &[&str] = &[
+    "changes",
+    "heads",
+    "titles",
+    "checks",
+    "check_logs",
+    "merges",
+];
 
 #[test]
 fn an_empty_state_is_written_as_its_golden_and_omits_every_field_it_does_not_hold() {

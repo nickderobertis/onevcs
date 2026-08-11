@@ -128,6 +128,11 @@ fn written_to(descriptor: i32, act: impl FnOnce()) -> String {
     captured
 }
 
+/// A title that can be a publication's subject.
+fn subject(title: &str) -> onevcs::Subject {
+    onevcs::Subject::try_from(title.to_owned()).expect("a usable title")
+}
+
 /// A session over `identity`, opened through whichever repository side is supplied.
 fn open(vcs: &dyn Vcs, branch: &str) -> Session {
     vcs.open_session(SessionRequest {
@@ -351,7 +356,7 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
         &session.token,
         &PublishRequest {
             policy: Some(MergePolicy::ChangeOpen),
-            title: Some("feat: the narrowed thing".to_owned()),
+            title: Some(subject("feat: the narrowed thing")),
         },
     )
     .expect("the publication runs");
@@ -459,6 +464,48 @@ fn the_commands_read_the_same_over_a_provided_session_as_over_a_real_one() {
 }
 
 #[test]
+fn a_title_that_could_not_be_a_subject_is_refused_where_the_request_is_built() {
+    // No world and no session: the point is that a caller never gets far enough to
+    // need one. A publication commits the session's work and merges its base before
+    // it composes a message, so a title checked where the message is composed is
+    // checked after a commit nobody can undo — and this is why the check is in the
+    // conversion instead.
+    for (what, title) in [
+        ("blank", "   ".to_owned()),
+        ("only a newline", "\n".to_owned()),
+        ("overlong", format!("feat: {}", "x".repeat(200))),
+    ] {
+        let refused = onevcs::Subject::try_from(title)
+            .expect_err("a title that could not be a commit subject is not one");
+        assert!(
+            refused.contains("the explicit title is"),
+            "a {what} title says what was wrong with it: {refused}"
+        );
+    }
+
+    // One that could be is trimmed as it is built, so what a host is given and what
+    // a base branch records are the same string.
+    let subject = subject("  feat: the thing  ");
+    assert_eq!(&*subject, "feat: the thing");
+    assert_eq!(subject.to_string(), "feat: the thing");
+    // And it survives the trip a request takes through JSON, refusing there too.
+    let request = PublishRequest {
+        policy: None,
+        title: Some(subject),
+    };
+    let json = serde_json::to_string(&request).expect("a request serializes");
+    assert_eq!(json, r#"{"title":"feat: the thing"}"#);
+    assert_eq!(
+        serde_json::from_str::<PublishRequest>(&json).expect("and reads back"),
+        request
+    );
+    assert!(
+        serde_json::from_str::<PublishRequest>(r#"{"title":"  "}"#).is_err(),
+        "a request carrying a title that is not a subject does not deserialize"
+    );
+}
+
+#[test]
 fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
     let world = World::new();
     inhabit(&world);
@@ -477,7 +524,7 @@ fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
         &session.token,
         &PublishRequest {
             policy: None,
-            title: Some("feat: the title the caller asked for".to_owned()),
+            title: Some(subject("feat: the title the caller asked for")),
         },
     )
     .expect("the publication runs");

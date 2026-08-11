@@ -99,7 +99,8 @@ pub fn session(p: &Providers, token: &SessionToken) -> Result<SessionRecord>;
 pub struct SessionRecord { pub session: Session, pub identity: String,
                            pub lifecycle: Lifecycle, pub provenance: Provenance }
 pub enum Lifecycle { Open, Closed }
-pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<String> }
+pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<Subject> }
+pub struct Subject(String);                  // TryFrom<String>: a title that can be one
 pub struct Publication { pub session: SessionToken, pub branch: String,
                          pub policy: MergePolicy, pub outcome: PublishOutcome }
 pub enum PublishOutcome {
@@ -131,8 +132,13 @@ this one would.
 Three rules that belong to publication rather than to any one implementation of it
 are public for the same reason, so a supplied `Vcs` applies the rule rather than a
 restatement that could accept what the real one refuses: `MergePolicy::narrow` (a
-per-run policy may narrow the repository's and never widen it), `PublishRequest::
-subject` (an explicit title must be able to be a subject), and `FailureKind::of`.
+per-run policy may narrow the repository's and never widen it), `FailureKind::of`,
+and `Subject`, which is the type of an explicit title. That one is a *type* rather
+than a method because of where a publication would otherwise meet it: it commits
+the session's work and merges its base before it composes a message, so a title
+refused where the message is composed is refused after a commit nobody can undo.
+The check is in the conversion, as it is for every other validated name here, so a
+`PublishRequest` carrying a title that could not be a subject is unrepresentable.
 
 ---
 

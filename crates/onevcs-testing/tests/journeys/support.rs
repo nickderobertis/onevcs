@@ -138,6 +138,8 @@ pub fn full_host_state() -> HostState {
     let id = ChangeId("1".to_owned());
     let mut heads = BTreeMap::new();
     heads.insert(id.clone(), "feature/seeded".to_owned());
+    let mut titles = BTreeMap::new();
+    titles.insert(id.clone(), "feat: the seeded change".to_owned());
     let mut checks = BTreeMap::new();
     checks.insert(
         id.clone(),
@@ -167,6 +169,7 @@ pub fn full_host_state() -> HostState {
             base: "main".to_owned(),
         }],
         heads,
+        titles,
         checks,
         check_logs,
         merges,

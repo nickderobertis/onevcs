@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use onevcs::{ChangeId, ChangeRequest, Check, Error, Identity, MergeOutcome, Recoverable, Result};
-use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
+use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken, Subject};
 
 use crate::events;
 use crate::store::Checked;
@@ -23,9 +23,10 @@ use crate::store::Checked;
 /// and those goldens are compared byte for byte, so a field that changes shape
 /// cannot reach a consumer without the diff saying so.
 ///
-/// `2` is what the repository side learned when publishing and closing a session
-/// came through the interface: [`VcsState::policy`], [`VcsState::closed_sessions`],
-/// and [`VcsState::publications`]. A document at version `1` is refused by name
+/// `2` is what both sides learned when publishing and closing a session came
+/// through the interface: [`VcsState::policy`], [`VcsState::closed_sessions`],
+/// [`VcsState::publications`], and [`HostState::titles`]. A document at version `1`
+/// is refused by name
 /// rather than read: it describes a provider that could not publish, and every
 /// session in it would read back as open — which for a journey asserting on a
 /// session it had closed is a wrong answer rather than a missing one.
@@ -149,6 +150,14 @@ pub struct HostState {
     // implementation makes at the same point.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub heads: BTreeMap<ChangeId, String>,
+    /// The title each change request was opened under.
+    ///
+    /// Beyond the sketch, and for the same reason [`heads`](HostState::heads) is:
+    /// [`ChangeRequest`] records neither, and the title is what a publication's
+    /// commit subject becomes — so a journey asserting that the subject it asked
+    /// for is the one the host was given has nowhere else to read it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub titles: BTreeMap<ChangeId, String>,
     /// The checks the host reports on each change request. A change with no entry
     /// has no checks, which is what a repository with no CI reports.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -181,6 +190,7 @@ impl Default for HostState {
             authenticated_user: DEFAULT_AUTHENTICATED_USER.to_owned(),
             changes: Vec::new(),
             heads: BTreeMap::new(),
+            titles: BTreeMap::new(),
             checks: BTreeMap::new(),
             check_logs: BTreeMap::new(),
             merges: BTreeMap::new(),
@@ -314,25 +324,48 @@ impl Checked for VcsState {
             named_branch(&row.branch.branch, "the preserved branch")?;
             named_branch(&row.branch.base, "the preserved branch's base")?;
         }
-        // Both of these name a session, and a name that is not a plain one goes on
-        // to spell the file its stream is written in.
+        // Both of these name a session, so both are checked twice over: the token
+        // has to be a plain name, because it goes on to spell the file its stream is
+        // written in, and it has to name a session this state actually holds. A
+        // document that closes or publishes a session nobody opened describes a run
+        // that could not have happened, and answering `recoverable` or `session`
+        // from it would be answering from a fiction rather than refusing one.
         for token in &self.closed_sessions {
-            if !events::is_safe_name(&token.0) {
-                return Err(Error::Invalid {
-                    reason: format!("{:?} is not a session token", token.0),
-                });
-            }
+            opened(self, token, "closed")?;
         }
         for publication in &self.publications {
-            if !events::is_safe_name(&publication.session.0) {
+            let session = opened(self, &publication.session, "published")?;
+            named_branch(&publication.branch, "the published branch")?;
+            // A publication of some other branch than the one the session is on is
+            // the same kind of fiction, and the harder one to spot afterwards: the
+            // branch is what a journey asserts the publication was of.
+            if publication.branch != session.branch {
                 return Err(Error::Invalid {
-                    reason: format!("{:?} is not a session token", publication.session.0),
+                    reason: format!(
+                        "the publication of session {:?} names branch {:?}, but that session is \
+                         on {:?}",
+                        publication.session.0, publication.branch, session.branch
+                    ),
                 });
             }
-            named_branch(&publication.branch, "the published branch")?;
         }
         Ok(())
     }
+}
+
+/// The session a token names, refused when this state does not hold one.
+fn opened<'a>(state: &'a VcsState, token: &SessionToken, what: &str) -> Result<&'a Session> {
+    if !events::is_safe_name(&token.0) {
+        return Err(Error::Invalid {
+            reason: format!("{:?} is not a session token", token.0),
+        });
+    }
+    session_of(state, token).ok_or_else(|| Error::Invalid {
+        reason: format!(
+            "session {:?} is {what} here, but no session by that token was opened",
+            token.0
+        ),
+    })
 }
 
 /// A seeded host side is refused if it holds a change nothing could address.
@@ -362,6 +395,13 @@ impl Checked for HostState {
         }
         for head in self.heads.values() {
             named_branch(head, "the head of a seeded change request")?;
+        }
+        // A title becomes a commit subject on the base branch, so one that could not
+        // be a subject is refused here rather than published.
+        for title in self.titles.values() {
+            Subject::try_from(title.clone()).map_err(|reason| Error::Invalid {
+                reason: format!("a seeded change request's title cannot be a subject: {reason}"),
+            })?;
         }
         Ok(())
     }

@@ -268,6 +268,44 @@ fn a_failing_gate_stops_the_publication_and_leaves_the_work_where_it_can_be_foun
 }
 
 #[test]
+fn a_title_that_could_not_be_a_subject_is_refused_before_anything_is_committed() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/untitled"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+    // Left uncommitted on purpose: publishing commits whatever the worktree holds
+    // before it composes a message, so a title refused where the message is composed
+    // is refused *after* a commit the operator cannot undo.
+    std::fs::write(worktree.join("work.txt"), "work\n").expect("work in the tree");
+    let before = fixture.world.events(&token);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token, "--title", "   "])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("the explicit title is blank"));
+
+    // Nothing happened first. The tree is as dirty as it was, and the session's
+    // stream is exactly what opening it left — no commit preserving that work, no
+    // fetch of the base, no gate.
+    assert!(
+        fixture
+            .world
+            .git(&worktree, &["status", "--porcelain"])
+            .contains("work.txt"),
+        "the worktree still holds the work it did"
+    );
+    assert_eq!(
+        fixture.world.events(&token),
+        before,
+        "a title that could not be a subject stops the publication before it does anything"
+    );
+}
+
+#[test]
 fn a_branch_that_adds_nothing_publishes_nothing() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, _worktree) = fixture.open(&["--branch", "feature/empty"]);

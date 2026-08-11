@@ -127,3 +127,77 @@ fn a_document_that_is_not_this_crates_shape_is_refused_when_it_is_attached_to() 
     let seeded = FileVcs::seeded(&path, VcsState::default()).expect("seeding rewrites it");
     assert!(seeded.state().expect("readable").identities.is_empty());
 }
+
+#[test]
+fn a_document_that_closes_or_publishes_a_session_nobody_opened_is_refused_by_name() {
+    let home = Home::new();
+    // Every one of these is the right *shape* and describes a run that could not
+    // have happened. A provider answering `session` or `recoverable` out of one
+    // would be answering from a fiction rather than refusing one, so the document
+    // is refused where it is read, naming the session it disagrees about.
+    let cases: [(&str, serde_json::Value, &str); 3] = [
+        (
+            "a session closed that was never opened",
+            serde_json::json!({"version": 2, "closed_sessions": ["s-testing-4"]}),
+            "s-testing-4",
+        ),
+        (
+            "a publication of a session that was never opened",
+            serde_json::json!({
+                "version": 2,
+                "publications": [{
+                    "session": "s-testing-7",
+                    "branch": "feature/ghost",
+                    "policy": "change-open",
+                    "outcome": "nothing-to-publish",
+                }],
+            }),
+            "s-testing-7",
+        ),
+        (
+            "a publication of some branch other than the session's own",
+            serde_json::json!({
+                "version": 2,
+                "sessions": [{
+                    "token": "s-testing-1",
+                    "worktree": "/scratch/s-testing-1/worktree",
+                    "branch": "feature/one",
+                    "base": "main",
+                }],
+                "publications": [{
+                    "session": "s-testing-1",
+                    "branch": "feature/other",
+                    "policy": "change-open",
+                    "outcome": "nothing-to-publish",
+                }],
+            }),
+            "feature/other",
+        ),
+    ];
+    for (what, document, named) in cases {
+        let path = home.path(format!("{}.json", what.replace(' ', "-")));
+        std::fs::write(&path, format!("{document}\n")).expect("a written document");
+        let refused = FileVcs::create(&path)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| panic!("{what} describes a run nothing could have made"));
+        assert!(
+            refused.contains(named),
+            "the refusal names what it disagrees about ({what}): {refused}"
+        );
+    }
+
+    // And the one that agrees with itself reads, so the check refuses a fiction
+    // rather than the shape.
+    let path = home.path("consistent.json");
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::to_string(&full_vcs_state()).expect("a state serializes")
+        ),
+    )
+    .expect("a written document");
+    let held = FileVcs::create(&path).expect("a state that agrees with itself");
+    assert_eq!(held.state().expect("readable").publications.len(), 1);
+}

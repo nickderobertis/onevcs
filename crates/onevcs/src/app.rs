@@ -15,7 +15,7 @@ use crate::cli::{
 };
 use crate::error::{self, Error, Result};
 use crate::providers::Providers;
-use crate::publish::{PublishOutcome, PublishRequest, Retention};
+use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::{Registry, RepoType, Workflow};
 use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
@@ -191,12 +191,22 @@ fn session_close(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u
 /// embedding the crate branches on are the same decision rendered twice rather
 /// than two paths that could disagree.
 fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> {
+    // The title is checked here, where the command line hands it over, rather than
+    // where a message is composed from it: a publication commits the session's work
+    // and merges its base first, and a refusal after those is one an operator cannot
+    // undo.
+    let title = args
+        .title
+        .clone()
+        .map(Subject::try_from)
+        .transpose()
+        .map_err(error::invalid)?;
     let publication = crate::publish(
         providers,
         &SessionToken(args.token.clone()),
         &PublishRequest {
             policy: args.policy,
-            title: args.title.clone(),
+            title,
         },
     )?;
     let PublishOutcome::Failed {

@@ -66,7 +66,7 @@ pub use host::{
     ChangeId, ChangeRequest, ChangeSpec, Check, GitHub, Hosting, MergeOutcome, RemoteHost, Sha,
 };
 pub use providers::Providers;
-pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention};
+pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject};
 pub use registry::Identity;
 pub use rules::MergePolicy;
 pub use session::{

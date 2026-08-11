@@ -38,7 +38,9 @@ gate in, nothing to push, and no lock to queue behind, so a publication here emi
 the policy comes from `VcsState::policy` rather than a rules file (narrowed through
 `MergePolicy::narrow`, which is the rules system's own rule), and an unrequested
 change-request title names the branch rather than a commit subject there is no
-commit to take.
+commit to take. A *requested* title needs no check here — `PublishRequest::title`
+is a `Subject`, so one that could not be a commit subject never reaches a
+provider.
 
 ## One behaviour, two stores
 

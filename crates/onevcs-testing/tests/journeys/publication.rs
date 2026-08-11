@@ -17,6 +17,11 @@ use onevcs_testing::{FileHost, FileVcs, HostState, MemoryHost, MemoryVcs, VcsSta
 
 use crate::support::{green_check, identity, one_repository, Home};
 
+/// A title that can be a publication's subject.
+fn subject(title: &str) -> onevcs::Subject {
+    onevcs::Subject::try_from(title.to_owned()).expect("a usable title")
+}
+
 /// A session over the one repository these journeys know.
 fn open(vcs: &dyn Vcs, branch: &str) -> Session {
     vcs.open_session(SessionRequest {
@@ -203,57 +208,29 @@ fn a_publication_of_a_session_this_provider_never_opened_is_refused() {
 }
 
 #[test]
-fn a_title_this_provider_would_publish_under_is_one_the_real_publication_would_take() {
+fn a_requested_title_is_the_one_the_host_is_given() {
     let _home = Home::new();
     let vcs = MemoryVcs::seeded(one_repository());
-
-    // A title arrives from outside and becomes the subject the base branch is read
-    // by, so the two the real publication refuses are refused here too — a provider
-    // that took either would let a journey pass where the real run stops.
-    for (what, title, said) in [
-        ("blank", "   ".to_owned(), "the explicit title is blank"),
-        (
-            "overlong",
-            "feat: ".to_owned() + &"x".repeat(200),
-            "over the 72-character limit",
-        ),
-    ] {
-        let host = MemoryHost::new();
-        let session = open(&vcs, &format!("feature/{what}"));
-        let published = vcs
-            .publish(
-                &session.token,
-                &PublishRequest {
-                    policy: None,
-                    title: Some(title),
-                },
-                &host,
-            )
-            .expect("an unusable title stops the publication rather than the request");
-        let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
-            panic!("a {what} title cannot be a subject: {published:?}");
-        };
-        assert_eq!(*kind, FailureKind::Invalid);
-        assert!(reason.contains(said), "a {what} title says so: {reason}");
-        assert!(
-            host.state().changes.is_empty(),
-            "and nothing was opened under it"
-        );
-    }
-
-    // One it would take is the one the host is given.
     let host = MemoryHost::new();
     let session = open(&vcs, "feature/titled");
+
+    // A title cannot reach a provider unless it could be a subject — the check is in
+    // the conversion that builds one — so what is left to assert here is that the
+    // one that was asked for is the one the host was given, trimmed as it was built.
     vcs.publish(
         &session.token,
         &PublishRequest {
             policy: None,
-            title: Some("  feat: the requested title  ".to_owned()),
+            title: Some(subject("  feat: the requested title  ")),
         },
         &host,
     )
     .expect("the publication runs");
     assert_eq!(host.state().changes.len(), 1);
+    assert_eq!(
+        host.state().titles[&host.state().changes[0].id],
+        "feat: the requested title"
+    );
 }
 
 #[test]

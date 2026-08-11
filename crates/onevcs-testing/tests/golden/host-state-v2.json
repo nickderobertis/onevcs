@@ -12,6 +12,9 @@
   "heads": {
     "1": "feature/seeded"
   },
+  "titles": {
+    "1": "feat: the seeded change"
+  },
   "checks": {
     "1": [
       {

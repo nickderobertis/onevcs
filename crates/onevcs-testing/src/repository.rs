@@ -479,11 +479,6 @@ fn publish_as_change(
     request: &PublishRequest,
     token: &SessionToken,
 ) -> Result<(PublishOutcome, Vec<Emission>)> {
-    // A title arrives from outside and becomes the subject the base branch is read
-    // by, so it is checked here — through the crate's own rule rather than a
-    // restatement of it, which is what keeps this provider from accepting a title
-    // the real publication refuses.
-    let requested = request.subject()?;
     let host = hosting.for_repo(slug)?;
     // Who the host believes is calling travels with the change, as it does in the
     // real publication and for the same reason.
@@ -494,10 +489,15 @@ fn publish_as_change(
         None => host.open_change(ChangeSpec {
             head: session.branch.clone(),
             base: session.base.clone(),
-            // The real implementation takes the subject from the branch's commits,
-            // and refuses a branch whose commits name no change. A provider has no
-            // commits to read, so an unrequested title names the branch instead.
-            title: requested.unwrap_or_else(|| format!("Publish {}", session.branch)),
+            // A requested title has been checked by the conversion that built it, so
+            // this provider cannot accept one the real publication would refuse. The
+            // real implementation takes the subject from the branch's commits when no
+            // title was requested, and a provider has no commits to read — so an
+            // unrequested title names the branch instead.
+            title: request
+                .title
+                .as_deref()
+                .map_or_else(|| format!("Publish {}", session.branch), str::to_owned),
             body: None,
         })?,
     };
