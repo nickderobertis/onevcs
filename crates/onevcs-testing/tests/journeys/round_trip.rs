@@ -195,6 +195,51 @@ fn a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_
         );
     }
 
+    // A session or preserved work belonging to a repository this provider was never
+    // seeded with is the same fiction from the other side: the identity is what
+    // `identity_for` answers with, and it goes on to spell a slug and an event label.
+    let session = serde_json::json!({
+        "token": "s-testing-1",
+        "worktree": "/scratch/s-testing-1/worktree",
+        "branch": "feature/one",
+        "base": "main",
+    });
+    for (what, document) in [
+        (
+            "a session belonging to a repository nobody seeded",
+            serde_json::json!({
+                "version": 2,
+                "sessions": [session],
+                "session_identities": {"s-testing-1": "github.com/acme-corp/elsewhere"},
+            }),
+        ),
+        (
+            "preserved work belonging to one",
+            serde_json::json!({
+                "version": 2,
+                "preserved": [{
+                    "identity": "github.com/acme-corp/elsewhere",
+                    "branch": {"branch": "feature/one", "base": "main", "provenance": "complete",
+                               "change_url": null, "change_base": null},
+                    "checkout": "/scratch/widgets",
+                    "stopped_because": "the run was interrupted",
+                    "recover_command": ["onevcs", "integrate", "feature/one"],
+                }],
+            }),
+        ),
+    ] {
+        let path = home.path(format!("{}.json", what.replace(' ', "-")));
+        std::fs::write(&path, format!("{document}\n")).expect("a written document");
+        let refused = FileVcs::create(&path)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| panic!("{what} names a repository this provider does not know"));
+        assert!(
+            refused.contains("github.com/acme-corp/elsewhere") && refused.contains("does not know"),
+            "the refusal names the identity and says it is unknown ({what}): {refused}"
+        );
+    }
+
     // And the one that agrees with itself reads, so the check refuses a fiction
     // rather than the shape.
     let path = home.path("consistent.json");
