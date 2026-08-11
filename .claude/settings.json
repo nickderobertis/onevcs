@@ -23,6 +23,7 @@
       "Bash(just test)",
       "Bash(just test-e2e)",
       "Bash(just test-quick)",
+      "Bash(just smoke-real)",
       "Bash(just lint)",
       "Bash(just format)",
       "Bash(just fmt-check)",
