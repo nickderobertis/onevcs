@@ -2,10 +2,15 @@
 //!
 //! This is the one boundary an offline gate cannot exercise for free, so it is kept
 //! narrow and behind one seam: every call goes through [`invoke`] or [`attempt`],
-//! and the program either runs is `ONEVCS_GH` when that names one. A journey therefore fakes GitHub's
-//! *decisioning* — which change requests exist, what its checks say, whether a
-//! merge is allowed — while the merge itself is performed with real git against a
-//! real origin. Nothing about the repository side is simulated.
+//! and the program either of them runs is `ONEVCS_GH` when that names one. An
+//! offline journey therefore fakes GitHub's *decisioning* — which change requests
+//! exist, what its checks say, whether a merge is allowed — while the merge itself
+//! is performed with real git against a real origin. Nothing about the repository
+//! side is simulated.
+//!
+//! `ONEVCS_GH` is what `tests/smoke/` deliberately never sets: there the program
+//! that answers as `gh` is `gh`, which is the only way this module's own reading of
+//! what `gh` prints can be wrong in a way a test can see.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
