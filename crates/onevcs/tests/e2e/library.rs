@@ -77,6 +77,57 @@ fn knowing(identity: &Identity) -> MemoryVcs {
     })
 }
 
+/// One command line, run against these implementations.
+fn run(args: &[&str], providers: Providers<'_>) -> u8 {
+    onevcs::run_with(
+        &<onevcs::cli::Cli as clap::Parser>::parse_from(args),
+        providers,
+    )
+}
+
+/// Run `act` with this process's standard error redirected, and hand back what it
+/// wrote there.
+fn stderr_of(act: impl FnOnce()) -> String {
+    written_to(libc::STDERR_FILENO, act)
+}
+
+/// Run `act` with this process's standard output redirected, and hand back what it
+/// wrote there.
+fn stdout_of(act: impl FnOnce()) -> String {
+    written_to(libc::STDOUT_FILENO, act)
+}
+
+/// Run `act` with one of this process's own standard descriptors redirected into a
+/// file, and hand back what it received.
+///
+/// The commands under test take supplied implementations, which only a caller
+/// embedding the crate can do — so there is no subprocess whose output the suite
+/// could read, and what a user is shown has to be taken off this process's own
+/// descriptor.
+fn written_to(descriptor: i32, act: impl FnOnce()) -> String {
+    let path = std::env::temp_dir().join(format!("onevcs-fd{descriptor}-{}", std::process::id()));
+    let file = std::fs::File::create(&path).expect("a file to capture output in");
+    let captured = {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `dup`/`dup2` on one of this process's own standard descriptors,
+        // restored before this scope ends. `file` keeps its descriptor alive across
+        // the call, and both of Rust's standard streams are flushed by the `println!`
+        // and `eprintln!` that write them, so what `act` wrote is in the file by the
+        // time the original is put back.
+        unsafe {
+            let saved = libc::dup(descriptor);
+            assert!(saved >= 0, "a standard descriptor can be duplicated");
+            assert!(libc::dup2(file.as_raw_fd(), descriptor) >= 0);
+            act();
+            assert!(libc::dup2(saved, descriptor) >= 0);
+            libc::close(saved);
+        }
+        std::fs::read_to_string(&path).expect("whatever was written there")
+    };
+    let _ = std::fs::remove_file(&path);
+    captured
+}
+
 /// A session over `identity`, opened through whichever repository side is supplied.
 fn open(vcs: &dyn Vcs, branch: &str) -> Session {
     vcs.open_session(SessionRequest {
@@ -174,6 +225,103 @@ fn a_publication_through_the_providers_reports_a_failure_as_an_outcome() {
     assert!(
         host.state().changes.is_empty(),
         "nothing was opened against a host nobody speaks for"
+    );
+}
+
+#[test]
+fn the_command_says_nothing_about_a_branch_the_repository_side_never_held() {
+    let world = World::new();
+    inhabit(&world);
+    // The same publication as above, reported by the command rather than returned:
+    // a repository side with no execution checkout retains nothing, and the CLI
+    // must then say nothing about one rather than name a path nobody has.
+    let vcs = MemoryVcs::seeded(VcsState {
+        identities: vec![Identity {
+            origin: "gitlab.com/acme-corp/widgets".to_owned(),
+            workflow: onevcs::registry::Workflow::Remote,
+            repo_type: onevcs::registry::RepoType::Team,
+            gate: "just check".to_owned(),
+        }],
+        ..VcsState::default()
+    });
+    let host = MemoryHost::new();
+    let session = vcs
+        .open_session(SessionRequest {
+            repo: "widgets".to_owned(),
+            branch: Some("feature/unretained".to_owned()),
+            base: Some("main".to_owned()),
+            execution_checkout: None,
+        })
+        .expect("a session");
+
+    let mut code = 0;
+    let told = stderr_of(|| {
+        code = run(
+            &["onevcs", "publish", &session.token.0],
+            Providers {
+                vcs: &vcs,
+                hosting: &host,
+            },
+        );
+    });
+
+    assert_eq!(code, 70, "the seam behind it has no body");
+    assert!(told.contains("not implemented"), "{told}");
+    for absent in ["is preserved in", "refused branch"] {
+        assert!(
+            !told.contains(absent),
+            "nothing may be claimed about a branch nobody held: {told}"
+        );
+    }
+}
+
+#[test]
+fn following_a_provided_sessions_events_stops_when_that_session_closes() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let host = MemoryHost::new();
+    let session = open(&vcs, "feature/followed");
+
+    // `--follow` keeps reading until the session it follows has closed, and which
+    // sessions are closed is the *supplied* side's answer — so a session no record
+    // on disk describes is followed to its end rather than abandoned at the first
+    // question this build's git cannot answer about it.
+    let read = stdout_of(|| {
+        std::thread::scope(|scope| {
+            let following = scope.spawn(|| {
+                run(
+                    &["onevcs", "events", &session.token.0, "--follow"],
+                    Providers {
+                        vcs: &vcs,
+                        hosting: &host,
+                    },
+                )
+            });
+            // The follower polls every 100ms, so closing after one interval is what
+            // makes the closing event one it could only have read by carrying on.
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            onevcs::close_session(
+                &Providers {
+                    vcs: &vcs,
+                    hosting: &host,
+                },
+                &session.token,
+            )
+            .expect("the session closes");
+            assert_eq!(following.join().expect("the follower thread"), 0);
+        });
+    });
+
+    assert!(
+        read.contains("session-opened"),
+        "the events that already existed are written: {read}"
+    );
+    assert!(
+        read.contains("session-closed"),
+        "and it kept reading past them, until the supplied side said the session had \
+         closed: {read}"
     );
 }
 
@@ -517,4 +665,38 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
         .read()
         .expect_err("a line that is not an envelope is refused");
     assert!(refused.to_string().contains("line 1"), "{refused}");
+}
+
+#[test]
+fn an_event_stream_refuses_an_envelope_that_belongs_to_another_session() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let mine = open(&vcs, "feature/mine");
+    let theirs = open(&vcs, "feature/theirs");
+
+    // Attribution is what a reader following several publications at once is
+    // trusting, so an envelope of another session in this file is refused rather
+    // than handed on as this session's — which is the shape that would have a
+    // caller journal one run's merge against another's.
+    let stream_of = |token: &SessionToken| {
+        world
+            .home()
+            .join("streams")
+            .join(format!("{}.ndjson", token.0))
+    };
+    let intruder = std::fs::read_to_string(stream_of(&theirs.token)).expect("their stream");
+    let mut mixed = std::fs::read_to_string(stream_of(&mine.token)).expect("my stream");
+    mixed.push_str(&intruder);
+    std::fs::write(stream_of(&mine.token), &mixed).expect("a stream to cross-contaminate");
+
+    let mut stream = EventStream::open(&mine.token).expect("the stream");
+    let refused = stream
+        .read()
+        .expect_err("an event of another stream is not this session's");
+    let reason = refused.to_string();
+    assert!(reason.contains("line 2"), "{reason}");
+    assert!(reason.contains(&mine.token.0), "{reason}");
+    assert!(reason.contains(&theirs.token.0), "{reason}");
 }

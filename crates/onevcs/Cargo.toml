@@ -44,6 +44,13 @@ url = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+# A journey that supplies implementations runs in-process, because the binary
+# deliberately has no way to select a backend — so there is no subprocess whose
+# stderr could be captured, and asserting what a user is told means redirecting
+# this process's own descriptor.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 assert_cmd = { workspace = true }
 # The parser the honesty journey drives `run_with` with, which is the same one the
