@@ -3,6 +3,8 @@
 //! Host-neutral vocabulary: the review unit is a [`ChangeRequest`]. GitHub maps it
 //! to a pull request; a later host maps it to whatever it calls the same thing.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -10,6 +12,20 @@ use crate::error::{invalid, Error, Result};
 use crate::event::ArtifactId;
 use crate::rules::MergePolicy;
 use crate::{gh, git, stream};
+
+/// What `gh pr checks` exits with when a check it has just reported has not
+/// settled. The rollup it printed is still the answer, so this status is read
+/// alongside `0` rather than as a failure.
+const CHECKS_PENDING: i32 = 8;
+
+/// What `gh pr checks --required` says when the repository declares no required
+/// check at all — a repository with no branch protection genuinely has none.
+const NO_REQUIRED_CHECKS: &str = "no required checks";
+
+/// Whether a `gh pr checks` answer is one to read.
+fn usable(answer: &gh::Answer) -> bool {
+    matches!(answer.code, Some(0) | Some(CHECKS_PENDING))
+}
 
 /// Everything `onevcs` asks of a repository's remote host.
 pub trait RemoteHost {
@@ -219,6 +235,106 @@ impl GitHub {
         Ok(Self { repo })
     }
 
+    /// The names of the checks the host says block the merge.
+    ///
+    /// A second call, and it has to be one: `gh pr view`'s `statusCheckRollup`
+    /// carries a check's name, status, and conclusion and *nothing* about whether it
+    /// blocks anything. This build asked it for `isRequired` anyway and read the
+    /// field's absence as a host answering partially, so every `change_checks`
+    /// against real GitHub failed — a field `gh pr view` has never returned, checked
+    /// only ever against a stand-in that returned it. `gh pr checks --required` is
+    /// where `gh` reports it.
+    fn required_checks(&self, cr: &ChangeRequest) -> Result<BTreeSet<String>> {
+        addressable(&cr.id.0, "change request id")?;
+        let answer = gh::attempt(&[
+            "pr",
+            "checks",
+            &cr.id.0,
+            "--repo",
+            &self.repo,
+            "--required",
+            "--json",
+            "name",
+        ])?;
+        if !usable(&answer) {
+            // A repository that declares no required check at all is answering, not
+            // failing: refusing here would make every unprotected repository
+            // unreadable, and "nothing blocks the merge" is what the publication
+            // path already knows how to act on.
+            if answer.stderr.contains(NO_REQUIRED_CHECKS) {
+                return Ok(BTreeSet::new());
+            }
+            return Err(unsaid(&cr.url, &answer.detail()));
+        }
+        let value = gh::json(&answer.stdout)?;
+        let entries = value
+            .as_array()
+            .ok_or_else(|| unsaid(&cr.url, &value.to_string()))?;
+        let mut names = BTreeSet::new();
+        for entry in entries {
+            let name = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| unsaid(&cr.url, &entry.to_string()))?;
+            names.insert(name.to_owned());
+        }
+        Ok(names)
+    }
+
+    /// The log of the job one check ran in.
+    ///
+    /// Two calls, because `gh` addresses a job's log by the job's *id* and a check's
+    /// name is not one. This build passed the name to `gh run view --job`, which has
+    /// never accepted anything but a number — so the artifact every settled check
+    /// carried held a refusal to produce a log rather than the log, and no offline
+    /// journey could tell, because the program standing in for `gh` answered to the
+    /// name. The id is the last segment of the details URL `gh pr checks` reports.
+    fn job_log(&self, cr: &ChangeRequest, name: &str) -> Result<String> {
+        addressable(&cr.id.0, "change request id")?;
+        let answer = gh::attempt(&[
+            "pr",
+            "checks",
+            &cr.id.0,
+            "--repo",
+            &self.repo,
+            "--json",
+            "name,link",
+        ])?;
+        if !usable(&answer) {
+            return Err(invalid(format!(
+                "gh pr checks would not say where check {name:?} on {} ran: {}",
+                cr.url,
+                answer.detail()
+            )));
+        }
+        let value = gh::json(&answer.stdout)?;
+        let link = value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.get("name").and_then(|value| value.as_str()) == Some(name))
+            .and_then(|entry| entry.get("link"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "the host reports no job for check {name:?} on {}",
+                    cr.url
+                ))
+            })?;
+        let job = link
+            .rsplit_once("/job/")
+            .map(|(_, id)| id)
+            .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "the host says check {name:?} ran at {link:?}, which names no job this build \
+                     can ask for a log"
+                ))
+            })?;
+        gh::invoke(&["run", "view", "--repo", &self.repo, "--log", "--job", job])
+    }
+
     fn view(&self, id: &str) -> Result<serde_json::Value> {
         addressable(id, "change request id")?;
         let raw = gh::invoke(&[
@@ -369,7 +485,14 @@ impl RemoteHost for GitHub {
         let rollup = reported
             .as_array()
             .ok_or_else(|| invalid(format!("gh pr view returned a non-list rollup: {reported}")))?;
-        rollup.iter().map(|entry| check(entry, cr)).collect()
+        if rollup.is_empty() {
+            return Ok(Vec::new());
+        }
+        let required = self.required_checks(cr)?;
+        rollup
+            .iter()
+            .map(|entry| check(entry, cr, &required))
+            .collect()
     }
 
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
@@ -377,17 +500,7 @@ impl RemoteHost for GitHub {
         // log the host declined to produce, and is recorded the same way: as the
         // artifact's content. Raising it would undo a publication over a log.
         let log = addressable(&check.name, "check name")
-            .and_then(|()| {
-                gh::invoke(&[
-                    "run",
-                    "view",
-                    "--repo",
-                    &self.repo,
-                    "--log",
-                    "--job",
-                    &check.name,
-                ])
-            })
+            .and_then(|()| self.job_log(cr, &check.name))
             .unwrap_or_else(|error| {
                 format!(
                     "the host could not produce a log for check {:?} on {}: {error}\n",
@@ -429,13 +542,31 @@ impl RemoteHost for GitHub {
     }
 }
 
+/// The refusal for a host that will not say which of its checks block the merge.
+///
+/// Inferring it is the one shape that must never be guessed: it is the difference
+/// between a merge that was gated and one that only looked like it. What changed
+/// with the real backend is *where* the question is asked, not that it may be
+/// skipped — a host that answers `gh pr checks --required` with something other
+/// than the checks it requires is refused here rather than read as requiring none.
+fn unsaid(url: &Url, detail: &str) -> Error {
+    invalid(format!(
+        "gh pr checks --required answered about {url} with {detail}, so a check it reported does \
+         not say whether it blocks the merge"
+    ))
+}
+
 /// One entry of the host's check rollup, required to say what it is.
 ///
 /// Defaulting a missing field here is what would let a host that answered
-/// partially be read as a green, non-blocking check — the one shape that must
-/// never be inferred, because it is the difference between a merge that was gated
-/// and one that only looked like it.
-fn check(entry: &serde_json::Value, cr: &ChangeRequest) -> Result<Check> {
+/// partially be read as a green check — the one shape that must never be inferred.
+/// Whether the check *blocks* is not in this entry at all and never was: it comes
+/// from [`GitHub::required_checks`], which refuses a host that will not say.
+fn check(
+    entry: &serde_json::Value,
+    cr: &ChangeRequest,
+    required: &BTreeSet<String>,
+) -> Result<Check> {
     let field = |name: &str| -> Result<&str> {
         entry
             .get(name)
@@ -449,6 +580,7 @@ fn check(entry: &serde_json::Value, cr: &ChangeRequest) -> Result<Check> {
             })
     };
     let name = field("name").or_else(|_| field("context"))?.to_owned();
+    let blocks = required.contains(&name);
     Ok(Check {
         name,
         status: field("status")?.to_ascii_lowercase(),
@@ -459,16 +591,7 @@ fn check(entry: &serde_json::Value, cr: &ChangeRequest) -> Result<Check> {
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase),
-        required: entry
-            .get("isRequired")
-            .and_then(|value| value.as_bool())
-            .ok_or_else(|| {
-                invalid(format!(
-                    "gh pr view returned a check on {} that does not say whether it blocks \
-                     the merge: {entry}",
-                    cr.url
-                ))
-            })?,
+        required: blocks,
     })
 }
 

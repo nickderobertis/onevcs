@@ -64,6 +64,15 @@ matching fails here rather than downstream. All three write `ONEVCS_HOME` and
 friends into their own process, which is safe only because `cargo nextest` gives
 each test its own process; `cargo test` would race them.
 
+`tests/smoke/` is the exception to "no unit tests" being the whole story: it is a
+second test binary, excluded from `just test` and `just gate` by name, that drives
+both interfaces against **real** git, a real GitHub remote, and the real API. It is
+in-process for the same reason the three modules above are — what it holds is the
+interfaces, and `Vcs::preserve` and every direct `RemoteHost` call are reachable no
+other way. `just smoke-real` runs it. It never skips and never substitutes `gh`: a
+missing credential or a repository whose name does not end in `-smoke` is a loud
+failure, because a smoke that can pass without talking to GitHub proves nothing.
+
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI

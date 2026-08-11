@@ -263,13 +263,23 @@ impl World {
     /// checks with something that is not a list of them, `no-state` will not say
     /// whether it is open or merged, and `no-url` / `url-names-no-change` print
     /// something other than a change request's URL when one is opened.
+    ///
+    /// Three are about the second call a check's log takes — where the job that ran
+    /// it is: `no-check-list` refuses to list the checks at all, `no-job` reports
+    /// the check in the rollup and then lists no job for it, and `jobless-link`
+    /// names a details URL that is not a job's.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
     }
 
-    /// Make the substituted host answer about a check without saying whether it
-    /// blocks the merge.
+    /// Make the substituted host refuse to say which of its checks block the merge.
+    ///
+    /// It answers about the checks themselves as usual and then declines the one
+    /// question that decides whether a merge was gated — which is the call `gh` puts
+    /// it behind, `pr checks --required`. Deliberately not the wording a repository
+    /// that requires nothing gets: "none block" is an answer, and this is a refusal
+    /// to answer.
     pub fn report_checks_that_do_not_say_if_they_block(&self) {
         std::fs::write(self.path("gh-state/partial-checks"), "")
             .expect("a host that answers partially");
@@ -379,15 +389,24 @@ case "$command" in
     exit 0
     ;;
   run)
-    name=""
+    # `gh run view --log --job` addresses a job by its **id**, never by a check's
+    # name, so this answers to the id `pr checks` reported for that row and to
+    # nothing else — a caller that passed a name would fail here as it does against
+    # the real host.
+    job=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --job) name="${2:-}"; shift 2 ;;
+        --job) job="${2:-}"; shift 2 ;;
         *) shift ;;
       esac
     done
     if [ -f "$STATE/no-logs" ]; then
       printf 'this repository keeps its check logs to itself\n' >&2
+      exit 1
+    fi
+    name="$(awk -F'|' -v want="$job" 'NF && ++row == want { print $1 }' "$CHECKS" 2>/dev/null || printf '')"
+    if [ -z "$name" ]; then
+      printf 'could not find any jobs with ID %s\n' "$job" >&2
       exit 1
     fi
     if [ -f "$STATE/log-$name.txt" ]; then
@@ -407,10 +426,10 @@ esac
 subcommand="${1:-}"; shift || true
 number=""
 case "$subcommand" in
-  view|merge) number="${1:-}"; shift || true ;;
+  view|merge|checks) number="${1:-}"; shift || true ;;
 esac
 
-repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""
+repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""; only_required=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}"; shift 2 ;;
@@ -421,25 +440,27 @@ while [ $# -gt 0 ]; do
     --json) json_fields="${2:-}"; shift 2 ;;
     --state) shift 2 ;;
     --auto) auto=1; shift ;;
+    --required) only_required=1; shift ;;
     *) shift ;;
   esac
 done
 
 # The rollup and the merge decision are rendered from the same rows, so what the
 # host reports and what it acts on cannot disagree.
+#
+# It carries no `isRequired`, because `gh pr view` carries none: its rollup says
+# what a check is called, where it is, and how it ended, and nothing about whether
+# it blocks anything. Emitting one here is what let this crate read a field the
+# real host has never returned. Whether a check blocks is answered by
+# `pr checks --required`, below.
 rollup() {
   printf '['
   local separator="" name status conclusion required entry
   while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
     if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
-    if [ -f "$STATE/partial-checks" ]; then
-      printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s}' \
-        "$separator" "$name" "$status" "$entry"
-    else
-      printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"isRequired":%s}' \
-        "$separator" "$name" "$status" "$entry" "$required"
-    fi
+    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s}' \
+      "$separator" "$name" "$status" "$entry"
     separator=","
   done <"$CHECKS" 2>/dev/null || true
   printf ']'
@@ -465,6 +486,54 @@ verdict() {
 }
 
 case "$subcommand" in
+  checks)
+    # Where `gh` reports whether a check blocks the merge, and where each check
+    # ran. `gh pr view`'s rollup says neither, which is why this is a second call.
+    . "$STATE/pr-$number.env"
+    if [ "$only_required" = "0" ]; then
+      case "$malformed" in
+        no-check-list)
+          printf 'the host will not list the checks on this change request\n' >&2
+          exit 1 ;;
+        no-job)
+          # It reported the check and will not say where it ran.
+          printf '[]\n'
+          exit 0 ;;
+        jobless-link)
+          printf '[{"name":"%s","state":"COMPLETED","link":"https://github.com/%s/actions/runs/1"}]\n' \
+            "$(awk -F'|' 'NF { print $1; exit }' "$CHECKS")" "$repo"
+          exit 0 ;;
+      esac
+    fi
+    if [ "$only_required" = "1" ] && [ -f "$STATE/partial-checks" ]; then
+      # A host that will not say which of its checks block the merge. Deliberately
+      # not the "no required checks" wording, which means the opposite: that the
+      # repository requires none and the host knows it.
+      printf 'the host declines to say which of its checks block the merge\n' >&2
+      exit 1
+    fi
+    rows=""; separator=""; row=0; unsettled=0
+    while IFS='|' read -r name status conclusion required; do
+      [ -n "$name" ] || continue
+      # Counted over every row, filtered or not, so the job id a row reports is the
+      # one `gh run view --job` answers to.
+      row=$((row + 1))
+      if [ "$only_required" = "1" ] && [ "$required" != "true" ]; then continue; fi
+      [ "$status" = "completed" ] || unsettled=1
+      rows="$rows$separator{\"name\":\"$name\",\"state\":\"$status\",\"link\":\"https://github.com/$repo/actions/runs/1/job/$row\"}"
+      separator=","
+    done <"$CHECKS" 2>/dev/null || true
+    if [ "$only_required" = "1" ] && [ -z "$rows" ]; then
+      printf "no required checks reported on the '%s' branch\n" "$PR_HEAD" >&2
+      exit 1
+    fi
+    printf '[%s]\n' "$rows"
+    # gh reports a non-zero status when a check it has just printed has not
+    # settled. The rollup above is still the answer, and a caller that read this
+    # as a failure would be unable to watch a check at all.
+    [ "$unsettled" = "0" ] || exit 8
+    exit 0
+    ;;
   list)
     printf '['
     separator=""

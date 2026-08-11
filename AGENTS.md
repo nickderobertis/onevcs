@@ -84,12 +84,17 @@ rationale; the mechanics live in the files named. -->
 
 ## Command surface
 
-`just --list` is the index; do not hand-roll equivalents. Three things it does
+`just --list` is the index; do not hand-roll equivalents. Four things it does
 not tell you:
 
 - **`just gate` is the bar, not `just check`.** `check` is the deterministic tier
   and stays offline and credential-free; `gate` adds the diff-scoped llmlint tier,
   and that is what must be green before pushing.
+- **`just smoke-real` is the one tier neither of them runs.** It is real `git`
+  against a real GitHub remote and the real API through the real `gh`, over the
+  scratch repository `nickderobertis/onevcs-smoke`, and it lives in its own test
+  binary (`crates/onevcs/tests/smoke/`) so `offline-tiers` can exclude it by name.
+  It needs `gh` and a credential and refuses loudly without one; it never skips.
 - **The repo-wide verbs delegate to Nx** (`scripts/nx.sh`), which fans the uniform
   target names across the graph. A target's *body* belongs to its project, never
   to a for-each loop here. The `onevcs` project's targets run `--workspace`, so
@@ -144,6 +149,37 @@ not tell you:
 
 `gh-secrets.json` names the secrets a fork or a fresh clone must provision;
 values live in the secret store, never in the tree.
+
+## The tier that talks to GitHub
+
+Everything else in this repository is offline, and the cost of that was measured
+rather than hypothetical: `GitHub::change_checks` asked `gh pr view` for an
+`isRequired` field that command has never returned, and `GitHub::check_log` asked
+`gh run view --job` for a job by a check's *name* when it only ever accepted a job
+id. Both shipped green for every release, because the only thing that had ever
+read them was a shell script written beside them that answered to what they asked.
+
+- **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
+  whose name does not end in `-smoke` is refused before the first mutating call.
+  `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.
+- **It never skips.** No `gh`, no credential, no permission — each fails loudly
+  and names what is missing. Nothing falls back to a provider or a stand-in.
+- **A run is uniquely named** by journey label, process id, and its own scratch
+  directory, so two runs at once cannot collide on a branch or a change request.
+  Cleanup is a `Drop`, so a run that fails half way still removes its branch; what
+  it can leave behind is a merged (or, on a failure between opening and merging,
+  an open) pull request, which is deliberate — that is the evidence it ran.
+- **The scratch repository declares no required check.** `gate: {kind: checks}`
+  waits for checks that *block*, so that path cannot go green there and stays
+  covered by the offline tier; the smoke tier proves `change_checks` and
+  `check_log` themselves against the real workflow the repository carries.
+- **The honesty comparison has two legs.** `tests/e2e/honesty.rs` is the offline
+  one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
+  real `Git` + real `GitHub`. Both reduce their streams with
+  `tests/e2e/comparison.rs`, so neither can accept a difference the other rejects.
+- **CI runs it on `pull_request` only**, with `secrets.RELEASE_PLZ_TOKEN` as
+  `GH_TOKEN`. It is not in the required-checks list in this file: make it required
+  once a run has proved that credential reaches the scratch repository.
 
 ## Invariants (non-negotiable)
 

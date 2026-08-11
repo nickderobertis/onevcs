@@ -131,6 +131,47 @@ jobs:
       # can never disagree about which floor was proven.
       - run: just msrv
 
+  # The one tier that is not offline: real git against a real GitHub remote, and
+  # the real GitHub API opening, checking, and merging real pull requests on a
+  # scratch repository. Every other job here would pass against a `gh` that agreed
+  # with whatever this crate asked it for — and two of them did, which is why this
+  # job exists.
+  #
+  # `pull_request` only: it mutates a repository, so a push to main must not run it
+  # a second time for a change that has already been proved.
+  #
+  # It calls `just smoke-real`, the same entry point a person runs locally, so the
+  # journeys are defined once in the test binary and never reimplemented as
+  # workflow steps. The credential is named rather than embedded, and the tier
+  # refuses loudly rather than skipping when it is absent — a smoke that can pass
+  # without talking to GitHub proves nothing.
+  smoke:
+    needs: changes
+    if: needs.changes.outputs.crate == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,nextest
+      - name: Real git, a real remote, and the real GitHub API
+        run: just smoke-real
+        env:
+          # The default GITHUB_TOKEN is scoped to the repository the workflow runs
+          # in, and this job publishes to another one — so it needs a token of its
+          # own. RELEASE_PLZ_TOKEN is the one provisioned here; it must be able to
+          # read, push to, open a pull request on, and merge in the scratch
+          # repository. Absent or too narrowly scoped, this job fails naming what it
+          # could not do, which is the intended behaviour: the alternative is a
+          # smoke that passes without talking to GitHub.
+          # llmlint: ignore[least_privilege_grants] the credential this job should hold is a fine-grained PAT on nickderobertis/onevcs-smoke alone with contents and pull-requests write and nothing else; provisioning one is a secret-store change only the operator can make, and RELEASE_PLZ_TOKEN is the token that exists on this repository today and the one named for this job. Swap the reference here once the narrower secret exists.
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # No ONEVCS_SMOKE_REPO: the tier's own default is the scratch repository,
+          # and naming it here again would be a second place for it to be wrong. Set
+          # it only to point a run somewhere else, and only at a name ending
+          # `-smoke` — the tier refuses anything else.
+
   # Advisory + license audit and unused-dependency check. Its own Linux-only job:
   # it needs a network advisory DB and must not be duplicated across the matrix.
   deny:

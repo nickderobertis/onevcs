@@ -11,6 +11,10 @@
 //! binary deliberately has no flag for it. Each says so at its head.
 
 mod cli;
+// The terms two backends' event streams are compared on. Shared with the
+// real-backend tier in `tests/smoke`, so one leg cannot accept a difference the
+// other rejects.
+mod comparison;
 #[cfg(unix)]
 mod edges;
 // Unix only: these drive a substituted `gh` and real `pre-push` hooks, both POSIX
