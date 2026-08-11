@@ -952,6 +952,16 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
         .read()
         .expect_err("a line that is not an envelope is refused");
     assert!(refused.to_string().contains("line 1"), "{refused}");
+
+    // A blank line is not an event either. Skipping one would be the typed reader
+    // deciding some of the file is not worth reading, which is what a caller
+    // following a stream is trusting it not to do.
+    std::fs::write(&path, "\n").expect("a stream holding a line no writer left");
+    let refused = EventStream::open(&session.token)
+        .expect("the stream is still there")
+        .read()
+        .expect_err("a blank line is not an envelope");
+    assert!(refused.to_string().contains("line 1"), "{refused}");
 }
 
 #[test]

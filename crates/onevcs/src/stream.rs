@@ -224,9 +224,10 @@ impl EventStream {
         let mut line_number = self.reader.read;
         for line in self.reader.lines()? {
             line_number += 1;
-            if line.trim().is_empty() {
-                continue;
-            }
+            // A blank line is not an event, and skipping one would be this reader
+            // deciding that some of the file is not worth reading — which is the one
+            // thing a typed reader must not do. A writer appends whole envelopes, so
+            // a blank line is a stream that is not what any writer left.
             let envelope: Envelope = serde_json::from_str(&line).map_err(|e| {
                 error::invalid(format!(
                     "line {line_number} of the stream for {:?} is not an event envelope: {e}",
