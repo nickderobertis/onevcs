@@ -360,20 +360,23 @@ impl GitHub {
         gh::invoke(&["run", "view", "--repo", &self.repo, "--log", "--job", job])
     }
 
-    fn view(&self, id: &str) -> Result<serde_json::Value> {
+    /// One change request as `gh` describes it, in the fields the caller reads and
+    /// no others.
+    ///
+    /// The field list is the caller's, not a constant, because `gh pr view` fails
+    /// *whole* when GitHub refuses one field of the several it was asked for — and
+    /// the fields differ in what a credential has to be allowed to see.
+    /// `statusCheckRollup` resolves the change request's check runs, which a
+    /// fine-grained token may not read without the repository's Checks permission,
+    /// while `state`, `headRefOid`, and `mergeCommit` need no more than the read
+    /// access that found the change request at all. This build asked for all of them
+    /// at every call, so a token that could open and merge a change request was
+    /// refused at both over a field neither reads — and only from the moment a check
+    /// first appeared on it, so the same credential merged a young change request and
+    /// failed on an older one. Ask for what you read.
+    fn view(&self, id: &str, fields: &str) -> Result<serde_json::Value> {
         addressable(id, "change request id")?;
-        let raw = gh::invoke(&[
-            "pr",
-            "view",
-            id,
-            "--repo",
-            &self.repo,
-            "--json",
-            // `headRefOid` is load-bearing: `open_change` reads the commit the new
-            // change request's checks will be reported against out of this answer,
-            // and `gh` returns exactly the fields it was asked for.
-            "number,state,mergeStateStatus,headRefOid,mergeCommit,statusCheckRollup",
-        ])?;
+        let raw = gh::invoke(&["pr", "view", id, "--repo", &self.repo, "--json", fields])?;
         gh::json(&raw)
     }
 }
@@ -448,7 +451,9 @@ impl RemoteHost for GitHub {
             })?
             .to_owned();
         Ok(ChangeRequest {
-            head_sha: head_sha(&self.view(&id)?)?,
+            // The commit the new change request's checks will be reported against,
+            // which `gh pr create` does not print.
+            head_sha: head_sha(&self.view(&id, "headRefOid")?)?,
             id: ChangeId(id),
             url: parsed,
             base: req.base,
@@ -497,7 +502,7 @@ impl RemoteHost for GitHub {
     }
 
     fn change_checks(&self, cr: &ChangeRequest) -> Result<Vec<Check>> {
-        let value = self.view(&cr.id.0)?;
+        let value = self.view(&cr.id.0, "statusCheckRollup")?;
         let reported = value.get("statusCheckRollup").ok_or_else(|| {
             invalid(format!(
                 "gh pr view reported no checks at all on {}",
@@ -543,7 +548,7 @@ impl RemoteHost for GitHub {
                 gh::invoke(&[
                     "pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash", "--auto",
                 ])?;
-                let view = self.view(&cr.id.0)?;
+                let view = self.view(&cr.id.0, MERGE_FIELDS)?;
                 Ok(match merged_sha(&view, cr)? {
                     Some(sha) => MergeOutcome::Merged(sha),
                     None => MergeOutcome::Queued,
@@ -552,7 +557,7 @@ impl RemoteHost for GitHub {
             MergePolicy::ChangeDirect => {
                 addressable(&cr.id.0, "change request id")?;
                 gh::invoke(&["pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash"])?;
-                let view = self.view(&cr.id.0)?;
+                let view = self.view(&cr.id.0, MERGE_FIELDS)?;
                 match merged_sha(&view, cr)? {
                     Some(sha) => Ok(MergeOutcome::Merged(sha)),
                     None => Err(Error::GateFailed {
@@ -619,6 +624,9 @@ fn check(
         required: blocks,
     })
 }
+
+/// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for.
+const MERGE_FIELDS: &str = "state,mergeCommit";
 
 /// The commit a merged change request landed as, or `None` while it is still open.
 ///

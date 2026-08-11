@@ -615,6 +615,16 @@ case "$subcommand" in
         printf '{"number":%s,"headRefOid":"%s","mergeCommit":null,"statusCheckRollup":%s}\n' \
           "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
         exit 0 ;;
+      checks-refused)
+        # What real GitHub answers a credential the repository does not allow to read
+        # its checks: `gh pr view` fails *whole*, however much of what it was asked
+        # for the token could see. Every other field list is answered as usual, which
+        # is the point — a caller that asked only for what it reads is unaffected.
+        if wanted statusCheckRollup; then
+          printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup.nodes.0.commit.statusCheckRollup.contexts.nodes.0)\n' >&2
+          exit 1
+        fi
+        ;;
     esac
     separator=""
     printf '{'

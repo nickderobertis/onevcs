@@ -145,10 +145,13 @@ test-quick:
 # fails and names what is missing; it never skips and never falls back to a fake.
 # Set ONEVCS_SMOKE_REPO to publish somewhere other than the default scratch
 # repository, whose name must end in `-smoke`. `--no-capture`, because its whole
-# value is the evidence it prints.
+# value is the evidence it prints, and `--no-fail-fast` because a run costs minutes
+# and a real credential: stopping at the first failure hides how the other journeys
+# fared under the same one, which is the question this tier is asked.
 # Drive both interfaces against real git, a real remote, and the real GitHub API.
 smoke-real:
-    @cargo nextest run --workspace --locked -E 'binary(smoke)' --no-capture --status-level all
+    @cargo nextest run --workspace --locked -E 'binary(smoke)' --no-capture --no-fail-fast \
+      --status-level all
 
 # Drives the compiled binary as a subprocess — never an in-process `main()`.
 # The end-to-end binary journeys in isolation (also run by `test`/`check`).

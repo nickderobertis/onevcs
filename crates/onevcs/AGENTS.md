@@ -87,6 +87,17 @@ for a job by a check's *name* when it only ever accepted a job id. Both shipped
 green for every release, because the only thing that had ever read them was a shell
 script written beside them that answered to what they asked.
 
+**A credential is part of the backend, so one that passes locally proves one
+credential.** `gh pr view` used to be asked for every field any caller might read,
+`statusCheckRollup` among them — and GitHub refuses that field to a fine-grained
+token the repository does not allow to read its checks, failing the *whole* call.
+So a token that could open and merge a change request was refused at both, over a
+field neither reads, and only from the moment a check first appeared on it. An
+interactive `gh auth login` never saw it; CI's `RELEASE_PLZ_TOKEN` saw it on the
+first run. Every `gh pr view` here now asks for what its caller reads and nothing
+else, and `tests/e2e/host.rs` holds it there with a substituted host that refuses
+that one field the way GitHub does.
+
 - **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
   whose name does not end in `-smoke` is refused before the first mutating call.
   `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.

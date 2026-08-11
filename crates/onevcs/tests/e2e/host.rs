@@ -87,6 +87,60 @@ impl Hosted {
 
 const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
 const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
+/// Published straight into the base behind a gate that is a command, so nothing on
+/// this path asks the host what checks a change request carries.
+const DIRECT: &str = "{publication: change-direct, approvals: none, gate: {command: [\"true\"]}}";
+
+#[test]
+fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_and_merges_one() {
+    // The credential CI runs this crate's real-backend tier under cannot read the
+    // scratch repository's check runs, and GitHub refuses the *whole* `gh pr view`
+    // call over it — so a build that asked for a change request's checks alongside
+    // its head commit and its merge commit could neither open nor merge under a
+    // token allowed to do both. Worse, it only broke once a check had appeared, so
+    // the same credential merged a young change request and failed on an older one.
+    let hosted = Hosted::new(DIRECT);
+    hosted.world.answer_malformed("checks-refused");
+    let token = hosted.change("feature/checkless-host", "feat: add the thing anyway");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the change reached the base with real git, under a host that would not \
+         describe its checks"
+    );
+
+    // And the refusal is still a refusal where the checks are what decides: a host
+    // that would not say what its checks are has not said there are none, and the
+    // publication that waits for them stops rather than merging on the strength of
+    // an answer it never got.
+    let gated = Hosted::new(AUTOMATED);
+    gated.world.answer_malformed("checks-refused");
+    let token = gated.change("feature/gated-checkless", "feat: add the gated thing");
+
+    gated
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "Resource not accessible by personal access token",
+        ));
+    assert_eq!(
+        gated.origin_log().len(),
+        1,
+        "nothing may land while the host will not say what its checks are"
+    );
+}
 
 #[test]
 fn a_reviewed_change_is_pushed_and_left_open() {
