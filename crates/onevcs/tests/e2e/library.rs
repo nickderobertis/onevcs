@@ -934,6 +934,13 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
 
     // And a line that is not an envelope is refused where it is read, naming the
     // line, rather than handed on as an event with fields nobody wrote.
+    //
+    // llmlint: ignore[tests_mirror_real_usage] the file *is* the input under test. A
+    // stream that is not what a well-behaved producer wrote is what a torn write or a
+    // damaged disk leaves, and no public interface of this crate can produce one — a
+    // writer only ever appends whole envelopes. Manufacturing it any other way would be
+    // asserting on a state the check does not exist for. The same posture the malformed
+    // registry and provider-state journeys already take.
     let path = world
         .home()
         .join("streams")
@@ -965,10 +972,15 @@ fn an_event_stream_refuses_an_envelope_that_belongs_to_another_session() {
             .join("streams")
             .join(format!("{}.ndjson", token.0))
     };
+    // llmlint: ignore-block[tests_mirror_real_usage] as above: no interface can write one
+    // session's envelope into another's file — a `Stream` is opened by the token it
+    // writes under — so the misattributed line a reader must refuse can only be put there
+    // directly. That it is unreachable through the API is why the reader checks the file.
     let intruder = std::fs::read_to_string(stream_of(&theirs.token)).expect("their stream");
     let mut mixed = std::fs::read_to_string(stream_of(&mine.token)).expect("my stream");
     mixed.push_str(&intruder);
     std::fs::write(stream_of(&mine.token), &mixed).expect("a stream to cross-contaminate");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let mut stream = EventStream::open(&mine.token).expect("the stream");
     let refused = stream
