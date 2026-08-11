@@ -358,10 +358,13 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                     emissions,
                 )
             };
-            // A session that has already landed has nothing the base does not carry.
+            // A session that has already landed has nothing the base does not carry,
+            // which is what the real implementation reports for the same reason. One
+            // whose change request is merely open or queued has *not* landed, and
+            // publishing it again adopts that change rather than opening a second —
+            // so it falls through to the host, as it does there.
             if state.publications.iter().any(|earlier| {
-                earlier.session == *token
-                    && !matches!(earlier.outcome, PublishOutcome::Failed { .. })
+                earlier.session == *token && matches!(earlier.outcome, PublishOutcome::Merged(_))
             }) {
                 let (publication, emissions) =
                     published(PublishOutcome::NothingToPublish, Vec::new());

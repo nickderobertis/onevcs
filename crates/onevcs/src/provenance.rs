@@ -342,11 +342,11 @@ pub fn provenance_of(
 
 /// One explicit title, checked as the subject a publication would carry.
 ///
-/// Separate from the search below because it is also what
-/// [`PublishRequest::subject`](crate::PublishRequest::subject) answers: the rule
-/// belongs to publication rather than to any one implementation of the repository
-/// side, and a second implementation applying a restatement of it would accept
-/// what this refuses.
+/// Separate from the search below because it is also the check inside
+/// [`Subject`](crate::Subject)'s conversion: the rule belongs to publication rather
+/// than to any one implementation of the repository side, and a title is refused
+/// where a request is built rather than where a message is composed — by which
+/// point the session's work has been committed and its base merged.
 ///
 /// Blank before long: a title that is only spacing would publish a commit with no
 /// subject at all, which is the one shape a length check reads as fine.

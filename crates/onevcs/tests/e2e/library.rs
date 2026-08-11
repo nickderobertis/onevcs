@@ -174,14 +174,52 @@ fn a_publication_through_the_providers_answers_which_ending_it_reached() {
     assert_eq!(changes[0].url, url);
     assert_eq!(changes[0].base, "main");
 
-    // Published again, the base already carries it.
+    // Published again, the change it already opened is adopted rather than a second
+    // one opened — a change request that is open has not landed, so the branch still
+    // holds what the base does not.
     let again = onevcs::publish(&providers, &session.token, &PublishRequest::default())
         .expect("a second publication runs");
-    assert_eq!(again.outcome, PublishOutcome::NothingToPublish);
+    assert_eq!(again.outcome, PublishOutcome::ChangeOpen(url));
     assert_eq!(
         host.state().changes.len(),
         1,
-        "nothing to publish opens no second change request"
+        "the second publication adopts the change rather than opening another"
+    );
+}
+
+#[test]
+fn a_session_whose_change_has_landed_has_nothing_left_to_publish() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let mut state = VcsState {
+        identities: vec![identity],
+        ..VcsState::default()
+    };
+    // Landed outright rather than left for review, so the second publication meets a
+    // base that already carries the branch.
+    state.policy = Some(MergePolicy::LocalDirect);
+    let vcs = MemoryVcs::seeded(state);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+    let session = open(&vcs, "feature/landed");
+
+    let landed = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("the publication runs");
+    assert!(
+        matches!(landed.outcome, PublishOutcome::Merged { .. }),
+        "{landed:?}"
+    );
+
+    let again = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("a second publication runs");
+    assert_eq!(again.outcome, PublishOutcome::NothingToPublish);
+    assert!(
+        host.state().changes.is_empty(),
+        "nothing to publish asks the host for nothing"
     );
 }
 

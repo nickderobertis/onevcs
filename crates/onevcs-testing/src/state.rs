@@ -360,6 +360,20 @@ impl Checked for VcsState {
     }
 }
 
+/// Refuse a record kept about a change request this state does not hold.
+fn opened_change(state: &HostState, id: &ChangeId, what: &str) -> Result<()> {
+    if state.changes.iter().any(|change| change.id == *id) {
+        return Ok(());
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "{what} is recorded for change request {:?}, but no change request by that \
+             identifier was opened",
+            id.0
+        ),
+    })
+}
+
 /// A change request's title, refused when it names nothing.
 ///
 /// The one thing a real host refuses about a title, and the only one this provider
@@ -415,12 +429,20 @@ impl Checked for HostState {
                 });
             }
         }
-        for head in self.heads.values() {
+        // Both of these are recorded *about* a change request, by `open_change` and
+        // by nothing else, and both are read back by the id they are keyed under. An
+        // entry for a change nobody opened is one no call could ever reach, so it is
+        // refused rather than carried — unlike the checks, logs, and merge outcomes
+        // below it, which a journey deliberately seeds for a change it has not
+        // opened yet.
+        for (id, head) in &self.heads {
+            opened_change(self, id, "a head")?;
             named_branch(head, "the head of a seeded change request")?;
         }
-        // A change request nobody could have opened: the real host refuses a title
-        // that names nothing, so a seeded one is refused for the same reason.
-        for title in self.titles.values() {
+        for (id, title) in &self.titles {
+            opened_change(self, id, "a title")?;
+            // The real host refuses a title that names nothing, so a seeded one is
+            // refused for the same reason.
             titled(title)?;
         }
         Ok(())
