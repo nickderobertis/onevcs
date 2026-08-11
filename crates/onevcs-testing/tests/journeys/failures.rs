@@ -223,11 +223,41 @@ fn a_seeded_document_holding_a_session_nothing_could_act_on_is_refused() {
 
     // …and the same for a host document naming a change nothing could address.
     let host = home.path("host.json");
-    std::fs::write(&host, r#"{"heads": {"1": "two words"}}"#).expect("a written document");
+    let opened = r#""changes": [{"id": "1", "url": "https://github.com/a/b/pull/1",
+             "head_sha": "abc123", "base": "main"}]"#;
+    std::fs::write(
+        &host,
+        format!(r#"{{{opened}, "heads": {{"1": "two words"}}}}"#),
+    )
+    .expect("a written document");
     assert!(FileHost::create(&host)
         .expect_err("a head nothing could address")
         .to_string()
         .contains("git would not accept"));
+
+    // A head or a title recorded for a change request nobody opened is a record no
+    // call could ever reach, so it is refused rather than carried.
+    for stray in [
+        r#""heads": {"9": "feature/one"}"#,
+        r#""titles": {"9": "feat: x"}"#,
+    ] {
+        std::fs::write(&host, format!(r#"{{{opened}, {stray}}}"#)).expect("a written document");
+        let refused = FileHost::create(&host)
+            .expect_err("a record about a change nobody opened")
+            .to_string();
+        assert!(
+            refused.contains("no change request by that identifier was opened"),
+            "the refusal names what it disagrees about: {refused}"
+        );
+    }
+
+    // And a title that names nothing is refused where the real host refuses it.
+    std::fs::write(&host, format!(r#"{{{opened}, "titles": {{"1": "   "}}}}"#))
+        .expect("a written document");
+    assert!(FileHost::create(&host)
+        .expect_err("a title that names no change")
+        .to_string()
+        .contains("blank"));
 
     // A change request that names no commit its checks are reported against is the
     // one answer the real host implementation refuses to pass through.

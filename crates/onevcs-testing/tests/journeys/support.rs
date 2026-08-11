@@ -5,13 +5,13 @@
 //! under `cargo nextest`, where each test is its own process — the same reason the
 //! crate next door's journeys can point the binary at a scratch directory.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
-    ChangeId, ChangeRequest, Check, Identity, MergeOutcome, PreservedBranch, Provenance,
-    Recoverable, Session, SessionToken, Sha, Url,
+    ChangeId, ChangeRequest, Check, Identity, MergeOutcome, MergePolicy, PreservedBranch,
+    Provenance, Publication, PublishOutcome, Recoverable, Session, SessionToken, Sha, Url,
 };
 use onevcs_testing::{HostState, VcsState};
 
@@ -97,12 +97,20 @@ pub fn full_vcs_state() -> VcsState {
         base: "main".to_owned(),
     };
     let mut session_identities = BTreeMap::new();
-    session_identities.insert(token, identity().origin);
+    session_identities.insert(token.clone(), identity().origin);
     VcsState {
         version: onevcs_testing::STATE_VERSION,
         identities: vec![identity()],
         sessions: vec![session],
         session_identities,
+        closed_sessions: BTreeSet::from([token.clone()]),
+        policy: Some(MergePolicy::ChangeAuto),
+        publications: vec![Publication {
+            session: token,
+            branch: "feature/seeded".to_owned(),
+            policy: MergePolicy::ChangeAuto,
+            outcome: PublishOutcome::Merged(Sha("abc123".to_owned())),
+        }],
         preserved: vec![Recoverable {
             identity: identity().origin,
             branch: PreservedBranch {
@@ -130,6 +138,8 @@ pub fn full_host_state() -> HostState {
     let id = ChangeId("1".to_owned());
     let mut heads = BTreeMap::new();
     heads.insert(id.clone(), "feature/seeded".to_owned());
+    let mut titles = BTreeMap::new();
+    titles.insert(id.clone(), "feat: the seeded change".to_owned());
     let mut checks = BTreeMap::new();
     checks.insert(
         id.clone(),
@@ -159,6 +169,7 @@ pub fn full_host_state() -> HostState {
             base: "main".to_owned(),
         }],
         heads,
+        titles,
         checks,
         check_logs,
         merges,

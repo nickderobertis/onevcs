@@ -4,19 +4,28 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
+use crate::host::Hosting;
+use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
-    PreservedBranch, Provenance, Recoverable, Scope, Session, SessionRequest, SessionToken,
+    PreservedBranch, Provenance, Recoverable, Scope, Session, SessionRecord, SessionRequest,
+    SessionToken,
 };
 use crate::stream::Stream;
 use crate::workspace::{self, object};
-use crate::{git, provenance, store};
+use crate::{git, provenance, publish, store};
 
 use serde_json::json;
 use url::Url;
 
 /// Everything `onevcs` does to a repository, independent of which version
 /// control system is underneath.
+///
+/// The session record belongs here rather than beside it. It was written by [`Git`]
+/// directly for three releases, and the cost was exact: a session a supplied
+/// implementation had just opened was refused by `publish` and by `session close`
+/// as a session nobody opened, so the seam was declared and those commands went
+/// around it.
 pub trait Vcs {
     /// Resolve an origin URL or a checkout path to the repository identity it
     /// belongs to.
@@ -30,8 +39,26 @@ pub trait Vcs {
     /// lease.
     fn adopt_session(&self, token: SessionToken) -> Result<Session>;
 
+    /// What this implementation recorded about a session it opened.
+    fn session(&self, token: &SessionToken) -> Result<SessionRecord>;
+
+    /// Release a session's worktree and its lease, keeping its branch.
+    fn close_session(&self, token: &SessionToken) -> Result<Session>;
+
     /// Commit the session's work onto a branch that outlives it, recording why.
     fn preserve(&self, s: &Session, provenance: Provenance) -> Result<PreservedBranch>;
+
+    /// Verify a session's branch and land it under its repository's policy.
+    ///
+    /// The one operation that reaches both interfaces — the repository side lands
+    /// the change and the host side opens and merges the change request — so the
+    /// host factory travels with the request rather than being reached for.
+    fn publish(
+        &self,
+        token: &SessionToken,
+        request: &PublishRequest,
+        hosting: &dyn Hosting,
+    ) -> Result<Publication>;
 
     /// Every preserved-but-unpublished branch in scope, and what would land each.
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>>;
@@ -61,10 +88,44 @@ impl Vcs for Git {
         Ok(record.session())
     }
 
+    fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
+        let record = workspace::load(&token.0)?;
+        let base = base_ref(&record.clone, &record.base);
+        let trailers = provenance::configured()?;
+        Ok(SessionRecord {
+            session: record.session(),
+            identity: record.identity.clone(),
+            lifecycle: record.state,
+            // Read off the branch rather than remembered: an adoption that met a
+            // dirty tree writes the marker, and a recovery clears it, so what the
+            // branch carries now is the only answer that stays true.
+            provenance: provenance::provenance_of(&record.clone, &base, &record.branch, &trailers)?,
+        })
+    }
+
+    fn close_session(&self, token: &SessionToken) -> Result<Session> {
+        let record = workspace::close(&token.0)?;
+        let mut stream = Stream::open(&record.token)?;
+        stream.emit(
+            EventKind::SessionClosed,
+            object(json!({"token": record.token, "branch": record.branch})),
+        );
+        Ok(record.session())
+    }
+
     fn preserve(&self, s: &Session, provenance: Provenance) -> Result<PreservedBranch> {
         let record = workspace::load(&s.token.0)?;
         let mut stream = Stream::open(&s.token.0)?;
         preserve_into(&record, &mut stream, provenance)
+    }
+
+    fn publish(
+        &self,
+        token: &SessionToken,
+        request: &PublishRequest,
+        hosting: &dyn Hosting,
+    ) -> Result<Publication> {
+        publish::run_for_session(token, request, hosting)
     }
 
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>> {
@@ -219,7 +280,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                     .iter()
                     .find(|record| *record.branch == *branch)
                     .map(|record| {
-                        if record.state == crate::workspace::Lifecycle::Open {
+                        if record.state == crate::session::Lifecycle::Open {
                             format!("session {} was left open", record.token)
                         } else {
                             format!("session {} closed without publishing", record.token)

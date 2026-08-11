@@ -72,6 +72,74 @@ lists it as an incomplete step naming the prefix it found, `integrate` skips it,
 particular prefix — the shape recognized is the marker's own, under whatever prefix
 it carries.
 
+**Publishing, closing a session, and reading its events are library calls, and the
+session record is behind the seam.** The contract declares the two interfaces "with
+a trait seam" and gives a run one answer: a process exit code. A caller embedding
+this crate has to branch on what a publication *did*, and neither a `u8` nor the
+prose printed beside it carries that — so the first consumer parsed the prose,
+wrongly, and shipped it. The root cause is one thing: the session record was
+written by `Git` directly rather than through the interface, so a session a
+supplied implementation opened was refused by every command that took one.
+
+`Vcs` therefore gains three methods, and each of the operations they serve gains a
+typed entry point beside the CLI. The CLI is unchanged — same arguments, same
+output, same exit codes — and `run` and `run_with` keep their signatures.
+
+```rust
+pub trait Vcs {                              // the five above, unchanged, plus:
+    fn session(&self, token: &SessionToken) -> Result<SessionRecord>;
+    fn close_session(&self, token: &SessionToken) -> Result<Session>;
+    fn publish(&self, token: &SessionToken, req: &PublishRequest, hosting: &dyn Hosting)
+        -> Result<Publication>;
+}
+pub fn publish(p: &Providers, token: &SessionToken, req: &PublishRequest) -> Result<Publication>;
+pub fn close_session(p: &Providers, token: &SessionToken) -> Result<Session>;
+pub fn session(p: &Providers, token: &SessionToken) -> Result<SessionRecord>;
+
+pub struct SessionRecord { pub session: Session, pub identity: String,
+                           pub lifecycle: Lifecycle, pub provenance: Provenance }
+pub enum Lifecycle { Open, Closed }
+pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<Subject> }
+pub struct Subject(String);                  // TryFrom<String>: a title that can be one
+pub struct Publication { pub session: SessionToken, pub branch: String,
+                         pub policy: MergePolicy, pub outcome: PublishOutcome }
+pub enum PublishOutcome {
+    Merged(Sha), ChangeOpen(Url), Queued(Url), NothingToPublish,
+    Failed { kind: FailureKind, reason: String, retained: Option<Retention> },
+}
+pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented }  // 1 | 2 | 3 | 70
+pub enum Retention { HandedBack(PathBuf), Refused(PathBuf) }
+
+impl EventStream {                           // `onevcs events TOKEN`, as values
+    pub fn open(session: &SessionToken) -> Result<Self>;
+    pub fn session(&self) -> &SessionToken;
+    pub fn read(&mut self) -> Result<Vec<Envelope>>;
+}
+```
+
+`publish` takes the host side explicitly because a publication is the one operation
+that reaches both interfaces: the repository side lands it, and the host side opens
+and merges the change request. `Providers` still bundles the two, which is what the
+free function above takes.
+
+A publication that did not land is a `Failed` outcome rather than an `Err`, exactly
+where the CLI reported a non-zero exit rather than a refusal — so the two surfaces
+cannot disagree about which failures are which. The exit codes the contract fixes
+are unchanged and are now stated once, on `FailureKind::exit_code`, beside
+`FailureKind::of(&Error)`, which is how any implementation answers with the kind
+this one would.
+
+Three rules that belong to publication rather than to any one implementation of it
+are public for the same reason, so a supplied `Vcs` applies the rule rather than a
+restatement that could accept what the real one refuses: `MergePolicy::narrow` (a
+per-run policy may narrow the repository's and never widen it), `FailureKind::of`,
+and `Subject`, which is the type of an explicit title. That one is a *type* rather
+than a method because of where a publication would otherwise meet it: it commits
+the session's work and merges its base before it composes a message, so a title
+refused where the message is composed is refused after a commit nobody can undo.
+The check is in the conversion, as it is for every other validated name here, so a
+`PublishRequest` carrying a title that could not be a subject is unrepresentable.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

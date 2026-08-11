@@ -1,20 +1,27 @@
 //! The repository side: one implementation of [`Vcs`] over either store.
 //!
-//! What it is not: git. It answers the five questions the interface asks, records
-//! what it was asked, and emits the events the real implementation emits. What it
+//! What it is not: git. It answers the questions the interface asks, records what
+//! it was asked, and emits the events the real implementation emits. What it
 //! cannot do is tell you whether a tree is dirty or whether a merge conflicts,
 //! because there is no tree — a journey that needs those drives the real `Git`.
+//!
+//! Publishing is the one operation that reaches past the repository: the host side
+//! of it is *performed*, against the [`Hosting`] the publication was handed, and
+//! the repository side of it is neither performed nor claimed. What that leaves
+//! out is written where each piece is left out.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
 use onevcs::{
-    Error, EventKind, Identity, PreservedBranch, Provenance, Recoverable, Result, Scope, Session,
-    SessionRequest, SessionToken, Vcs,
+    ChangeSpec, Error, EventKind, FailureKind, Hosting, Identity, Lifecycle, MergeOutcome,
+    MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest,
+    Recoverable, Result, Scope, Session, SessionRecord, SessionRequest, SessionToken, Sha, Vcs,
 };
 
 use crate::events::{self, Emission};
+use crate::remote::DEFAULT_HOST;
 use crate::state::{self, VcsState};
 use crate::store::{FileStore, MemoryStore, Store};
 
@@ -23,6 +30,12 @@ use crate::store::{FileStore, MemoryStore, Store};
 /// The real implementation asks the origin for its default branch, and this
 /// provider has no origin to ask.
 pub const DEFAULT_BASE: &str = "main";
+
+/// The policy a publication takes when nothing was seeded and nothing requested.
+///
+/// The policy the contract's own `default:` names, which is what the real
+/// implementation resolves to for a registry with no rules file.
+pub const DEFAULT_PUBLICATION: MergePolicy = MergePolicy::ChangeOpen;
 
 /// The repository side of a run, over whichever store holds its state.
 ///
@@ -215,17 +228,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
 
     fn preserve(&self, s: &Session, provenance: Provenance) -> Result<PreservedBranch> {
         let (branch, emission) = self.store.with(|state| {
-            let identity = state
-                .session_identities
-                .get(&s.token)
-                .cloned()
-                .ok_or_else(|| Error::Invalid {
-                    reason: format!(
-                        "this provider has no record of session {:?}, so it cannot say which \
-                         identity a branch preserved from it belongs to",
-                        s.token.0
-                    ),
-                })?;
+            let identity = state::identity_for(state, &s.token)?;
             let branch = PreservedBranch {
                 branch: s.branch.clone(),
                 base: s.base.clone(),
@@ -268,6 +271,133 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
         Ok(branch)
     }
 
+    fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
+        self.store.with(|state| {
+            let session = state::session_of(state, token)
+                .cloned()
+                .ok_or_else(|| unknown_session(token))?;
+            let identity = state::identity_for(state, token)?;
+            // Read off what was preserved rather than remembered separately: the
+            // real implementation reads the branch, so a session whose work was
+            // preserved behind an incomplete-step marker answers the same here.
+            let provenance = state
+                .preserved
+                .iter()
+                .find(|row| row.identity == identity && row.branch.branch == session.branch)
+                .map_or(Provenance::Complete, |row| row.branch.provenance);
+            Ok(SessionRecord {
+                lifecycle: if state.closed_sessions.contains(token) {
+                    Lifecycle::Closed
+                } else {
+                    Lifecycle::Open
+                },
+                session,
+                identity,
+                provenance,
+            })
+        })
+    }
+
+    fn close_session(&self, token: &SessionToken) -> Result<Session> {
+        let (session, emission) = self.store.with(|state| {
+            let session = state::session_of(state, token)
+                .cloned()
+                .ok_or_else(|| unknown_session(token))?;
+            state.closed_sessions.insert(token.clone());
+            let emission = Emission {
+                stream: token.0.clone(),
+                // No identity label, because the real implementation carries none
+                // here: closing opens the stream fresh, and the label is stamped
+                // where a session is opened.
+                identity: None,
+                kind: EventKind::SessionClosed,
+                payload: object(json!({"token": token.0, "branch": session.branch})),
+            };
+            Ok((session, emission))
+        })?;
+        events::emit(&emission);
+        Ok(session)
+    }
+
+    /// Publish a session's branch, as far as a provider honestly can.
+    ///
+    /// The host side is performed rather than described: a change request is really
+    /// opened against the [`Hosting`] this was handed, really adopted when one is
+    /// already open, and really merged under the policy — so the six host methods
+    /// are exercised and what the host recorded is what a journey reads back.
+    ///
+    /// The repository side is not, and none of it is claimed. There is no origin to
+    /// fetch from, no tree to run a gate in, no push, and no lock to queue behind,
+    /// so no `fetch`, `gate-started`, `gate-verdict`, `push`, `lock-wait`,
+    /// `lock-acquired`, or `merge-queued` event is emitted. What is emitted is what
+    /// was decided: the change that was opened, and the merge that landed.
+    fn publish(
+        &self,
+        token: &SessionToken,
+        request: &PublishRequest,
+        hosting: &dyn Hosting,
+    ) -> Result<Publication> {
+        let (publication, emissions) = self.store.with(|state| {
+            let session = state::session_of(state, token)
+                .cloned()
+                .ok_or_else(|| unknown_session(token))?;
+            let identity = state::identity_for(state, token)?;
+            let resolved = state.policy.unwrap_or(DEFAULT_PUBLICATION);
+            let policy = match request.policy {
+                Some(requested) => resolved.narrow(requested)?,
+                None => resolved,
+            };
+            let published = |outcome, emissions| {
+                (
+                    Publication {
+                        session: token.clone(),
+                        branch: session.branch.clone(),
+                        policy,
+                        outcome,
+                    },
+                    emissions,
+                )
+            };
+            // A session that has already landed has nothing the base does not carry,
+            // which is what the real implementation reports for the same reason. One
+            // whose change request is merely open or queued has *not* landed, and
+            // publishing it again adopts that change rather than opening a second —
+            // so it falls through to the host, as it does there.
+            if state.publications.iter().any(|earlier| {
+                earlier.session == *token && matches!(earlier.outcome, PublishOutcome::Merged(_))
+            }) {
+                let (publication, emissions) =
+                    published(PublishOutcome::NothingToPublish, Vec::new());
+                state.publications.push(publication.clone());
+                return Ok((publication, emissions));
+            }
+
+            let (outcome, emissions) = if policy == MergePolicy::LocalDirect {
+                record_local_landing(&identity, &session, token)
+            } else {
+                match slug(&identity) {
+                    Some(slug) => match publish_as_change(
+                        hosting, &slug, &identity, &session, policy, request, token,
+                    ) {
+                        Ok(published) => published,
+                        // Once a publication has started, what stops it is an outcome
+                        // rather than a refusal — the same split the real
+                        // implementation keeps, so a caller reads one shape.
+                        Err(error) => (failed(&error), Vec::new()),
+                    },
+                    None => (refusal(&identity), Vec::new()),
+                }
+            };
+            let (publication, emissions) = published(outcome, emissions);
+            state.publications.push(publication.clone());
+            Ok((publication, emissions))
+        })?;
+        for emission in &emissions {
+            events::emit(emission);
+        }
+        Ok(publication)
+    }
+
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>> {
         self.store.with(|state| {
             let wanted = match &scope {
@@ -292,6 +422,156 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 .cloned()
                 .collect())
         })
+    }
+}
+
+/// The refusal a session this provider never opened meets.
+fn unknown_session(token: &SessionToken) -> Error {
+    Error::Invalid {
+        reason: format!(
+            "no session {:?} is open; `onevcs session open` prints a token",
+            token.0
+        ),
+    }
+}
+
+/// The `owner/name` slug an identity key spells, when it is a GitHub one.
+///
+/// The host is checked rather than assumed, exactly as the real implementation
+/// checks it: a GitLab origin has the same three segments, and a provider that
+/// published one anyway would let a journey pass where the real run answers that
+/// nobody has implemented that host.
+fn slug(identity: &str) -> Option<String> {
+    let mut parts = identity.split('/');
+    let (host, owner, name) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || host != DEFAULT_HOST || owner.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{name}"))
+}
+
+/// Record that a `local-direct` publication landed — record, and nothing more.
+///
+/// Landing one is entirely repository-side work, a squash built detached and
+/// pushed, which this provider does not perform and must not be named as if it
+/// did. What it does is decide the outcome and emit the completion that says so.
+fn record_local_landing(
+    identity: &str,
+    session: &Session,
+    token: &SessionToken,
+) -> (PublishOutcome, Vec<Emission>) {
+    let sha = events::stable_sha(&["publish", &token.0, &session.branch]);
+    let emission = Emission {
+        stream: token.0.clone(),
+        identity: Some(identity.to_owned()),
+        kind: EventKind::MergeCompleted,
+        payload: object(json!({"identity": identity, "sha": sha, "base": session.base})),
+    };
+    (PublishOutcome::Merged(Sha(sha)), vec![emission])
+}
+
+/// Publish as a change request: open the session's change on the host, or adopt
+/// the one it already holds, and then do with it what the policy asks — which for
+/// `change-open` is to leave it open and ask the host for nothing more.
+fn publish_as_change(
+    hosting: &dyn Hosting,
+    slug: &str,
+    identity: &str,
+    session: &Session,
+    policy: MergePolicy,
+    request: &PublishRequest,
+    token: &SessionToken,
+) -> Result<(PublishOutcome, Vec<Emission>)> {
+    let host = hosting.for_repo(slug)?;
+    // Who the host believes is calling travels with the change, as it does in the
+    // real publication and for the same reason.
+    let author = host.authenticated_user()?;
+    let existing = host.find_changes(&session.branch, &session.base)?;
+    let change = match existing.into_iter().next() {
+        Some(change) => change,
+        None => host.open_change(ChangeSpec {
+            head: session.branch.clone(),
+            base: session.base.clone(),
+            // A requested title has been checked by the conversion that built it, so
+            // this provider cannot accept one the real publication would refuse. The
+            // real implementation takes the subject from the branch's commits when no
+            // title was requested, and a provider has no commits to read — so an
+            // unrequested title names the branch instead.
+            title: request
+                .title
+                .as_deref()
+                .map_or_else(|| format!("Publish {}", session.branch), str::to_owned),
+            body: None,
+        })?,
+    };
+    let mut emissions = vec![Emission {
+        stream: token.0.clone(),
+        identity: Some(identity.to_owned()),
+        kind: EventKind::ChangeOpened,
+        payload: object(json!({
+            "url": change.url.to_string(),
+            "host": "github",
+            "id": change.id.0,
+            "base": change.base,
+            "author": author,
+        })),
+    }];
+    if policy == MergePolicy::ChangeOpen {
+        return Ok((PublishOutcome::ChangeOpen(change.url.clone()), emissions));
+    }
+    Ok(match host.merge(&change, policy)? {
+        MergeOutcome::Merged(sha) => {
+            emissions.push(Emission {
+                stream: token.0.clone(),
+                identity: Some(identity.to_owned()),
+                kind: EventKind::ChangeMerged,
+                payload: object(json!({"url": change.url.to_string(), "sha": sha.0})),
+            });
+            emissions.push(Emission {
+                stream: token.0.clone(),
+                identity: Some(identity.to_owned()),
+                kind: EventKind::MergeCompleted,
+                payload: object(json!({"identity": identity, "sha": sha.0})),
+            });
+            (PublishOutcome::Merged(sha), emissions)
+        }
+        MergeOutcome::Queued => (PublishOutcome::Queued(change.url.clone()), emissions),
+        MergeOutcome::Open => (PublishOutcome::ChangeOpen(change.url.clone()), emissions),
+    })
+}
+
+/// What a publication answers for an identity no change request can be opened
+/// against.
+///
+/// Two failures rather than one, as the real implementation keeps them: an
+/// identity that is not hosted at all is asking for the wrong policy, while a
+/// hosted one on a host this build does not speak for is asking for an
+/// implementation that has not arrived.
+fn refusal(identity: &str) -> PublishOutcome {
+    failed(&if identity.split('/').count() == 3 {
+        Error::NotImplemented {
+            operation: "RemoteHost for a host other than github.com",
+        }
+    } else {
+        Error::Invalid {
+            reason: format!(
+                "identity {identity:?} is not a hosted repository, so it cannot publish a \
+                 change request; a local identity publishes with local-direct"
+            ),
+        }
+    })
+}
+
+/// One failure, as the outcome a publication that started and did not land is.
+fn failed(error: &Error) -> PublishOutcome {
+    PublishOutcome::Failed {
+        // Through the crate's own mapping, so the kind a caller branches on is the
+        // one the real implementation would report for the same failure.
+        kind: FailureKind::of(error),
+        reason: error.to_string(),
+        // A provider has no execution checkout, so there is nowhere a branch could
+        // have been handed back to and nothing to report about one.
+        retained: None,
     }
 }
 

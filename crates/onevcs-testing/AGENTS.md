@@ -26,6 +26,22 @@ Two things follow when you add a behaviour here:
   has, so no provider emits one — and the comparison excludes that kind by name,
   with the reason written where it is excluded.
 
+Publishing is where that rule does the most work, because a publication reaches
+both interfaces. The **host** side of one is performed here: the change request is
+really opened on the `Hosting` the publication was handed, really adopted when the
+host already holds one, and really merged under the policy. The **repository** side
+is not, and none of it is claimed — there is no origin to fetch, no tree to run a
+gate in, nothing to push, and no lock to queue behind, so a publication here emits
+`change-opened`, `change-merged`, and `merge-completed` and never `fetch`,
+`gate-started`, `gate-verdict`, `push`, `lock-wait`, `lock-acquired`, or
+`merge-queued`. Two more things it cannot read, and states instead of inventing:
+the policy comes from `VcsState::policy` rather than a rules file (narrowed through
+`MergePolicy::narrow`, which is the rules system's own rule), and an unrequested
+change-request title names the branch rather than a commit subject there is no
+commit to take. A *requested* title needs no check here — `PublishRequest::title`
+is a `Subject`, so one that could not be a commit subject never reaches a
+provider.
+
 ## One behaviour, two stores
 
 `MemoryVcs` / `FileVcs` and `MemoryHost` / `FileHost` are type aliases over one

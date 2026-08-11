@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "identities": [
     {
       "origin": "github.com/acme-corp/widgets",
@@ -36,6 +36,20 @@
         "recover",
         "feature/seeded"
       ]
+    }
+  ],
+  "closed_sessions": [
+    "s-testing-1"
+  ],
+  "policy": "change-auto",
+  "publications": [
+    {
+      "session": "s-testing-1",
+      "branch": "feature/seeded",
+      "policy": "change-auto",
+      "outcome": {
+        "merged": "abc123"
+      }
     }
   ]
 }

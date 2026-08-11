@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use onevcs::{ChangeId, ChangeSpec, Hosting, MergeOutcome, MergePolicy};
+use onevcs::{ChangeId, ChangeSpec, Hosting, MergeOutcome, MergePolicy, RemoteHost};
 use onevcs_testing::{FileHost, HostState, MemoryHost};
 
 use crate::support::{green_check, Home};
@@ -20,6 +20,32 @@ fn spec(head: &str) -> ChangeSpec {
         title: "feat: the thing".to_owned(),
         body: Some("## What\n\nthe thing\n".to_owned()),
     }
+}
+
+#[test]
+fn a_change_request_whose_title_names_nothing_is_refused_as_the_real_host_refuses_it() {
+    let _home = Home::new();
+    let host = MemoryHost::new();
+    let refused = host
+        .open_change(ChangeSpec {
+            title: "   ".to_owned(),
+            ..spec("feature/one")
+        })
+        .expect_err("a host will not open a change request that names no change");
+    assert!(refused.to_string().contains("blank"), "{refused}");
+    assert!(host.state().changes.is_empty());
+
+    // How *long* a title may be is the host's own rule rather than this crate's rule
+    // for a commit subject — so one past the 72 characters a subject is bounded by
+    // is opened, exactly as a real host opens it.
+    let long = format!("feat: {}", "x".repeat(200));
+    let opened = host
+        .open_change(ChangeSpec {
+            title: long.clone(),
+            ..spec("feature/one")
+        })
+        .expect("a host's own limit is its own");
+    assert_eq!(host.state().titles[&opened.id], long);
 }
 
 #[test]

@@ -160,6 +160,20 @@ pub enum MergePolicy {
     ChangeDirect,
 }
 
+impl MergePolicy {
+    /// This policy narrowed to `requested`, or the reason that would widen it.
+    ///
+    /// The rule belongs to the rules system rather than to any one implementation
+    /// of [`Vcs`](crate::Vcs): a supplied implementation publishing under a policy
+    /// of its own applies this, rather than a restatement of it that could drift.
+    /// The direction is not symmetric and cannot be made so — widening is how work
+    /// reaches a base branch without the review its repository requires, and no
+    /// later step notices.
+    pub fn narrow(self, requested: MergePolicy) -> crate::Result<MergePolicy> {
+        crate::policy::narrow_publication(self, requested)
+    }
+}
+
 /// Whether a change needs someone else's approval before it may merge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

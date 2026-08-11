@@ -35,7 +35,11 @@
 //!
 //! What they are *not* is git and GitHub. Nothing here clones, commits, pushes, or
 //! moves a ref; a merge records an outcome and no origin advances. A journey about
-//! git drives the real `Git`.
+//! git drives the real `Git`. A publication is the sharpest case of that: its host
+//! side really happens — a change request is opened, adopted, and merged on the
+//! [`Hosting`](onevcs::Hosting) it was handed — and its repository side does not,
+//! so nothing here emits a `fetch`, a gate verdict, a push, or a lock it did not
+//! take.
 //!
 //! ```no_run
 //! use onevcs::{Providers, cli::Cli, run_with};
@@ -60,6 +64,6 @@ mod state;
 mod store;
 
 pub use remote::{FileHost, Host, MemoryHost, DEFAULT_HOST, DEFAULT_SLUG};
-pub use repository::{FileVcs, MemoryVcs, Repository, DEFAULT_BASE};
+pub use repository::{FileVcs, MemoryVcs, Repository, DEFAULT_BASE, DEFAULT_PUBLICATION};
 pub use state::{HostState, VcsState, DEFAULT_AUTHENTICATED_USER, STATE_VERSION};
 pub use store::{Checked, FileStore, MemoryStore, Store};

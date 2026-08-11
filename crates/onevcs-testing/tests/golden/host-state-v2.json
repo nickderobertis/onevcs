@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "authenticated_user": "seeded-user",
   "changes": [
     {
@@ -11,6 +11,9 @@
   ],
   "heads": {
     "1": "feature/seeded"
+  },
+  "titles": {
+    "1": "feat: the seeded change"
   },
   "checks": {
     "1": [

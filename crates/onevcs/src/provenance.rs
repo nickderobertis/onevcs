@@ -340,6 +340,30 @@ pub fn provenance_of(
     )
 }
 
+/// One explicit title, checked as the subject a publication would carry.
+///
+/// Separate from the search below because it is also the check inside
+/// [`Subject`](crate::Subject)'s conversion: the rule belongs to publication rather
+/// than to any one implementation of the repository side, and a title is refused
+/// where a request is built rather than where a message is composed — by which
+/// point the session's work has been committed and its base merged.
+///
+/// Blank before long: a title that is only spacing would publish a commit with no
+/// subject at all, which is the one shape a length check reads as fine.
+pub fn checked_subject(title: &str) -> std::result::Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        Err("the explicit title is blank".to_owned())
+    } else if title.len() <= SUBJECT_LIMIT {
+        Ok(title.to_owned())
+    } else {
+        Err(format!(
+            "the explicit title is {} characters, over the {SUBJECT_LIMIT}-character limit",
+            title.len()
+        ))
+    }
+}
+
 /// The subject a squashed publication of this branch carries.
 ///
 /// The most significant commit supplies the description and the branch's own
@@ -356,19 +380,7 @@ pub fn publication_subject(
     trailers: &Trailers,
 ) -> Result<std::result::Result<String, String>> {
     if let Some(title) = explicit {
-        // Blank before long: a title that is only spacing would publish a commit with
-        // no subject at all, which is the one shape a length check reads as fine.
-        let title = title.trim();
-        return Ok(if title.is_empty() {
-            Err("the explicit title is blank".to_owned())
-        } else if title.len() <= SUBJECT_LIMIT {
-            Ok(title.to_owned())
-        } else {
-            Err(format!(
-                "the explicit title is {} characters, over the {SUBJECT_LIMIT}-character limit",
-                title.len()
-            ))
-        });
+        return Ok(checked_subject(title));
     }
     let commits = git::log_messages(repo, base, branch)?;
     let describing: Vec<&git::CommitMessage> = commits

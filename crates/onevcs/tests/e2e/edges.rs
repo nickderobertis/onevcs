@@ -533,6 +533,43 @@ fn an_adoption_recreates_the_worktree_a_torn_down_session_left_behind() {
 }
 
 #[test]
+fn events_hands_over_a_line_this_build_cannot_parse_rather_than_hiding_it() {
+    let fixture =
+        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let (token, _worktree) = fixture.open(&["--branch", "feature/unparsed"]);
+
+    // A stream this build cannot read every line of: what a torn write leaves, and
+    // what a *later* build writes when the envelope has grown a shape this one does
+    // not know. The command is a reader of one file rather than a validator of it,
+    // so it hands the line over — refusing would hide the evidence from the operator
+    // who went looking for it, and would stop this build reading a newer one's
+    // stream at all. The typed reader is the half that refuses; `library.rs` holds
+    // it to that.
+    //
+    // llmlint: ignore-block[tests_mirror_real_usage] no interface of this crate writes a
+    // line it cannot read back — that is precisely the state under test, and it arrives
+    // from a killed writer or a build that is not this one.
+    let stream = fixture
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let mut raw = std::fs::read_to_string(&stream).expect("the stream the session wrote");
+    raw.push_str("{\"v\":2,\"from\":\"a build this one is not\"}\n");
+    std::fs::write(&stream, &raw).expect("a stream carrying a line this build cannot parse");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    fixture
+        .world
+        .onevcs()
+        .args(["events", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("session-opened"))
+        .stdout(predicate::str::contains("a build this one is not"));
+}
+
+#[test]
 fn events_follow_returns_once_the_session_it_is_following_has_closed() {
     let fixture =
         Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");

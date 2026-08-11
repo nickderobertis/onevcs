@@ -72,21 +72,44 @@ could:
 - **`run_with(&Cli, Providers)`** — `run` is this with `Providers::real()`, so the
   contract's `run` is unchanged in signature and in behaviour.
 
-Two consequences worth stating plainly, because they are what the seam does *not*
+One consequence worth stating plainly, because it is what the seam does *not*
 reach:
 
-- **A publication's repository side is git, not `Vcs`.** The five methods cover
-  identities, sessions, preserved work, and recovery; the work `onevcs publish`
-  does — fetch, merge, squash, push — is beneath them, in a private module. A
-  supplied `Vcs` is therefore reached by `resolve`, `session open`, `session
-  adopt`, `publish`'s preserve step, and `recoverable`, and a publication still
-  runs on real git. Widening `Vcs` to cover publication is a contract amendment.
 - **A non-GitHub hosted origin still answers `NotImplemented`.** The slug a change
   request is opened against is derived from a `github.com/...` identity key, and
   that derivation is upstream of the factory. So supplying a `Hosting` does not
   make a GitLab origin publishable; it makes GitHub's *behaviour* replaceable.
   Routing a second host vocabulary through the seam is the next question, not this
   one.
+
+**A publication's repository side used to be git rather than `Vcs`, and no longer
+is.** The five methods covered identities, sessions, preserved work, and recovery,
+while the work `onevcs publish` does — fetch, merge, squash, push — sat beneath
+them in a private module, reached from a private on-disk session record only `Git`
+wrote. That is why a session a supplied implementation opened was refused by
+`publish` and by `session close`. The widening that closes it is an approved
+amendment, written into `docs/contract.md`: `Vcs` owns the session record, closing
+a session, and publishing one, so a provider-opened session is a first-class
+session everywhere. What is *inferred* here is only the shape of the four types
+that widening needs, and each is the smallest thing that could answer the question
+it exists for. The declarations themselves live in `docs/contract.md` and are held
+to the code by `the_amendment_declares_the_types_the_widened_seam_gained` in
+`tests/contract.rs`; the column below records only *why* each shape was chosen,
+which is what this file is for.
+
+<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the table below is a
+reviewer's record of which lines are approved and which are an inference, not a second
+declaration of them: the authoritative one is the amendment in docs/contract.md, and the
+suite reconciles that with the types. Gating a rationale column would hold the reasons to
+the code rather than the shapes, and the pre-existing rows above have the same character
+for the same reason. -->
+
+| Type | Inferred shape | Why |
+| --- | --- | --- |
+| `SessionRecord` | `session`, `identity`, `lifecycle`, `provenance` | What every command that takes a token needed off the private record and could not derive from a `Session`: which repository it belongs to, whether it is still open, and whether its branch carries an incomplete-step marker. |
+| `PublishRequest` | `policy`, `title` | Exactly the options `onevcs publish` takes beyond the token. `title` is a `Subject` rather than a `String`: a publication commits and merges before it composes a message, so the check has to be in the conversion that builds the request rather than where the message is composed. |
+| `Publication` | `session`, `branch`, `policy`, `outcome` | What a caller journals about a publication: which session and branch, the policy it was actually taken under (after the rules file and any narrowing), and what happened. |
+| `PublishOutcome` | `merged` / `change-open` / `queued` / `nothing-to-publish` / `failed` | The four endings the CLI printed as prose, plus the failure it printed to stderr and reported as an exit code. `Retention` is on the failure because the branch is the only record of the work, and whether it survived is the first thing a caller asks. |
 
 Every type reachable from a supplied implementation's state also gained
 `Deserialize` beside its `Serialize` — `Session`, `SessionToken`, `Provenance`,

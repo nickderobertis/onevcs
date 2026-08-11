@@ -133,6 +133,9 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     fn open_change(&self, req: ChangeSpec) -> Result<ChangeRequest> {
         addressable(&req.head, "the head branch")?;
         addressable(&req.base, "the base branch")?;
+        // The same refusal the real host makes: a change request whose title names
+        // nothing is one it will not open.
+        crate::state::titled(&req.title)?;
         let slug = self.slug.clone();
         self.store.with(|state| {
             // The host numbers its change requests, consecutively from one, so a
@@ -147,7 +150,8 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
                 base: req.base.clone(),
                 id: id.clone(),
             };
-            state.heads.insert(id, req.head.clone());
+            state.heads.insert(id.clone(), req.head.clone());
+            state.titles.insert(id, req.title.clone());
             state.changes.push(change.clone());
             Ok(change)
         })

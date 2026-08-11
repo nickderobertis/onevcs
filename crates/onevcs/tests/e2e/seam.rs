@@ -111,10 +111,13 @@ fn session_adopt_hands_back_the_supplied_repository_sides_session() {
         .expect("a session");
 
     let mut state = VcsState {
-        identities: vec![identity],
+        identities: vec![identity.clone()],
         ..VcsState::default()
     };
     state.sessions.push(session.clone());
+    state
+        .session_identities
+        .insert(session.token.clone(), identity.origin.clone());
     let vcs = MemoryVcs::seeded(state);
 
     assert_eq!(
@@ -142,51 +145,105 @@ fn session_adopt_hands_back_the_supplied_repository_sides_session() {
 }
 
 #[test]
-fn publishing_a_dirty_session_preserves_through_the_supplied_repository_side() {
+fn publishing_goes_through_the_supplied_repository_side() {
     let world = World::new();
     inhabit(&world);
     let (_checkout, identity) = hosted(&world, REVIEWED);
-    let session = Git
+    // Opened through the seam and published through it: no session record on disk
+    // is involved anywhere, which is the whole of what used to make this
+    // impossible.
+    let vcs = knowing(&identity);
+    let session = vcs
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
-            branch: Some("feature/dirty".to_owned()),
-            base: None,
+            branch: Some("feature/provided".to_owned()),
+            base: Some("main".to_owned()),
             execution_checkout: None,
         })
         .expect("a session");
-    // Left uncommitted on purpose: a dirty tree at publication time is what sends
-    // the branch through `preserve`.
-    std::fs::write(session.worktree.join("work.txt"), "work\n").expect("work in the tree");
-
-    let mut state = VcsState {
-        identities: vec![identity.clone()],
-        ..VcsState::default()
-    };
-    state.sessions.push(session.clone());
-    state
-        .session_identities
-        .insert(session.token.clone(), identity.origin.clone());
-    let vcs = MemoryVcs::seeded(state);
+    let host = MemoryHost::new();
 
     assert_eq!(
         run(
             &["onevcs", "publish", &session.token.0],
             Providers {
                 vcs: &vcs,
+                hosting: &host,
+            },
+        ),
+        0,
+        "a session the supplied repository side opened is one it can publish"
+    );
+
+    // The supplied side is what published, and the supplied host is what the change
+    // request was opened on — no `gh` answered anything in this world.
+    let published = vcs.state().publications;
+    assert_eq!(published.len(), 1, "the supplied side recorded it");
+    assert_eq!(published[0].branch, "feature/provided");
+    let changes = host.state().changes;
+    assert_eq!(changes.len(), 1, "the supplied host holds the change");
+    assert_eq!(
+        published[0].outcome,
+        onevcs::PublishOutcome::ChangeOpen(changes[0].url.clone())
+    );
+
+    // And a repository side with no record of the session refuses it, which it
+    // could not do if `publish` still read the record `Git` writes.
+    assert_eq!(
+        run(
+            &["onevcs", "publish", &session.token.0],
+            Providers {
+                vcs: &MemoryVcs::new(),
+                hosting: &MemoryHost::new(),
+            },
+        ),
+        2,
+        "the supplied repository side is what a publication starts from"
+    );
+}
+
+#[test]
+fn closing_a_session_goes_through_the_supplied_repository_side() {
+    let world = World::new();
+    inhabit(&world);
+    let (_checkout, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let session = vcs
+        .open_session(SessionRequest {
+            repo: "hosted".to_owned(),
+            branch: Some("feature/closed".to_owned()),
+            base: Some("main".to_owned()),
+            execution_checkout: None,
+        })
+        .expect("a session");
+
+    assert_eq!(
+        run(
+            &["onevcs", "session", "close", &session.token.0],
+            Providers {
+                vcs: &vcs,
                 hosting: &MemoryHost::new(),
             },
         ),
         0,
-        "the publication runs"
+        "a session the supplied repository side opened is one it can close"
+    );
+    assert!(
+        vcs.state().closed_sessions.contains(&session.token),
+        "the supplied side is what released it"
     );
 
-    // The supplied side is what was asked to preserve the work — and, being a
-    // provider rather than git, it recorded the branch instead of committing it,
-    // so the base carries nothing and the publication had nothing to land.
-    let preserved = vcs.state().preserved;
-    assert_eq!(preserved.len(), 1, "the supplied side preserved the branch");
-    assert_eq!(preserved[0].branch.branch, "feature/dirty");
-    assert_eq!(preserved[0].identity, identity.origin);
+    assert_eq!(
+        run(
+            &["onevcs", "session", "close", &session.token.0],
+            Providers {
+                vcs: &MemoryVcs::new(),
+                hosting: &MemoryHost::new(),
+            },
+        ),
+        2,
+        "a repository side with no record of the session refuses to close it"
+    );
 }
 
 #[test]

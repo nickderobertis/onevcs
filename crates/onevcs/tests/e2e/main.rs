@@ -5,10 +5,10 @@
 //! exit code, stdout, and stderr, the way a user or a CI job meets it. Nothing
 //! here calls into the library.
 //!
-//! Two modules are the exception, and they are the ones *about* the library's
-//! trait seam: `honesty` and `seam` drive `onevcs::run_with` in-process, because
-//! supplying an implementation is something only a caller embedding the crate can
-//! do — the binary deliberately has no flag for it. Each says so at its head.
+//! Three modules are the exception, and they are the ones *about* the library:
+//! `honesty`, `seam`, and `library` drive it in-process, because supplying an
+//! implementation is something only a caller embedding the crate can do — the
+//! binary deliberately has no flag for it. Each says so at its head.
 
 mod cli;
 #[cfg(unix)]
@@ -23,6 +23,12 @@ mod edges;
 mod honesty;
 #[cfg(unix)]
 mod host;
+// `library` drives the typed library surface on both backends: half of what it
+// compares is a supplied implementation by construction, and the other half is the
+// real `Git` and the substituted `gh`. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod library;
 #[cfg(unix)]
 mod lifecycle;
 mod packaging;
