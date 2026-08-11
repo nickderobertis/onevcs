@@ -373,9 +373,9 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 land_locally(&identity, &session, token)
             } else {
                 match slug(&identity) {
-                    Some(slug) => {
-                        open_and_merge(hosting, &slug, &identity, &session, policy, request, token)?
-                    }
+                    Some(slug) => publish_as_change(
+                        hosting, &slug, &identity, &session, policy, request, token,
+                    )?,
                     None => (refusal(&identity), Vec::new()),
                 }
             };
@@ -461,9 +461,10 @@ fn land_locally(
     (PublishOutcome::Merged(Sha(sha)), vec![emission])
 }
 
-/// Open (or adopt) the session's change request on the host, and ask the host to
-/// do with it what the policy says.
-fn open_and_merge(
+/// Publish as a change request: open the session's change on the host, or adopt
+/// the one it already holds, and then do with it what the policy asks — which for
+/// `change-open` is to leave it open and ask the host for nothing more.
+fn publish_as_change(
     hosting: &dyn Hosting,
     slug: &str,
     identity: &str,

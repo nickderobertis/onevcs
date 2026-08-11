@@ -451,6 +451,67 @@ fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() 
 }
 
 #[test]
+fn a_branch_the_execution_checkout_will_not_take_back_is_reported_as_refused() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REFUSING);
+    let checkout = world.path("hosted");
+    let session = open(&Git, "feature/handback");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the handed-back thing",
+    );
+
+    // The first refusal hands the branch back, which is what the checkout then
+    // holds.
+    let first = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    assert!(
+        matches!(
+            &first.outcome,
+            PublishOutcome::Failed {
+                retained: Some(Retention::HandedBack(_)),
+                ..
+            }
+        ),
+        "{first:?}"
+    );
+
+    // Now the checkout carries work this session's clone does not, so the copy is
+    // no longer a fast-forward and it refuses. Nothing outside the session then
+    // carries the branch, and a caller has to be told that rather than left to
+    // assume the work survived.
+    world.git(&checkout, &["checkout", "-q", "feature/handback"]);
+    world.commit_file(
+        &checkout,
+        "two.txt",
+        "two\n",
+        "feat: work this session never saw",
+    );
+
+    let second = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let PublishOutcome::Failed {
+        retained: Some(Retention::Refused(refused)),
+        ..
+    } = &second.outcome
+    else {
+        panic!("a checkout that will not take the branch back is reported: {second:?}");
+    };
+    assert_eq!(*refused, checkout);
+}
+
+#[test]
 fn publishing_a_dirty_session_preserves_its_work_on_one_gapless_stream() {
     let world = World::new();
     inhabit(&world);
