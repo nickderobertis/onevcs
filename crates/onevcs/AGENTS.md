@@ -124,6 +124,17 @@ that one field the way GitHub does.
   one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
   real `Git` + real `GitHub`. Both reduce their streams with
   `tests/e2e/comparison.rs`, so neither can accept a difference the other rejects.
+- **CI's credential cannot read the scratch repository's checks, and that is a
+  secret-store change, not a code one.** `RELEASE_PLZ_TOKEN` reaches
+  `nickderobertis/onevcs-smoke` and pushes, opens, and merges there — the `smoke`
+  job has done all three. It is a fine-grained token without that repository's
+  `Checks` permission, so GitHub refuses to resolve a check run for it: `gh pr view
+  --json statusCheckRollup` and `gh pr checks --json …` are declined identically,
+  from different query roots, which is what rules out this build asking wrongly.
+  Seven of the tier's eight journeys pass under it; the `checks` one cannot, and
+  fails saying so. Granting `Checks: read` is the fix. `check_log` then reads a job
+  log through `gh run view --job`, which wants `Actions: read` as well — untested
+  under that token, because nothing has reached it yet.
 
 ## Everything durable lives under one state root
 
