@@ -535,6 +535,55 @@ fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() 
 }
 
 #[test]
+fn a_base_that_moved_incompatibly_is_a_sync_conflict_the_caller_can_tell_apart() {
+    let world = World::new();
+    inhabit(&world);
+    // A gate that passes, so what stops this publication is the base rather than a
+    // verdict — the third of the contract's own exit codes, and the one a caller
+    // has to distinguish because retrying it is the only thing that can settle it.
+    let (origin, _identity) = hosted(
+        &world,
+        "{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}",
+    );
+    let session = open(&Git, "feature/conflicting");
+    world.commit_file(
+        &session.worktree,
+        "shared.txt",
+        "from the session\n",
+        "feat: change the shared file",
+    );
+
+    // The base moves under the session, incompatibly.
+    let other = world.clone_of(&origin, "advancing");
+    world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: change it differently",
+    );
+    world.git(&other, &["push", "-q", "origin", "main"]);
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a base that moved is an outcome, not a refusal to start");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a conflicting base stops the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::SyncConflict);
+    assert_eq!(kind.exit_code(), 3);
+    assert!(reason.contains("sync conflict"), "{reason}");
+    assert!(
+        !world
+            .events_of(&session.token.0, "sync-conflict")
+            .is_empty(),
+        "and the stream records what the caller was told"
+    );
+}
+
+#[test]
 fn a_branch_the_execution_checkout_will_not_take_back_is_reported_as_refused() {
     let world = World::new();
     inhabit(&world);
