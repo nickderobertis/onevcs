@@ -410,6 +410,90 @@ fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
 }
 
 #[test]
+fn the_commands_read_the_same_over_a_provided_session_as_over_a_real_one() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let host = MemoryHost::new();
+    let providers = || Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+    let session = open(&vcs, "feature/rendered");
+
+    // Adopting a session whose work was preserved behind an incomplete-step marker
+    // warns, and the warning is now the *supplied* side's answer about the branch.
+    vcs.preserve(&session, onevcs::Provenance::IncompleteStep)
+        .expect("the work is preserved");
+    let mut code = 0;
+    let warned = stderr_of(|| {
+        code = run(
+            &["onevcs", "session", "adopt", &session.token.0],
+            providers(),
+        );
+    });
+    assert_eq!(code, 0);
+    assert!(
+        warned.contains("incomplete-step provenance") && warned.contains("onevcs recover"),
+        "{warned}"
+    );
+
+    // Publishing renders the typed outcome as the sentence a user reads.
+    let published = stdout_of(|| {
+        code = run(&["onevcs", "publish", &session.token.0], providers());
+    });
+    assert_eq!(code, 0);
+    let url = host.state().changes[0].url.to_string();
+    assert_eq!(published, format!("change request open at {url}\n"));
+
+    // And closing names the session it released.
+    let closed = stdout_of(|| {
+        code = run(
+            &["onevcs", "session", "close", &session.token.0],
+            providers(),
+        );
+    });
+    assert_eq!(code, 0);
+    assert_eq!(closed, format!("{} closed\n", session.token.0));
+}
+
+#[test]
+fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/titled");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: the subject the branch would have given",
+    );
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: Some("feat: the title the caller asked for".to_owned()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(matches!(
+        published.outcome,
+        PublishOutcome::ChangeOpen { .. }
+    ));
+
+    // What the host was actually told, read back off the host's own state rather
+    // than off the value this journey passed in.
+    let title = std::fs::read_to_string(world.path("gh-state/pr-1.title"))
+        .expect("the host records the title it was given");
+    assert_eq!(title.trim(), "feat: the title the caller asked for");
+}
+
+#[test]
 fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() {
     let world = World::new();
     inhabit(&world);
