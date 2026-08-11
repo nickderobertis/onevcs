@@ -144,7 +144,8 @@ test-quick:
 # It needs `gh` and a credential (`gh auth login`, or GH_TOKEN). With neither it
 # fails and names what is missing; it never skips and never falls back to a fake.
 # Set ONEVCS_SMOKE_REPO to publish somewhere other than the default scratch
-# repository, whose name must end in `-smoke`. `--no-capture`, because its whole
+# repository; which names it will accept is the tier's own rule, and the tier says
+# so when it refuses one (`tests/smoke/scratch.rs`). `--no-capture`, because its whole
 # value is the evidence it prints, and `--no-fail-fast` because a run costs minutes
 # and a real credential: stopping at the first failure hides how the other journeys
 # fared under the same one, which is the question this tier is asked.

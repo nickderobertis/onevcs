@@ -87,17 +87,6 @@ for a job by a check's *name* when it only ever accepted a job id. Both shipped
 green for every release, because the only thing that had ever read them was a shell
 script written beside them that answered to what they asked.
 
-**A credential is part of the backend, so one that passes locally proves one
-credential.** `gh pr view` used to be asked for every field any caller might read,
-`statusCheckRollup` among them — and GitHub refuses that field to a fine-grained
-token the repository does not allow to read its checks, failing the *whole* call.
-So a token that could open and merge a change request was refused at both, over a
-field neither reads, and only from the moment a check first appeared on it. An
-interactive `gh auth login` never saw it; CI's `RELEASE_PLZ_TOKEN` saw it on the
-first run. Every `gh pr view` here now asks for what its caller reads and nothing
-else, and `tests/e2e/host.rs` holds it there with a substituted host that refuses
-that one field the way GitHub does.
-
 - **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
   whose name does not end in `-smoke` is refused before the first mutating call.
   `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.
@@ -124,14 +113,15 @@ that one field the way GitHub does.
   one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
   real `Git` + real `GitHub`. Both reduce their streams with
   `tests/e2e/comparison.rs`, so neither can accept a difference the other rejects.
-- **A permission this tier lacks is a secret-store change, never a parse to
-  loosen.** GitHub declines a check run by refusing the field rather than omitting
-  it, so `change_checks` refusing is the correct answer and must stay one — reading
-  a refusal as "no checks" is what lets a merge through. `RELEASE_PLZ_TOKEN` is
-  fine-grained and carries no `Checks` permission on the scratch repository, which
-  is the one journey of the eight that cannot pass in CI; `check_log` will want
-  `Actions: read` behind it. Everything else about that token is proved: it pushes,
-  opens, and merges there.
+- **The credential is part of the backend, so ask `gh` only for what you read.**
+  GitHub declines a field a token may not see by failing the whole `gh` call, so a
+  query carrying one unreadable field takes down every caller of it — and only once
+  there is something to refuse, which makes it look intermittent. Two rules follow:
+  each call names the fields its caller reads (`tests/e2e/host.rs` holds it there),
+  and a refusal stays a refusal — reading one as "no checks" is what lets a merge
+  through. Granting the permission is the operator's move, not the parser's.
+  `RELEASE_PLZ_TOKEN` has no `Checks` on the scratch repository and `check_log`
+  wants `Actions: read` behind that; it pushes, opens, and merges there.
 
 ## Everything durable lives under one state root
 

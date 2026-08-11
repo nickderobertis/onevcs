@@ -36,6 +36,13 @@ pub const BRANCH_PREFIX: &str = "onevcs-smoke";
 /// The line the scratch repository's `smoke-check.yml` writes into its job log,
 /// which is what proves [`RemoteHost::check_log`] fetched the real thing rather
 /// than a message about not having fetched it.
+///
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the other end of this
+// agreement is a workflow file in a repository outside this one, so there is no
+// checked-in source to derive it from and no gate that could run before the drift.
+// The tier is the gate: the checks journey asserts the fetched log contains this
+// line, so editing `smoke-check.yml` out from under it fails `just smoke-real` with
+// the artifact's actual contents rather than passing quietly.
 pub const CHECK_LOG_LINE: &str = "onevcs real-backend smoke: this line is what check_log fetches.";
 
 /// The scratch repository, or a refusal naming why this is not one.
