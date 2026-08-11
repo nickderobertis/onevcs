@@ -39,6 +39,39 @@ pub struct Session {
     pub base: String,
 }
 
+/// Where a session is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Lifecycle {
+    /// It has a worktree and its work has not been published or released.
+    Open,
+    /// Its worktree is gone and its branch has been handed back. The session is
+    /// still addressable, because the branch it names is still the only record of
+    /// the work.
+    Closed,
+}
+
+/// Everything the implementation that opened a session records about it.
+///
+/// A [`Session`] is the handle a caller was given; this is what the repository side
+/// knows about it afterwards, and it is why the record had to come through the
+/// interface: which repository the session belongs to, whether it is still open,
+/// and whether its branch carries an incomplete-step marker are all questions a
+/// command asks between opening a session and publishing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRecord {
+    /// The session itself.
+    pub session: Session,
+    /// The identity key the session belongs to.
+    pub identity: String,
+    /// Where the session is in its life.
+    pub lifecycle: Lifecycle,
+    /// What the session's branch carries now — an adopted session that was left
+    /// dirty carries [`Provenance::IncompleteStep`], and must pass the merge-path
+    /// gate through `onevcs recover` before it may be published.
+    pub provenance: Provenance,
+}
+
 /// Why a branch was preserved, and therefore what recovering it must do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

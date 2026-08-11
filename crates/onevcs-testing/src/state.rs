@@ -4,12 +4,12 @@
 //! provider and the file-backed one differ in where the state lives and in nothing
 //! else, so a scenario seeded for one is the same scenario for the other.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use onevcs::{ChangeId, ChangeRequest, Check, Error, Identity, MergeOutcome, Recoverable, Result};
-use onevcs::{Session, SessionRequest, SessionToken};
+use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
 
 use crate::events;
 use crate::store::Checked;
@@ -19,10 +19,17 @@ use crate::store::Checked;
 /// A file-backed state outlives the process that wrote it and is read by the next
 /// one, which makes it a stored contract like `onevcs`'s own registry document —
 /// and like that document, a version this build does not read is refused by name
-/// rather than guessed at. `1` is the shape the goldens in `tests/golden/` hold,
+/// rather than guessed at. `2` is the shape the goldens in `tests/golden/` hold,
 /// and those goldens are compared byte for byte, so a field that changes shape
 /// cannot reach a consumer without the diff saying so.
-pub const STATE_VERSION: u32 = 1;
+///
+/// `2` is what the repository side learned when publishing and closing a session
+/// came through the interface: [`VcsState::policy`], [`VcsState::closed_sessions`],
+/// and [`VcsState::publications`]. A document at version `1` is refused by name
+/// rather than read: it describes a provider that could not publish, and every
+/// session in it would read back as open — which for a journey asserting on a
+/// session it had closed is a wrong answer rather than a missing one.
+pub const STATE_VERSION: u32 = 2;
 
 /// Everything the repository side of a run knows about itself.
 ///
@@ -35,7 +42,7 @@ pub const STATE_VERSION: u32 = 1;
 #[serde(default)]
 pub struct VcsState {
     /// The schema version this state was written at. A document that names none is
-    /// this version: it is the only one there has ever been.
+    /// the one this build writes.
     // llmlint: ignore[boundary_inputs_validated] deciding what to do with a version this
     // build does not read is the whole of the check — and it is in `Checked::check` below,
     // where a document is read, rather than here where serde only proves the shape.
@@ -69,6 +76,29 @@ pub struct VcsState {
     /// alone. One list rather than two that could disagree.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub preserved: Vec<Recoverable>,
+    /// The sessions that have been closed. Every other session here is open.
+    ///
+    /// One way to say closed rather than two, so a scenario written by hand names
+    /// only the sessions whose lifecycle is not the one they were opened in.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub closed_sessions: BTreeSet<SessionToken>,
+    /// The policy this provider publishes under.
+    ///
+    /// The answer a rules file gives the real implementation, which a provider has
+    /// none of — so a journey states it, and unset is the policy the contract's own
+    /// `default:` names ([`DEFAULT_PUBLICATION`](crate::DEFAULT_PUBLICATION)). A
+    /// per-run policy narrows it through [`MergePolicy::narrow`], which is the
+    /// rules system's rule rather than a restatement of it here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<MergePolicy>,
+    /// Every publication this provider performed, in the order it performed them.
+    ///
+    /// Both a record a journey asserts on and the answer to "has this session been
+    /// published already": a second publication of a session that landed has
+    /// nothing the base does not already carry, which is what the real
+    /// implementation reports for the same reason.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub publications: Vec<Publication>,
 }
 
 /// A repository side that knows nothing, at the version this build writes.
@@ -80,6 +110,9 @@ impl Default for VcsState {
             sessions: Vec::new(),
             session_identities: BTreeMap::new(),
             preserved: Vec::new(),
+            closed_sessions: BTreeSet::new(),
+            policy: None,
+            publications: Vec::new(),
         }
     }
 }
@@ -91,7 +124,7 @@ impl Default for VcsState {
 #[serde(default)]
 pub struct HostState {
     /// The schema version this state was written at. A document that names none is
-    /// this version.
+    /// the one this build writes.
     // llmlint: ignore[boundary_inputs_validated] as on `VcsState::version`: the decision
     // about an unreadable version is made in `Checked::check`, where the document is read.
     pub version: u32,
@@ -190,6 +223,25 @@ pub(crate) fn known(state: &VcsState) -> String {
     format!("it knows {}", names.join(", "))
 }
 
+/// The identity a session belongs to, or the reason this provider cannot say.
+///
+/// `open_session` records it and nothing else writes it, so a session that arrived
+/// in a hand-written scenario without one is refused here rather than published
+/// against a repository nobody named.
+pub(crate) fn identity_for(state: &VcsState, token: &SessionToken) -> Result<String> {
+    state
+        .session_identities
+        .get(token)
+        .cloned()
+        .ok_or_else(|| Error::Invalid {
+            reason: format!(
+                "this provider has no record of session {:?}, so it cannot say which identity \
+                 its work belongs to",
+                token.0
+            ),
+        })
+}
+
 /// The session a token names.
 pub(crate) fn session_of<'a>(state: &'a VcsState, token: &SessionToken) -> Option<&'a Session> {
     state
@@ -261,6 +313,23 @@ impl Checked for VcsState {
         for row in &self.preserved {
             named_branch(&row.branch.branch, "the preserved branch")?;
             named_branch(&row.branch.base, "the preserved branch's base")?;
+        }
+        // Both of these name a session, and a name that is not a plain one goes on
+        // to spell the file its stream is written in.
+        for token in &self.closed_sessions {
+            if !events::is_safe_name(&token.0) {
+                return Err(Error::Invalid {
+                    reason: format!("{:?} is not a session token", token.0),
+                });
+            }
+        }
+        for publication in &self.publications {
+            if !events::is_safe_name(&publication.session.0) {
+                return Err(Error::Invalid {
+                    reason: format!("{:?} is not a session token", publication.session.0),
+                });
+            }
+            named_branch(&publication.branch, "the published branch")?;
         }
         Ok(())
     }

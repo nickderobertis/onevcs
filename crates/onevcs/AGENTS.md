@@ -20,13 +20,29 @@ a concrete implementation at a call site is what made both traits decorative for
 three releases; `grep 'dyn Vcs'` and `grep 'dyn RemoteHost'` are how you check
 they still are not.
 
-What the seam does **not** cover is a publication's repository side: fetch, merge,
-squash, and push live beneath the five `Vcs` methods, so a supplied `Vcs` is
-reached by `resolve`, `session open`, `session adopt`, `publish`'s preserve step,
-and `recoverable`, and a publication runs on real git whoever supplied it.
-`tests/e2e/seam.rs` holds each of those commands to the implementation it was
-handed: with a provider that knows the answer it succeeds, with one that does not
-it fails, which cannot happen if the command never asked.
+The seam covers the session record too, and that is what makes it whole: `Vcs`
+owns reading a session, closing it, and publishing it, so a session a supplied
+implementation opened is a first-class session in every command that takes one.
+It was not always so — the record was written by `Git` directly, and `publish` and
+`session close` therefore refused a provider-opened session as a session nobody
+opened. Anything that reaches for `workspace::load` from a command is that bug
+coming back.
+
+`tests/e2e/seam.rs` holds each command to the implementation it was handed: with a
+provider that knows the answer it succeeds, with one that does not it fails, which
+cannot happen if the command never asked.
+
+## Both surfaces, one decision
+
+`publish`, `session close`, and reading a session's events each have a typed
+library entry point beside the CLI — `crate::publish` answering a `Publication`,
+`close_session`, `session`, and `EventStream`. The CLI is a *rendering* of those
+and never a second path: `app::publish_session` calls `crate::publish` and turns
+the outcome into stdout, stderr, and an exit code. A consumer that had to parse
+that stdout is why the value exists, so a failure that the CLI reports as a
+non-zero exit is a `PublishOutcome::Failed` rather than an `Err` — the two
+surfaces cannot disagree about which failures are which. `tests/e2e/library.rs`
+drives every one of them twice, on the providers and on real `Git` + `gh`.
 
 ## Tests are journeys, and there are no unit tests
 
@@ -36,16 +52,17 @@ approved surface to the contract text it is extracted from; everything else in
 only an in-process test could reach is a path to delete, not one to unit-test —
 which is also how the 95% coverage floor is met.
 
-`tests/e2e/honesty.rs` is the one module that does not spawn the binary, and the
-reason is the thing it tests: `run_with` is a *library* seam, and the binary
-deliberately has no way to select a backend, so a journey comparing two backends
-can only be in-process. It runs one publication and one session journey twice —
-`Git` + `GitHub` against the providers in `crates/onevcs-testing` — and holds the
-two event streams to each other. That comparison is what keeps every consumer's
-suite honest, so a provider that stops matching fails here rather than downstream.
-It writes `ONEVCS_HOME` and friends into its own process, which is safe only
-because `cargo nextest` gives each test its own process; `cargo test` would race
-them.
+`tests/e2e/honesty.rs`, `tests/e2e/seam.rs`, and `tests/e2e/library.rs` are the
+modules that do not spawn the binary, and the reason is the thing they test: the
+library surface — `run_with`, and the typed entry points beside it — is reached by
+supplying implementations, which the binary deliberately has no way to do, so a
+journey about it can only be in-process. `honesty.rs` runs one publication and one
+session journey twice — `Git` + `GitHub` against the providers in
+`crates/onevcs-testing` — and holds the two event streams to each other. That
+comparison is what keeps every consumer's suite honest, so a provider that stops
+matching fails here rather than downstream. All three write `ONEVCS_HOME` and
+friends into their own process, which is safe only because `cargo nextest` gives
+each test its own process; `cargo test` would race them.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a

@@ -19,14 +19,22 @@ use onevcs_testing::{FileHost, FileVcs, HostState, VcsState, STATE_VERSION};
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v1-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v1-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v2-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v2-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v1.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v1.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v2.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v2.json");
 
 /// Every optional key of a repository state, as the document spells it.
-const VCS_OPTIONAL: &[&str] = &["identities", "sessions", "session_identities", "preserved"];
+const VCS_OPTIONAL: &[&str] = &[
+    "identities",
+    "sessions",
+    "session_identities",
+    "preserved",
+    "closed_sessions",
+    "policy",
+    "publications",
+];
 /// Every optional key of a host state, as the document spells it.
 const HOST_OPTIONAL: &[&str] = &["changes", "heads", "checks", "check_logs", "merges"];
 
@@ -63,8 +71,8 @@ fn an_empty_state_is_written_as_its_golden_and_omits_every_field_it_does_not_hol
             "{key} holds nothing, so the document must not name it"
         );
     }
-    assert!(VCS_EMPTY.contains(r#""version": 1"#));
-    assert!(HOST_EMPTY.contains(r#""version": 1"#));
+    assert!(VCS_EMPTY.contains(&format!(r#""version": {STATE_VERSION}"#)));
+    assert!(HOST_EMPTY.contains(&format!(r#""version": {STATE_VERSION}"#)));
     // The one field a host always names: it answers `authenticated_user` from it,
     // and a document that omitted it would describe a host that names nobody.
     assert!(HOST_EMPTY.contains(r#""authenticated_user": "onevcs-testing""#));
@@ -133,8 +141,8 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
         );
     }
 
-    // A document that names no version at all is this version: it is the only one
-    // there has ever been, and a scenario written by hand should not have to say so.
+    // A document that names no version at all is the one this build writes: a
+    // scenario written by hand should not have to say which version it is at.
     let path = home.path("terse.json");
     std::fs::write(&path, "{}\n").expect("a written document");
     let terse = FileVcs::create(&path).expect("a document with no version");

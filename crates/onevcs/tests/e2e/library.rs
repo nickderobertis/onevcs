@@ -1,0 +1,520 @@
+//! The typed library surface, driven the way a consumer embedding this crate
+//! drives it.
+//!
+//! `onevcs publish` answers a process with an exit code and a sentence, and the
+//! first consumer to embed this crate parsed the sentence — wrongly, and it
+//! shipped. So the three operations it needs answer values instead:
+//! [`onevcs::publish`] hands back a [`Publication`], [`onevcs::close_session`] the
+//! session it released, and [`EventStream`] the envelopes one session wrote, each
+//! attributed to it.
+//!
+//! Every operation here is proved **twice**: once through the providers next door,
+//! and once on the real `Git` and the substituted `gh` every other journey in this
+//! suite drives. Neither run is weakened for the other — the provided run really
+//! opens a change request on the host it was handed, and the real run really
+//! clones, commits, and pushes.
+//!
+//! Unix and in-process for the reasons `honesty.rs` gives: supplying an
+//! implementation is something only a caller embedding the crate can do.
+
+#![cfg(unix)]
+
+// llmlint: ignore-file[e2e_not_mocked] half of what this module compares is by
+// construction a supplied implementation — that is the seam under test, not a shortcut
+// around it. The other half is real: a real bare origin, a real clone, a real `git push`,
+// a real session record under a real state root, and the same substituted `gh` every
+// journey in this suite uses.
+
+use onevcs::{
+    EventStream, FailureKind, Git, Identity, MergePolicy, Providers, PublishOutcome,
+    PublishRequest, Retention, Session, SessionRequest, SessionToken, Vcs,
+};
+use onevcs_testing::{MemoryHost, MemoryVcs, VcsState};
+
+use crate::honesty::inhabit;
+use crate::registry::configure_rules;
+use crate::world::World;
+
+/// A policy that opens a change request and leaves it open: the shortest path that
+/// still reaches the host, and the one both backends are compared on.
+const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
+
+/// A registered hosted repository whose gate refuses everything, so a publication
+/// that reaches it fails for a reason the journey chose.
+const REFUSING: &str = "{publication: local-direct, approvals: none, gate: {command: [\"false\"]}}";
+
+/// A registered hosted repository, its origin, and the identity the registry
+/// derived for it.
+fn hosted(world: &World, rules: &str) -> (std::path::PathBuf, Identity) {
+    let origin = world.bare_origin("hosted");
+    let checkout = world.clone_of(&origin, "hosted");
+    assert_eq!(
+        onevcs::run_with(
+            &<onevcs::cli::Cli as clap::Parser>::parse_from([
+                "onevcs",
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/hosted.git",
+            ]),
+            Providers::real(),
+        ),
+        0,
+        "the repository registers"
+    );
+    configure_rules(world, format!("version: 1\nrules: []\ndefault: {rules}\n"));
+    (
+        origin,
+        Git.resolve_identity("hosted").expect("the identity"),
+    )
+}
+
+/// A repository side that knows one identity and nothing else.
+fn knowing(identity: &Identity) -> MemoryVcs {
+    MemoryVcs::seeded(VcsState {
+        identities: vec![identity.clone()],
+        ..VcsState::default()
+    })
+}
+
+/// A session over `identity`, opened through whichever repository side is supplied.
+fn open(vcs: &dyn Vcs, branch: &str) -> Session {
+    vcs.open_session(SessionRequest {
+        repo: "hosted".to_owned(),
+        branch: Some(branch.to_owned()),
+        base: Some("main".to_owned()),
+        execution_checkout: None,
+    })
+    .expect("a session over the registered repository")
+}
+
+#[test]
+fn a_publication_through_the_providers_answers_which_ending_it_reached() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+    let session = open(&vcs, "feature/provided");
+
+    let published = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("the publication runs");
+    // The ending is a case, not a sentence: this is exactly what the consumer that
+    // parsed stdout could not do.
+    let url = match &published.outcome {
+        PublishOutcome::ChangeOpen(url) => url.clone(),
+        other => panic!("change-open must open a change request, not {other:?}"),
+    };
+    assert_eq!(published.policy, MergePolicy::ChangeOpen);
+    assert_eq!(published.branch, "feature/provided");
+    assert_eq!(published.session, session.token);
+    // And the change request really is on the host that was handed over.
+    let changes = host.state().changes;
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].url, url);
+    assert_eq!(changes[0].base, "main");
+
+    // Published again, the base already carries it.
+    let again = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("a second publication runs");
+    assert_eq!(again.outcome, PublishOutcome::NothingToPublish);
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "nothing to publish opens no second change request"
+    );
+}
+
+#[test]
+fn a_publication_through_the_providers_reports_a_failure_as_an_outcome() {
+    let world = World::new();
+    inhabit(&world);
+    // A hosted identity on a host this build does not speak for: the request is
+    // well-formed and the seam behind it has no body, which is this repository's
+    // own exit code 70 and never a refusal to start.
+    let elsewhere = Identity {
+        origin: "gitlab.com/acme-corp/widgets".to_owned(),
+        workflow: onevcs::registry::Workflow::Remote,
+        repo_type: onevcs::registry::RepoType::Team,
+        gate: "just check".to_owned(),
+    };
+    let vcs = MemoryVcs::seeded(VcsState {
+        identities: vec![elsewhere],
+        ..VcsState::default()
+    });
+    let host = MemoryHost::new();
+    let session = vcs
+        .open_session(SessionRequest {
+            repo: "widgets".to_owned(),
+            branch: Some("feature/elsewhere".to_owned()),
+            base: Some("main".to_owned()),
+            execution_checkout: None,
+        })
+        .expect("a session");
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &vcs,
+            hosting: &host,
+        },
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs and reports what stopped it");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a host nobody implemented must fail: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::NotImplemented);
+    assert_eq!(kind.exit_code(), 70);
+    assert!(reason.contains("not implemented"), "{reason}");
+    assert!(
+        host.state().changes.is_empty(),
+        "nothing was opened against a host nobody speaks for"
+    );
+}
+
+#[test]
+fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_it() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let mut state = VcsState {
+        identities: vec![identity],
+        ..VcsState::default()
+    };
+    // What the rules file answers the real implementation, stated: a provider has
+    // no rules file to read one out of.
+    state.policy = Some(MergePolicy::ChangeAuto);
+    let vcs = MemoryVcs::seeded(state);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+
+    // More review than the repository asks for is a narrowing, and it is taken.
+    let session = open(&vcs, "feature/narrowed");
+    let published = onevcs::publish(
+        &providers,
+        &session.token,
+        &PublishRequest {
+            policy: Some(MergePolicy::ChangeOpen),
+            title: Some("feat: the narrowed thing".to_owned()),
+        },
+    )
+    .expect("the publication runs");
+    assert_eq!(published.policy, MergePolicy::ChangeOpen);
+    assert!(matches!(
+        published.outcome,
+        PublishOutcome::ChangeOpen { .. }
+    ));
+
+    // Less is a widening, and no implementation may take it.
+    let second = open(&vcs, "feature/widened");
+    let refused = onevcs::publish(
+        &providers,
+        &second.token,
+        &PublishRequest {
+            policy: Some(MergePolicy::LocalDirect),
+            title: None,
+        },
+    )
+    .expect_err("a widening is refused rather than published");
+    assert!(
+        refused.to_string().contains("may narrow but never widen"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/real");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the real thing",
+    );
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    assert_eq!(published.policy, MergePolicy::ChangeOpen);
+    assert_eq!(published.branch, "feature/real");
+    let PublishOutcome::ChangeOpen(url) = &published.outcome else {
+        panic!("change-open must open a change request, not {published:?}");
+    };
+    // The URL the host answered, not one this journey composed.
+    let opened = world.events_of(&session.token.0, "change-opened");
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0]["payload"]["url"], url.to_string());
+}
+
+#[test]
+fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REFUSING);
+    let session = open(&Git, "feature/refused");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the refused thing",
+    );
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a rejected gate is an outcome, not a refusal to start");
+    let PublishOutcome::Failed {
+        kind,
+        reason,
+        retained,
+    } = &published.outcome
+    else {
+        panic!("a gate that exits non-zero must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Gate);
+    assert_eq!(kind.exit_code(), 1);
+    assert!(reason.contains("gate failed"), "{reason}");
+    // The work is the only record of itself, so the caller is told where it is.
+    let Some(Retention::HandedBack(checkout)) = retained else {
+        panic!("the branch is handed back to the execution checkout: {retained:?}");
+    };
+    let branches = world.git(checkout, &["branch", "--list", "feature/refused"]);
+    assert!(
+        branches.contains("feature/refused"),
+        "the checkout it names carries the branch: {branches:?}"
+    );
+}
+
+#[test]
+fn publishing_a_dirty_session_preserves_its_work_on_one_gapless_stream() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/dirty");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the committed thing",
+    );
+    // Left uncommitted on purpose: a dirty tree at publication time is what sends
+    // the branch through `preserve` first.
+    std::fs::write(session.worktree.join("work.txt"), "work\n").expect("work in the tree");
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    assert!(matches!(
+        published.outcome,
+        PublishOutcome::ChangeOpen { .. }
+    ));
+
+    let events = world.events(&session.token.0);
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event["kind"].as_str().expect("a kind"))
+        .collect();
+    assert!(
+        kinds.contains(&"commit-preserved"),
+        "the dirty tree is committed before anything is published: {kinds:?}"
+    );
+    // One writer, one sequence: a consumer detects loss by a gap, and two streams
+    // over one file would repeat a number rather than leave one out.
+    let seqs: Vec<u64> = events
+        .iter()
+        .map(|event| event["seq"].as_u64().expect("a seq"))
+        .collect();
+    assert_eq!(seqs, (1..=events.len() as u64).collect::<Vec<u64>>());
+}
+
+#[test]
+fn closing_a_session_answers_the_session_it_released_on_either_backend() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+
+    // Through the providers.
+    let vcs = knowing(&identity);
+    let provided = open(&vcs, "feature/provided-close");
+    let released = onevcs::close_session(
+        &Providers {
+            vcs: &vcs,
+            hosting: &MemoryHost::new(),
+        },
+        &provided.token,
+    )
+    .expect("the supplied side releases it");
+    assert_eq!(released, provided);
+    assert_eq!(
+        onevcs::session(
+            &Providers {
+                vcs: &vcs,
+                hosting: &MemoryHost::new()
+            },
+            &provided.token
+        )
+        .expect("the record")
+        .lifecycle,
+        onevcs::Lifecycle::Closed
+    );
+
+    // And on the real one, where closing also tears the worktree down.
+    let real = open(&Git, "feature/real-close");
+    let released =
+        onevcs::close_session(&Providers::real(), &real.token).expect("the real side releases it");
+    assert_eq!(released.token, real.token);
+    assert!(
+        !real.worktree.is_dir(),
+        "the worktree goes when the session is closed"
+    );
+    assert_eq!(
+        onevcs::session(&Providers::real(), &real.token)
+            .expect("the record")
+            .lifecycle,
+        onevcs::Lifecycle::Closed
+    );
+}
+
+#[test]
+fn two_concurrent_sessions_each_get_their_own_events() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+
+    // Interleaved on purpose: an orchestrator following several publications at
+    // once is the case this exists for, and a reader that answered from the wrong
+    // file would still look plausible on one session.
+    let first = open(&vcs, "feature/first");
+    let second = open(&vcs, "feature/second");
+    let mut left = EventStream::open(&first.token).expect("the first session's stream");
+    let mut right = EventStream::open(&second.token).expect("the second session's stream");
+    assert_eq!(left.session(), &first.token);
+    assert_eq!(right.session(), &second.token);
+
+    let opened = |stream: &mut EventStream, token: &SessionToken, branch: &str| {
+        let events = stream.read().expect("the events so far");
+        assert_eq!(events.len(), 1, "one session, one opening");
+        assert_eq!(events[0].stream, token.0, "attributed to its own session");
+        assert_eq!(
+            events[0].labels.extra["session"],
+            serde_json::Value::String(token.0.clone())
+        );
+        assert_eq!(events[0].payload["branch"], branch);
+        assert_eq!(events[0].kind, onevcs::EventKind::SessionOpened);
+    };
+    opened(&mut left, &first.token, "feature/first");
+    opened(&mut right, &second.token, "feature/second");
+
+    // Now interleave two publications and a close, and read each stream again: a
+    // cursor hands back only what its own session has written since.
+    onevcs::publish(&providers, &first.token, &PublishRequest::default()).expect("the first lands");
+    onevcs::publish(&providers, &second.token, &PublishRequest::default())
+        .expect("the second lands");
+    onevcs::close_session(&providers, &first.token).expect("the first closes");
+
+    let fresh = left.read().expect("the first session's new events");
+    assert_eq!(
+        fresh
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<onevcs::EventKind>>(),
+        vec![
+            onevcs::EventKind::ChangeOpened,
+            onevcs::EventKind::SessionClosed
+        ]
+    );
+    let theirs = right.read().expect("the second session's new events");
+    assert_eq!(
+        theirs
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<onevcs::EventKind>>(),
+        vec![onevcs::EventKind::ChangeOpened],
+        "the session that was not closed is not told that it was"
+    );
+    for (stream, token) in [(&fresh, &first.token), (&theirs, &second.token)] {
+        for event in stream {
+            assert_eq!(
+                event.stream, token.0,
+                "no event lands against the wrong session"
+            );
+        }
+    }
+    // Each change request went to its own branch, which is the other half of the
+    // attribution: two publications, two changes, in the order they were made.
+    let changes = host.state().changes;
+    assert_eq!(changes.len(), 2);
+    let heads = host.state().heads;
+    assert_eq!(heads[&changes[0].id], "feature/first");
+    assert_eq!(heads[&changes[1].id], "feature/second");
+}
+
+#[test]
+fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let session = open(&Git, "feature/streamed");
+
+    let mut stream = EventStream::open(&session.token).expect("the session's stream");
+    let events = stream.read().expect("the events the real backend wrote");
+    // The real backend fetches its origin before it clones, which a provider with
+    // no origin does not do — so this is the one journey where the two differ.
+    assert_eq!(
+        events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        vec![onevcs::EventKind::Fetch, onevcs::EventKind::SessionOpened]
+    );
+    let opened = &events[1];
+    assert_eq!(opened.source, onevcs::Source::Vcs);
+    assert_eq!(opened.v, 1);
+    assert_eq!(opened.stream, session.token.0);
+    assert_eq!(opened.payload["branch"], "feature/streamed");
+    // A second read of a stream nothing has written to answers nothing rather than
+    // the same events again.
+    assert!(stream.read().expect("no new events").is_empty());
+
+    // A session that has emitted nothing has no stream, and is refused by name.
+    let missing = EventStream::open(&SessionToken("s-nobody".to_owned()))
+        .expect_err("there is no stream for a session nobody opened");
+    assert!(missing.to_string().contains("s-nobody"), "{missing}");
+
+    // And a line that is not an envelope is refused where it is read, naming the
+    // line, rather than handed on as an event with fields nobody wrote.
+    let path = world
+        .home()
+        .join("streams")
+        .join(format!("{}.ndjson", session.token.0));
+    std::fs::write(&path, "{\"v\": 1}\n").expect("a stream to corrupt");
+    let mut reopened = EventStream::open(&session.token).expect("the stream is still there");
+    let refused = reopened
+        .read()
+        .expect_err("a line that is not an envelope is refused");
+    assert!(refused.to_string().contains("line 1"), "{refused}");
+}

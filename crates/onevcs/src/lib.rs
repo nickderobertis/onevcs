@@ -22,6 +22,15 @@
 //! Everything durable lives under one state root (`ONEVCS_HOME`, otherwise
 //! `~/.onevcs`): the registry document, the advisory locks and merge-queue state,
 //! the per-session workspaces, the event streams, and their artifacts.
+//!
+//! # Two surfaces over one decision
+//!
+//! [`run`] is the command line: it answers a process, with an exit code and a line
+//! of prose. A caller embedding this crate wants the decision itself, so the same
+//! operations answer values — [`publish`] hands back a [`Publication`],
+//! [`close_session`] the session it released, [`session`] what the repository side
+//! recorded, and [`EventStream`] the envelopes one session wrote. The command line
+//! is a rendering of those rather than a second path through them.
 
 #![warn(missing_docs)]
 
@@ -57,11 +66,14 @@ pub use host::{
     ChangeId, ChangeRequest, ChangeSpec, Check, GitHub, Hosting, MergeOutcome, RemoteHost, Sha,
 };
 pub use providers::Providers;
+pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention};
 pub use registry::Identity;
 pub use rules::MergePolicy;
 pub use session::{
-    PreservedBranch, Provenance, Recoverable, Scope, Session, SessionRequest, SessionToken,
+    Lifecycle, PreservedBranch, Provenance, Recoverable, Scope, Session, SessionRecord,
+    SessionRequest, SessionToken,
 };
+pub use stream::EventStream;
 pub use vcs::{Git, Vcs};
 
 /// A parsed absolute URL, re-exported so a caller needs no direct dependency on
@@ -85,4 +97,39 @@ pub fn run(cli: &cli::Cli) -> u8 {
 /// by default.
 pub fn run_with(cli: &cli::Cli, providers: Providers<'_>) -> u8 {
     app::run(&cli.command, &providers)
+}
+
+/// Verify a session's work and publish it, returning what the publication did.
+///
+/// The library form of `onevcs publish`, and the reason it exists: a run answers
+/// with an exit code and prose, and a caller that has to branch on *what happened*
+/// can only parse the prose. [`Publication`] is that answer as a value — the policy
+/// it was taken under, whether it merged, opened a change request, queued one, or
+/// had nothing to publish, and the failure and what became of the branch when it
+/// did not land.
+///
+/// It runs through the seam, so a session a supplied [`Vcs`] opened publishes
+/// against a supplied [`Hosting`] with no git, no host, and no process.
+pub fn publish(
+    providers: &Providers<'_>,
+    token: &SessionToken,
+    request: &PublishRequest,
+) -> Result<Publication> {
+    providers.vcs.publish(token, request, providers.hosting)
+}
+
+/// Release a session's worktree and its occupancy lease, keeping its branch.
+///
+/// The library form of `onevcs session close`.
+pub fn close_session(providers: &Providers<'_>, token: &SessionToken) -> Result<Session> {
+    providers.vcs.close_session(token)
+}
+
+/// What the repository side recorded about a session.
+///
+/// The library form of the record every command that takes a token reads: which
+/// repository it belongs to, whether it is still open, and whether its branch
+/// carries an incomplete-step marker.
+pub fn session(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionRecord> {
+    providers.vcs.session(token)
 }

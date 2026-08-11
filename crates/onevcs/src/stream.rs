@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{self, Result};
 use crate::event::{ArtifactId, ArtifactRef, Envelope, EventKind, Labels, Source};
+use crate::session::SessionToken;
 use crate::{home, ids};
 
 /// The envelope schema version this build emits.
@@ -134,6 +135,106 @@ impl Stream {
             .append(true)
             .open(&self.path)?;
         writeln!(file, "{line}")
+    }
+}
+
+/// A cursor over one session's stream, handing back only what is new.
+///
+/// The reading half of `onevcs events`: it resolves the file, refuses a token that
+/// names none, and remembers how far it has read so a second call answers with the
+/// lines appended since the first. Both renderings — the command's bytes and
+/// [`EventStream`]'s values — are this one cursor, so neither can drift from the
+/// other about where a stream lives or when it has been read to its end.
+#[derive(Debug)]
+pub struct Reader {
+    path: PathBuf,
+    read: usize,
+}
+
+impl Reader {
+    /// Open the stream a session token names.
+    pub fn open(token: &str) -> Result<Self> {
+        let path = path_for(token)?;
+        if !path.is_file() {
+            return Err(error::invalid(format!("no event stream for {token:?}")));
+        }
+        Ok(Self { path, read: 0 })
+    }
+
+    /// The lines appended since the last call, in the order they were written.
+    pub fn lines(&mut self) -> Result<Vec<String>> {
+        let raw = std::fs::read_to_string(&self.path).map_err(error::at("read", &self.path))?;
+        let lines: Vec<&str> = raw.lines().collect();
+        let fresh = lines
+            .iter()
+            .skip(self.read)
+            .map(|line| (*line).to_owned())
+            .collect();
+        self.read = lines.len();
+        Ok(fresh)
+    }
+}
+
+/// A reader over one session's event stream, as values rather than as text.
+///
+/// What `onevcs events TOKEN` writes to stdout, handed back typed and attributed:
+/// every [`Envelope`] it yields belongs to the session it was opened for, checked
+/// rather than assumed, so a caller following several publications at once can tell
+/// whose event it is holding. Reading again yields whatever has been appended
+/// since, which is what `--follow` does with a loop around it.
+#[derive(Debug)]
+pub struct EventStream {
+    session: SessionToken,
+    reader: Reader,
+}
+
+impl EventStream {
+    /// Open the stream one session writes.
+    ///
+    /// A session that has emitted nothing has no stream, and is refused by name
+    /// rather than answered with an empty reader that would never say why.
+    pub fn open(session: &SessionToken) -> Result<Self> {
+        Ok(Self {
+            session: session.clone(),
+            reader: Reader::open(&session.0)?,
+        })
+    }
+
+    /// The session this stream belongs to.
+    #[must_use]
+    pub fn session(&self) -> &SessionToken {
+        &self.session
+    }
+
+    /// The events appended since the last read, in order.
+    pub fn read(&mut self) -> Result<Vec<Envelope>> {
+        let mut events = Vec::new();
+        // One-based, and counted across every read, so a refusal names the line of
+        // the file rather than of the batch it happened to arrive in.
+        let mut line_number = self.reader.read;
+        for line in self.reader.lines()? {
+            line_number += 1;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let envelope: Envelope = serde_json::from_str(&line).map_err(|e| {
+                error::invalid(format!(
+                    "line {line_number} of the stream for {:?} is not an event envelope: {e}",
+                    self.session.0
+                ))
+            })?;
+            // The attribution is the point of a typed reader, so it is checked at the
+            // boundary: an envelope naming another stream in this file is a record
+            // nothing can be concluded from, not one to hand on as this session's.
+            if envelope.stream != self.session.0 {
+                return Err(error::invalid(format!(
+                    "line {line_number} of the stream for {:?} carries an event of stream {:?}",
+                    self.session.0, envelope.stream
+                )));
+            }
+            events.push(envelope);
+        }
+        Ok(events)
     }
 }
 

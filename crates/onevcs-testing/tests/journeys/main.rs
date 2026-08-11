@@ -9,6 +9,7 @@
 mod failures;
 mod golden;
 mod host;
+mod publication;
 mod refs;
 mod repository;
 mod round_trip;

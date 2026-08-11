@@ -27,7 +27,7 @@ pub fn run(
     branch: &str,
     hosting: &dyn Hosting,
     stream: &mut Stream,
-) -> Result<publish::Outcome> {
+) -> Result<publish::PublishOutcome> {
     let resolution = store::resolve(registry, repo)?;
     let (file, source_name) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);

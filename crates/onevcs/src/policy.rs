@@ -305,13 +305,22 @@ fn glob(pattern: &str, value: &str) -> bool {
 
 /// Apply a per-run `--policy`, refusing anything that widens the resolved one.
 pub fn narrow(resolved: &Policy, requested: MergePolicy) -> Result<MergePolicy> {
-    if review_rank(requested) < review_rank(resolved.publication) {
+    narrow_publication(resolved.publication, requested)
+}
+
+/// The rule itself, over the one field that decides it.
+///
+/// Separate from [`narrow`] because it is also what [`MergePolicy::narrow`]
+/// answers: a supplied implementation resolves its own publication policy without
+/// a rules file, and must narrow it the same way rather than by a restatement.
+pub fn narrow_publication(resolved: MergePolicy, requested: MergePolicy) -> Result<MergePolicy> {
+    if review_rank(requested) < review_rank(resolved) {
         return Err(Error::Invalid {
             reason: format!(
                 "--policy {} would widen the policy this repository resolves to ({}); a per-run \
                  policy may narrow but never widen",
                 spell(requested),
-                spell(resolved.publication)
+                spell(resolved)
             ),
         });
     }

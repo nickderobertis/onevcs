@@ -51,10 +51,32 @@ onevcs --help
 `--help` is the command surface, and `publish` reserves its own exit codes for a
 gate that failed, a request that was invalid, and a base that moved under it.
 
+## Embed it
+
+A command answers a process: an exit code and a line of prose. A caller embedding
+the crate wants the decision, so the same operations answer values.
+
+```rust,ignore
+let published = onevcs::publish(&providers, &token, &PublishRequest::default())?;
+match published.outcome {
+    PublishOutcome::Merged(sha) => journal.landed(sha),
+    PublishOutcome::ChangeOpen(url) | PublishOutcome::Queued(url) => journal.awaiting(url),
+    PublishOutcome::NothingToPublish => journal.nothing(),
+    PublishOutcome::Failed { kind, reason, retained } => journal.failed(kind, reason, retained),
+}
+```
+
+`close_session` and `session` are the same for the rest of a session's life, and
+`EventStream::open(&token)` reads its events as `Envelope`s, each attributed to
+the session that wrote it — so a caller following several publications at once can
+tell them apart. The command line is a rendering of these rather than a second
+path through them.
+
 ## Test against it, without a real GitHub
 
 Embedding the crate, `run_with(&cli, providers)` takes the two implementations a
-run reaches `Vcs` and `RemoteHost` through; `run` is that with `Git` and GitHub.
+run reaches `Vcs` and `RemoteHost` through; `run` is that with `Git` and GitHub,
+and every entry point above goes through the same seam.
 [`onevcs-testing`](crates/onevcs-testing) ships in-memory and file-backed
 implementations of both, so a consumer's suite drives a real `onevcs` through a
 real journey against a host it seeded:

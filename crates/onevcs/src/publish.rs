@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::{Error, Result};
@@ -20,41 +21,226 @@ use url::Url;
 
 use crate::host::{ChangeRequest, ChangeSpec, Check, Hosting, MergeOutcome, RemoteHost, Sha};
 use crate::rules::{Gate, GateKind, MergePolicy, Policy};
+use crate::session::{Lifecycle, Provenance, SessionToken};
 use crate::store::Resolution;
 use crate::stream::{self, Stream};
 use crate::workspace::{object, Ref};
-use crate::{gate, gh, git, home, ids, lock, policy, provenance, queue};
+use crate::{gate, gh, git, home, ids, lock, policy, provenance, queue, store, vcs, workspace};
 
 /// How many times a base that moved under a publication is re-merged before the
 /// attempt is abandoned. Bounded, because a base advancing on every retry is a
 /// conflict that resolving again will not settle.
 pub const SYNC_ATTEMPTS: usize = 3;
 
-/// What a publication did, and which exit code says so.
-#[derive(Debug, Clone)]
-pub enum Outcome {
+/// What one publication was asked for beyond the session it publishes.
+///
+/// The two options `onevcs publish` takes, and nothing else: everything else about
+/// a publication comes from the session and from the repository's rules.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishRequest {
+    /// A per-run policy. It may narrow the repository's but never widen it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<MergePolicy>,
+    /// An explicit title, which replaces the subject synthesized from the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// What one publication did.
+///
+/// The value `onevcs publish` renders and a caller embedding this crate branches
+/// on. Every ending is a case of [`PublishOutcome`] rather than a sentence to
+/// match on, because the sentence is what a consumer read wrongly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Publication {
+    /// The session that was published.
+    pub session: SessionToken,
+    /// The branch that carried the change.
+    pub branch: String,
+    /// The policy it was published under, after the repository's rules and any
+    /// per-run narrowing have both had their say.
+    pub policy: MergePolicy,
+    /// What happened.
+    pub outcome: PublishOutcome,
+}
+
+/// How a publication ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PublishOutcome {
     /// The change reached its base, at this commit.
     Merged(Sha),
     /// A change request is open, which the policy asked for.
-    Open(Url),
+    ChangeOpen(Url),
     /// The host queued the merge and will land it once its checks pass.
     Queued(Url),
     /// The branch had nothing the base did not already carry.
     NothingToPublish,
+    /// The change did not land, and this is why.
+    ///
+    /// A case rather than an `Err`, in exactly the places the CLI reports a
+    /// non-zero exit rather than a refusal — so the two surfaces cannot disagree
+    /// about which failures are which.
+    Failed {
+        /// Which failure it is, which is what a caller branches on.
+        kind: FailureKind,
+        /// The failure as it reads, which is what the CLI writes to stderr.
+        reason: String,
+        /// What became of the branch. The work is the only record of itself, so
+        /// whether it outlived the session is the first thing a caller asks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retained: Option<Retention>,
+    },
 }
 
-impl Outcome {
+impl PublishOutcome {
     /// How the publication is reported to a human.
+    #[must_use]
     pub fn describe(&self) -> String {
         match self {
-            Outcome::Merged(sha) => format!("merged at {}", sha.0),
-            Outcome::Open(url) => format!("change request open at {url}"),
-            Outcome::Queued(url) => format!("merge queued for {url}"),
-            Outcome::NothingToPublish => {
+            PublishOutcome::Merged(sha) => format!("merged at {}", sha.0),
+            PublishOutcome::ChangeOpen(url) => format!("change request open at {url}"),
+            PublishOutcome::Queued(url) => format!("merge queued for {url}"),
+            PublishOutcome::NothingToPublish => {
                 "nothing to publish: the base already carries this branch's content".to_owned()
             }
+            PublishOutcome::Failed { reason, .. } => reason.clone(),
         }
     }
+}
+
+/// Which failure ended a publication, and therefore which exit code says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureKind {
+    /// A verification gate, or the host's required checks, reported failure.
+    Gate,
+    /// Input was rejected at a trust boundary.
+    Invalid,
+    /// The base moved under the publication and the bounded resolve-and-requeue
+    /// did not converge.
+    SyncConflict,
+    /// The request was well-formed and the seam behind it has no implementation.
+    NotImplemented,
+}
+
+impl FailureKind {
+    /// The exit code the contract fixes for this failure.
+    ///
+    /// The one statement of it: `onevcs publish` reports this, and a caller
+    /// embedding the crate reads the same mapping rather than rediscovering it.
+    #[must_use]
+    pub fn exit_code(self) -> u8 {
+        match self {
+            FailureKind::Gate => 1,
+            FailureKind::Invalid => 2,
+            FailureKind::SyncConflict => 3,
+            FailureKind::NotImplemented => 70,
+        }
+    }
+
+    /// Which failure an error is.
+    pub(crate) fn of(error: &Error) -> Self {
+        match error {
+            Error::GateFailed { .. } => FailureKind::Gate,
+            Error::SyncConflict { .. } => FailureKind::SyncConflict,
+            Error::NotImplemented { .. } => FailureKind::NotImplemented,
+            _ => FailureKind::Invalid,
+        }
+    }
+}
+
+/// What became of a branch whose publication did not land.
+///
+/// The session's clone is disposable, so a branch that is not handed back goes
+/// with it. Which of these happened decides whether there is anything left to
+/// recover, and the CLI says so on stderr for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Retention {
+    /// The branch was handed back to this checkout, which now carries the work.
+    HandedBack(PathBuf),
+    /// This checkout refused the branch, so nothing outside the session carries it.
+    Refused(PathBuf),
+}
+
+/// Publish one session's branch, as the git implementation does it.
+///
+/// The whole of `onevcs publish` behind the interface, which is where it had to
+/// move: it starts from the session record, and a record only this implementation
+/// writes is what made a session opened through the seam unpublishable.
+///
+/// The split between `Err` and [`PublishOutcome::Failed`] is the CLI's own, kept
+/// exactly: a publication that could not *start* — an unknown token, an unreadable
+/// registry, a `--policy` that widens — is a refusal, and one that started and did
+/// not land is an outcome carrying what became of the branch.
+pub fn session(
+    token: &SessionToken,
+    request: &PublishRequest,
+    hosting: &dyn Hosting,
+) -> Result<Publication> {
+    let mut record = workspace::load(&token.0)?;
+    let registry = store::load()?;
+    let resolution = store::resolve(&registry, &record.identity)?;
+    let (file, source) = policy::load(&registry)?;
+    let normalized = store::normalize(&resolution.identity.origin);
+    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
+    let effective = effective_policy(&resolved.policy, request.policy)?;
+
+    let mut stream = Stream::open(&record.token)?;
+    stream.label("identity", &record.identity);
+
+    // On the stream this publication is already writing, deliberately: a second
+    // stream over the same file resumes the same sequence number, and the two would
+    // then emit one `seq` twice — which is exactly the gap a consumer reads as loss.
+    if git::is_dirty(&record.worktree)? {
+        vcs::preserve_into(&record, &mut stream, Provenance::Complete)?;
+    }
+    let change_base = preserved_change_base(&record.base, record.change_base.as_ref());
+    let context = Context {
+        resolution,
+        policy: resolved.policy.clone(),
+        effective,
+        repo: record.clone.clone(),
+        worktree: record.worktree.clone(),
+        branch: record.branch.clone(),
+        base: record.base.clone(),
+        change_base,
+        run_root: record.run_root.clone(),
+        title: request.title.clone(),
+        trailers: Vec::new(),
+        provenance: provenance::from_rules(&file),
+        hosting,
+    };
+    let branch = record.branch.to_string();
+    let outcome = match run(&context, &mut stream) {
+        Ok(outcome) => {
+            record.state = Lifecycle::Closed;
+            workspace::save(&record)?;
+            outcome
+        }
+        Err(error) => {
+            // The branch is the only record of the work, so it is handed back to the
+            // execution checkout whatever refused it — the alternative is a rejected
+            // tree that exists only in a run root about to be reclaimed.
+            let checkout = record.execution_checkout.clone();
+            let retained = match git::copy_branch(&record.clone, &checkout, &record.branch) {
+                Ok(true) => Retention::HandedBack(checkout),
+                _ => Retention::Refused(checkout),
+            };
+            PublishOutcome::Failed {
+                kind: FailureKind::of(&error),
+                reason: error.to_string(),
+                retained: Some(retained),
+            }
+        }
+    };
+    Ok(Publication {
+        session: token.clone(),
+        branch,
+        policy: effective,
+        outcome,
+    })
 }
 
 /// Everything one publication needs to know about itself.
@@ -92,7 +278,7 @@ pub struct Context<'a> {
 }
 
 /// Verify and publish a branch.
-pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<Outcome> {
+pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome> {
     let remote_base = format!("origin/{}", context.change_base);
     if git::has_remote(&context.repo, "origin") {
         // Outside every exclusive section, deliberately.
@@ -111,7 +297,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<Outcome> {
     sync(context, stream, &compared)?;
 
     if git::log_messages(&context.repo, &compared, &context.branch)?.is_empty() {
-        return Ok(Outcome::NothingToPublish);
+        return Ok(PublishOutcome::NothingToPublish);
     }
 
     let (subject, trailers) = describe(context, &compared)?;
@@ -239,7 +425,7 @@ fn publish_locally(
     stream: &mut Stream,
     compared: &str,
     environment: &[(String, String)],
-) -> Result<Outcome> {
+) -> Result<PublishOutcome> {
     let publication = &context.resolution.publication;
     require_publication_checkout_ready(publication, &context.base)?;
     let judged = git::tip(&context.repo, compared);
@@ -263,7 +449,7 @@ fn publish_locally(
         object(json!({"identity": identity, "queue_position": turn.position})),
     );
 
-    let outcome = (|| -> Result<Outcome> {
+    let outcome = (|| -> Result<PublishOutcome> {
         // The base can have advanced while this turn was queued — the writer ahead
         // of it in the queue is the usual reason. The tree that lands is therefore
         // re-synced and re-judged here rather than silently reconciled: what the
@@ -282,9 +468,9 @@ fn publish_locally(
         home::ensure_dir(&scratch_parent)?;
         let scratch = scratch_parent.join("worktree");
         git::worktree_add_detached(&context.repo, &scratch, compared)?;
-        let landed = (|| -> Result<Outcome> {
+        let landed = (|| -> Result<PublishOutcome> {
             let Some(sha) = git::merge_squash(&scratch, &context.branch, &message)? else {
-                return Ok(Outcome::NothingToPublish);
+                return Ok(PublishOutcome::NothingToPublish);
             };
             let pushed = git::push(
                 &scratch,
@@ -305,7 +491,7 @@ fn publish_locally(
                 EventKind::MergeCompleted,
                 object(json!({"identity": identity, "sha": sha, "base": context.base})),
             );
-            Ok(Outcome::Merged(Sha(sha)))
+            Ok(PublishOutcome::Merged(Sha(sha)))
         })();
         git::worktree_remove(&context.repo, &scratch)?;
         let _ = std::fs::remove_dir_all(&scratch_parent);
@@ -323,7 +509,7 @@ fn publish_as_change(
     subject: &str,
     trailers: &[String],
     environment: &[(String, String)],
-) -> Result<Outcome> {
+) -> Result<PublishOutcome> {
     let pushed = git::push(&context.worktree, &context.branch, "origin", environment)?;
     record_push(context, stream, &pushed)?;
     pushed.map_err(|output| Error::GateFailed {
@@ -363,7 +549,7 @@ fn publish_as_change(
     );
 
     if context.effective == MergePolicy::ChangeOpen {
-        return Ok(Outcome::Open(change.url.clone()));
+        return Ok(PublishOutcome::ChangeOpen(change.url.clone()));
     }
 
     // Everything automated is serialized against the identity, so two sessions of
@@ -383,7 +569,7 @@ fn publish_as_change(
         object(json!({"identity": identity})),
     );
 
-    let outcome = (|| -> Result<Outcome> {
+    let outcome = (|| -> Result<PublishOutcome> {
         if matches!(
             context.policy.gate,
             Gate::Kind {
@@ -411,10 +597,10 @@ fn publish_as_change(
                     object(json!({"identity": identity, "sha": sha.0})),
                 );
                 fast_forward_publication(&context.resolution.publication, &context.base)?;
-                Ok(Outcome::Merged(sha))
+                Ok(PublishOutcome::Merged(sha))
             }
-            MergeOutcome::Queued => Ok(Outcome::Queued(change.url.clone())),
-            MergeOutcome::Open => Ok(Outcome::Open(change.url.clone())),
+            MergeOutcome::Queued => Ok(PublishOutcome::Queued(change.url.clone())),
+            MergeOutcome::Open => Ok(PublishOutcome::ChangeOpen(change.url.clone())),
         }
     })();
     drop(turn);
@@ -627,12 +813,7 @@ pub fn effective_policy(resolved: &Policy, requested: Option<MergePolicy>) -> Re
 
 /// The exit code an error reports, as the contract fixes them.
 pub fn exit_code(error: &Error) -> u8 {
-    match error {
-        Error::GateFailed { .. } => 1,
-        Error::SyncConflict { .. } => 3,
-        Error::NotImplemented { .. } => 70,
-        _ => 2,
-    }
+    FailureKind::of(error).exit_code()
 }
 
 /// A session's own record, once publication has decided what it publishes onto.

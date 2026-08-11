@@ -8,8 +8,6 @@
 use std::io::Write;
 use std::path::Path;
 
-use serde_json::json;
-
 use crate::cli::{
     ArtifactCommand, Command, IntegrateArgs, PublishArgs, RecoverArgs, RecoverableArgs,
     RegisterArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
@@ -17,11 +15,12 @@ use crate::cli::{
 };
 use crate::error::{self, Error, Result};
 use crate::providers::Providers;
+use crate::publish::{PublishOutcome, PublishRequest, Retention};
 use crate::registry::{Registry, RepoType, Workflow};
-use crate::session::{Provenance, Scope, SessionRequest, SessionToken};
+use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::{git, integrate, lock, policy, provenance, publish, recover, stream, vcs, workspace};
+use crate::{git, integrate, lock, policy, provenance, publish, recover, stream, workspace};
 
 /// Run one parsed command, returning its exit code.
 pub fn run(command: &Command, providers: &Providers<'_>) -> u8 {
@@ -47,14 +46,14 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::Session { command } => match command {
             SessionCommand::Open(args) => session_open(args, providers),
             SessionCommand::Adopt(args) => session_adopt(args, providers),
-            SessionCommand::Close(args) => session_close(args),
+            SessionCommand::Close(args) => session_close(args, providers),
         },
         Command::Publish(args) => publish_session(args, providers),
         Command::Recover(args) => recover_branch(args, providers),
         Command::Recoverable(args) => recoverable(args, providers),
         Command::Integrate(args) => integrate_branches(args),
         Command::Sync(args) => sync(args),
-        Command::Events(args) => events(&args.token, args.follow),
+        Command::Events(args) => events(&args.token, args.follow, providers),
         Command::Artifact { command } => match command {
             ArtifactCommand::Cat(args) => artifact(&args.id),
         },
@@ -161,19 +160,16 @@ fn session_open(args: &SessionOpenArgs, providers: &Providers<'_>) -> Result<u8>
 }
 
 fn session_adopt(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u8> {
-    let session = providers
-        .vcs
-        .adopt_session(SessionToken(args.token.clone()))?;
+    let token = SessionToken(args.token.clone());
+    let session = providers.vcs.adopt_session(token.clone())?;
     println!(
         "{}",
         serde_json::to_string(&session).map_err(serialization)?
     );
-    let record = workspace::load(&args.token)?;
-    let base = vcs::base_ref(&record.clone, &record.base);
-    let trailers = provenance::configured()?;
-    if provenance::provenance_of(&record.clone, &base, &record.branch, &trailers)?
-        == Provenance::IncompleteStep
-    {
+    // Through the trait, because the record is: the adoption may have just written
+    // the marker, and a session a supplied implementation opened has to answer here
+    // as readily as one this build's git did.
+    if providers.vcs.session(&token)?.provenance == Provenance::IncompleteStep {
         eprintln!(
             "onevcs: this branch carries incomplete-step provenance, so it must pass the \
              merge-path gate through `onevcs recover` before it may be published."
@@ -182,83 +178,53 @@ fn session_adopt(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u
     Ok(0)
 }
 
-fn session_close(args: &SessionTokenArgs) -> Result<u8> {
-    let record = workspace::close(&args.token)?;
-    let mut stream = Stream::open(&record.token)?;
-    stream.emit(
-        crate::event::EventKind::SessionClosed,
-        workspace::object(json!({"token": record.token, "branch": record.branch})),
-    );
-    println!("{} closed", record.token);
+fn session_close(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u8> {
+    let session = crate::close_session(providers, &SessionToken(args.token.clone()))?;
+    println!("{} closed", session.token.0);
     Ok(0)
 }
 
+/// Render one publication the way `onevcs publish` reports it.
+///
+/// The command is this and nothing else now: the publication itself is
+/// [`crate::publish`], so the exit code a user meets and the outcome a caller
+/// embedding the crate branches on are the same decision rendered twice rather
+/// than two paths that could disagree.
 fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> {
-    let mut record = workspace::load(&args.token)?;
-    let registry = store::load()?;
-    let resolution = store::resolve(&registry, &record.identity)?;
-    let (file, source) = policy::load(&registry)?;
-    let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
-    let effective = publish::effective_policy(&resolved.policy, args.policy)?;
-
-    let mut stream = Stream::open(&record.token)?;
-    stream.label("identity", &record.identity);
-
-    if git::is_dirty(&record.worktree)? {
-        // Through the trait: the same call a caller embedding this crate makes.
-        providers
-            .vcs
-            .preserve(&record.session(), Provenance::Complete)?;
-    }
-    let change_base = publish::preserved_change_base(&record.base, record.change_base.as_ref());
-    let context = publish::Context {
-        resolution,
-        policy: resolved.policy.clone(),
-        effective,
-        repo: record.clone.clone(),
-        worktree: record.worktree.clone(),
-        branch: record.branch.clone(),
-        base: record.base.clone(),
-        change_base,
-        run_root: record.run_root.clone(),
-        title: args.title.clone(),
-        trailers: Vec::new(),
-        provenance: provenance::from_rules(&file),
-        hosting: providers.hosting,
+    let publication = crate::publish(
+        providers,
+        &SessionToken(args.token.clone()),
+        &PublishRequest {
+            policy: args.policy,
+            title: args.title.clone(),
+        },
+    )?;
+    let PublishOutcome::Failed {
+        kind,
+        reason,
+        retained,
+    } = &publication.outcome
+    else {
+        println!("{}", publication.outcome.describe());
+        return Ok(0);
     };
-    match publish::run(&context, &mut stream) {
-        Ok(outcome) => {
-            println!("{}", outcome.describe());
-            record.state = workspace::Lifecycle::Closed;
-            workspace::save(&record)?;
-            Ok(0)
-        }
-        Err(error) => {
-            // The branch is the only record of the work, so it is handed back to the
-            // execution checkout whatever refused it — the alternative is a rejected
-            // tree that exists only in a run root about to be reclaimed.
-            let copied =
-                git::copy_branch(&record.clone, &record.execution_checkout, &record.branch)
-                    .unwrap_or(false);
-            eprintln!("onevcs: {error}");
-            if copied {
-                eprintln!(
-                    "onevcs: branch {:?} is preserved in {}",
-                    record.branch,
-                    record.execution_checkout.display()
-                );
-            } else {
-                eprintln!(
-                    "onevcs: warning: {} refused branch {:?}, so nothing outside this session \
-                     carries it",
-                    record.execution_checkout.display(),
-                    record.branch
-                );
-            }
-            Ok(publish::exit_code(&error))
-        }
+    eprintln!("onevcs: {reason}");
+    match retained {
+        Some(Retention::HandedBack(checkout)) => eprintln!(
+            "onevcs: branch {:?} is preserved in {}",
+            publication.branch,
+            checkout.display()
+        ),
+        Some(Retention::Refused(checkout)) => eprintln!(
+            "onevcs: warning: {} refused branch {:?}, so nothing outside this session carries it",
+            checkout.display(),
+            publication.branch
+        ),
+        // A repository side with no checkout to hand a branch back to says nothing
+        // about one, rather than a sentence naming a path it does not have.
+        None => {}
     }
+    Ok(kind.exit_code())
 }
 
 fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
@@ -361,29 +327,32 @@ fn sync(args: &SyncArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn events(token: &str, follow: bool) -> Result<u8> {
-    let path = stream::path_for(token)?;
-    if !path.is_file() {
-        return Err(Error::Invalid {
-            reason: format!("no event stream for {token:?}"),
-        });
-    }
-    let mut written = 0usize;
+fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
+    // The bytes rather than the values [`crate::EventStream`] hands back: a stream
+    // is written by whichever process produced it, and this command is a reader of
+    // one file rather than a validator of it — a line it could not parse is still a
+    // line its reader wants to see.
+    let mut reader = stream::Reader::open(token)?;
+    let session = SessionToken(token.to_owned());
     loop {
-        let raw = std::fs::read_to_string(&path).map_err(error::at("read", &path))?;
-        let lines: Vec<&str> = raw.lines().collect();
         let mut out = std::io::stdout().lock();
-        for line in lines.iter().skip(written) {
-            writeln!(out, "{line}").map_err(error::at("write the event stream to", &path))?;
+        for line in reader.lines()? {
+            writeln!(out, "{line}").map_err(|e| {
+                error::invalid(format!("cannot write the event stream for {token:?}: {e}"))
+            })?;
         }
-        written = lines.len();
+        drop(out);
         if !follow {
             return Ok(0);
         }
         // `--follow` on a session that has already closed would otherwise never
-        // return, and a reader asking to follow finished work wants its tail.
-        if workspace::load(token)
-            .map(|record| record.state == workspace::Lifecycle::Closed)
+        // return, and a reader asking to follow finished work wants its tail. Asked
+        // of the repository side, so a session a supplied implementation opened is
+        // followed to its end rather than to the first question it cannot answer.
+        if providers
+            .vcs
+            .session(&session)
+            .map(|record| record.lifecycle == Lifecycle::Closed)
             .unwrap_or(true)
         {
             return Ok(0);
