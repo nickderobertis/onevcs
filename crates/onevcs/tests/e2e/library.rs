@@ -946,7 +946,6 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
         .join("streams")
         .join(format!("{}.ndjson", session.token.0));
     std::fs::write(&path, "{\"v\": 1}\n").expect("a stream to corrupt");
-    // llmlint: ignore-end[tests_mirror_real_usage]
     let mut reopened = EventStream::open(&session.token).expect("the stream is still there");
     let refused = reopened
         .read()
@@ -957,6 +956,7 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
     // deciding some of the file is not worth reading, which is what a caller
     // following a stream is trusting it not to do.
     std::fs::write(&path, "\n").expect("a stream holding a line no writer left");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let refused = EventStream::open(&session.token)
         .expect("the stream is still there")
         .read()
