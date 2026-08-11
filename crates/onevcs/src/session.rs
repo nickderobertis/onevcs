@@ -63,6 +63,12 @@ pub struct SessionRecord {
     /// The session itself.
     pub session: Session,
     /// The identity key the session belongs to.
+    // llmlint: ignore[invalid_states_unrepresentable] an identity key is a `String`
+    // everywhere this contract spells one — `Recoverable::identity`, `Identity::origin`,
+    // and the registry document's own map key — so a newtype here would disagree with the
+    // types it names and add a public item the contract does not. Every value written here
+    // came out of a registry the implementation resolved against, which is where the key
+    // is normalized and decided.
     pub identity: String,
     /// Where the session is in its life.
     pub lifecycle: Lifecycle,

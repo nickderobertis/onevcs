@@ -56,6 +56,12 @@ pub struct Publication {
     /// The session that was published.
     pub session: SessionToken,
     /// The branch that carried the change.
+    // llmlint: ignore[invalid_states_unrepresentable] this is the session's own branch,
+    // and the contract declares that field verbatim as `pub branch: String` on `Session`;
+    // spelling it as a validated ref here would disagree with the type the contract fixes
+    // and add a public item it does not name. The validated `workspace::Ref` is what the
+    // publication path carries internally, and every value written here is one — it is
+    // `record.branch`, which git's own parser accepted before the session was opened.
     pub branch: String,
     /// The policy it was published under, after the repository's rules and any
     /// per-run narrowing have both had their say.
