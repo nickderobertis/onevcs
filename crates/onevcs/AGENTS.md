@@ -64,10 +64,64 @@ matching fails here rather than downstream. All three write `ONEVCS_HOME` and
 friends into their own process, which is safe only because `cargo nextest` gives
 each test its own process; `cargo test` would race them.
 
+`tests/smoke/` is the exception to "no unit tests" being the whole story: it is a
+second test binary, excluded from `just test` and `just gate` by name, that drives
+both interfaces against **real** git, a real GitHub remote, and the real API. It is
+in-process for the same reason the three modules above are — what it holds is the
+interfaces, and `Vcs::preserve` and every direct `RemoteHost` call are reachable no
+other way. `just smoke-real` runs it. It never skips and never substitutes `gh`: a
+missing credential or a repository whose name does not end in `-smoke` is a loud
+failure, because a smoke that can pass without talking to GitHub proves nothing.
+
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
 builds the crate and runs the contract, boundary, and packaging suites.
+
+## The tier that talks to GitHub
+
+Every other journey here is offline, and the cost of that was measured rather than
+hypothetical: `GitHub::change_checks` asked `gh pr view` for an `isRequired` field
+that command has never returned, and `GitHub::check_log` asked `gh run view --job`
+for a job by a check's *name* when it only ever accepted a job id. Both shipped
+green for every release, because the only thing that had ever read them was a shell
+script written beside them that answered to what they asked.
+
+- **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
+  whose name does not end in `-smoke` is refused before the first mutating call.
+  `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.
+- **A whole run is about a minute and under a hundred API calls** — measured twice
+  on a warm build, 58s and 65s wall clock, three pull requests opened and merged
+  each time. The call count varies with how long the real Actions job takes to
+  settle, because the checks journey polls a job it cannot hurry: 7 REST + 44
+  GraphQL on the faster run, 29 REST + 54 GraphQL on the slower. Take the larger
+  pair as the budget. That is the number to weigh when deciding whether to make
+  `smoke` a required check, and the reason a journey should cover several methods
+  rather than one.
+- **A run is uniquely named** by journey label, process id, and its own scratch
+  directory, so two runs at once cannot collide on a branch or a change request.
+  Cleanup is a `Drop`, so a run that fails half way still removes its branch; what
+  it can leave behind is a merged (or, on a failure between opening and merging,
+  an open) pull request, which is deliberate — that is the evidence it ran.
+- **The scratch repository declares no required check.** `gate: {kind: checks}`
+  waits for checks that *block*, so that path cannot go green there and stays
+  covered by the offline tier; this tier proves `change_checks` and `check_log`
+  themselves against the real workflow the repository carries. Making its check
+  required would need branch protection, which would then also gate every merge
+  this tier depends on.
+- **The honesty comparison has two legs.** `tests/e2e/honesty.rs` is the offline
+  one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
+  real `Git` + real `GitHub`. Both reduce their streams with
+  `tests/e2e/comparison.rs`, so neither can accept a difference the other rejects.
+- **The credential is part of the backend, so ask `gh` only for what you read.**
+  GitHub declines a field a token may not see by failing the whole `gh` call, so a
+  query carrying one unreadable field takes down every caller of it — and only once
+  there is something to refuse, which makes it look intermittent. Two rules follow:
+  each call names the fields its caller reads (`tests/e2e/host.rs` holds it there),
+  and a refusal stays a refusal — reading one as "no checks" is what lets a merge
+  through. Granting the permission is the operator's move, not the parser's.
+  `RELEASE_PLZ_TOKEN` has no `Checks` on the scratch repository and `check_log`
+  wants `Actions: read` behind that; it pushes, opens, and merges there.
 
 ## Everything durable lives under one state root
 

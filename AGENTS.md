@@ -84,12 +84,17 @@ rationale; the mechanics live in the files named. -->
 
 ## Command surface
 
-`just --list` is the index; do not hand-roll equivalents. Three things it does
+`just --list` is the index; do not hand-roll equivalents. Four things it does
 not tell you:
 
 - **`just gate` is the bar, not `just check`.** `check` is the deterministic tier
   and stays offline and credential-free; `gate` adds the diff-scoped llmlint tier,
   and that is what must be green before pushing.
+- **`just smoke-real` is the one tier neither of them runs.** It is real `git`
+  against a real GitHub remote and the real API through the real `gh`, over the
+  scratch repository `nickderobertis/onevcs-smoke`, and it lives in its own test
+  binary (`crates/onevcs/tests/smoke/`) so `offline-tiers` can exclude it by name.
+  It needs `gh` and a credential and refuses loudly without one; it never skips.
 - **The repo-wide verbs delegate to Nx** (`scripts/nx.sh`), which fans the uniform
   target names across the graph. A target's *body* belongs to its project, never
   to a for-each loop here. The `onevcs` project's targets run `--workspace`, so
@@ -108,7 +113,12 @@ not tell you:
   branches auto-delete. Admins may bypass in a break-glass.
 - **All gating checks are required**: `gate`, `cross`, `msrv`, `deny`, `install`,
   `pr-title`, and `llmlint`. `published-smoke.yml` is a schedule, never a PR
-  check, so it cannot be required.
+  check, so it cannot be required. `smoke` is deliberately not on that list: it
+  runs on `pull_request` only and takes `secrets.RELEASE_PLZ_TOKEN` as `GH_TOKEN`,
+  and that token is not allowed to read the scratch repository's checks — so one
+  of its journeys cannot pass, and requiring it would block every pull request on
+  a permission only the operator can grant. Make it required once that permission
+  exists and a run is green.
 - **PRs follow `.github/pull_request_template.md`** — terse **What** and **Why**;
   it becomes the squash body. `.github/CODEOWNERS` routes the review by subtree,
   so a packaging or workflow change is not reviewed as if it were a crate change.
@@ -143,7 +153,9 @@ not tell you:
   keep theirs.
 
 `gh-secrets.json` names the secrets a fork or a fresh clone must provision;
-values live in the secret store, never in the tree.
+values live in the secret store, never in the tree. One GitHub resource outside
+this repository belongs to it: `nickderobertis/onevcs-smoke`, the scratch
+repository the `smoke` job publishes to and the only one it is allowed to touch.
 
 ## Invariants (non-negotiable)
 

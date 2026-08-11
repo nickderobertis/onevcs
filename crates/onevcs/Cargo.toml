@@ -79,3 +79,12 @@ tempfile = { workspace = true }
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
+
+# The real-backend tier: real git against a real remote and the real GitHub API.
+# Its own binary so `just test` and `just gate` can exclude it by name — an
+# ordinary gate stays offline and credential-free — while `just smoke-real` runs
+# it. Excluded by name rather than by `#[ignore]`, so no journey here is ever a
+# skipped test.
+[[test]]
+name = "smoke"
+path = "tests/smoke/main.rs"

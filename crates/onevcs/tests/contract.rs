@@ -1322,3 +1322,76 @@ fn every_file_the_npm_launcher_names_is_in_its_package() {
         "npm/onevcs/package.json names {unresolved:?}, which does not resolve inside npm/onevcs"
     );
 }
+
+#[test]
+fn every_nextest_binary_filter_names_a_test_target_that_exists() {
+    // The justfile decides which tiers run by *naming* Cargo test binaries in
+    // nextest filters — `not binary(smoke)` for the offline tiers, `binary(smoke)`
+    // for `just smoke-real`, `binary(e2e)` for `just test-e2e`. A `[[test]]`
+    // renamed or removed in Cargo.toml leaves both filters matching nothing, and
+    // both failures are silent in the worst way: `just test` would quietly start
+    // needing a GitHub credential, and `just smoke-real` would quietly pass having
+    // run no journey at all. Nothing else reconciles the two files.
+    let justfile = repo_file("justfile");
+    let manifest = repo_file("crates/onevcs/Cargo.toml");
+
+    let mut declared = BTreeSet::new();
+    let mut in_test_target = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_test_target = line == "[[test]]";
+            continue;
+        }
+        if !in_test_target {
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix("name")
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+            .and_then(|rest| rest.trim().strip_prefix('"'))
+            .and_then(|rest| rest.split_once('"'))
+            .map(|(name, _)| name.to_owned())
+        {
+            declared.insert(name);
+        }
+    }
+    assert!(
+        declared.contains("e2e") && declared.contains("smoke"),
+        "the crate's [[test]] targets did not parse: {declared:?}"
+    );
+
+    let named: BTreeSet<String> = justfile
+        .match_indices("binary(")
+        .filter_map(|(at, _)| justfile[at + "binary(".len()..].split_once(')'))
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    assert!(
+        !named.is_empty(),
+        "no nextest binary filter parsed out of the justfile"
+    );
+    for name in &named {
+        assert!(
+            declared.contains(name),
+            "the justfile selects the test binary {name:?}, which crates/onevcs/Cargo.toml does \
+             not declare as a [[test]] target: {declared:?}"
+        );
+    }
+    assert!(
+        named.contains("smoke"),
+        "the tier that needs a GitHub credential is no longer named in any filter, so `just \
+         test` would run it: {named:?}"
+    );
+
+    // And CI calls the recipe rather than restating the filter, so the journeys a
+    // person runs and the ones the pull request runs cannot diverge.
+    let ci = repo_file(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("just smoke-real"),
+        "ci.yml no longer runs the real-backend tier through its one entry point"
+    );
+    assert!(
+        !ci.contains("binary(smoke)"),
+        "ci.yml restates the nextest filter instead of calling `just smoke-real`"
+    );
+}

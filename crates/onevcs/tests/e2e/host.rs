@@ -87,6 +87,60 @@ impl Hosted {
 
 const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
 const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
+/// Published straight into the base behind a gate that is a command, so nothing on
+/// this path asks the host what checks a change request carries.
+const DIRECT: &str = "{publication: change-direct, approvals: none, gate: {command: [\"true\"]}}";
+
+#[test]
+fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_and_merges_one() {
+    // The credential CI runs this crate's real-backend tier under cannot read the
+    // scratch repository's check runs, and GitHub refuses the *whole* `gh pr view`
+    // call over it — so a build that asked for a change request's checks alongside
+    // its head commit and its merge commit could neither open nor merge under a
+    // token allowed to do both. Worse, it only broke once a check had appeared, so
+    // the same credential merged a young change request and failed on an older one.
+    let hosted = Hosted::new(DIRECT);
+    hosted.world.answer_malformed("checks-refused");
+    let token = hosted.change("feature/checkless-host", "feat: add the thing anyway");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the change reached the base with real git, under a host that would not \
+         describe its checks"
+    );
+
+    // And the refusal is still a refusal where the checks are what decides: a host
+    // that would not say what its checks are has not said there are none, and the
+    // publication that waits for them stops rather than merging on the strength of
+    // an answer it never got.
+    let gated = Hosted::new(AUTOMATED);
+    gated.world.answer_malformed("checks-refused");
+    let token = gated.change("feature/gated-checkless", "feat: add the gated thing");
+
+    gated
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "Resource not accessible by personal access token",
+        ));
+    assert_eq!(
+        gated.origin_log().len(),
+        1,
+        "nothing may land while the host will not say what its checks are"
+    );
+}
 
 #[test]
 fn a_reviewed_change_is_pushed_and_left_open() {
@@ -447,4 +501,107 @@ fn a_check_whose_name_cannot_address_a_job_is_recorded_not_run() {
             "could not produce a log for check \"-x\"",
         ))
         .stdout(predicate::str::contains("must not begin with '-'"));
+}
+
+#[test]
+fn a_repository_that_declares_no_required_check_is_not_read_as_having_passed() {
+    // The shape of an unprotected repository: its checks run and pass, and nothing
+    // declares any of them blocking. That is the answer, not a failure to answer —
+    // `gh pr checks --required` says so in as many words — and the publication then
+    // waits for the required check nobody declared rather than merging on the
+    // strength of a check that vouches for nothing.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "advisory",
+        status: "completed",
+        conclusion: Some("success"),
+        required: false,
+    }]);
+    let token = hosted.change("feature/unprotected", "feat: add the unprotected thing");
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("no settled required checks"));
+    assert_eq!(hosted.origin_log().len(), 1);
+
+    // It was still reported, carrying the host's own answer about whether it blocks.
+    let checks = hosted.world.events_of(&token, "change-check");
+    assert_eq!(checks[0]["payload"]["name"], "advisory");
+    assert_eq!(checks[0]["payload"]["required"], false);
+}
+
+#[test]
+fn a_change_request_the_host_reports_no_checks_on_is_bounded_rather_than_merged() {
+    // A change request whose checks have not appeared yet — the first seconds of
+    // every real one. Nothing is asked about which of them block the merge, because
+    // there are none to ask about.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[]);
+    let token = hosted.change("feature/checkless", "feat: add the checkless thing");
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("no settled required checks"));
+    assert_eq!(hosted.origin_log().len(), 1);
+    assert!(hosted.world.events_of(&token, "change-check").is_empty());
+}
+
+#[test]
+fn a_check_whose_job_the_host_will_not_name_is_recorded_rather_than_undoing_the_merge() {
+    // The log of a check is not the check: a host that reports the check and then
+    // will not say where it ran leaves the publication standing and the reason in
+    // the artifact. Four ways it can decline, because they are four different
+    // answers and an operator reading the artifact has to be told which one — in
+    // particular, a host that answered with something that is not a list of checks
+    // has not said this check has no job.
+    for (shape, reason) in [
+        ("no-check-list", "would not say where check"),
+        ("no-job", "reports no job for check"),
+        ("jobless-link", "names no job this build can ask for a log"),
+        ("non-list", "returned a non-list of checks"),
+    ] {
+        let hosted = Hosted::new(AUTOMATED);
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }]);
+        hosted.world.answer_malformed(shape);
+        let token = hosted.change(
+            &format!("feature/{shape}"),
+            &format!("feat: add the {shape} thing"),
+        );
+
+        hosted
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("merged at"));
+
+        let checks = hosted.world.events_of(&token, "change-check");
+        let id = checks[0]["artifacts"][0]["id"]
+            .as_str()
+            .expect("a settled check carries an artifact whatever the host said");
+        hosted
+            .world
+            .onevcs()
+            .args(["artifact", "cat", id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("could not produce a log"))
+            .stdout(predicate::str::contains(reason));
+    }
 }

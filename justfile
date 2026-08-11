@@ -118,19 +118,41 @@ _crate-format:
 _crate-lint:
     @cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 
+# The offline tier: every binary but `smoke`, which needs a GitHub credential and
+# a scratch repository and is run by `just smoke-real` alone. Excluded by name
+# rather than by `#[ignore]`, so no journey in it is ever a skipped test.
+offline-tiers := "not binary(smoke)"
+
 # 95% line coverage is the gate; lower it only with a documented reason in
 # AGENTS.md.
-# The crate's full test suite (contract + e2e) with coverage enforced.
+# The crate's offline test suite (contract + e2e) with coverage enforced.
 _crate-test:
     @cargo llvm-cov nextest --workspace --locked --fail-under-lines 95 \
-      --status-level fail --final-status-level fail \
+      -E '{{offline-tiers}}' --status-level fail --final-status-level fail \
       || { echo "tests failed, or coverage fell below 95% — cover the lines the table above counts as missed" >&2; exit 1; }
 
 # Coverage instrumentation is measured on Linux only, so the cross-platform CI
 # legs run the same suite through this instead of `test`.
-# Full test suite without coverage instrumentation.
+# The offline suite without coverage instrumentation.
 test-quick:
-    @cargo nextest run --workspace --locked --status-level fail
+    @cargo nextest run --workspace --locked -E '{{offline-tiers}}' --status-level fail
+
+# Outside `check` and `gate` on purpose: those stay offline and credential-free.
+# CI's `smoke` job calls this same recipe, so the journeys are defined once — in
+# the test binary — rather than reimplemented as workflow steps.
+#
+# It needs `gh` and a credential (`gh auth login`, or GH_TOKEN). With neither it
+# fails and names what is missing; it never skips and never falls back to a fake.
+# Set ONEVCS_SMOKE_REPO to publish somewhere other than the default scratch
+# repository; which names it will accept is the tier's own rule, and the tier says
+# so when it refuses one (`tests/smoke/scratch.rs`). `--no-capture`, because its whole
+# value is the evidence it prints, and `--no-fail-fast` because a run costs minutes
+# and a real credential: stopping at the first failure hides how the other journeys
+# fared under the same one, which is the question this tier is asked.
+# Drive both interfaces against real git, a real remote, and the real GitHub API.
+smoke-real:
+    @cargo nextest run --workspace --locked -E 'binary(smoke)' --no-capture --no-fail-fast \
+      --status-level all
 
 # Drives the compiled binary as a subprocess — never an in-process `main()`.
 # The end-to-end binary journeys in isolation (also run by `test`/`check`).

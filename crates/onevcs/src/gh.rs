@@ -1,11 +1,16 @@
 //! Driving GitHub through the `gh` CLI.
 //!
 //! This is the one boundary an offline gate cannot exercise for free, so it is kept
-//! narrow and behind one seam: every call goes through [`invoke`], and the program
-//! it runs is `ONEVCS_GH` when that names one. A journey therefore fakes GitHub's
-//! *decisioning* — which change requests exist, what its checks say, whether a
-//! merge is allowed — while the merge itself is performed with real git against a
-//! real origin. Nothing about the repository side is simulated.
+//! narrow and behind one seam: every call goes through [`invoke`] or [`attempt`],
+//! and the program either of them runs is `ONEVCS_GH` when that names one. An
+//! offline journey therefore fakes GitHub's *decisioning* — which change requests
+//! exist, what its checks say, whether a merge is allowed — while the merge itself
+//! is performed with real git against a real origin. Nothing about the repository
+//! side is simulated.
+//!
+//! `ONEVCS_GH` is what `tests/smoke/` deliberately never sets: there the program
+//! that answers as `gh` is `gh`, which is the only way this module's own reading of
+//! what `gh` prints can be wrong in a way a test can see.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -34,25 +39,58 @@ pub fn program() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("gh"))
 }
 
-/// Run one `gh` invocation and return its standard output.
-pub fn invoke(args: &[&str]) -> Result<String> {
+/// What one `gh` invocation wrote, and how it ended.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    /// The status it exited with, or `None` where a signal ended it — the shape
+    /// [`std::process::ExitStatus::code`] answers in, kept rather than flattened
+    /// into a status no process ever exits with.
+    pub code: Option<i32>,
+    /// Standard output.
+    pub stdout: String,
+    /// Standard error.
+    pub stderr: String,
+}
+
+impl Answer {
+    /// The most specific thing it wrote, for a message a human reads.
+    pub fn detail(&self) -> String {
+        if self.stderr.trim().is_empty() {
+            self.stdout.trim().to_owned()
+        } else {
+            self.stderr.trim().to_owned()
+        }
+    }
+}
+
+/// Run one `gh` invocation and return what it wrote, whatever its status.
+///
+/// [`invoke`] is this with a non-zero status turned into a refusal, which is right
+/// for every call whose answer is only the answer. `gh pr checks` is the exception
+/// this exists for: it prints its rollup *and* reports a non-zero status while a
+/// check it just reported has not settled, and reading that as a failure would make
+/// every unsettled check unreadable.
+pub fn attempt(args: &[&str]) -> Result<Answer> {
     let output = Command::new(program())
         .args(args)
         .stdin(Stdio::null())
         .output()
         .map_err(error::at("run", &program()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    if output.status.success() {
-        return Ok(stdout);
+    Ok(Answer {
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+/// Run one `gh` invocation and return its standard output.
+pub fn invoke(args: &[&str]) -> Result<String> {
+    let answer = attempt(args)?;
+    if answer.code == Some(0) {
+        return Ok(answer.stdout);
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let detail = if stderr.trim().is_empty() {
-        stdout.trim().to_owned()
-    } else {
-        stderr.trim().to_owned()
-    };
     Err(Error::Invalid {
-        reason: format!("gh {} failed: {detail}", args.join(" ")),
+        reason: format!("gh {} failed: {}", args.join(" "), answer.detail()),
     })
 }
 
