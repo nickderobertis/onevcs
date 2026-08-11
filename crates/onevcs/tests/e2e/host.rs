@@ -506,12 +506,15 @@ fn a_change_request_the_host_reports_no_checks_on_is_bounded_rather_than_merged(
 fn a_check_whose_job_the_host_will_not_name_is_recorded_rather_than_undoing_the_merge() {
     // The log of a check is not the check: a host that reports the check and then
     // will not say where it ran leaves the publication standing and the reason in
-    // the artifact. Three ways it can decline, because they are three different
-    // answers and an operator reading the artifact has to be told which one.
+    // the artifact. Four ways it can decline, because they are four different
+    // answers and an operator reading the artifact has to be told which one — in
+    // particular, a host that answered with something that is not a list of checks
+    // has not said this check has no job.
     for (shape, reason) in [
         ("no-check-list", "would not say where check"),
         ("no-job", "reports no job for check"),
         ("jobless-link", "names no job this build can ask for a log"),
+        ("non-list", "returned a non-list of checks"),
     ] {
         let hosted = Hosted::new(AUTOMATED);
         hosted.world.host_checks(&[Check {

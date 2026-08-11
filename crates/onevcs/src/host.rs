@@ -309,10 +309,19 @@ impl GitHub {
             )));
         }
         let value = gh::json(&answer.stdout)?;
-        let link = value
-            .as_array()
-            .into_iter()
-            .flatten()
+        // Rejected here rather than searched through: a host that answered with
+        // something other than a list of checks has not said this check has no job,
+        // and reporting it as though it had would put the wrong reason in the
+        // artifact an operator reads to find out why there is no log.
+        let entries = value.as_array().ok_or_else(|| {
+            invalid(format!(
+                "gh pr checks returned a non-list of checks on {}, so where check {name:?} ran \
+                 cannot be read from it: {value}",
+                cr.url
+            ))
+        })?;
+        let link = entries
+            .iter()
             .find(|entry| entry.get("name").and_then(|value| value.as_str()) == Some(name))
             .and_then(|entry| entry.get("link"))
             .and_then(|value| value.as_str())

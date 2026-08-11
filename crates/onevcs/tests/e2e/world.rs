@@ -266,8 +266,9 @@ impl World {
     ///
     /// Three are about the second call a check's log takes — where the job that ran
     /// it is: `no-check-list` refuses to list the checks at all, `no-job` reports
-    /// the check in the rollup and then lists no job for it, and `jobless-link`
-    /// names a details URL that is not a job's.
+    /// the check in the rollup and then lists no job for it, `jobless-link` names a
+    /// details URL that is not a job's, and `non-list` answers with JSON that is not
+    /// a list of checks at all.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -502,6 +503,11 @@ case "$subcommand" in
         jobless-link)
           printf '[{"name":"%s","state":"COMPLETED","link":"https://github.com/%s/actions/runs/1"}]\n' \
             "$(awk -F'|' 'NF { print $1; exit }' "$CHECKS")" "$repo"
+          exit 0 ;;
+        non-list)
+          # Well-formed JSON that is not a list of checks: an answer nothing can be
+          # searched for a job, as distinct from one that lists no job.
+          printf '{"checks":[]}\n'
           exit 0 ;;
       esac
     fi
