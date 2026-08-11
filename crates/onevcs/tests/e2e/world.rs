@@ -264,7 +264,7 @@ impl World {
     /// whether it is open or merged, and `no-url` / `url-names-no-change` print
     /// something other than a change request's URL when one is opened.
     ///
-    /// Three are about the second call a check's log takes — where the job that ran
+    /// Four are about the second call a check's log takes — where the job that ran
     /// it is: `no-check-list` refuses to list the checks at all, `no-job` reports
     /// the check in the rollup and then lists no job for it, `jobless-link` names a
     /// details URL that is not a job's, and `non-list` answers with JSON that is not
