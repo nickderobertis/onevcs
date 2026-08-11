@@ -113,11 +113,12 @@ not tell you:
   branches auto-delete. Admins may bypass in a break-glass.
 - **All gating checks are required**: `gate`, `cross`, `msrv`, `deny`, `install`,
   `pr-title`, and `llmlint`. `published-smoke.yml` is a schedule, never a PR
-  check, so it cannot be required. `smoke` is deliberately not on that list yet:
-  it runs on `pull_request` only and takes `secrets.RELEASE_PLZ_TOKEN` as
-  `GH_TOKEN`, and requiring a check nobody has watched reach its scratch
-  repository would block every pull request on a credential question. Make it
-  required once a run has proved that token gets there.
+  check, so it cannot be required. `smoke` is deliberately not on that list: it
+  runs on `pull_request` only and takes `secrets.RELEASE_PLZ_TOKEN` as `GH_TOKEN`,
+  and that token is not allowed to read the scratch repository's checks — so one
+  of its journeys cannot pass, and requiring it would block every pull request on
+  a permission only the operator can grant. Make it required once that permission
+  exists and a run is green.
 - **PRs follow `.github/pull_request_template.md`** — terse **What** and **Why**;
   it becomes the squash body. `.github/CODEOWNERS` routes the review by subtree,
   so a packaging or workflow change is not reviewed as if it were a crate change.
