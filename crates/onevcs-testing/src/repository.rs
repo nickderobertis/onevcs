@@ -373,7 +373,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             }
 
             let (outcome, emissions) = if policy == MergePolicy::LocalDirect {
-                land_locally(&identity, &session, token)
+                record_local_landing(&identity, &session, token)
             } else {
                 match slug(&identity) {
                     Some(slug) => match publish_as_change(
@@ -450,12 +450,12 @@ fn slug(identity: &str) -> Option<String> {
     Some(format!("{owner}/{name}"))
 }
 
-/// Record a `local-direct` landing.
+/// Record that a `local-direct` publication landed — record, and nothing more.
 ///
-/// Entirely repository-side work — a squash built detached and pushed — which this
-/// provider does not perform and does not claim: the one event is the completion,
-/// which is the decision it did make.
-fn land_locally(
+/// Landing one is entirely repository-side work, a squash built detached and
+/// pushed, which this provider does not perform and must not be named as if it
+/// did. What it does is decide the outcome and emit the completion that says so.
+fn record_local_landing(
     identity: &str,
     session: &Session,
     token: &SessionToken,

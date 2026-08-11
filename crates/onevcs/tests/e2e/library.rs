@@ -935,7 +935,7 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
     // And a line that is not an envelope is refused where it is read, naming the
     // line, rather than handed on as an event with fields nobody wrote.
     //
-    // llmlint: ignore[tests_mirror_real_usage] the file *is* the input under test. A
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test. A
     // stream that is not what a well-behaved producer wrote is what a torn write or a
     // damaged disk leaves, and no public interface of this crate can produce one — a
     // writer only ever appends whole envelopes. Manufacturing it any other way would be
@@ -946,6 +946,7 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
         .join("streams")
         .join(format!("{}.ndjson", session.token.0));
     std::fs::write(&path, "{\"v\": 1}\n").expect("a stream to corrupt");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let mut reopened = EventStream::open(&session.token).expect("the stream is still there");
     let refused = reopened
         .read()

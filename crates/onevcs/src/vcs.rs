@@ -125,7 +125,7 @@ impl Vcs for Git {
         request: &PublishRequest,
         hosting: &dyn Hosting,
     ) -> Result<Publication> {
-        publish::session(token, request, hosting)
+        publish::run_for_session(token, request, hosting)
     }
 
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>> {

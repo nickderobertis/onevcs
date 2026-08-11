@@ -246,7 +246,7 @@ pub enum Retention {
 /// exactly: a publication that could not *start* — an unknown token, an unreadable
 /// registry, a `--policy` that widens — is a refusal, and one that started and did
 /// not land is an outcome carrying what became of the branch.
-pub fn session(
+pub fn run_for_session(
     token: &SessionToken,
     request: &PublishRequest,
     hosting: &dyn Hosting,
