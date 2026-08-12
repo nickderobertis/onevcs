@@ -1,0 +1,12 @@
+name: Set up just
+description: Install a pinned just from crates.io, independently of GitHub release downloads
+
+runs:
+  using: composite
+  steps:
+    - name: Install just from crates.io
+      shell: bash
+      run: cargo install just --locked --version 1.42.4
+    - name: Verify just is available
+      shell: bash
+      run: just --version

@@ -119,7 +119,8 @@ jobs:
           node-version: "22"
       - uses: taiki-e/install-action@v2
         with:
-          tool: just,nextest,cargo-llvm-cov
+          tool: nextest,cargo-llvm-cov
+      - uses: ./.github/actions/setup-just
       - run: just bootstrap
       - run: just check
 
