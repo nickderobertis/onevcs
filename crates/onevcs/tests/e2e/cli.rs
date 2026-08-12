@@ -47,6 +47,10 @@ fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
         ),
         ("session adopt", vec!["session", "adopt", "s-7f3a"]),
         ("session close", vec!["session", "close", "s-7f3a"]),
+        (
+            "session holders",
+            vec!["session", "holders", "github.com/owner/repo", "--json"],
+        ),
         ("publish", vec!["publish", "s-7f3a"]),
         (
             "publish",
@@ -101,6 +105,7 @@ fn every_command_offers_its_own_help() {
         vec!["session", "open"],
         vec!["session", "adopt"],
         vec!["session", "close"],
+        vec!["session", "holders"],
         vec!["publish"],
         vec!["recover"],
         vec!["recoverable"],

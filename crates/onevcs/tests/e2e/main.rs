@@ -23,6 +23,8 @@ mod edges;
 // is a test backend by construction — the subject, not a shortcut around it. Its own
 // header carries the reason in full.
 #[cfg(unix)]
+mod holders;
+#[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod honesty;
 #[cfg(unix)]

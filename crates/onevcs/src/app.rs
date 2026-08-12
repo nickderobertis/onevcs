@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::cli::{
     ArtifactCommand, Command, IntegrateArgs, PublishArgs, RecoverArgs, RecoverableArgs,
     RegisterArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
-    SessionOpenArgs, SessionTokenArgs, SyncArgs,
+    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
 use crate::providers::Providers;
@@ -47,6 +47,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             SessionCommand::Open(args) => session_open(args, providers),
             SessionCommand::Adopt(args) => session_adopt(args, providers),
             SessionCommand::Close(args) => session_close(args, providers),
+            SessionCommand::Holders(args) => session_holders(args),
         },
         Command::Publish(args) => publish_session(args, providers),
         Command::Recover(args) => recover_branch(args, providers),
@@ -181,6 +182,38 @@ fn session_adopt(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u
 fn session_close(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u8> {
     let session = crate::close_session(providers, &SessionToken(args.token.clone()))?;
     println!("{} closed", session.token.0);
+    Ok(0)
+}
+
+fn session_holders(args: &SessionHoldersArgs) -> Result<u8> {
+    let registry = store::load()?;
+    let resolution = store::resolve(&registry, &args.repo)?;
+    let holders: Vec<_> = workspace::all()?
+        .into_iter()
+        .filter(|record| record.identity == resolution.key)
+        .map(workspace::Holder::from)
+        .collect();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&holders).map_err(serialization)?
+        );
+    } else {
+        for holder in holders {
+            println!(
+                "{}\t{}\t{}\tpid={}\t{}\t{}",
+                holder.token,
+                match holder.state {
+                    Lifecycle::Open => "open",
+                    Lifecycle::Closed => "closed",
+                },
+                holder.liveness.as_str(),
+                holder.owner_pid,
+                holder.branch,
+                holder.worktree.display()
+            );
+        }
+    }
     Ok(0)
 }
 

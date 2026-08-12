@@ -44,6 +44,12 @@ url = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
 # A journey that supplies implementations runs in-process, because the binary
 # deliberately has no way to select a backend — so there is no subprocess whose
 # stderr could be captured, and asserting what a user is told means redirecting

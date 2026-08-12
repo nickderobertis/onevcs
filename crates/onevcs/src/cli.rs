@@ -97,6 +97,8 @@ pub enum SessionCommand {
     Adopt(SessionTokenArgs),
     /// Release a session's worktree and its occupancy lease.
     Close(SessionTokenArgs),
+    /// List every session recorded for a repository.
+    Holders(SessionHoldersArgs),
 }
 
 /// Arguments for `onevcs session open`.
@@ -120,6 +122,16 @@ pub struct SessionOpenArgs {
 pub struct SessionTokenArgs {
     /// The token `onevcs session open` printed.
     pub token: String,
+}
+
+/// Arguments for `onevcs session holders`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct SessionHoldersArgs {
+    /// An identity key, a registered alias, an origin URL, or a path.
+    pub repo: String,
+    /// Report the holders as a JSON array.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs publish`.

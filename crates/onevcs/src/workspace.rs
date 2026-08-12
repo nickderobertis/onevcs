@@ -180,6 +180,71 @@ pub struct Record {
     pub owner_pid: u32,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct Holder {
+    pub(crate) token: String,
+    pub(crate) identity: String,
+    pub(crate) branch: String,
+    pub(crate) worktree: PathBuf,
+    pub(crate) owner_pid: u32,
+    pub(crate) state: Lifecycle,
+    pub(crate) liveness: Liveness,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Liveness {
+    Live,
+    Stale,
+}
+
+impl Liveness {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Stale => "stale",
+        }
+    }
+}
+
+impl From<Record> for Holder {
+    fn from(record: Record) -> Self {
+        let liveness = if process_exists(record.owner_pid) {
+            Liveness::Live
+        } else {
+            Liveness::Stale
+        };
+        Self {
+            token: record.token.to_string(),
+            identity: record.identity,
+            branch: record.branch.to_string(),
+            worktree: record.worktree,
+            owner_pid: record.owner_pid,
+            state: record.state,
+            liveness,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED as i32);
+    }
+    unsafe { CloseHandle(handle) };
+    true
+}
+
 impl Record {
     /// The session as the contract's [`Session`] type spells it.
     pub fn session(&self) -> Session {
