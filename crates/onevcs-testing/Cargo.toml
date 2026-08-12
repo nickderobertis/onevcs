@@ -4,7 +4,7 @@ name = "onevcs-testing"
 # crate beside it. Its own version, because it is its own deliverable: a consumer
 # pins it in `dev-dependencies` and nothing about a test provider belongs in a
 # release binary.
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -25,7 +25,7 @@ path = "src/lib.rs"
 # The interfaces these implement, and the types their states are made of. The
 # version requirement is what `cargo publish` uploads — a bare path resolves to
 # nothing on crates.io — and release-plz keeps it in step with the sibling.
-onevcs = { version = "0.2.1", path = "../onevcs" }
+onevcs = { version = "0.2.2", path = "../onevcs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A change request's head commit and a preserved commit both need a hash-shaped
