@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.1...onevcs-testing-v0.1.2) - 2026-08-12
+
+### Fixed
+
+- read check state through an API a fine-grained token can reach ([#15](https://github.com/nickderobertis/onevcs/pull/15))
+
 ## [0.1.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.0...onevcs-testing-v0.1.1) - 2026-08-11
 
 ### Added
