@@ -97,7 +97,9 @@ script written beside them that answered to what they asked.
   GraphQL on the faster run, 29 REST + 54 GraphQL on the slower. Take the larger
   pair as the budget. That is the number to weigh when deciding whether to make
   `smoke` a required check, and the reason a journey should cover several methods
-  rather than one.
+  rather than one. The checks journey then reads the same change request a second
+  way, through the Actions API — a handful more REST calls, and the only way that
+  path is proved from a machine whose credential would always take the other one.
 - **A run is uniquely named** by journey label, process id, and its own scratch
   directory, so two runs at once cannot collide on a branch or a change request.
   Cleanup is a `Drop`, so a run that fails half way still removes its branch; what
