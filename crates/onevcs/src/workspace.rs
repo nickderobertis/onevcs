@@ -578,6 +578,14 @@ pub fn close(token: &str) -> Result<Record> {
             git::worktree_remove(&record.clone, &record.worktree)?;
         }
     }
+    // Publish the terminator before making `Closed` observable. An event follower
+    // queries state before its final drain; reversing these writes lets it observe
+    // closure and drain the stream before the closing event exists.
+    let mut stream = Stream::open(token)?;
+    stream.emit(
+        EventKind::SessionClosed,
+        object(json!({"token": record.token, "branch": record.branch})),
+    );
     record.state = Lifecycle::Closed;
     save(&record)?;
     drop(lease);

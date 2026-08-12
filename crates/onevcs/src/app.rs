@@ -378,6 +378,16 @@ fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
     let mut reader = stream::Reader::open(token)?;
     let session = SessionToken(token.to_owned());
     loop {
+        // Ask first, then drain. Closing providers append `session-closed` before
+        // publishing the closed lifecycle, so once closure is visible this read is
+        // guaranteed to include the terminator. Reading first leaves a race in
+        // which close happens between the drain and the state query.
+        let closed = follow
+            && providers
+                .vcs
+                .session(&session)
+                .map(|record| record.lifecycle == Lifecycle::Closed)
+                .unwrap_or(true);
         let mut out = std::io::stdout().lock();
         for line in reader.lines()? {
             writeln!(out, "{line}").map_err(|e| {
@@ -385,21 +395,13 @@ fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
             })?;
         }
         drop(out);
-        if !follow {
+        if !follow || closed {
             return Ok(0);
         }
         // `--follow` on a session that has already closed would otherwise never
         // return, and a reader asking to follow finished work wants its tail. Asked
         // of the repository side, so a session a supplied implementation opened is
         // followed to its end rather than to the first question it cannot answer.
-        if providers
-            .vcs
-            .session(&session)
-            .map(|record| record.lifecycle == Lifecycle::Closed)
-            .unwrap_or(true)
-        {
-            return Ok(0);
-        }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
