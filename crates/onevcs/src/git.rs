@@ -841,14 +841,18 @@ mod windows_tests {
 
     fn configure_repository(repo: &Path) {
         checked(&["init", "-q", "-b", "main"], Some(repo)).expect("git initializes");
+        configure_identity(repo);
+        checked(&["commit", "--allow-empty", "-q", "-m", "seed"], Some(repo))
+            .expect("a seed commit");
+    }
+
+    fn configure_identity(repo: &Path) {
         checked(&["config", "user.name", "Journey"], Some(repo)).expect("a user name");
         checked(
             &["config", "user.email", "journey@example.invalid"],
             Some(repo),
         )
         .expect("a user email");
-        checked(&["commit", "--allow-empty", "-q", "-m", "seed"], Some(repo))
-            .expect("a seed commit");
     }
 
     #[test]
@@ -874,6 +878,7 @@ mod windows_tests {
         let clone = root.join("clone");
         clone_sharing(&source, &clone, &source.to_string_lossy(), "main")
             .expect("canonical source and clone paths reach git");
+        configure_identity(&clone);
         fetch(&clone, "origin").expect("a canonical local origin reaches git");
         assert_eq!(
             hooks_dir(&clone).expect("the carried hooks path"),
