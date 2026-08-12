@@ -140,6 +140,15 @@ script written beside them that answered to what they asked.
   `ONEVCS_CHECK_SOURCE` narrows the choice for an operator who already knows what
   their token can read, which is also how `tests/smoke/checks.rs` proves the Actions
   path from a machine whose `gh auth` would otherwise never take it.
+- **Which endpoints that path may reach is an assertion, not a description.** The
+  claim is that `Actions: Read` suffices, and that claim is exactly the claim that
+  every call is one such a token may make — which no answer can show, because a
+  developer's own credential reads the rollup happily and every stand-in answers
+  whatever it is asked. `CHECK_ENDPOINTS` in `tests/e2e/host.rs` is the list, and
+  the journey beside it drives a whole publication and asserts over the calls the
+  substituted host recorded: the set of `gh api` paths reached is exactly that list,
+  and no call names `statusCheckRollup`, `pr checks`, or `run view`. Add an endpoint
+  to the read and add it there.
 
 ## Everything durable lives under one state root
 

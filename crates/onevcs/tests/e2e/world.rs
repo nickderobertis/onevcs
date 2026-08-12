@@ -306,6 +306,22 @@ impl World {
         std::fs::write(self.path("gh-state/no-logs"), "").expect("a host that keeps its logs");
     }
 
+    /// Every call the substituted host has been asked to make, in order.
+    ///
+    /// What a journey about a credential's *reach* asserts over. Whether a build
+    /// can answer under a token that may not resolve a check run is decided by
+    /// which endpoints it asks for, and an answer cannot show that: this world
+    /// replies to calls the real host would refuse.
+    pub fn host_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("gh-state/gh-calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|call| !call.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// Every event a session's stream carries, read the way a consumer reads it.
     pub fn events(&self, token: &str) -> Vec<serde_json::Value> {
         let output = self
@@ -387,6 +403,14 @@ set -euo pipefail
 
 STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
 mkdir -p "$STATE"
+
+# Every call this host is asked to make, one line each, in order. A journey about
+# what a *credential* can reach has to assert over this rather than over the
+# answer: a stand-in that replies is indistinguishable from one that was allowed
+# to be asked, so which endpoints a path touched is readable nowhere else. An
+# argument's own newlines are folded into spaces so one call stays one line.
+{ printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+
 ORIGIN="$(cat "$STATE/origin")"
 CHECKS="$STATE/checks.rows"
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"

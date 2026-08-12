@@ -213,6 +213,21 @@ fn checks_read_through_the_actions_api_gate_a_merge_when_the_rollup_is_refused()
         .assert()
         .success()
         .stdout(predicate::str::contains("the host log for check gate"));
+
+    // Both answers came from the Actions endpoints, and not from a rollup that this
+    // world refused every time it was asked. Asserted over the calls, because an
+    // answer arriving proves only that something answered.
+    let calls = hosted.world.host_calls();
+    for wanted in CHECK_ENDPOINTS {
+        assert!(
+            calls
+                .iter()
+                .filter_map(|call| call.strip_prefix("api "))
+                .filter_map(|rest| rest.split_whitespace().next())
+                .any(|path| endpoint(path) == wanted),
+            "the fallback reads {wanted}, and nothing asked for it: {calls:?}"
+        );
+    }
 }
 
 #[test]
@@ -257,6 +272,134 @@ fn the_actions_source_is_refused_rather_than_read_as_nothing_blocking() {
             "nothing may land while {shape} leaves what its checks say unknown"
         );
     }
+}
+
+/// Every endpoint reading a change request's check state through GitHub Actions is
+/// allowed to reach, written the way GitHub's own reference writes it.
+///
+/// The list is the claim, so it is checked in rather than described: the reason a
+/// fine-grained personal access token can answer `change_checks` and `check_log` is
+/// that every call they issue is one such a token may make — the three Actions
+/// endpoints under `Actions: Read`, and the repository's rules, which needs no
+/// permission beyond the repository access every fine-grained token carries. Not one
+/// of them resolves a check run, which is the permission that does not exist.
+const CHECK_ENDPOINTS: [&str; 4] = [
+    "repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+    "repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+    "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=100",
+    "repos/{owner}/{repo}/rules/branches/{branch}",
+];
+
+/// One `gh api` path with what varies between repositories, commits, and runs
+/// written as the reference writes it, so the assertion names an endpoint rather
+/// than one call to it.
+fn endpoint(path: &str) -> String {
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let mut shaped: Vec<String> = Vec::new();
+    let mut previous = "";
+    for segment in route.split('/') {
+        shaped.push(match segment {
+            "acme-corp" => "{owner}".to_owned(),
+            "hosted" => "{repo}".to_owned(),
+            _ if previous == "branches" => "{branch}".to_owned(),
+            _ if previous == "runs" && digits(segment) => "{run_id}".to_owned(),
+            _ if previous == "jobs" && digits(segment) => "{job_id}".to_owned(),
+            _ => segment.to_owned(),
+        });
+        previous = segment;
+    }
+    let route = shaped.join("/");
+    if query.is_empty() {
+        return route;
+    }
+    let query: Vec<String> = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            // The page size is the build's own and fixed, so it stays literal; the
+            // commit is the change request's and would differ every run.
+            Some(("head_sha", _)) => "head_sha={sha}".to_owned(),
+            _ => pair.to_owned(),
+        })
+        .collect();
+    format!("{route}?{}", query.join("&"))
+}
+
+/// Whether a path segment is an identifier GitHub assigned rather than a fixed part
+/// of the route.
+fn digits(segment: &str) -> bool {
+    !segment.is_empty() && segment.chars().all(|character| character.is_ascii_digit())
+}
+
+#[test]
+fn reading_checks_through_actions_asks_for_nothing_that_resolves_a_check_run() {
+    // The proof that this path works for a credential no machine here holds. A
+    // fine-grained token's refusal is invisible from a developer's shell — the
+    // credential a maintainer runs under reads the rollup happily — so what makes
+    // the Actions path sufficient cannot be shown by an answer coming back. It is
+    // shown by *which calls produced it*: this asserts over what the host was
+    // asked, and the world above answers `pr view --json statusCheckRollup` and
+    // `pr checks` perfectly well, so nothing here is arranged to make them absent.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/actions-reach", "feat: add the reachable thing");
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECK_SOURCE", "actions")
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let calls = hosted.world.host_calls();
+    assert!(
+        !calls.is_empty(),
+        "a publication that waits for a check must have asked the host something"
+    );
+    for call in &calls {
+        assert!(
+            !call.contains("statusCheckRollup"),
+            "the rollup is what no fine-grained token can read, and {call:?} asked for it"
+        );
+        assert!(
+            !call.starts_with("pr checks "),
+            "`gh pr checks` reads the same check runs, and {call:?} ran it"
+        );
+        assert!(
+            !call.starts_with("run view "),
+            "`gh run view` addresses a job through a link only the rollup carries, \
+             and {call:?} ran it"
+        );
+    }
+
+    // And the endpoints it did reach, named. `api user` is who the credential is
+    // rather than check state, and is the only call here that is neither.
+    let mut reached: std::collections::BTreeSet<String> = calls
+        .iter()
+        .filter_map(|call| call.strip_prefix("api "))
+        // The path is the first word; anything after it shapes the answer rather
+        // than choosing what is asked for.
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(endpoint)
+        .collect();
+    assert!(
+        reached.remove("user"),
+        "the host is asked who is calling: {reached:?}"
+    );
+    assert_eq!(
+        reached,
+        CHECK_ENDPOINTS
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect(),
+        "the check state, and its log, came from these endpoints and no others"
+    );
 }
 
 #[test]
