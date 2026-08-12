@@ -48,8 +48,10 @@ fn no_required_checks(answer: &gh::Answer) -> bool {
 enum Consult {
     /// The rollup, and Actions when the credential is not allowed to read it.
     Either,
-    /// One source and no other, because the operator named it.
-    Only(CheckSource),
+    /// The complete status-check rollup only.
+    StatusChecks,
+    /// Actions jobs together with the branch rules that say which ones block.
+    Actions,
 }
 
 /// What [`gh::CHECK_SOURCE_ENV`] narrows a call to, or [`Consult::Either`].
@@ -66,8 +68,8 @@ fn consult() -> Result<Consult> {
     };
     match raw.to_string_lossy().trim().to_ascii_lowercase().as_str() {
         "" | "auto" => Ok(Consult::Either),
-        "status-checks" => Ok(Consult::Only(CheckSource::StatusChecks)),
-        "actions" => Ok(Consult::Only(CheckSource::Actions)),
+        "status-checks" => Ok(Consult::StatusChecks),
+        "actions" => Ok(Consult::Actions),
         other => Err(invalid(format!(
             "{} names {other:?}, which is not a check source this build can read: it must be \
              \"auto\", \"status-checks\", or \"actions\"",
@@ -84,7 +86,7 @@ const PAGE: u32 = 100;
 /// the shapes it declines it in: a GraphQL error naming the node it would not
 /// produce, and a REST 403. The wording is GitHub's, and it is the whole of the
 /// test because it is the whole of what distinguishes the two cases below.
-const NOT_ACCESSIBLE: &str = "Resource not accessible";
+const CHECK_RUN_REFUSAL: &str = "GraphQL: Resource not accessible by personal access token";
 
 /// Whether a refusal is one this credential will *always* get.
 ///
@@ -96,7 +98,10 @@ const NOT_ACCESSIBLE: &str = "Resource not accessible";
 /// integration posted. A required check nobody looked at is how a merge that was
 /// never gated ends up looking like one that was.
 fn unauthorized(error: &Error) -> bool {
-    error.to_string().contains(NOT_ACCESSIBLE)
+    let Error::Invalid { reason } = error else {
+        return false;
+    };
+    reason.contains(CHECK_RUN_REFUSAL) && reason.contains("statusCheckRollup")
 }
 
 /// Everything `onevcs` asks of a repository's remote host.
@@ -299,6 +304,8 @@ pub struct ChangeChecks {
     pub checks: Vec<Check>,
     /// Every source consulted to produce them. Never empty: a host that could read
     /// none of its sources is a refusal rather than an answer.
+    // llmlint: ignore[invalid_states_unrepresentable] the approved contract fixes
+    // this as a public BTreeSet; implementations refuse an empty answer.
     pub sources: BTreeSet<CheckSource>,
 }
 
@@ -478,10 +485,8 @@ impl GitHub {
     /// credential may not read the rollup at all.
     fn log_of(&self, cr: &ChangeRequest, name: &str) -> Result<String> {
         match consult()? {
-            Consult::Only(CheckSource::StatusChecks) => self.job_log(cr, name),
-            Consult::Only(CheckSource::Actions | CheckSource::BranchRules) => {
-                self.actions_log(cr, name)
-            }
+            Consult::StatusChecks => self.job_log(cr, name),
+            Consult::Actions => self.actions_log(cr, name),
             // As above, and for the same reason: where a check ran is a question
             // `gh pr checks` can answer about every check, and only a credential
             // that may not ask it at all has cause to ask a narrower source.
@@ -966,10 +971,8 @@ impl RemoteHost for GitHub {
             sources: [CheckSource::StatusChecks].into_iter().collect(),
         };
         match consult()? {
-            Consult::Only(CheckSource::StatusChecks) => self.rollup_checks(cr).map(rollup),
-            Consult::Only(CheckSource::Actions | CheckSource::BranchRules) => {
-                self.actions_checks(cr)
-            }
+            Consult::StatusChecks => self.rollup_checks(cr).map(rollup),
+            Consult::Actions => self.actions_checks(cr),
             // The rollup first, because it is the complete answer and this build
             // cannot know what the credential is until it is refused. A refusal is
             // never read as "no checks": the fallback either produces an answer of

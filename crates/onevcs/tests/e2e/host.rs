@@ -275,6 +275,41 @@ fn the_actions_source_is_refused_rather_than_read_as_nothing_blocking() {
 }
 
 #[test]
+fn an_unrelated_access_refusal_does_not_discard_the_complete_check_source() {
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.answer_malformed("misleading-refusal");
+    let token = hosted.change(
+        "feature/unrelated-refusal",
+        "feat: preserve the complete source",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "another field said Resource not accessible",
+        ));
+    assert!(
+        hosted
+            .world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("/actions/runs")),
+        "an unrelated refusal must not silently narrow check visibility"
+    );
+    assert_eq!(hosted.origin_log().len(), 1);
+}
+
+#[test]
 fn explicit_complete_check_sources_read_the_rollup() {
     for source in ["auto", "status-checks"] {
         let hosted = Hosted::new(AUTOMATED);

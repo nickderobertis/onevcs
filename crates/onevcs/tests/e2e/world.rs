@@ -429,7 +429,7 @@ refused_graphql() {
 # repository's rulesets, and nothing that resolves a check run.
 readable_rollup() {
   case "$malformed" in
-    checks-refused|actions-only*) return 1 ;;
+    checks-refused|actions-only*|misleading-refusal) return 1 ;;
     *) return 0 ;;
   esac
 }
@@ -760,6 +760,12 @@ case "$subcommand" in
         printf '{"number":%s,"headRefOid":"%s","mergeCommit":null,"statusCheckRollup":%s}\n' \
           "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
         exit 0 ;;
+      misleading-refusal)
+        if wanted statusCheckRollup; then
+          printf 'GraphQL: another field said Resource not accessible while the checks service was unavailable\n' >&2
+          exit 1
+        fi
+        ;;
       checks-refused|actions-only*)
         # What real GitHub answers a credential the repository does not allow to read
         # its checks: `gh pr view` fails *whole*, however much of what it was asked
