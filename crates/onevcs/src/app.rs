@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::cli::{
     ArtifactCommand, Command, IntegrateArgs, PublishArgs, RecoverArgs, RecoverableArgs,
     RegisterArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
-    SessionOpenArgs, SessionTokenArgs, SyncArgs,
+    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
 use crate::providers::Providers;
@@ -47,6 +47,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             SessionCommand::Open(args) => session_open(args, providers),
             SessionCommand::Adopt(args) => session_adopt(args, providers),
             SessionCommand::Close(args) => session_close(args, providers),
+            SessionCommand::Holders(args) => session_holders(args),
         },
         Command::Publish(args) => publish_session(args, providers),
         Command::Recover(args) => recover_branch(args, providers),
@@ -181,6 +182,38 @@ fn session_adopt(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u
 fn session_close(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u8> {
     let session = crate::close_session(providers, &SessionToken(args.token.clone()))?;
     println!("{} closed", session.token.0);
+    Ok(0)
+}
+
+fn session_holders(args: &SessionHoldersArgs) -> Result<u8> {
+    let registry = store::load()?;
+    let resolution = store::resolve(&registry, &args.repo)?;
+    let holders: Vec<_> = workspace::all()?
+        .into_iter()
+        .filter(|record| record.identity == resolution.key)
+        .map(workspace::Holder::from)
+        .collect();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&holders).map_err(serialization)?
+        );
+    } else {
+        for holder in holders {
+            println!(
+                "{}\t{}\t{}\tpid={}\t{}\t{}",
+                holder.token,
+                match holder.state {
+                    Lifecycle::Open => "open",
+                    Lifecycle::Closed => "closed",
+                },
+                holder.liveness.as_str(),
+                holder.owner_pid,
+                holder.branch,
+                holder.worktree.display()
+            );
+        }
+    }
     Ok(0)
 }
 
@@ -345,6 +378,16 @@ fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
     let mut reader = stream::Reader::open(token)?;
     let session = SessionToken(token.to_owned());
     loop {
+        // Ask first, then drain. Closing providers append `session-closed` before
+        // publishing the closed lifecycle, so once closure is visible this read is
+        // guaranteed to include the terminator. Reading first leaves a race in
+        // which close happens between the drain and the state query.
+        let closed = follow
+            && providers
+                .vcs
+                .session(&session)
+                .map(|record| record.lifecycle == Lifecycle::Closed)
+                .unwrap_or(true);
         let mut out = std::io::stdout().lock();
         for line in reader.lines()? {
             writeln!(out, "{line}").map_err(|e| {
@@ -352,21 +395,13 @@ fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
             })?;
         }
         drop(out);
-        if !follow {
+        if !follow || closed {
             return Ok(0);
         }
         // `--follow` on a session that has already closed would otherwise never
         // return, and a reader asking to follow finished work wants its tail. Asked
         // of the repository side, so a session a supplied implementation opened is
         // followed to its end rather than to the first question it cannot answer.
-        if providers
-            .vcs
-            .session(&session)
-            .map(|record| record.lifecycle == Lifecycle::Closed)
-            .unwrap_or(true)
-        {
-            return Ok(0);
-        }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }

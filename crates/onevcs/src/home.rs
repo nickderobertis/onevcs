@@ -96,10 +96,19 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
 /// Replace a file's whole contents in one step, so a reader never sees a partial
 /// document and an interrupted write leaves the previous one intact.
 pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
+    atomic_write_before_replace(path, contents, || {})
+}
+
+fn atomic_write_before_replace(
+    path: &Path,
+    contents: &str,
+    before_replace: impl FnOnce(),
+) -> Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     ensure_dir(parent)?;
     let temporary = parent.join(format!(".{}.{}", file_name(path), crate::ids::unique()));
     std::fs::write(&temporary, contents).map_err(error::at("write", &temporary))?;
+    before_replace();
     let replaced = std::fs::rename(&temporary, path).map_err(error::at("replace", path));
     let _ = std::fs::remove_file(&temporary);
     replaced
@@ -109,4 +118,40 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    #[test]
+    fn a_reader_overlapping_replacement_sees_only_a_complete_document() {
+        let directory = tempfile::tempdir().expect("a temporary state directory");
+        let path = directory.path().join("session.json");
+        let old = r#"{"state":"open"}"#;
+        let new = r#"{"state":"closed"}"#;
+        std::fs::write(&path, old).expect("the old record");
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            super::atomic_write_before_replace(&writer_path, new, || {
+                ready_tx.send(()).expect("the reader is waiting");
+                continue_rx.recv().expect("the reader completed");
+            })
+            .expect("the replacement succeeds");
+        });
+
+        ready_rx.recv().expect("the replacement is ready");
+        let during = std::fs::read_to_string(&path).expect("the record remains readable");
+        serde_json::from_str::<serde_json::Value>(&during).expect("the old record is complete");
+        assert_eq!(during, old);
+        continue_tx.send(()).expect("the writer is waiting");
+        writer.join().expect("the writer finishes");
+
+        let after = std::fs::read_to_string(&path).expect("the new record is readable");
+        serde_json::from_str::<serde_json::Value>(&after).expect("the new record is complete");
+        assert_eq!(after, new);
+    }
 }

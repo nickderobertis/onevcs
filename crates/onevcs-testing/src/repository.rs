@@ -299,11 +299,10 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
     }
 
     fn close_session(&self, token: &SessionToken) -> Result<Session> {
-        let (session, emission) = self.store.with(|state| {
+        self.store.with(|state| {
             let session = state::session_of(state, token)
                 .cloned()
                 .ok_or_else(|| unknown_session(token))?;
-            state.closed_sessions.insert(token.clone());
             let emission = Emission {
                 stream: token.0.clone(),
                 // No identity label, because the real implementation carries none
@@ -313,10 +312,13 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 kind: EventKind::SessionClosed,
                 payload: object(json!({"token": token.0, "branch": session.branch})),
             };
-            Ok((session, emission))
-        })?;
-        events::emit(&emission);
-        Ok(session)
+            // Match the real provider's observable ordering: a follower reads the
+            // stream before consulting this state, so the terminator must exist
+            // before `Closed` can be returned to that concurrent reader.
+            events::emit(&emission);
+            state.closed_sessions.insert(token.clone());
+            Ok(session)
+        })
     }
 
     /// Publish a session's branch, as far as a provider honestly can.

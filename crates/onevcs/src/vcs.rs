@@ -105,11 +105,6 @@ impl Vcs for Git {
 
     fn close_session(&self, token: &SessionToken) -> Result<Session> {
         let record = workspace::close(&token.0)?;
-        let mut stream = Stream::open(&record.token)?;
-        stream.emit(
-            EventKind::SessionClosed,
-            object(json!({"token": record.token, "branch": record.branch})),
-        );
         Ok(record.session())
     }
 

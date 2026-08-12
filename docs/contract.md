@@ -261,6 +261,7 @@ CLI:
 onevcs register PATH [--origin URL] | repos [--audit-gates] | resolve REPO
 onevcs session open REPO [--branch B] [--base B] [--execution-checkout ALIAS]
 onevcs session adopt TOKEN | session close TOKEN
+onevcs session holders REPO [--json]
 onevcs publish TOKEN [--policy P] [--title T]
 onevcs recover BRANCH --repo PATH | recoverable [--json]
 onevcs integrate BRANCH... [--push] | sync [BRANCH]
