@@ -195,7 +195,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// leave this process for Git.
 #[cfg(windows)]
 fn git_path(path: &Path) -> &Path {
-    path
+    dunce::simplified(path)
 }
 
 #[cfg(not(windows))]
@@ -207,7 +207,7 @@ fn git_path(path: &Path) -> &Path {
 fn git_location(value: &str) -> Cow<'_, str> {
     let path = Path::new(value);
     if path.is_absolute() {
-        path.to_string_lossy()
+        git_path(path).to_string_lossy()
     } else {
         Cow::Borrowed(value)
     }
