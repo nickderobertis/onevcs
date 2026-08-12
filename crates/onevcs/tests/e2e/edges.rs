@@ -2492,7 +2492,7 @@ fn a_stored_record_that_disagrees_with_itself_is_rejected_where_it_is_read() {
         (
             "version",
             serde_json::json!(99),
-            "declares version 99; this build reads version 1",
+            "declares version 99; this build reads version 2",
         ),
     ] {
         let mut broken = original.clone();
@@ -2605,7 +2605,9 @@ fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
     // Written as the state it names, not as a flag whose meaning a reader has to
     // remember — and stamped with the schema it was written at.
     let opened = stored();
-    assert_eq!(opened["version"], 1, "{opened}");
+    assert_eq!(opened["version"], 2, "{opened}");
+    assert!(opened["owner_started"].is_u64(), "{opened}");
+    let opened_owner = opened["owner_started"].clone();
     assert_eq!(opened["state"], "open", "{opened}");
 
     fixture
@@ -2620,13 +2622,19 @@ fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
     assert_eq!(stored()["state"], "closed");
 
     // …and back, because adoption is what re-opens one.
+    // Linux records process starts in clock ticks; cross one tick so a new owner
+    // must have a distinguishable creation identity even on a fast runner.
+    std::thread::sleep(std::time::Duration::from_millis(20));
     fixture
         .world
         .onevcs()
         .args(["session", "adopt", &token])
         .assert()
         .success();
-    assert_eq!(stored()["state"], "open");
+    let adopted = stored();
+    assert_eq!(adopted["state"], "open");
+    assert!(adopted["owner_started"].is_u64(), "{adopted}");
+    assert_ne!(adopted["owner_started"], opened_owner, "{adopted}");
 
     // Publishing releases it, which is the other way a session reaches `closed`.
     fixture
