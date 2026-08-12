@@ -348,6 +348,42 @@ fn explicit_complete_check_sources_read_the_rollup() {
     }
 }
 
+#[test]
+fn an_explicit_status_check_source_never_falls_back_to_actions() {
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.answer_malformed("actions-only");
+    let token = hosted.change(
+        "feature/status-checks-refused",
+        "feat: require complete check visibility",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECK_SOURCE", "status-checks")
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "Resource not accessible by personal access token",
+        ));
+    assert!(
+        hosted
+            .world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("/actions/runs")),
+        "an explicitly complete source must not narrow itself after refusal"
+    );
+    assert_eq!(hosted.origin_log().len(), 1);
+}
+
 /// Every endpoint reading a change request's check state through GitHub Actions is
 /// allowed to reach, written the way GitHub's own reference writes it.
 ///

@@ -530,6 +530,17 @@ fn the_checks_a_host_reports_say_which_of_its_sources_they_were_read_from() {
         "the host log for check gate\n"
     );
 
+    world.host_checks(&[]);
+    let no_jobs = host
+        .change_checks(change)
+        .expect("Actions can answer that no workflow job has started");
+    assert!(no_jobs.checks.is_empty());
+    assert_eq!(
+        no_jobs.sources,
+        [CheckSource::Actions].into_iter().collect(),
+        "branch rules were not consulted when there was no job to classify"
+    );
+
     // A credential that can read neither source is a refusal, never an empty list —
     // and it names both refusals and the permission that answers one of them.
     world.answer_malformed("checks-refused");
