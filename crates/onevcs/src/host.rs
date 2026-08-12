@@ -97,7 +97,7 @@ const CHECK_RUN_REFUSAL: &str = "GraphQL: Resource not accessible by personal ac
 /// quietly answering from GitHub Actions alone would drop whatever a third-party
 /// integration posted. A required check nobody looked at is how a merge that was
 /// never gated ends up looking like one that was.
-fn unauthorized(error: &Error) -> bool {
+fn check_rollup_refused_for_pat(error: &Error) -> bool {
     let Error::Invalid { reason } = error else {
         return false;
     };
@@ -491,7 +491,7 @@ impl GitHub {
             // `gh pr checks` can answer about every check, and only a credential
             // that may not ask it at all has cause to ask a narrower source.
             Consult::Either => self.job_log(cr, name).or_else(|reported| {
-                if !unauthorized(&reported) {
+                if !check_rollup_refused_for_pat(&reported) {
                     return Err(reported);
                 }
                 self.actions_log(cr, name).map_err(|actions| {
@@ -678,7 +678,6 @@ impl GitHub {
         ])
     }
 
-    /// One `gh api` response, parsed.
     fn api(&self, path: &str) -> Result<serde_json::Value> {
         gh::json(&gh::invoke(&["api", path])?)
     }
@@ -979,7 +978,7 @@ impl RemoteHost for GitHub {
             // its own or both refusals are reported together.
             Consult::Either => match self.rollup_checks(cr) {
                 Ok(checks) => Ok(rollup(checks)),
-                Err(refused) if unauthorized(&refused) => self
+                Err(refused) if check_rollup_refused_for_pat(&refused) => self
                     .actions_checks(cr)
                     .map_err(|actions| unreadable(&self.repo, cr, &refused, &actions)),
                 Err(refused) => Err(refused),
