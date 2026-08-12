@@ -1,12 +1,24 @@
 name: Set up just
-description: Install a pinned just from crates.io, independently of GitHub release downloads
+description: Restore a pinned just binary, or build it from crates.io on a cache miss
 
 runs:
   using: composite
   steps:
+    # The version is part of the immutable key: once one run has built this exact
+    # binary, a crates.io outage cannot take later required checks down. OS and
+    # architecture keep native executables from crossing runner boundaries.
+    - name: Restore just
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/just
+          ~/.cargo/bin/just.exe
+        key: just-${{ runner.os }}-${{ runner.arch }}-1.42.4
     - name: Install just from crates.io
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: cargo install just --locked --version 1.42.4
     - name: Verify just is available
       shell: bash
-      run: just --version
+      run: test "$(just --version)" = "just 1.42.4"
