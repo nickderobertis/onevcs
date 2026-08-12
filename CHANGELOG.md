@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/nickderobertis/onevcs/compare/v0.2.4...v0.2.5) - 2026-08-12
+
+### Fixed
+
+- identify live session owner processes soundly ([#21](https://github.com/nickderobertis/onevcs/pull/21))
+
 ## [0.2.4](https://github.com/nickderobertis/onevcs/compare/v0.2.3...v0.2.4) - 2026-08-12
 
 ### Fixed
