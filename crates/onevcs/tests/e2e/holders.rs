@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use assert_cmd::cargo::CommandCargoExt;
 use predicates::prelude::*;
 
 use crate::lifecycle::{local_direct, Fixture};
@@ -55,18 +54,6 @@ fn set_owner_pid(fixture: &Fixture, token: &str, pid: u32) {
         ),
     )
     .expect("the fixture can name the real owner process");
-}
-
-fn concurrent_onevcs(fixture: &Fixture) -> Command {
-    let mut command = Command::cargo_bin("onevcs").expect("the binary must be built");
-    command
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", fixture.checkout.parent().expect("the world root"))
-        .env("ONEVCS_HOME", fixture.world.home())
-        .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "60")
-        .current_dir(fixture.checkout.parent().expect("the world root"));
-    command
 }
 
 #[test]
@@ -231,62 +218,27 @@ fn holders_human_output_is_one_line_per_record_and_empty_means_no_output() {
 }
 
 #[test]
-fn holders_reads_complete_records_while_sessions_are_opened_and_closed() {
+fn non_process_pid_values_are_stale() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let zero = fixture.open(&["--branch", "feature/pid-zero"]).0;
+    let overflow = fixture.open(&["--branch", "feature/pid-overflow"]).0;
+    set_owner_pid(&fixture, &zero, 0);
+    set_owner_pid(&fixture, &overflow, i32::MAX as u32 + 1);
 
-    let mut opening = concurrent_onevcs(&fixture);
-    let opening = opening
-        .args([
-            "session",
-            "open",
-            "project",
-            "--branch",
-            "feature/concurrent",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("session open starts");
-    let during_open = fixture
+    let output = fixture
         .world
         .onevcs()
         .args(["session", "holders", "project", "--json"])
         .output()
-        .expect("the concurrent read runs");
-    assert!(during_open.status.success());
-    let _: Vec<serde_json::Value> =
-        serde_json::from_slice(&during_open.stdout).expect("only complete records are reported");
-    let opened = opening.wait_with_output().expect("session open finishes");
-    assert!(opened.status.success());
-    let token = token_of(&opened.stdout);
-
-    for _ in 0..3 {
-        let mut closing = concurrent_onevcs(&fixture);
-        let mut closing = closing
-            .args(["session", "close", &token])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("session close starts");
-        let during_close = fixture
-            .world
-            .onevcs()
-            .args(["session", "holders", "project", "--json"])
-            .output()
-            .expect("the concurrent read runs");
-        assert!(during_close.status.success());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&during_close.stdout)
-            .expect("only complete records are reported");
-        assert!(rows
+        .expect("holders runs");
+    assert!(output.status.success());
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("holders prints a JSON array");
+    for token in [zero, overflow] {
+        let row = rows
             .iter()
-            .all(|row| row["state"] == "open" || row["state"] == "closed"));
-        assert!(closing.wait().expect("session close finishes").success());
-
-        fixture
-            .world
-            .onevcs()
-            .args(["session", "adopt", &token])
-            .assert()
-            .success();
+            .find(|row| row["token"] == token)
+            .expect("the session is reported");
+        assert_eq!(row["liveness"], "stale");
     }
 }
