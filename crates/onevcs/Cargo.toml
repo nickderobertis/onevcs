@@ -45,6 +45,7 @@ url = { workspace = true }
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+dunce = { workspace = true }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_Threading",

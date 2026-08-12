@@ -16,6 +16,7 @@
 //! `push` whose pre-push hook runs a repository's complete gate *is* the work, and
 //! bounding it at what an ordinary fetch needs would abort every publication.
 
+use std::borrow::Cow;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -120,7 +121,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(directory) = cwd {
-        command.current_dir(directory);
+        command.current_dir(git_path(directory));
     }
     for (key, value) in env {
         command.env(key, value);
@@ -183,6 +184,38 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         stdout,
         stderr,
     })
+}
+
+/// The ordinary Win32 spelling Git expects at its process boundary.
+///
+/// `canonicalize` uses Windows' verbatim namespace, so the standard library can
+/// address long paths. Git for Windows does not accept that spelling consistently
+/// as a working directory or path argument, and may persist it in worktree
+/// metadata. Keep canonical paths in our records, but simplify them where they
+/// leave this process for Git.
+#[cfg(windows)]
+fn git_path(path: &Path) -> &Path {
+    dunce::simplified(path)
+}
+
+#[cfg(not(windows))]
+fn git_path(path: &Path) -> &Path {
+    path
+}
+
+#[cfg(windows)]
+fn git_location(value: &str) -> Cow<'_, str> {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        git_path(path).to_string_lossy()
+    } else {
+        Cow::Borrowed(value)
+    }
+}
+
+#[cfg(not(windows))]
+fn git_location(value: &str) -> Cow<'_, str> {
+    Cow::Borrowed(value)
 }
 
 /// Run one git command and turn a non-zero status into an error naming it.
@@ -346,17 +379,17 @@ pub fn has_remote(cwd: &Path, remote: &str) -> bool {
 /// every task tree is a linked worktree. The result costs little more than its
 /// refs, so one per run is affordable where one shared clone per repository is not.
 pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<()> {
+    let source_arg = git_path(source).to_string_lossy();
+    let dest_arg = git_path(dest).to_string_lossy();
+    let origin_arg = git_location(origin);
     checked(
-        &[
-            "clone",
-            "--shared",
-            "--no-checkout",
-            &source.to_string_lossy(),
-            &dest.to_string_lossy(),
-        ],
+        &["clone", "--shared", "--no-checkout", &source_arg, &dest_arg],
         None,
     )?;
-    checked(&["remote", "set-url", "origin", origin], Some(dest))?;
+    checked(
+        &["remote", "set-url", "origin", origin_arg.as_ref()],
+        Some(dest),
+    )?;
     checked(
         &[
             "symbolic-ref",
@@ -392,7 +425,11 @@ fn carry_hooks(source: &Path, dest: &Path) -> Result<()> {
         }
     };
     checked(
-        &["config", "core.hooksPath", &hooks.to_string_lossy()],
+        &[
+            "config",
+            "core.hooksPath",
+            &git_path(&hooks).to_string_lossy(),
+        ],
         Some(dest),
     )
     .map(|_| ())
@@ -676,39 +713,21 @@ pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
 
 /// Create `branch` off `base`, checked out in a new worktree at `path`.
 pub fn worktree_add(cwd: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
-    checked(
-        &[
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            &path.to_string_lossy(),
-            base,
-        ],
-        Some(cwd),
-    )
-    .map(|_| ())
+    let path = git_path(path).to_string_lossy();
+    checked(&["worktree", "add", "-b", branch, &path, base], Some(cwd)).map(|_| ())
 }
 
 /// Check out an existing local branch in a new worktree.
 pub fn worktree_add_existing(cwd: &Path, path: &Path, branch: &str) -> Result<()> {
-    checked(
-        &["worktree", "add", &path.to_string_lossy(), branch],
-        Some(cwd),
-    )
-    .map(|_| ())
+    let path = git_path(path).to_string_lossy();
+    checked(&["worktree", "add", &path, branch], Some(cwd)).map(|_| ())
 }
 
 /// Check out a ref detached in a new scratch worktree.
 pub fn worktree_add_detached(cwd: &Path, path: &Path, reference: &str) -> Result<()> {
+    let path = git_path(path).to_string_lossy();
     checked(
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            &path.to_string_lossy(),
-            reference,
-        ],
+        &["worktree", "add", "--detach", &path, reference],
         Some(cwd),
     )
     .map(|_| ())
@@ -716,11 +735,8 @@ pub fn worktree_add_detached(cwd: &Path, path: &Path, reference: &str) -> Result
 
 /// Remove a worktree, forcing past an unclean tree.
 pub fn worktree_remove(cwd: &Path, path: &Path) -> Result<()> {
-    run(
-        &["worktree", "remove", "--force", &path.to_string_lossy()],
-        Some(cwd),
-    )
-    .map(|_| ())
+    let path = git_path(path).to_string_lossy();
+    run(&["worktree", "remove", "--force", &path], Some(cwd)).map(|_| ())
 }
 
 /// Drop worktree registrations git considers prunable.
@@ -793,10 +809,11 @@ pub fn push(
 /// from a run clone would run the execution checkout's `pre-push` hook, rejecting
 /// exactly the gate-failed work this operation exists to preserve.
 pub fn copy_branch(source: &Path, destination: &Path, branch: &str) -> Result<bool> {
+    let source = git_path(source).to_string_lossy();
     let output = run(
         &[
             "fetch",
-            &source.to_string_lossy(),
+            &source,
             &format!("refs/heads/{branch}:refs/heads/{branch}"),
         ],
         Some(destination),
@@ -806,13 +823,99 @@ pub fn copy_branch(source: &Path, destination: &Path, branch: &str) -> Result<bo
 
 /// Adopt a branch from another local repository, overwriting the local ref.
 pub fn import_branch(cwd: &Path, source: &Path, branch: &str) -> Result<bool> {
+    let source = git_path(source).to_string_lossy();
     let output = run(
         &[
             "fetch",
-            &source.to_string_lossy(),
+            &source,
             &format!("+refs/heads/{branch}:refs/heads/{branch}"),
         ],
         Some(cwd),
     )?;
     Ok(output.ok())
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn configure_repository(repo: &Path) {
+        checked(&["init", "-q", "-b", "main"], Some(repo)).expect("git initializes");
+        configure_identity(repo);
+        checked(&["commit", "--allow-empty", "-q", "-m", "seed"], Some(repo))
+            .expect("a seed commit");
+    }
+
+    fn configure_identity(repo: &Path) {
+        checked(&["config", "user.name", "Journey"], Some(repo)).expect("a user name");
+        checked(
+            &["config", "user.email", "journey@example.invalid"],
+            Some(repo),
+        )
+        .expect("a user email");
+    }
+
+    #[test]
+    fn canonical_windows_paths_cross_every_git_path_boundary() {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let root = std::fs::canonicalize(directory.path()).expect("a canonical Windows path");
+        assert!(
+            root.to_string_lossy().starts_with(r"\\?\"),
+            "Windows canonicalize must exercise the verbatim-path defect"
+        );
+
+        let source = root.join("source");
+        std::fs::create_dir(&source).expect("a source directory");
+        configure_repository(&source);
+        let hooks = root.join("hooks");
+        std::fs::create_dir(&hooks).expect("a hooks directory");
+        checked(
+            &["config", "core.hooksPath", &hooks.to_string_lossy()],
+            Some(&source),
+        )
+        .expect("a canonical hooks path is configured");
+
+        let clone = root.join("clone");
+        clone_sharing(&source, &clone, &source.to_string_lossy(), "main")
+            .expect("canonical source and clone paths reach git");
+        configure_identity(&clone);
+        fetch(&clone, "origin").expect("a canonical local origin reaches git");
+        assert_eq!(
+            hooks_dir(&clone).expect("the carried hooks path"),
+            git_path(&hooks),
+            "the clone carries the simplified hooks path"
+        );
+
+        let worktree = root.join("worktree");
+        worktree_add(&clone, &worktree, "feature/windows-path", "main")
+            .expect("a canonical worktree path reaches git");
+        commit_empty(&worktree, "work").expect("a canonical working directory reaches git");
+
+        let destination = root.join("destination");
+        std::fs::create_dir(&destination).expect("a destination directory");
+        configure_repository(&destination);
+        assert!(
+            copy_branch(&clone, &destination, "feature/windows-path")
+                .expect("a canonical local-fetch source reaches git"),
+            "the branch is copied"
+        );
+        assert!(
+            import_branch(&destination, &clone, "feature/windows-path")
+                .expect("a canonical import source reaches git"),
+            "the branch is imported"
+        );
+
+        worktree_remove(&clone, &worktree).expect("a canonical removal path reaches git");
+        assert!(!worktree.exists(), "git removed the worktree");
+
+        let existing = root.join("existing-worktree");
+        worktree_add_existing(&clone, &existing, "feature/windows-path")
+            .expect("a canonical existing-worktree path reaches git");
+        worktree_remove(&clone, &existing).expect("the existing worktree is removed");
+
+        let detached = root.join("detached-worktree");
+        worktree_add_detached(&clone, &detached, "main")
+            .expect("a canonical detached-worktree path reaches git");
+        worktree_remove(&clone, &detached).expect("the detached worktree is removed");
+    }
 }

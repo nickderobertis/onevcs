@@ -254,6 +254,24 @@ fn process_exists(pid: u32) -> bool {
     true
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::process_exists;
+
+    #[test]
+    fn pid_liveness_distinguishes_this_process_from_invalid_pids() {
+        assert!(
+            process_exists(std::process::id()),
+            "the test process is live"
+        );
+        assert!(!process_exists(0), "Windows reserves PID zero");
+        assert!(
+            !process_exists(u32::MAX),
+            "a PID outside Windows' process range is stale"
+        );
+    }
+}
+
 impl Record {
     /// The session as the contract's [`Session`] type spells it.
     pub fn session(&self) -> Session {
