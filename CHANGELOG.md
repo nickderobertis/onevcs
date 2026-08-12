@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/nickderobertis/onevcs/compare/v0.2.2...v0.2.3) - 2026-08-12
+
+### Added
+
+- report which live sessions hold a repository identity ([#16](https://github.com/nickderobertis/onevcs/pull/16))
+
 ## [0.2.2](https://github.com/nickderobertis/onevcs/compare/v0.2.1...v0.2.2) - 2026-08-12
 
 ### Fixed
