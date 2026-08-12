@@ -863,11 +863,23 @@ mod windows_tests {
         let source = root.join("source");
         std::fs::create_dir(&source).expect("a source directory");
         configure_repository(&source);
+        let hooks = root.join("hooks");
+        std::fs::create_dir(&hooks).expect("a hooks directory");
+        checked(
+            &["config", "core.hooksPath", &hooks.to_string_lossy()],
+            Some(&source),
+        )
+        .expect("a canonical hooks path is configured");
 
         let clone = root.join("clone");
         clone_sharing(&source, &clone, &source.to_string_lossy(), "main")
             .expect("canonical source and clone paths reach git");
         fetch(&clone, "origin").expect("a canonical local origin reaches git");
+        assert_eq!(
+            hooks_dir(&clone).expect("the carried hooks path"),
+            git_path(&hooks),
+            "the clone carries the simplified hooks path"
+        );
 
         let worktree = root.join("worktree");
         worktree_add(&clone, &worktree, "feature/windows-path", "main")
@@ -882,8 +894,23 @@ mod windows_tests {
                 .expect("a canonical local-fetch source reaches git"),
             "the branch is copied"
         );
+        assert!(
+            import_branch(&destination, &clone, "feature/windows-path")
+                .expect("a canonical import source reaches git"),
+            "the branch is imported"
+        );
 
         worktree_remove(&clone, &worktree).expect("a canonical removal path reaches git");
         assert!(!worktree.exists(), "git removed the worktree");
+
+        let existing = root.join("existing-worktree");
+        worktree_add_existing(&clone, &existing, "feature/windows-path")
+            .expect("a canonical existing-worktree path reaches git");
+        worktree_remove(&clone, &existing).expect("the existing worktree is removed");
+
+        let detached = root.join("detached-worktree");
+        worktree_add_detached(&clone, &detached, "main")
+            .expect("a canonical detached-worktree path reaches git");
+        worktree_remove(&clone, &detached).expect("the detached worktree is removed");
     }
 }
