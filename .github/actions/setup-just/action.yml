@@ -18,7 +18,9 @@ runs:
     - name: Install just from crates.io
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
-      run: cargo install just --locked --version 1.42.4
+      # rust-cache may have restored a different `just` into Cargo's bin dir.
+      # A miss in this action's versioned cache must replace it deterministically.
+      run: cargo install just --locked --version 1.42.4 --force
     - name: Verify just is available
       shell: bash
       run: test "$(just --version)" = "just 1.42.4"
