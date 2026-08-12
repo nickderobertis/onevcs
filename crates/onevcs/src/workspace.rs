@@ -754,8 +754,33 @@ pub fn object(value: Value) -> Map<String, Value> {
 
 #[cfg(test)]
 mod process_tests {
-    use super::process_started;
+    use super::{
+        process_started, Holder, Liveness, ProcessStart, Record, Ref, Token, RECORD_VERSION,
+    };
+    use crate::session::Lifecycle;
+    use std::num::NonZeroU64;
+    use std::path::PathBuf;
     use std::process::Command;
+
+    fn holder_for(owner_started: Option<ProcessStart>) -> Holder {
+        Holder::from(Record {
+            version: RECORD_VERSION,
+            token: Token::try_from("s-process-test".to_owned()).expect("a token"),
+            identity: "identity".to_owned(),
+            alias: "alias".to_owned(),
+            branch: Ref::from_git("main"),
+            base: Ref::from_git("main"),
+            change_base: None,
+            worktree: PathBuf::from("worktree"),
+            clone: PathBuf::from("clone"),
+            run_root: PathBuf::from("run"),
+            execution_checkout: PathBuf::from("execution"),
+            publication_checkout: PathBuf::from("publication"),
+            state: Lifecycle::Open,
+            owner_pid: std::process::id(),
+            owner_started,
+        })
+    }
 
     #[test]
     fn process_identity_is_live_then_stale_after_the_child_is_reaped() {
@@ -783,5 +808,21 @@ mod process_tests {
         child.wait().expect("reap the child");
         assert_eq!(process_started(pid), None);
         assert_eq!(process_started(0), None);
+    }
+
+    #[test]
+    fn holder_requires_the_same_live_process_instance_not_only_the_same_pid() {
+        let started = process_started(std::process::id()).expect("this process is live");
+        assert!(matches!(holder_for(Some(started)).liveness, Liveness::Live));
+
+        let different_value = started.0.get().checked_add(1).unwrap_or(1);
+        let different = NonZeroU64::new(different_value)
+            .map(ProcessStart)
+            .expect("a nonzero different creation identity");
+        assert!(matches!(
+            holder_for(Some(different)).liveness,
+            Liveness::Stale
+        ));
+        assert!(matches!(holder_for(None).liveness, Liveness::Stale));
     }
 }
