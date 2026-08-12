@@ -42,6 +42,7 @@ const HOST_OPTIONAL: &[&str] = &[
     "titles",
     "checks",
     "check_logs",
+    "check_sources",
     "merges",
 ];
 

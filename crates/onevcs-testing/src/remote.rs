@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use url::Url;
 
 use onevcs::{
-    ArtifactId, ChangeId, ChangeRequest, ChangeSpec, Check, Error, Hosting, MergeOutcome,
-    MergePolicy, RemoteHost, Result, Sha,
+    ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Error,
+    Hosting, MergeOutcome, MergePolicy, RemoteHost, Result, Sha,
 };
 
 use crate::events;
@@ -175,14 +175,26 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             .collect())
     }
 
-    fn change_checks(&self, cr: &ChangeRequest) -> Result<Vec<Check>> {
-        Ok(self
-            .store
-            .snapshot()?
-            .checks
-            .get(&cr.id)
-            .cloned()
-            .unwrap_or_default())
+    fn change_checks(&self, cr: &ChangeRequest) -> Result<ChangeChecks> {
+        let state = self.store.snapshot()?;
+        let sources = state.check_sources.clone().unwrap_or_else(complete_sources);
+        // The same refusal the real implementation makes when its credential can
+        // read neither the host's check rollup nor its Actions API: what the checks
+        // say is unknown, and answering "none" for "could not look" is what lets a
+        // merge through unguarded.
+        if sources.is_empty() {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "this host was seeded with no check source, so what the checks on {} say \
+                     cannot be read rather than being empty",
+                    cr.url
+                ),
+            });
+        }
+        Ok(ChangeChecks {
+            checks: state.checks.get(&cr.id).cloned().unwrap_or_default(),
+            sources,
+        })
     }
 
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
@@ -230,6 +242,13 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             })
         })
     }
+}
+
+/// What a host that was not told otherwise answers about where its checks came
+/// from: the host's own rollup, which is every check anything posted on the change
+/// request — the answer a credential allowed to read check runs gets.
+fn complete_sources() -> std::collections::BTreeSet<CheckSource> {
+    [CheckSource::StatusChecks].into_iter().collect()
 }
 
 /// Whether every required check on a change request has settled green.

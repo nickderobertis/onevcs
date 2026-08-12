@@ -403,7 +403,11 @@ fn a_change_with_no_checks_at_all_is_not_one_auto_merge_lands() {
         MergeOutcome::Queued,
         "nothing has vouched for it, which is the state auto-merge waits in"
     );
-    assert!(host.change_checks(&change).expect("no checks").is_empty());
+    assert!(host
+        .change_checks(&change)
+        .expect("no checks")
+        .checks
+        .is_empty());
 }
 
 #[test]

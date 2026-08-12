@@ -691,7 +691,11 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
     let started = std::time::Instant::now();
     let mut reported: Vec<(String, String)> = Vec::new();
     loop {
-        let checks = host.change_checks(change)?;
+        // What was consulted travels with the checks and is deliberately not acted
+        // on here: a credential that can see only GitHub Actions still gates a merge
+        // on what it *can* see, and a credential that could see nothing was a
+        // refusal above rather than an empty answer.
+        let checks = host.change_checks(change)?.checks;
         for check in &checks {
             let previous = reported
                 .iter()

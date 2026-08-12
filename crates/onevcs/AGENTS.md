@@ -120,8 +120,24 @@ script written beside them that answered to what they asked.
   each call names the fields its caller reads (`tests/e2e/host.rs` holds it there),
   and a refusal stays a refusal — reading one as "no checks" is what lets a merge
   through. Granting the permission is the operator's move, not the parser's.
-  `RELEASE_PLZ_TOKEN` has no `Checks` on the scratch repository and `check_log`
-  wants `Actions: read` behind that; it pushes, opens, and merges there.
+- **A fine-grained token can never read a check run, so the checks are read from
+  GitHub Actions.** Not a scope to widen: GitHub offers no `Checks` permission for
+  that credential class, so `gh pr view --json statusCheckRollup` and `gh pr checks`
+  are both out of reach for `RELEASE_PLZ_TOKEN` and for anyone who authenticates
+  `onevcs` the way GitHub recommends. `change_checks` and `check_log` fall back to
+  the Actions API (`Actions: Read`), which reports one check per workflow job and
+  addresses its log by job id, and the answer carries `sources` so a caller can tell
+  Actions-only visibility from the whole picture. Three rules go with it: the
+  fallback is taken **only** on a permission refusal, because answering from the
+  narrower source whenever the complete one merely went wrong would drop whatever a
+  third-party integration posted; which checks *block* comes from the repository's
+  rulesets there, which do not report classic branch protection, so a
+  classically-protected repository under such a token waits for a required check
+  that never arrives rather than merging; and a credential that can read neither
+  source is an error naming both refusals and the permission, never an empty list.
+  `ONEVCS_CHECK_SOURCE` narrows the choice for an operator who already knows what
+  their token can read, which is also how `tests/smoke/checks.rs` proves the Actions
+  path from a machine whose `gh auth` would otherwise never take it.
 
 ## Everything durable lives under one state root
 
@@ -132,7 +148,9 @@ scratch directory, which is what lets the suite drive the real binary without
 touching an operator's own state.
 
 The other environment seams exist for the same reason and nothing else: `ONEVCS_GH`
-names the program that answers as `gh`, and the bounds
+names the program that answers as `gh`, `ONEVCS_CHECK_SOURCE` narrows which of the
+host's check sources may be consulted (`auto`, `status-checks`, `actions`), and the
+bounds
 (`ONEVCS_GIT_TIMEOUT`, `ONEVCS_GIT_HOOK_TIMEOUT`, `ONEVCS_LOCK_TIMEOUT_SECONDS`,
 `ONEVCS_CHECKS_TIMEOUT_SECONDS`, `ONEVCS_CHECKS_POLL_SECONDS`) are operator knobs a
 journey turns down so a bound can be *proved* rather than waited out.

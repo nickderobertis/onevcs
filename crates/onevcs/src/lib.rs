@@ -63,7 +63,8 @@ mod workspace;
 pub use error::{Error, Result};
 pub use event::{ArtifactId, ArtifactRef, Envelope, EventKind, Labels, Source};
 pub use host::{
-    ChangeId, ChangeRequest, ChangeSpec, Check, GitHub, Hosting, MergeOutcome, RemoteHost, Sha,
+    ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, GitHub, Hosting,
+    MergeOutcome, RemoteHost, Sha,
 };
 pub use providers::Providers;
 pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject};

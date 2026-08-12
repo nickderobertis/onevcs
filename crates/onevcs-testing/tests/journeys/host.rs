@@ -5,9 +5,9 @@
 //! journey — these calls made by `onevcs publish` itself, against real git — is
 //! `publication_events_match_across_backends` in the crate next door.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use onevcs::{ChangeId, ChangeSpec, Hosting, MergeOutcome, MergePolicy, RemoteHost};
+use onevcs::{ChangeId, ChangeSpec, CheckSource, Hosting, MergeOutcome, MergePolicy, RemoteHost};
 use onevcs_testing::{FileHost, HostState, MemoryHost};
 
 use crate::support::{green_check, Home};
@@ -20,6 +20,49 @@ fn spec(head: &str) -> ChangeSpec {
         title: "feat: the thing".to_owned(),
         body: Some("## What\n\nthe thing\n".to_owned()),
     }
+}
+
+#[test]
+fn a_seeded_host_answers_from_the_check_sources_its_credential_can_read() {
+    // The real implementation's answer says where it came from, because a
+    // fine-grained token cannot resolve a check run at all and sees GitHub Actions
+    // alone. A journey that has to drive a consumer's "I am only seeing workflow
+    // checks" branch can only do it if a provider can be that credential.
+    let _home = Home::new();
+    let mut checks = BTreeMap::new();
+    checks.insert(ChangeId("1".to_owned()), vec![green_check("gate")]);
+    let factory = MemoryHost::seeded(HostState {
+        checks: checks.clone(),
+        check_sources: Some(
+            [CheckSource::Actions, CheckSource::BranchRules]
+                .into_iter()
+                .collect(),
+        ),
+        ..HostState::default()
+    });
+    let host = factory.for_repo("acme-corp/widgets").expect("a host");
+    let change = host.open_change(spec("feature/narrow")).expect("opened");
+
+    let reported = host.change_checks(&change).expect("the host's checks");
+    assert!(
+        !reported.complete(),
+        "a host seeded as a fine-grained token has not seen every check"
+    );
+    assert_eq!(reported.checks, vec![green_check("gate")]);
+
+    // And a credential that can read no source at all is a refusal, which is the one
+    // answer that must not arrive as an empty list of checks.
+    let factory = MemoryHost::seeded(HostState {
+        checks,
+        check_sources: Some(BTreeSet::new()),
+        ..HostState::default()
+    });
+    let host = factory.for_repo("acme-corp/widgets").expect("a host");
+    let change = host.open_change(spec("feature/blind")).expect("opened");
+    let refused = host
+        .change_checks(&change)
+        .expect_err("what the checks say cannot be read");
+    assert!(refused.to_string().contains("cannot be read"), "{refused}");
 }
 
 #[test]
@@ -134,15 +177,19 @@ fn auto_merge_waits_for_the_required_checks_and_lands_once_they_are_green() {
     let change = host.open_change(spec("feature/checked")).expect("opened");
 
     let reported = host.change_checks(&change).expect("the host's checks");
-    assert_eq!(reported.len(), 2);
+    assert_eq!(reported.checks.len(), 2);
     assert!(
-        !reported[0].settled(),
+        reported.complete(),
+        "a host told nothing about its credential answers from every source it has"
+    );
+    assert!(
+        !reported.checks[0].settled(),
         "the required check is still running"
     );
 
     // The log of a check is an artifact `onevcs artifact cat` reads.
     let id = host
-        .check_log(&change, &reported[1])
+        .check_log(&change, &reported.checks[1])
         .expect("a log for the settled check");
     assert_eq!(id.0, "a-testing-1-lint");
     assert_eq!(home.artifact(&id.0), "the host log for check lint\n");
@@ -229,10 +276,12 @@ fn a_seeded_log_is_what_the_host_hands_over() {
     let reported = host.change_checks(&change).expect("the host's checks");
 
     assert!(
-        reported[0].red(),
+        reported.checks[0].red(),
         "a failed required check blocks the merge"
     );
-    let id = host.check_log(&change, &reported[0]).expect("its log");
+    let id = host
+        .check_log(&change, &reported.checks[0])
+        .expect("its log");
     assert_eq!(home.artifact(&id.0), "just check\nFAILED: two tests\n");
 }
 
