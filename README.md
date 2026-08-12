@@ -30,6 +30,16 @@ onevcs events "$token"                             # everything it did, as NDJSO
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.
 
+GitHub is reached through `gh`, so whatever `gh auth status` reports is the
+credential. A **fine-grained personal access token needs `Actions: Read`** on the
+repository beside its contents and pull-requests access: GitHub will not let that
+credential class resolve a check run at all — there is no `Checks` permission to
+grant one — so a change request's checks are read from its workflow runs, and
+`change_checks` says so in the `sources` it answers with. Anything a third-party
+integration posted as a check run or a commit status is invisible to such a token,
+and a credential that can read neither source is refused rather than reported as
+having no checks.
+
 ## Install
 
 ```console

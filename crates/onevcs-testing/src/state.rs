@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use onevcs::{ChangeId, ChangeRequest, Check, Error, Identity, MergeOutcome, Recoverable, Result};
+use onevcs::{
+    ChangeId, ChangeRequest, Check, CheckSource, Error, Identity, MergeOutcome, Recoverable, Result,
+};
 use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
 
 use crate::events;
@@ -188,6 +190,19 @@ pub struct HostState {
     /// without this the only log a journey could asssert on is a synthesized one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub check_logs: BTreeMap<ChangeId, BTreeMap<String, String>>,
+    /// Which sources this host answers about its checks from, which is what the
+    /// real implementation reports alongside them.
+    ///
+    /// Unset is a credential allowed to read everything: the whole rollup, exactly
+    /// what a host with nothing to hide reports. A journey states a narrower set to
+    /// be the credential the real one meets in CI — a fine-grained token, which
+    /// cannot read check runs at all and sees GitHub Actions and nothing else — and
+    /// states an *empty* one to be a credential that can read no source at all,
+    /// which is a refusal rather than "no checks". Unset and empty are therefore
+    /// different scenarios, which is why this is an `Option` rather than a set whose
+    /// emptiness means "not stated".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_sources: Option<BTreeSet<CheckSource>>,
     /// What merging each change request did.
     ///
     /// Both a script and a record: an entry seeded here is what `merge` answers,
@@ -214,6 +229,7 @@ impl Default for HostState {
             titles: BTreeMap::new(),
             checks: BTreeMap::new(),
             check_logs: BTreeMap::new(),
+            check_sources: None,
             merges: BTreeMap::new(),
         }
     }

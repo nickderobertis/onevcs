@@ -140,6 +140,55 @@ refused where the message is composed is refused after a commit nobody can undo.
 The check is in the conversion, as it is for every other validated name here, so a
 `PublishRequest` carrying a title that could not be a subject is unrepresentable.
 
+**A change request's checks say which of the host's sources they were read from.**
+The contract has `change_checks` answer `Vec<Check>`, and this crate read that list
+out of `gh pr view --json statusCheckRollup` and `gh pr checks`. **A fine-grained
+personal access token cannot read either, on any repository, with any permission**:
+GitHub offers no `Checks` permission for that credential class — it existed briefly,
+was withdrawn, and has not returned — so both commands answer `Resource not
+accessible by personal access token`, and the two methods a lifecycle decides a
+merge by were unusable for the credential GitHub steers people toward. The Actions
+API is what such a token *can* read, with `Actions: Read`, and a workflow job is the
+same unit GitHub posts a check run for.
+
+Reading a narrower source is not free, and the loss is in the answer rather than in
+a comment: a check that ran no workflow — anything a third-party integration posted
+as a check run or a commit status — is invisible to that credential, and a caller
+deciding whether a change may merge has to be able to tell that from having seen
+everything. So the return says where it looked.
+
+```rust
+pub trait RemoteHost {                       // the six above, one of them widened:
+    fn change_checks(&self, cr: &ChangeRequest) -> Result<ChangeChecks>;
+}
+pub struct ChangeChecks { pub checks: Vec<Check>, pub sources: BTreeSet<CheckSource> }
+impl ChangeChecks { pub fn complete(&self) -> bool; }        // sources holds StatusChecks
+pub enum CheckSource { StatusChecks, Actions, BranchRules }  // status-checks|actions|branch-rules
+```
+
+`Check` is unchanged, and so is every other method. `sources` is never empty: a host
+whose sources could none of them be read is an `Err` naming each refusal and the
+permission that answers one of them, never an empty list — "could not look" reported
+as "nothing blocks this" is the one answer that turns an ungated merge into one that
+looks gated.
+
+The three sources: `StatusChecks` is the host's own rollup, which is every check on
+the change request and carries whether each blocks; `Actions` is the jobs of the
+workflow runs on the head commit; `BranchRules` is the repository's rulesets, read
+for which checks block a merge into the base when the rollup cannot be. `BranchRules`
+is narrower than the rollup's own answer — it reports rulesets and not classic branch
+protection — so a repository protected the classic way reports nothing blocking, and
+the publication path fails closed on that, waiting for a required check that never
+arrives rather than merging without one.
+
+`GitHub` consults the rollup first and falls back to Actions **only** where the
+credential may never read the rollup; a rollup that came back garbled, or a host that
+would not say which of its checks block, is still a refusal, because answering from
+Actions alone whenever the complete answer went wrong would silently drop whatever a
+third-party integration posted. `ONEVCS_CHECK_SOURCE` (`auto`, `status-checks`,
+`actions`) narrows that to one source for an operator who already knows what their
+credential can read; an unrecognized value is refused where it is named.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

@@ -36,6 +36,10 @@
       "gate": "everything passed\n"
     }
   },
+  "check_sources": [
+    "actions",
+    "branch-rules"
+  ],
   "merges": {
     "1": {
       "merged": "abc123"

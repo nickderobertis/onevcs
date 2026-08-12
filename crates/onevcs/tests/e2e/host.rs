@@ -120,7 +120,9 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_and_merges
     // And the refusal is still a refusal where the checks are what decides: a host
     // that would not say what its checks are has not said there are none, and the
     // publication that waits for them stops rather than merging on the strength of
-    // an answer it never got.
+    // an answer it never got. Both sources are named, with the permission that would
+    // answer one of them — GitHub says only which node it declined, and an operator
+    // reading that cannot tell a scope they can widen from one they cannot.
     let gated = Hosted::new(AUTOMATED);
     gated.world.answer_malformed("checks-refused");
     let token = gated.change("feature/gated-checkless", "feat: add the gated thing");
@@ -134,12 +136,406 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_and_merges
         .code(2)
         .stderr(predicate::str::contains(
             "Resource not accessible by personal access token",
-        ));
+        ))
+        .stderr(predicate::str::contains("HTTP 403"))
+        .stderr(predicate::str::contains("Actions: Read"))
+        .stderr(predicate::str::contains("unknown rather than empty"));
     assert_eq!(
         gated.origin_log().len(),
         1,
         "nothing may land while the host will not say what its checks are"
     );
+}
+
+#[test]
+fn checks_read_through_the_actions_api_gate_a_merge_when_the_rollup_is_refused() {
+    // The credential this crate's real-backend tier runs under, and the one GitHub
+    // steers people toward: a fine-grained personal access token. It cannot resolve
+    // a check run *at all* — there is no Checks permission to grant one, so the
+    // rollup and `gh pr checks` are both out of reach — and the whole gate used to
+    // stop there. The Actions API is what it can read with `Actions: Read`, and the
+    // workflow jobs on the head commit are the same checks, reported the same way.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[
+        Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        },
+        Check {
+            name: "coverage-comment",
+            status: "in_progress",
+            conclusion: None,
+            required: false,
+        },
+    ]);
+    hosted.world.answer_malformed("actions-only");
+    let token = hosted.change("feature/actions-only", "feat: add the fine-grained thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let subjects = hosted.origin_log();
+    assert_eq!(
+        subjects[0], "feat: add the fine-grained thing (#1)",
+        "the change reached the base under a credential that cannot read a check run: {subjects:?}"
+    );
+
+    // Whether a check blocks is the repository's rulesets' word here, because the
+    // command that reports it reads the same check runs the token may not.
+    let checks = hosted.world.events_of(&token, "change-check");
+    let gate = checks
+        .iter()
+        .find(|event| event["payload"]["name"] == "gate")
+        .expect("the required check is reported");
+    assert_eq!(gate["payload"]["required"], true);
+    assert_eq!(gate["payload"]["conclusion"], "success");
+    let optional = checks
+        .iter()
+        .find(|event| event["payload"]["name"] == "coverage-comment")
+        .expect("the optional check is reported too");
+    assert_eq!(optional["payload"]["required"], false);
+
+    // And the log is the job's own, fetched from the Actions API by the job id that
+    // listing named rather than from a details URL the token cannot read.
+    let id = gate["artifacts"][0]["id"]
+        .as_str()
+        .expect("a settled check carries its log");
+    hosted
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("the host log for check gate"));
+
+    // Both answers came from the Actions endpoints, and not from a rollup that this
+    // world refused every time it was asked. Asserted over the calls, because an
+    // answer arriving proves only that something answered.
+    let calls = hosted.world.host_calls();
+    for wanted in CHECK_ENDPOINTS {
+        assert!(
+            calls
+                .iter()
+                .filter_map(|call| call.strip_prefix("api "))
+                .filter_map(|rest| rest.split_whitespace().next())
+                .any(|path| endpoint(path) == wanted),
+            "the fallback reads {wanted}, and nothing asked for it: {calls:?}"
+        );
+    }
+}
+
+#[test]
+fn the_actions_source_is_refused_rather_than_read_as_nothing_blocking() {
+    // Three ways the Actions path can fail to *answer*, each of which would
+    // otherwise be read as "no check blocks this merge" — which is the difference
+    // between a gated merge and one that only looked gated. All three are reached
+    // under the fine-grained credential, because that is the credential with no
+    // second source to fall back to.
+    for (shape, reason) in [
+        ("actions-only-truncated", "has not been shown all of them"),
+        ("actions-only-rules-not-a-list", "not a list of them"),
+        (
+            "actions-only-rules-unsaid",
+            "does not say whether it blocks the merge",
+        ),
+    ] {
+        let hosted = Hosted::new(AUTOMATED);
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }]);
+        hosted.world.answer_malformed(shape);
+        let token = hosted.change(
+            &format!("feature/{shape}"),
+            &format!("feat: add the {shape} thing"),
+        );
+
+        hosted
+            .world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+            .args(["publish", &token])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(reason));
+        assert_eq!(
+            hosted.origin_log().len(),
+            1,
+            "nothing may land while {shape} leaves what its checks say unknown"
+        );
+    }
+}
+
+#[test]
+fn an_unrelated_access_refusal_does_not_discard_the_complete_check_source() {
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.answer_malformed("misleading-refusal");
+    let token = hosted.change(
+        "feature/unrelated-refusal",
+        "feat: preserve the complete source",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "another field said Resource not accessible",
+        ));
+    assert!(
+        hosted
+            .world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("/actions/runs")),
+        "an unrelated refusal must not silently narrow check visibility"
+    );
+    assert_eq!(hosted.origin_log().len(), 1);
+}
+
+#[test]
+fn explicit_complete_check_sources_read_the_rollup() {
+    for source in ["auto", "status-checks"] {
+        let hosted = Hosted::new(AUTOMATED);
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }]);
+        let token = hosted.change(
+            &format!("feature/{source}"),
+            &format!("feat: read checks through {source}"),
+        );
+
+        hosted
+            .world
+            .onevcs()
+            .env("ONEVCS_CHECK_SOURCE", source)
+            .args(["publish", &token])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("merged at"));
+
+        let calls = hosted.world.host_calls();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.contains("--json statusCheckRollup")),
+            "{source} reads the complete check rollup: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call.starts_with("pr checks ")),
+            "{source} asks which rollup checks are required: {calls:?}"
+        );
+        assert_eq!(hosted.origin_log().len(), 2);
+    }
+}
+
+#[test]
+fn an_explicit_status_check_source_never_falls_back_to_actions() {
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.answer_malformed("actions-only");
+    let token = hosted.change(
+        "feature/status-checks-refused",
+        "feat: require complete check visibility",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECK_SOURCE", "status-checks")
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "Resource not accessible by personal access token",
+        ));
+    assert!(
+        hosted
+            .world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("/actions/runs")),
+        "an explicitly complete source must not narrow itself after refusal"
+    );
+    assert_eq!(hosted.origin_log().len(), 1);
+}
+
+/// Every endpoint reading a change request's check state through GitHub Actions is
+/// allowed to reach, written the way GitHub's own reference writes it.
+///
+/// The list is the claim, so it is checked in rather than described: the reason a
+/// fine-grained personal access token can answer `change_checks` and `check_log` is
+/// that every call they issue is one such a token may make — the three Actions
+/// endpoints under `Actions: Read`, and the repository's rules, which needs no
+/// permission beyond the repository access every fine-grained token carries. Not one
+/// of them resolves a check run, which is the permission that does not exist.
+const CHECK_ENDPOINTS: [&str; 4] = [
+    "repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+    "repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+    "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=100",
+    "repos/{owner}/{repo}/rules/branches/{branch}",
+];
+
+/// One `gh api` path with what varies between repositories, commits, and runs
+/// written as the reference writes it, so the assertion names an endpoint rather
+/// than one call to it.
+fn endpoint(path: &str) -> String {
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let mut shaped: Vec<String> = Vec::new();
+    let mut previous = "";
+    for segment in route.split('/') {
+        shaped.push(match segment {
+            "acme-corp" => "{owner}".to_owned(),
+            "hosted" => "{repo}".to_owned(),
+            _ if previous == "branches" => "{branch}".to_owned(),
+            _ if previous == "runs" && digits(segment) => "{run_id}".to_owned(),
+            _ if previous == "jobs" && digits(segment) => "{job_id}".to_owned(),
+            _ => segment.to_owned(),
+        });
+        previous = segment;
+    }
+    let route = shaped.join("/");
+    if query.is_empty() {
+        return route;
+    }
+    let query: Vec<String> = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            // The page size is the build's own and fixed, so it stays literal; the
+            // commit is the change request's and would differ every run.
+            Some(("head_sha", _)) => "head_sha={sha}".to_owned(),
+            _ => pair.to_owned(),
+        })
+        .collect();
+    format!("{route}?{}", query.join("&"))
+}
+
+/// Whether a path segment is an identifier GitHub assigned rather than a fixed part
+/// of the route.
+fn digits(segment: &str) -> bool {
+    !segment.is_empty() && segment.chars().all(|character| character.is_ascii_digit())
+}
+
+#[test]
+fn reading_checks_through_actions_asks_for_nothing_that_resolves_a_check_run() {
+    // The proof that this path works for a credential no machine here holds. A
+    // fine-grained token's refusal is invisible from a developer's shell — the
+    // credential a maintainer runs under reads the rollup happily — so what makes
+    // the Actions path sufficient cannot be shown by an answer coming back. It is
+    // shown by *which calls produced it*: this asserts over what the host was
+    // asked, and the world above answers `pr view --json statusCheckRollup` and
+    // `pr checks` perfectly well, so nothing here is arranged to make them absent.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/actions-reach", "feat: add the reachable thing");
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECK_SOURCE", "actions")
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let calls = hosted.world.host_calls();
+    assert!(
+        !calls.is_empty(),
+        "a publication that waits for a check must have asked the host something"
+    );
+    for call in &calls {
+        assert!(
+            !call.contains("statusCheckRollup"),
+            "the rollup is what no fine-grained token can read, and {call:?} asked for it"
+        );
+        assert!(
+            !call.starts_with("pr checks "),
+            "`gh pr checks` reads the same check runs, and {call:?} ran it"
+        );
+        assert!(
+            !call.starts_with("run view "),
+            "`gh run view` addresses a job through a link only the rollup carries, \
+             and {call:?} ran it"
+        );
+    }
+
+    // And the endpoints it did reach, named. `api user` is who the credential is
+    // rather than check state, and is the only call here that is neither.
+    let mut reached: std::collections::BTreeSet<String> = calls
+        .iter()
+        .filter_map(|call| call.strip_prefix("api "))
+        // The path is the first word; anything after it shapes the answer rather
+        // than choosing what is asked for.
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(endpoint)
+        .collect();
+    assert!(
+        reached.remove("user"),
+        "the host is asked who is calling: {reached:?}"
+    );
+    assert_eq!(
+        reached,
+        CHECK_ENDPOINTS
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect(),
+        "the check state, and its log, came from these endpoints and no others"
+    );
+}
+
+#[test]
+fn a_check_source_this_build_cannot_read_is_refused_where_it_is_named() {
+    // The operator knob is configuration, and a misspelling of it that quietly meant
+    // "try both" would look exactly like the fallback working.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/misconfigured", "feat: add the misconfigured thing");
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECK_SOURCE", "checks")
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "it must be \"auto\", \"status-checks\", or \"actions\"",
+        ));
+    assert_eq!(hosted.origin_log().len(), 1);
 }
 
 #[test]
@@ -564,6 +960,11 @@ fn a_check_whose_job_the_host_will_not_name_is_recorded_rather_than_undoing_the_
     // answers and an operator reading the artifact has to be told which one — in
     // particular, a host that answered with something that is not a list of checks
     // has not said this check has no job.
+    //
+    // None of the four is answered from somewhere else instead: a second source is
+    // asked only where the credential may never read the first, and a host that
+    // answered wrongly is not that. Reading these as "ask GitHub Actions" would
+    // report about workflow checks alone whenever the complete answer was garbled.
     for (shape, reason) in [
         ("no-check-list", "would not say where check"),
         ("no-job", "reports no job for check"),

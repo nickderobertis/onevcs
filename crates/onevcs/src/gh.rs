@@ -21,6 +21,9 @@ use crate::error::{self, Error, Result};
 
 /// Names the program that stands in for `gh`.
 pub const PROGRAM_ENV: &str = "ONEVCS_GH";
+/// Selects the check-reading strategy, when an operator narrows it. The Actions
+/// strategy also reads branch rules; unset, the complete rollup is tried first.
+pub const CHECK_SOURCE_ENV: &str = "ONEVCS_CHECK_SOURCE";
 /// How long a wait for the host's checks may last.
 pub const CHECKS_TIMEOUT_ENV: &str = "ONEVCS_CHECKS_TIMEOUT_SECONDS";
 /// How often the host is asked again while its checks are unsettled.

@@ -15,8 +15,8 @@ use clap::Parser;
 
 use onevcs::cli::Cli;
 use onevcs::{
-    ChangeRequest, Check, MergeOutcome, MergePolicy, Providers, PublishOutcome, PublishRequest,
-    RemoteHost, SessionRequest, SessionToken, Subject,
+    ChangeChecks, ChangeRequest, Check, MergeOutcome, MergePolicy, Providers, PublishOutcome,
+    PublishRequest, RemoteHost, SessionRequest, SessionToken, Subject,
 };
 
 use crate::scratch::{
@@ -48,33 +48,34 @@ const REQUIRED: bool = false;
 /// the credential was not allowed to do.
 ///
 /// A permission failure is the likeliest way this journey fails and the hardest to
-/// read off what GitHub says about it: a fine-grained token may not resolve a
-/// repository's check runs without that repository's `Checks` permission, and the
-/// way GitHub declines is to name the GraphQL node it would not produce. So the
-/// refusal is restated in the terms an operator can act on, and carries what this
-/// tier's own witness got when it asked the same question a different way — which is
-/// what separates "this credential cannot read checks at all" from "this build asks
-/// for them wrongly". Not waited out: no amount of polling grants a permission.
-fn checks_of(host: &dyn RemoteHost, change: &ChangeRequest, slug: &str) -> Vec<Check> {
+/// read off what GitHub says about it. What the credential can reach decides which
+/// source answers, and *neither* is a refusal rather than "no checks": a
+/// fine-grained token cannot resolve a check run under any permission — GitHub
+/// offers no `Checks` permission for one — so for that credential the rollup is out
+/// of reach for good and `Actions: Read` is what makes the other source work. The
+/// refusal is restated in those terms, and carries what this tier's own witness got
+/// when it asked a different way, which is what separates "this credential can read
+/// no check source" from "this build asks for them wrongly". Not waited out: no
+/// amount of polling grants a permission.
+fn checks_of(host: &dyn RemoteHost, change: &ChangeRequest, slug: &str) -> ChangeChecks {
     match host.change_checks(change) {
-        Ok(checks) => checks,
+        Ok(answer) => answer,
         Err(error) => {
             let witness = gh_try(&[
-                "pr",
-                "checks",
-                &change.id.0,
-                "--repo",
-                slug,
-                "--json",
-                "name,state,link",
+                "api",
+                &format!(
+                    "repos/{slug}/actions/runs?head_sha={}&per_page=1",
+                    change.head_sha.0
+                ),
             ]);
             panic!(
                 "the host would not say what checks are on {}: {error}\nThis tier needs a \
-                 credential that {slug} allows to read its check runs. In CI that is the \
-                 RELEASE_PLZ_TOKEN secret; if it is a fine-grained token it needs that \
-                 repository's `Checks: read` permission, which is not implied by the contents \
-                 and pull-requests access the rest of this tier uses. Asked the same question a \
-                 second way, `gh pr checks` answered: {}",
+                 credential {slug} allows to read one of its check sources. In CI that is the \
+                 RELEASE_PLZ_TOKEN secret; a fine-grained token needs that repository's \
+                 `Actions: read`, which is not implied by the contents and pull-requests access \
+                 the rest of this tier uses — and it cannot be given `Checks`, which does not \
+                 exist for that credential class. Asked the same question a second way, the \
+                 Actions API answered: {}",
                 change.url,
                 match &witness {
                     Ok(answer) => format!("{:?}", answer.trim()),
@@ -170,29 +171,87 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
     // The real workflow's check, watched through the interface until it settles.
     // Six minutes: a queued GitHub-hosted runner is minutes on a bad day, and a
     // bound that fired early would report the tier's own impatience as a defect.
-    let settled: Check = until(
+    let reported: ChangeChecks = until(
         &format!("the scratch repository's check on {url} to settle"),
         Duration::from_secs(360),
         || {
-            checks_of(host.as_ref(), change, &slug)
-                .into_iter()
-                .find(Check::settled)
+            let answer = checks_of(host.as_ref(), change, &slug);
+            answer.checks.iter().any(Check::settled).then_some(answer)
         },
     );
+    // Which source answered is the credential's to decide, and this tier runs under
+    // two different ones: a maintainer's `gh auth` can read the whole rollup, and
+    // CI's fine-grained token can read GitHub Actions and nothing else. Both are
+    // answers; what must never happen is either one being read as "no checks".
+    assert!(
+        !reported.sources.is_empty(),
+        "an answer names the source it came from"
+    );
+    println!(
+        "smoke checks: read through {:?} (complete visibility: {})",
+        reported.sources,
+        reported.complete()
+    );
+    let settled = |answer: &ChangeChecks| -> Check {
+        answer
+            .checks
+            .iter()
+            .find(|check| check.settled())
+            .unwrap_or_else(|| panic!("a settled check was found a moment ago: {answer:?}"))
+            .clone()
+    };
+    let check = settled(&reported);
     assert_eq!(
-        settled.status, "completed",
+        check.status, "completed",
         "a settled check is reported in the host's own vocabulary"
     );
-    assert_eq!(settled.conclusion.as_deref(), Some("success"));
-    assert!(settled.green(), "the scratch repository's check passes");
+    assert_eq!(check.conclusion.as_deref(), Some("success"));
+    assert!(check.green(), "the scratch repository's check passes");
     assert_eq!(
-        settled.required, REQUIRED,
+        check.required, REQUIRED,
         "see the note on REQUIRED: the scratch repository declares no required check"
     );
 
-    // And its log, fetched from the real job rather than described.
+    // And the same question with the credential's own reach taken out of it: the
+    // Actions path, driven whatever the token could have read. It is the only path a
+    // fine-grained token has, and a developer machine's credential would otherwise
+    // never take it — the rollup would answer first and the leg CI depends on would
+    // be proved nowhere.
+    std::env::set_var("ONEVCS_CHECK_SOURCE", "actions");
+    let through_actions = checks_of(host.as_ref(), change, &slug);
+    assert!(
+        !through_actions.complete(),
+        "the Actions API sees workflow checks and says so: {:?}",
+        through_actions.sources
+    );
+    let by_actions = settled(&through_actions);
+    assert_eq!(
+        by_actions.name, check.name,
+        "the same real check, read through the source a fine-grained token has"
+    );
+    assert_eq!(by_actions.status, "completed");
+    assert_eq!(by_actions.conclusion.as_deref(), Some("success"));
+    assert_eq!(
+        by_actions.required, REQUIRED,
+        "the scratch repository's rulesets declare no required check"
+    );
+
+    // And its log, fetched from the real job rather than described — through the
+    // Actions API, which addresses it by the job id that same listing named.
     let artifact = host
-        .check_log(change, &settled)
+        .check_log(change, &by_actions)
+        .expect("the host stores the check's log");
+    let log = world.artifact(&artifact.0);
+    assert!(
+        log.contains(CHECK_LOG_LINE),
+        "the stored artifact is not the check's own log; it holds {log:?}"
+    );
+    std::env::remove_var("ONEVCS_CHECK_SOURCE");
+
+    // The same log, through whichever source this credential can read, so the
+    // fetch a publication actually performs is proved too.
+    let artifact = host
+        .check_log(change, &check)
         .expect("the host stores the check's log");
     let log = world.artifact(&artifact.0);
     assert!(

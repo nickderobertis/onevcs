@@ -26,8 +26,9 @@
 // journey in this suite uses.
 
 use onevcs::{
-    EventStream, FailureKind, Git, Identity, MergePolicy, Providers, PublishOutcome,
-    PublishRequest, Retention, Session, SessionRequest, SessionToken, Vcs,
+    CheckSource, EventStream, FailureKind, Git, GitHub, Identity, MergePolicy, Providers,
+    PublishOutcome, PublishRequest, RemoteHost, Retention, Session, SessionRequest, SessionToken,
+    Vcs,
 };
 use onevcs_testing::{MemoryHost, MemoryVcs, VcsState};
 
@@ -450,6 +451,105 @@ fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
     let opened = world.events_of(&session.token.0, "change-opened");
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0]["payload"]["url"], url.to_string());
+}
+
+#[test]
+fn the_checks_a_host_reports_say_which_of_its_sources_they_were_read_from() {
+    // The one thing only a caller embedding the crate can see, and the thing a
+    // caller deciding whether a change may merge has to know: whether it is looking
+    // at every check on the change request or at GitHub Actions alone. The
+    // credential decides that, so it travels with the answer.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let session = open(&Git, "feature/sourced");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the sourced thing",
+    );
+    onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+
+    let host = GitHub::new("acme-corp/hosted").expect("a repository named owner/name");
+    let changes = host
+        .find_changes("feature/sourced", "main")
+        .expect("the host lists its open change requests");
+    let change = &changes[0];
+
+    // A credential the repository allows to read its check runs reads the host's own
+    // rollup, which is every check anything posted on the change request.
+    let complete = host.change_checks(change).expect("the host's checks");
+    assert!(complete.complete(), "{:?}", complete.sources);
+    assert_eq!(
+        complete.sources,
+        [CheckSource::StatusChecks].into_iter().collect()
+    );
+    assert_eq!(complete.checks.len(), 1);
+    assert!(complete.checks[0].required);
+
+    // The same host under a fine-grained token: the rollup is refused, the Actions
+    // API answers, and the answer says so rather than passing itself off as
+    // everything. What a third-party integration posted is invisible to it, and
+    // that is exactly what a caller needs to be able to tell.
+    world.answer_malformed("actions-only");
+    let actions = host
+        .change_checks(change)
+        .expect("the Actions API answers what the rollup would not");
+    assert!(!actions.complete(), "{:?}", actions.sources);
+    assert_eq!(
+        actions.sources,
+        [CheckSource::Actions, CheckSource::BranchRules]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(
+        actions.checks, complete.checks,
+        "the same checks, seen another way"
+    );
+
+    // And the log of one, fetched from the job the Actions listing named.
+    let artifact = host
+        .check_log(change, &actions.checks[0])
+        .expect("the host stores the check's log");
+    assert_eq!(
+        std::fs::read_to_string(world.home().join("artifacts").join(&artifact.0))
+            .expect("the stored artifact"),
+        "the host log for check gate\n"
+    );
+
+    world.host_checks(&[]);
+    let no_jobs = host
+        .change_checks(change)
+        .expect("Actions can answer that no workflow job has started");
+    assert!(no_jobs.checks.is_empty());
+    assert_eq!(
+        no_jobs.sources,
+        [CheckSource::Actions].into_iter().collect(),
+        "branch rules were not consulted when there was no job to classify"
+    );
+
+    // A credential that can read neither source is a refusal, never an empty list —
+    // and it names both refusals and the permission that answers one of them.
+    world.answer_malformed("checks-refused");
+    let refused = host
+        .change_checks(change)
+        .expect_err("what the checks say is unknown, not empty");
+    let reason = refused.to_string();
+    assert!(reason.contains("Actions: Read"), "{reason}");
+    assert!(reason.contains("no Checks permission"), "{reason}");
 }
 
 #[test]

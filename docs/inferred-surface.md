@@ -111,6 +111,26 @@ for the same reason. -->
 | `Publication` | `session`, `branch`, `policy`, `outcome` | What a caller journals about a publication: which session and branch, the policy it was actually taken under (after the rules file and any narrowing), and what happened. |
 | `PublishOutcome` | `merged` / `change-open` / `queued` / `nothing-to-publish` / `failed` | The four endings the CLI printed as prose, plus the failure it printed to stderr and reported as an exit code. `Retention` is on the failure because the branch is the only record of the work, and whether it survived is the first thing a caller asks. |
 
+**A host's checks used to be a bare `Vec<Check>`, and no longer are.** The
+credential decides which of GitHub's check sources can be read at all, and one
+credential class — the fine-grained personal access token — can read none of the
+ones the rollup is built from, whatever it is scoped to. So *where the answer came
+from* is part of the answer, and that widening is an approved amendment written into
+`docs/contract.md` and held to the code by
+`the_amendment_declares_what_a_hosts_checks_say_about_where_they_came_from` in
+`tests/contract.rs`. What is inferred here is only the shape:
+
+| Type | Inferred shape | Why |
+| --- | --- | --- |
+| `ChangeChecks` | `checks`, `sources` | The list the contract already named, plus the one thing a caller cannot recover from it: which sources it is the list *of*. A field on `Check` would not answer it — an empty answer has no check to carry the source, and "GitHub Actions reported nothing" and "nothing was readable" are the two things that must never look alike. |
+| `CheckSource` | `status-checks` / `actions` / `branch-rules` | Not a vocabulary this crate invented: they are the three endpoints an answer can be assembled from, and the third is separate because which checks *block* is a different question from what the checks are, answered by a different endpoint with a different reach. |
+
+Deliberately *not* added: a `Check.source`, a source on the `change-check` event, and
+a public constant for `ONEVCS_CHECK_SOURCE`. The first is the field above; the second
+would make an event stream differ by credential, which is what `honesty.rs` compares
+two backends on; the third is an operator knob like the timeouts beside it, and none
+of those is a public item either.
+
 Every type reachable from a supplied implementation's state also gained
 `Deserialize` beside its `Serialize` — `Session`, `SessionToken`, `Provenance`,
 `PreservedBranch`, `Recoverable`, `Scope`, `SessionRequest`, `ChangeRequest`,

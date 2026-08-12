@@ -10,8 +10,9 @@ use std::path::PathBuf;
 
 use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
-    ChangeId, ChangeRequest, Check, Identity, MergeOutcome, MergePolicy, PreservedBranch,
-    Provenance, Publication, PublishOutcome, Recoverable, Session, SessionToken, Sha, Url,
+    ChangeId, ChangeRequest, Check, CheckSource, Identity, MergeOutcome, MergePolicy,
+    PreservedBranch, Provenance, Publication, PublishOutcome, Recoverable, Session, SessionToken,
+    Sha, Url,
 };
 use onevcs_testing::{HostState, VcsState};
 
@@ -172,6 +173,14 @@ pub fn full_host_state() -> HostState {
         titles,
         checks,
         check_logs,
+        // The credential the real implementation meets in CI: a fine-grained token,
+        // which reads GitHub Actions and the repository's rulesets and cannot
+        // resolve a check run at all.
+        check_sources: Some(
+            [CheckSource::Actions, CheckSource::BranchRules]
+                .into_iter()
+                .collect(),
+        ),
         merges,
     }
 }

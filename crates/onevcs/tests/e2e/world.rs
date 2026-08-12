@@ -269,6 +269,15 @@ impl World {
     /// the check in the rollup and then lists no job for it, `jobless-link` names a
     /// details URL that is not a job's, and `non-list` answers with JSON that is not
     /// a list of checks at all.
+    ///
+    /// `checks-refused` is a credential that can read no check source at all, and
+    /// the `actions-only` family is the one this crate's real tier runs under: a
+    /// fine-grained token, which GitHub will not let resolve a check run under any
+    /// permission and which therefore reads the Actions API and the repository's
+    /// rulesets or nothing. `actions-only-truncated` has the Actions listing hold
+    /// entries back, `actions-only-rules-not-a-list` answers about the rulesets with
+    /// something that is not a list of them, and `actions-only-rules-unsaid` names a
+    /// ruleset that requires status checks and will not say which.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -295,6 +304,22 @@ impl World {
     /// Make the substituted host unable to hand over a check's log.
     pub fn refuse_check_logs(&self) {
         std::fs::write(self.path("gh-state/no-logs"), "").expect("a host that keeps its logs");
+    }
+
+    /// Every call the substituted host has been asked to make, in order.
+    ///
+    /// What a journey about a credential's *reach* asserts over. Whether a build
+    /// can answer under a token that may not resolve a check run is decided by
+    /// which endpoints it asks for, and an answer cannot show that: this world
+    /// replies to calls the real host would refuse.
+    pub fn host_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("gh-state/gh-calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|call| !call.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Every event a session's stream carries, read the way a consumer reads it.
@@ -378,16 +403,146 @@ set -euo pipefail
 
 STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
 mkdir -p "$STATE"
+
+# Every call this host is asked to make, one line each, in order. A journey about
+# what a *credential* can reach has to assert over this rather than over the
+# answer: a stand-in that replies is indistinguishable from one that was allowed
+# to be asked, so which endpoints a path touched is readable nowhere else. An
+# argument's own newlines are folded into spaces so one call stays one line.
+{ printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+
 ORIGIN="$(cat "$STATE/origin")"
 CHECKS="$STATE/checks.rows"
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
+
+# What a credential GitHub will not let read a change request's check runs is told,
+# in the two shapes it is told it: the GraphQL rollup names the node it would not
+# produce, and the REST endpoints answer 403. Both are refusals, and neither says
+# there are no checks.
+refused_graphql() {
+  printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup.nodes.0.commit.statusCheckRollup.contexts.nodes.0)\n' >&2
+  exit 1
+}
+
+# Whether this world's credential may read check runs at all. `actions-only` is the
+# fine-grained token the real tier runs under: it reads the Actions API and the
+# repository's rulesets, and nothing that resolves a check run.
+readable_rollup() {
+  case "$malformed" in
+    checks-refused|actions-only*|misleading-refusal) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# One job's log, addressed by the job's **id** — the id a row has in this world,
+# which is what both `gh run view --job` and the Actions API answer to.
+job_log() {
+  local want="$1" name
+  if [ -f "$STATE/no-logs" ]; then
+    printf 'this repository keeps its check logs to itself\n' >&2
+    exit 1
+  fi
+  name="$(awk -F'|' -v want="$want" 'NF && ++row == want { print $1 }' "$CHECKS" 2>/dev/null || printf '')"
+  if [ -z "$name" ]; then
+    printf 'could not find any jobs with ID %s\n' "$want" >&2
+    exit 1
+  fi
+  if [ -f "$STATE/log-$name.txt" ]; then
+    cat "$STATE/log-$name.txt"
+  else
+    printf 'the host log for check %s\n' "$name"
+  fi
+}
 
 command="${1:-}"; shift || true
 
 case "$command" in
   api)
-    printf 'tester\n'
-    exit 0
+    path="${1:-}"; shift || true
+    query=""
+    case "$path" in
+      *\?*) query="${path#*\?}"; path="${path%%\?*}" ;;
+    esac
+    if [ "$path" = "user" ]; then
+      printf 'tester\n'
+      exit 0
+    fi
+    # Everything below is GitHub's REST API: the Actions endpoints and the
+    # repository's rulesets, which is what a token that may not resolve a check run
+    # is left with. `checks-refused` is the credential that may not read those
+    # either, and it declines here the way the API declines.
+    if [ "$malformed" = "checks-refused" ]; then
+      printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
+      exit 1
+    fi
+    case "$path" in
+      */actions/runs)
+        head_sha="${query#*head_sha=}"; head_sha="${head_sha%%&*}"
+        runs=0
+        for record in "$STATE"/pr-*.env; do
+          [ -e "$record" ] || continue
+          if ( . "$record"; [ "$PR_HEAD_SHA" = "$head_sha" ] ); then runs=1; fi
+        done
+        if [ "$runs" = "0" ]; then
+          # No workflow has run on that commit, which is what a commit nothing was
+          # opened against reports.
+          printf '{"total_count":0,"workflow_runs":[]}\n'
+          exit 0
+        fi
+        printf '{"total_count":1,"workflow_runs":[{"id":1,"head_sha":"%s","status":"completed"}]}\n' "$head_sha"
+        exit 0 ;;
+      */actions/runs/*/jobs)
+        # The same rows the rollup is rendered from, as the jobs of that one run —
+        # so what this host reports through either source and what it acts on when
+        # asked to merge cannot disagree. A job's id is its row, which is the id
+        # `gh run view --job` answers to as well.
+        rows=""; separator=""; row=0; entry=""
+        while IFS='|' read -r name status conclusion required; do
+          [ -n "$name" ] || continue
+          row=$((row + 1))
+          if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
+          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry}"
+          separator=","
+        done <"$CHECKS" 2>/dev/null || true
+        total="$row"
+        # A page that held entries back. The listing says how many there are, and a
+        # build that read the short list as the whole answer would wait for a check
+        # it was never shown.
+        if [ "$malformed" = "actions-only-truncated" ]; then total=$((row + 1)); fi
+        printf '{"total_count":%s,"jobs":[%s]}\n' "$total" "$rows"
+        exit 0 ;;
+      */actions/jobs/*/logs)
+        job="${path%/logs}"; job="${job##*/}"
+        job_log "$job"
+        exit 0 ;;
+      */rules/branches/*)
+        case "$malformed" in
+          actions-only-rules-not-a-list)
+            printf '{"rules":[]}\n'
+            exit 0 ;;
+          actions-only-rules-unsaid)
+            # A ruleset that says it requires status checks and will not say which.
+            printf '[{"type":"required_status_checks","parameters":{}}]\n'
+            exit 0 ;;
+        esac
+        contexts=""; separator=""
+        while IFS='|' read -r name status conclusion required; do
+          [ -n "$name" ] || continue
+          [ "$required" = "true" ] || continue
+          contexts="$contexts$separator{\"context\":\"$name\",\"integration_id\":15368}"
+          separator=","
+        done <"$CHECKS" 2>/dev/null || true
+        if [ -z "$contexts" ]; then
+          # A repository with no ruleset requiring anything, which is what the
+          # scratch repository the real tier runs against answers.
+          printf '[]\n'
+          exit 0
+        fi
+        printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[%s]}}]\n' "$contexts"
+        exit 0 ;;
+    esac
+    printf 'fake gh: unsupported api path %s\n' "$path" >&2
+    exit 1
     ;;
   run)
     # `gh run view --log --job` addresses a job by its **id**, never by a check's
@@ -401,20 +556,7 @@ case "$command" in
         *) shift ;;
       esac
     done
-    if [ -f "$STATE/no-logs" ]; then
-      printf 'this repository keeps its check logs to itself\n' >&2
-      exit 1
-    fi
-    name="$(awk -F'|' -v want="$job" 'NF && ++row == want { print $1 }' "$CHECKS" 2>/dev/null || printf '')"
-    if [ -z "$name" ]; then
-      printf 'could not find any jobs with ID %s\n' "$job" >&2
-      exit 1
-    fi
-    if [ -f "$STATE/log-$name.txt" ]; then
-      cat "$STATE/log-$name.txt"
-    else
-      printf 'the host log for check %s\n' "$name"
-    fi
+    job_log "$job"
     exit 0
     ;;
   pr) ;;
@@ -491,6 +633,9 @@ case "$subcommand" in
     # Where `gh` reports whether a check blocks the merge, and where each check
     # ran. `gh pr view`'s rollup says neither, which is why this is a second call.
     . "$STATE/pr-$number.env"
+    # It resolves the same check runs the rollup does, so a credential refused
+    # there is refused here — this command is not a second way in.
+    readable_rollup || refused_graphql
     if [ "$only_required" = "0" ]; then
       case "$malformed" in
         no-check-list)
@@ -615,14 +760,19 @@ case "$subcommand" in
         printf '{"number":%s,"headRefOid":"%s","mergeCommit":null,"statusCheckRollup":%s}\n' \
           "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
         exit 0 ;;
-      checks-refused)
+      misleading-refusal)
+        if wanted statusCheckRollup; then
+          printf 'GraphQL: another field said Resource not accessible while the checks service was unavailable\n' >&2
+          exit 1
+        fi
+        ;;
+      checks-refused|actions-only*)
         # What real GitHub answers a credential the repository does not allow to read
         # its checks: `gh pr view` fails *whole*, however much of what it was asked
         # for the token could see. Every other field list is answered as usual, which
         # is the point — a caller that asked only for what it reads is unaffected.
         if wanted statusCheckRollup; then
-          printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup.nodes.0.commit.statusCheckRollup.contexts.nodes.0)\n' >&2
-          exit 1
+          refused_graphql
         fi
         ;;
     esac

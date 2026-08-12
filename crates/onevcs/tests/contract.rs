@@ -26,11 +26,11 @@ use onevcs::cli::Cli;
 use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
-    ArtifactId, ArtifactRef, ChangeId, ChangeRequest, ChangeSpec, Check, Envelope, Error,
-    EventKind, FailureKind, Git, GitHub, Labels, Lifecycle, MergeOutcome, MergePolicy,
-    PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest, Recoverable,
-    RemoteHost, Retention, Scope, Session, SessionRecord, SessionRequest, SessionToken, Sha,
-    Source, Subject, Url, Vcs,
+    ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
+    Envelope, Error, EventKind, FailureKind, Git, GitHub, Labels, Lifecycle, MergeOutcome,
+    MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest,
+    Recoverable, RemoteHost, Retention, Scope, Session, SessionRecord, SessionRequest,
+    SessionToken, Sha, Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -91,6 +91,27 @@ fn block(language: &str) -> String {
 /// The single block written in `language` in the amendments above the rule.
 fn amendment_block(language: &str) -> String {
     only_block(language, &regions().0, "the contract's amendments")
+}
+
+/// The one `rust` block in the amendments that declares `marker`.
+///
+/// Amendments accumulate, and each one that widens the surface spells its own
+/// declarations — so a block is found by what it declares rather than by being the
+/// only one of its language, which stopped being true with the second such
+/// amendment.
+fn amendment_declaring(marker: &str) -> String {
+    let matching: Vec<String> = fenced_blocks(&regions().0)
+        .into_iter()
+        .filter(|(language, body)| language == "rust" && body.contains(marker))
+        .map(|(_, body)| body)
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "exactly one amendment must declare {marker:?}; found {}",
+        matching.len()
+    );
+    matching.into_iter().next().expect("checked above")
 }
 
 fn only_block(language: &str, region: &str, named: &str) -> String {
@@ -912,7 +933,7 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         outcome: PublishOutcome::NothingToPublish,
     };
 
-    let declarations = amendment_block("rust");
+    let declarations = amendment_declaring("pub struct SessionRecord");
     for declared in [
         "fn session(&self, token: &SessionToken) -> Result<SessionRecord>;",
         "fn close_session(&self, token: &SessionToken) -> Result<Session>;",
@@ -954,6 +975,73 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
 
     assert_eq!(publication.session, record.session.token);
     assert_eq!(request.policy, Some(MergePolicy::ChangeOpen));
+}
+
+#[test]
+fn the_amendment_declares_what_a_hosts_checks_say_about_where_they_came_from() {
+    // Reconciled the same way the widened seam above is: the type is built with
+    // every field named, and the amendment is held to declaring it. What makes this
+    // one worth gating is that the sources are the *answer* — a caller reads them to
+    // tell "every check on this change request" from "the workflow checks, and
+    // whatever a third-party integration posted is invisible to this credential" —
+    // so a build that stopped reporting them would still compile everywhere.
+    let answer = ChangeChecks {
+        checks: vec![Check {
+            name: "gate".to_owned(),
+            status: "completed".to_owned(),
+            conclusion: Some("success".to_owned()),
+            required: true,
+        }],
+        sources: [CheckSource::Actions, CheckSource::BranchRules]
+            .into_iter()
+            .collect(),
+    };
+    assert!(
+        !answer.complete(),
+        "an answer without the host's own rollup in it has not seen every check"
+    );
+    assert!(
+        ChangeChecks {
+            checks: Vec::new(),
+            sources: [CheckSource::StatusChecks].into_iter().collect(),
+        }
+        .complete(),
+        "the host's own rollup is the complete answer, empty or not"
+    );
+
+    let declarations = amendment_declaring("pub struct ChangeChecks");
+    for declared in [
+        "fn change_checks(&self, cr: &ChangeRequest) -> Result<ChangeChecks>;",
+        "pub struct ChangeChecks { pub checks: Vec<Check>, pub sources: BTreeSet<CheckSource> }",
+        "impl ChangeChecks { pub fn complete(&self) -> bool; }",
+        "pub enum CheckSource { StatusChecks, Actions, BranchRules }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+
+    // A source is a value a consumer reads out of JSON, so the spellings the
+    // amendment writes are the ones it serializes as.
+    for (source, spelled) in [
+        (CheckSource::StatusChecks, "status-checks"),
+        (CheckSource::Actions, "actions"),
+        (CheckSource::BranchRules, "branch-rules"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(source).expect("a source serializes"),
+            json!(spelled)
+        );
+        assert!(
+            declarations.contains(spelled),
+            "the amendment does not spell {spelled}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(&answer).expect("the answer serializes")["sources"],
+        json!(["actions", "branch-rules"])
+    );
 }
 
 /// Every ending a publication has, proven exhaustive by the match below: adding a
