@@ -18,6 +18,7 @@
 //! pushed branch, a recovery attestation — is copied back into the execution
 //! checkout, which stays the durable record every later session reads.
 
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -43,7 +44,12 @@ pub const RETAINED_DEAD_RUNS: usize = 3;
 /// A record outlives the command that wrote it and is read by the next one, so it
 /// is a stored contract like the registry document — and like that document, an
 /// unreadable version is refused by name rather than guessed at.
-pub const RECORD_VERSION: u32 = 1;
+pub const RECORD_VERSION: u32 = 2;
+
+/// One OS process instance's creation identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessStart(NonZeroU64);
 
 /// A session token that has been checked before it names a file.
 ///
@@ -178,6 +184,10 @@ pub struct Record {
     pub state: Lifecycle,
     /// The process that opened it, for a diagnostic naming who to look for.
     pub owner_pid: u32,
+    /// The OS creation identity of `owner_pid`, distinguishing this process from a
+    /// later process that reuses its numeric pid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_started: Option<ProcessStart>,
 }
 
 #[derive(Debug, Serialize)]
@@ -209,7 +219,10 @@ impl Liveness {
 
 impl From<Record> for Holder {
     fn from(record: Record) -> Self {
-        let liveness = if process_exists(record.owner_pid) {
+        let same_process = record
+            .owner_started
+            .is_some_and(|started| process_started(record.owner_pid) == Some(started));
+        let liveness = if record.state == Lifecycle::Open && same_process {
             Liveness::Live
         } else {
             Liveness::Stale
@@ -226,50 +239,126 @@ impl From<Record> for Holder {
     }
 }
 
-#[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    if pid <= 0 {
-        return false;
-    }
-    let result = unsafe { libc::kill(pid, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
 #[cfg(windows)]
-fn process_exists(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+fn process_started(pid: u32) -> Option<ProcessStart> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     if pid == 0 {
-        return false;
+        return None;
     }
+    // SAFETY: this requests a query-only handle for the numeric pid; no borrowed
+    // pointer crosses the call.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
-        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED as i32);
+        return None;
     }
+    let mut exit_code = 0;
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: `handle` is open above and every out-pointer names initialized,
+    // writable storage that lives through these calls.
+    let running = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0
+        && exit_code == STILL_ACTIVE as u32
+        && unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) }
+            != 0;
+    // SAFETY: this is the same non-null owned handle and is closed exactly once.
     unsafe { CloseHandle(handle) };
-    true
+    running
+        .then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+        .and_then(NonZeroU64::new)
+        .map(ProcessStart)
 }
 
-#[cfg(all(test, windows))]
-mod windows_tests {
-    use super::process_exists;
-
-    #[test]
-    fn pid_liveness_distinguishes_this_process_from_invalid_pids() {
-        assert!(
-            process_exists(std::process::id()),
-            "the test process is live"
-        );
-        assert!(!process_exists(0), "Windows reserves PID zero");
-        assert!(
-            !process_exists(u32::MAX),
-            "a PID outside Windows' process range is stale"
-        );
+#[cfg(target_os = "linux")]
+fn process_started(pid: u32) -> Option<ProcessStart> {
+    if pid == 0 {
+        return None;
     }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name is parenthesized and may itself contain spaces or `)`, so
+    // fields after it are counted from the final closing parenthesis.
+    let fields: Vec<_> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    let state = *fields.first()?;
+    if matches!(state, "Z" | "X") {
+        return None;
+    }
+    fields
+        .get(19)?
+        .parse()
+        .ok()
+        .and_then(NonZeroU64::new)
+        .map(ProcessStart)
+}
+
+#[cfg(target_os = "macos")]
+fn process_started(pid: u32) -> Option<ProcessStart> {
+    use std::ffi::{c_int, c_void};
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProcBsdInfo {
+        flags: u32,
+        status: u32,
+        xstatus: u32,
+        pid: u32,
+        ppid: u32,
+        uid: u32,
+        gid: u32,
+        ruid: u32,
+        rgid: u32,
+        svuid: u32,
+        svgid: u32,
+        rfu_1: u32,
+        comm: [u8; 16],
+        name: [u8; 32],
+        nfiles: u32,
+        pgid: u32,
+        pjobc: u32,
+        e_tdev: u32,
+        e_tpgid: u32,
+        nice: i32,
+        start_tvsec: u64,
+        start_tvusec: u64,
+    }
+    extern "C" {
+        fn proc_pidinfo(
+            pid: c_int,
+            flavor: c_int,
+            arg: u64,
+            buffer: *mut c_void,
+            size: c_int,
+        ) -> c_int;
+    }
+    const PROC_PIDTBSDINFO: c_int = 3;
+    const SZOMB: u32 = 5;
+    let pid = c_int::try_from(pid).ok().filter(|pid| *pid > 0)?;
+    let mut info = ProcBsdInfo::default();
+    let size = c_int::try_from(std::mem::size_of::<ProcBsdInfo>()).ok()?;
+    // SAFETY: `info` is writable for exactly `size` bytes, and `proc_pidinfo`
+    // borrows that storage only for the duration of this call.
+    let read = unsafe {
+        proc_pidinfo(
+            pid,
+            PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut ProcBsdInfo).cast(),
+            size,
+        )
+    };
+    if read != size || info.status == SZOMB {
+        return None;
+    }
+    NonZeroU64::new(
+        info.start_tvsec
+            .saturating_mul(1_000_000)
+            .saturating_add(info.start_tvusec),
+    )
+    .map(ProcessStart)
 }
 
 impl Record {
@@ -485,6 +574,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         publication_checkout: resolution.publication.clone(),
         state: Lifecycle::Open,
         owner_pid: std::process::id(),
+        owner_started: process_started(std::process::id()),
     };
     save(&record)?;
     stream.emit(
@@ -576,6 +666,7 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
 
     record.state = Lifecycle::Open;
     record.owner_pid = std::process::id();
+    record.owner_started = process_started(std::process::id());
     save(&record)?;
     drop(lease);
     Ok((record, stream, preserved))
@@ -659,4 +750,38 @@ fn reclaim(runs: &Path) -> Result<()> {
 /// A `serde_json` object literal, as a payload map.
 pub fn object(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::process_started;
+    use std::process::Command;
+
+    #[test]
+    fn process_identity_is_live_then_stale_after_the_child_is_reaped() {
+        let mut child = if cfg!(windows) {
+            Command::new("powershell")
+                .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+                .spawn()
+        } else {
+            Command::new("sh").args(["-c", "sleep 30"]).spawn()
+        }
+        .expect("spawn a child that remains alive");
+        let pid = child.id();
+        let started = process_started(pid).expect("the running child has an identity");
+        assert_eq!(process_started(pid), Some(started));
+        child.kill().expect("terminate the child");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while process_started(pid).is_some() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            process_started(pid),
+            None,
+            "an exited child is stale before its handle is reaped"
+        );
+        child.wait().expect("reap the child");
+        assert_eq!(process_started(pid), None);
+        assert_eq!(process_started(0), None);
+    }
 }

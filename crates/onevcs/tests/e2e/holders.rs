@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
+use onevcs::{Git, SessionRequest, Vcs};
 use predicates::prelude::*;
 
+use crate::honesty::inhabit;
 use crate::lifecycle::{local_direct, Fixture};
 use crate::world::token_of;
 
@@ -40,6 +41,30 @@ fn record_path(fixture: &Fixture, token: &str) -> PathBuf {
         .join(format!("{token}.json"))
 }
 
+// llmlint: ignore-block[tests_mirror_real_usage] PID reuse is an OS race no test
+// can request deterministically. Corrupting only the persisted creation identity
+// models precisely the trust-boundary state reuse creates; the assertion still
+// drives the real CLI reader and its OS query.
+fn replace_owner_start_for_reuse(fixture: &Fixture, token: &str) {
+    let path = record_path(fixture, token);
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("a session record"))
+            .expect("the record is JSON");
+    let started = record["owner_started"]
+        .as_u64()
+        .expect("a process creation identity");
+    record["owner_started"] = started.saturating_add(1).into();
+    std::fs::write(
+        path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&record).expect("serializable record")
+        ),
+    )
+    .expect("the fixture can model pid reuse in the stored process identity");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
 fn set_owner_pid(fixture: &Fixture, token: &str, pid: u32) {
     let path = record_path(fixture, token);
     let mut record: serde_json::Value =
@@ -59,7 +84,6 @@ fn set_owner_pid(fixture: &Fixture, token: &str, pid: u32) {
 #[test]
 fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_state() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
-    let live = fixture.open(&["--branch", "feature/live"]).0;
     let closed = fixture.open(&["--branch", "feature/closed"]).0;
     fixture
         .world
@@ -68,14 +92,17 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
         .assert()
         .success();
 
-    let mut owner = Command::new("sh")
-        .args(["-c", "while :; do sleep 1; done"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("a real live owner process");
-    set_owner_pid(&fixture, &live, owner.id());
+    inhabit(&fixture.world);
+    let live = Git
+        .open_session(SessionRequest {
+            repo: "project".to_owned(),
+            branch: Some("feature/live".to_owned()),
+            base: None,
+            execution_checkout: None,
+        })
+        .expect("the embedding process opens a real session")
+        .token
+        .0;
 
     let before = files_beneath(&fixture.world.home());
     let output = fixture
@@ -91,8 +118,6 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
     );
     let rows: Vec<serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("holders prints one JSON array");
-    owner.kill().expect("the owner stops");
-    owner.wait().expect("the owner is reaped");
     assert_eq!(rows.len(), 2);
 
     let live_row = rows
@@ -121,7 +146,7 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
     assert_eq!(live_row["branch"], "feature/live");
     assert_eq!(live_row["state"], "open");
     assert_eq!(live_row["liveness"], "live");
-    assert_eq!(live_row["owner_pid"], owner.id());
+    assert_eq!(live_row["owner_pid"], std::process::id());
     assert!(live_row["worktree"].is_string());
     assert!(live_row["identity"].is_string());
 
@@ -137,13 +162,24 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
         "the read changes no state"
     );
 
-    fixture
+    // llmlint: ignore[tests_mirror_real_usage] deterministic PID reuse cannot be
+    // requested from an OS; alter only the persisted creation identity, then drive
+    // the real CLI reader, to model the exact state a recycled PID presents.
+    replace_owner_start_for_reuse(&fixture, &live);
+    let reused = fixture
         .world
         .onevcs()
         .args(["session", "holders", "project", "--json"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"liveness\":\"stale\""));
+        .output()
+        .expect("holders runs after simulated pid reuse");
+    assert!(reused.status.success());
+    let reused_rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&reused.stdout).expect("holder rows");
+    let reused_live = reused_rows
+        .iter()
+        .find(|row| row["token"] == live)
+        .expect("the reused owner row");
+    assert_eq!(reused_live["liveness"], "stale");
 }
 
 #[test]
