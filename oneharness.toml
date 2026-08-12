@@ -29,6 +29,31 @@ harnesses = ["codex", "claude-code"]
 [harness.codex]
 model = "gpt-5.5"
 
+[harness.codex.variant.alternate]
+model = "gpt-5.5"
+env_from = { CODEX_HOME = "ORCHESTRATOR_CODEX_ALT_HOME" }
+unset_env = ["OPENAI_API_KEY"]
+
 [harness.claude-code]
 model = "claude-opus-4-8"
 env = { IS_SANDBOX = "1" }
+
+[harness.claude-code.variant.alternate2]
+model = "claude-opus-4-8"
+env_from = { CLAUDE_CONFIG_DIR = "ORCHESTRATOR_CLAUDE_ALT2_CONFIG_DIR" }
+unset_env = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+]
+
+[harness.claude-code.variant.primary]
+model = "claude-opus-4-8"
+unset_env = [
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+]

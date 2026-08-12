@@ -274,6 +274,45 @@ fn the_actions_source_is_refused_rather_than_read_as_nothing_blocking() {
     }
 }
 
+#[test]
+fn explicit_complete_check_sources_read_the_rollup() {
+    for source in ["auto", "status-checks"] {
+        let hosted = Hosted::new(AUTOMATED);
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }]);
+        let token = hosted.change(
+            &format!("feature/{source}"),
+            &format!("feat: read checks through {source}"),
+        );
+
+        hosted
+            .world
+            .onevcs()
+            .env("ONEVCS_CHECK_SOURCE", source)
+            .args(["publish", &token])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("merged at"));
+
+        let calls = hosted.world.host_calls();
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.contains("--json statusCheckRollup")),
+            "{source} reads the complete check rollup: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call.starts_with("pr checks ")),
+            "{source} asks which rollup checks are required: {calls:?}"
+        );
+        assert_eq!(hosted.origin_log().len(), 2);
+    }
+}
+
 /// Every endpoint reading a change request's check state through GitHub Actions is
 /// allowed to reach, written the way GitHub's own reference writes it.
 ///
