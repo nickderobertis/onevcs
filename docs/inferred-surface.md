@@ -139,6 +139,29 @@ is what makes a scenario something a test can write down, and `onepipeline` had
 already recorded the two it could not read (`SessionToken`, `MergeOutcome`) as
 mirrors waiting to be deleted.
 
+**The holder view existed and could not be reached, and now is a library call.**
+`onevcs session holders` had rendered it since the first release, from a private
+type over a private record read by a private function — so the only consumer that
+wanted it had to spawn the binary and parse what it printed, which for that consumer
+is the thing it composes libraries to avoid. The widening is an approved amendment
+in `docs/contract.md`, held to the code by
+`the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers` in
+`tests/contract.rs`. The shapes were not chosen here — they are what the command
+already printed — so what this record holds is why the surface is drawn where it is:
+
+| Item | Shape | Why |
+| --- | --- | --- |
+| `SessionHolder` | `token`, `identity`, `branch`, `worktree`, `owner_pid`, `state`, `liveness` | Field for field what `--json` printed, so the two surfaces cannot diverge and a consumer can parse the command's output into the type. `token` is a `SessionToken` rather than the `String` the private type carried: it is the value the rest of the surface takes, and its `transparent` serialization leaves the JSON identical. |
+| `Liveness` | `live` / `stale` | Reported rather than derived. A caller holding `owner_pid` cannot answer it — pids are reused, so a later process wearing a dead session's number reads as its owner — and the creation identity that settles it is on the private record. `as_str` is public with it so a caller renders the words the command does rather than inventing a second spelling. |
+| `session_holders(repo)` | `&str` in, `Vec<SessionHolder>` out | The command's operand and its output. It takes no `Providers`: the holders are the records under this host's state root, so there is nothing here for a supplied implementation to answer. |
+
+Deliberately *not* public: `workspace::Record` and `workspace::all`, which are the
+whole durable record — the run root, the per-session clone, the two checkouts, and a
+schema version this build refuses to read at any other value. Exporting them would
+commit this crate to a private on-disk layout as a public type. `SessionHolder` is
+the projection of it that answers the question, and `Ref`, `Token`, `ProcessStart`,
+and `RECORD_VERSION` stay behind it for the same reason.
+
 ## Open questions for the planner
 
 These are reported rather than resolved. One that has since been resolved is kept
@@ -176,3 +199,10 @@ question was:
    every identity and for one repository. Run inside a registered checkout it
    answers for that repository; run anywhere else, for all of them. An explicit
    operand would be a contract amendment.
+6. **Holder enumeration does not go through the seam.** `session_holders` reads
+   this host's session records, which is what `onevcs session holders` has always
+   done and is why the two are one path — but it means a session a supplied `Vcs`
+   opened into its own state is not in the list, the one place a session that
+   implementation opened is not first-class. Closing it means a method on `Vcs`,
+   which every implementor would have to write, so it is a contract amendment and a
+   breaking release rather than a decision to take in passing.

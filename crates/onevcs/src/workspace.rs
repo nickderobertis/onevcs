@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use crate::error::{self, Error, Result};
 use crate::event::EventKind;
 use crate::registry::Registry;
-use crate::session::{Lifecycle, Session, SessionRequest, SessionToken};
+use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::{git, home, ids, lock};
@@ -190,34 +190,7 @@ pub struct Record {
     pub owner_started: Option<ProcessStart>,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct Holder {
-    pub(crate) token: String,
-    pub(crate) identity: String,
-    pub(crate) branch: String,
-    pub(crate) worktree: PathBuf,
-    pub(crate) owner_pid: u32,
-    pub(crate) state: Lifecycle,
-    pub(crate) liveness: Liveness,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Liveness {
-    Live,
-    Stale,
-}
-
-impl Liveness {
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::Live => "live",
-            Self::Stale => "stale",
-        }
-    }
-}
-
-impl From<Record> for Holder {
+impl From<Record> for SessionHolder {
     fn from(record: Record) -> Self {
         let same_process = record
             .owner_started
@@ -228,7 +201,7 @@ impl From<Record> for Holder {
             Liveness::Stale
         };
         Self {
-            token: record.token.to_string(),
+            token: SessionToken(record.token.to_string()),
             identity: record.identity,
             branch: record.branch.to_string(),
             worktree: record.worktree,
@@ -475,6 +448,27 @@ pub fn all() -> Result<Vec<Record>> {
     }
     records.sort_by(|a, b| a.token.cmp(&b.token));
     Ok(records)
+}
+
+/// Every session recorded for one repository, in token order.
+///
+/// The repository is spelled the way every other command spells one — an identity
+/// key, a registered alias, an origin URL, or a path — and one that resolves to no
+/// registered identity is refused rather than answered with an empty list, because
+/// "nobody is in this repository" and "this is not a repository I know" are
+/// different answers to act on.
+///
+/// Reading is all it does: a stale holder is reported as stale and left alone,
+/// since reclaiming somebody else's run root is the business of opening a session
+/// rather than of looking at one.
+pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
+    let registry = store::load()?;
+    let resolution = store::resolve(&registry, repo)?;
+    Ok(all()?
+        .into_iter()
+        .filter(|record| record.identity == resolution.key)
+        .map(SessionHolder::from)
+        .collect())
 }
 
 /// The directory one identity's run roots live under.
@@ -754,16 +748,14 @@ pub fn object(value: Value) -> Map<String, Value> {
 
 #[cfg(test)]
 mod process_tests {
-    use super::{
-        process_started, Holder, Liveness, ProcessStart, Record, Ref, Token, RECORD_VERSION,
-    };
-    use crate::session::Lifecycle;
+    use super::{process_started, ProcessStart, Record, Ref, Token, RECORD_VERSION};
+    use crate::session::{Lifecycle, Liveness, SessionHolder};
     use std::num::NonZeroU64;
     use std::path::PathBuf;
     use std::process::Command;
 
-    fn holder_for(owner_started: Option<ProcessStart>) -> Holder {
-        Holder::from(Record {
+    fn holder_for(owner_started: Option<ProcessStart>) -> SessionHolder {
+        SessionHolder::from(Record {
             version: RECORD_VERSION,
             token: Token::try_from("s-process-test".to_owned()).expect("a token"),
             identity: "identity".to_owned(),

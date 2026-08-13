@@ -82,6 +82,11 @@ the session that wrote it — so a caller following several publications at once
 tell them apart. The command line is a rendering of these rather than a second
 path through them.
 
+Before a caller has a token, `session_holders(repo)` answers who is in a
+repository: one `SessionHolder` per recorded session, carrying the token the calls
+above take, the branch and worktree it holds, and whether its owner is still
+running (`Liveness::Live`) or the session is the remains of a run that stopped.
+
 ## Test against it, without a real GitHub
 
 Embedding the crate, `run_with(&cli, providers)` takes the two implementations a

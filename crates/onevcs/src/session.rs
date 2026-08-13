@@ -78,6 +78,61 @@ pub struct SessionRecord {
     pub provenance: Provenance,
 }
 
+/// One session that holds a repository's workspace, as an enumeration reports it.
+///
+/// A [`SessionRecord`] answers about a session somebody already has the token for;
+/// this answers the question before that one — *who is in this repository* — for
+/// every session the host has recorded, including the ones whose owner is gone. It
+/// is what `onevcs session holders` prints, so a caller reading the command's JSON
+/// and a caller embedding [`crate::session_holders`] read the same shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHolder {
+    /// The handle this session is addressed by, and the one every command that
+    /// takes a session takes.
+    pub token: SessionToken,
+    /// The identity key the session belongs to.
+    pub identity: String,
+    /// The branch its worktree has checked out.
+    pub branch: String,
+    /// The worktree the change is made in. A closed session's is gone; its branch
+    /// is not.
+    pub worktree: PathBuf,
+    /// The process that opened it, so a diagnostic can name who to look for.
+    pub owner_pid: u32,
+    /// Where the session is in its life. Spelled `state` because that is the key
+    /// `onevcs session holders --json` prints it under.
+    pub state: Lifecycle,
+    /// Whether the process that opened it is still there.
+    pub liveness: Liveness,
+}
+
+/// Whether a session's owner is still running, which is what makes its lease real.
+///
+/// A recorded pid alone cannot answer this — the OS reuses pids, so a later process
+/// wearing a dead session's number would read as its owner. The answer is the pid
+/// *and* that process's creation identity, which is why it is reported rather than
+/// left for a caller to derive from [`SessionHolder::owner_pid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Liveness {
+    /// The session is open and the process that opened it is that same process,
+    /// still running.
+    Live,
+    /// Anything else: the session is closed, its owner exited, or its pid now
+    /// belongs to a different process.
+    Stale,
+}
+
+impl Liveness {
+    /// The word this crate reports it as, on the command line and in JSON.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Stale => "stale",
+        }
+    }
+}
+
 /// Why a branch was preserved, and therefore what recovering it must do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

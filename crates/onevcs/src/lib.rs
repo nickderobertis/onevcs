@@ -71,8 +71,8 @@ pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Rete
 pub use registry::Identity;
 pub use rules::MergePolicy;
 pub use session::{
-    Lifecycle, PreservedBranch, Provenance, Recoverable, Scope, Session, SessionRecord,
-    SessionRequest, SessionToken,
+    Lifecycle, Liveness, PreservedBranch, Provenance, Recoverable, Scope, Session, SessionHolder,
+    SessionRecord, SessionRequest, SessionToken,
 };
 pub use stream::EventStream;
 pub use vcs::{Git, Vcs};
@@ -124,6 +124,23 @@ pub fn publish(
 /// The library form of `onevcs session close`.
 pub fn close_session(providers: &Providers<'_>, token: &SessionToken) -> Result<Session> {
     providers.vcs.close_session(token)
+}
+
+/// Every session recorded for one repository, live or not, in token order.
+///
+/// The library form of `onevcs session holders`, and the question a caller asks
+/// *before* it has a token: which sessions hold this repository's workspaces, which
+/// of them still have an owner, and which are the remains of a run that stopped.
+/// [`SessionHolder::token`] is what the rest of this surface takes, so a holder is
+/// a session to act on rather than a line to read.
+///
+/// It takes no [`Providers`] because there is nothing here for an implementation to
+/// answer: the holders are the records under this host's state root, which is where
+/// `Git` writes them and where the command reads them. A `Vcs` that keeps its
+/// sessions elsewhere therefore does not appear in this list — the same limit the
+/// command has, since the two are one path.
+pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>> {
+    workspace::holders(repo)
 }
 
 /// What the repository side recorded about a session.
