@@ -27,10 +27,10 @@ use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
-    Envelope, Error, EventKind, FailureKind, Git, GitHub, Labels, Lifecycle, MergeOutcome,
-    MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest,
-    Recoverable, RemoteHost, Retention, Scope, Session, SessionRecord, SessionRequest,
-    SessionToken, Sha, Source, Subject, Url, Vcs,
+    Envelope, Error, EventKind, FailureKind, Git, GitHub, Labels, Lifecycle, Liveness,
+    MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome,
+    PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session, SessionHolder,
+    SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -1042,6 +1042,67 @@ fn the_amendment_declares_what_a_hosts_checks_say_about_where_they_came_from() {
         serde_json::to_value(&answer).expect("the answer serializes")["sources"],
         json!(["actions", "branch-rules"])
     );
+}
+
+#[test]
+fn the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers() {
+    // Reconciled the way the two amendments above are: the type is built from
+    // outside the crate with every field named, and the amendment is held to
+    // declaring it. What is worth gating here beyond that is the serialization —
+    // `onevcs session holders --json` printed this shape before it was a public
+    // type, so a rename that only touched Rust would break every reader of the
+    // command while still compiling.
+    let holder = SessionHolder {
+        token: SessionToken("s-7f3a".to_owned()),
+        identity: "github.com/nickderobertis/onevcs".to_owned(),
+        branch: "feature".to_owned(),
+        worktree: PathBuf::from("/run/onevcs/s-7f3a/worktree"),
+        owner_pid: 4321,
+        state: Lifecycle::Open,
+        liveness: Liveness::Live,
+    };
+    let value = serde_json::to_value(&holder).expect("a holder serializes");
+    assert_eq!(
+        value,
+        json!({
+            "token": "s-7f3a",
+            "identity": "github.com/nickderobertis/onevcs",
+            "branch": "feature",
+            "worktree": "/run/onevcs/s-7f3a/worktree",
+            "owner_pid": 4321,
+            "state": "open",
+            "liveness": "live",
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<SessionHolder>(value).expect("and reads back"),
+        holder,
+        "the shape the command prints is the shape a consumer parses"
+    );
+    for (liveness, spelled) in [(Liveness::Live, "live"), (Liveness::Stale, "stale")] {
+        assert_eq!(liveness.as_str(), spelled);
+        assert_eq!(
+            serde_json::to_value(liveness).expect("a liveness serializes"),
+            json!(spelled),
+            "a caller rendering `as_str` and one reading the JSON must agree"
+        );
+    }
+
+    let declarations = amendment_declaring("pub struct SessionHolder");
+    for declared in [
+        "pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>>;",
+        "pub struct SessionHolder { pub token: SessionToken, pub identity: String,",
+        "pub branch: String, pub worktree: PathBuf,",
+        "pub owner_pid: u32, pub state: Lifecycle,",
+        "pub liveness: Liveness }",
+        "pub enum Liveness { Live, Stale }",
+        "impl Liveness { pub fn as_str(&self) -> &'static str; }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
 }
 
 /// Every ending a publication has, proven exhaustive by the match below: adding a

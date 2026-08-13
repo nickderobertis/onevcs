@@ -189,6 +189,44 @@ third-party integration posted. `ONEVCS_CHECK_SOURCE` (`auto`, `status-checks`,
 `actions`) narrows that to one source for an operator who already knows what their
 credential can read; an unrecognized value is refused where it is named.
 
+**Enumerating a repository's session holders is a library call too.** The contract
+gives the enumeration one surface — `onevcs session holders REPO [--json]` — and a
+caller embedding this crate had no route to it at all: the records, the view over
+them, and the reader were each private, so the only way to ask which sessions hold a
+repository's workspaces was to spawn the binary and parse what it printed. That is
+the same defect the amendment above closed for publishing, met one question earlier:
+before a caller has a token to publish or close, it has to find out who is here.
+
+```rust
+pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>>;
+
+pub struct SessionHolder { pub token: SessionToken, pub identity: String,
+                           pub branch: String, pub worktree: PathBuf,
+                           pub owner_pid: u32, pub state: Lifecycle,
+                           pub liveness: Liveness }
+pub enum Liveness { Live, Stale }            // live|stale
+impl Liveness { pub fn as_str(&self) -> &'static str; }
+```
+
+The CLI is a rendering of that call and no longer a second reader of the store, so
+its output — the JSON keys, the human line, the exit codes, the refusal of a
+repository nothing resolves — is unchanged. `state` rather than `lifecycle` is the
+field name for exactly that reason: it is the key the command has always printed,
+and the Rust field and the JSON one stay the same word.
+
+`liveness` is reported rather than derived, because a caller cannot derive it: a pid
+alone is not an owner, since the OS reuses pids and a later process wearing a dead
+session's number would read as live. The answer is that pid *and* the recorded
+creation identity of the process behind it, which only the reader of the record has.
+
+It takes no `Providers`, and that is the boundary of what this amendment claims. The
+holders are the records under this host's state root — the thing `Git` writes and
+the command reads — so there is nothing here for a supplied implementation to
+answer, and a `Vcs` that keeps its sessions elsewhere does not appear in the list.
+That is the command's own limit, unchanged; routing enumeration through the seam
+would add a required method to a trait consumers implement, and is the next
+question rather than this one.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

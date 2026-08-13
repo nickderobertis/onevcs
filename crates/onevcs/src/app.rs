@@ -185,14 +185,13 @@ fn session_close(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u
     Ok(0)
 }
 
+/// Render the holders `onevcs session holders` reports.
+///
+/// The enumeration itself is [`crate::session_holders`], so a caller embedding the
+/// crate and a caller reading this command's output are told the same thing by the
+/// same code rather than by two readers of one store.
 fn session_holders(args: &SessionHoldersArgs) -> Result<u8> {
-    let registry = store::load()?;
-    let resolution = store::resolve(&registry, &args.repo)?;
-    let holders: Vec<_> = workspace::all()?
-        .into_iter()
-        .filter(|record| record.identity == resolution.key)
-        .map(workspace::Holder::from)
-        .collect();
+    let holders = crate::session_holders(&args.repo)?;
     if args.json {
         println!(
             "{}",
@@ -202,7 +201,7 @@ fn session_holders(args: &SessionHoldersArgs) -> Result<u8> {
         for holder in holders {
             println!(
                 "{}\t{}\t{}\tpid={}\t{}\t{}",
-                holder.token,
+                holder.token.0,
                 match holder.state {
                     Lifecycle::Open => "open",
                     Lifecycle::Closed => "closed",

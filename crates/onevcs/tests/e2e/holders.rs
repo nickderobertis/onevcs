@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use onevcs::{Git, SessionRequest, Vcs};
+use onevcs::{Git, Lifecycle, Liveness, Providers, SessionHolder, SessionRequest, Vcs};
 use predicates::prelude::*;
 
 use crate::honesty::inhabit;
@@ -79,6 +79,110 @@ fn set_owner_pid(fixture: &Fixture, token: &str, pid: u32) {
         ),
     )
     .expect("the fixture can name the real owner process");
+}
+
+/// The journey `onepipeline` was blocked on: enumerate a repository's holders from
+/// outside the crate, then act on one of them.
+///
+/// In-process for the reason `library.rs` is — what it drives is the library
+/// surface, which the binary deliberately has no way to be. Every item it names is
+/// reached through `onevcs::`, so it compiles only while the enumeration and the
+/// shape it answers are public.
+#[test]
+fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_binary() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (spawned, _) = fixture.open(&["--branch", "feature/spawned"]);
+
+    inhabit(&fixture.world);
+    let providers = Providers::real();
+    let embedded = Git
+        .open_session(SessionRequest {
+            repo: "project".to_owned(),
+            branch: Some("feature/embedded".to_owned()),
+            base: None,
+            execution_checkout: None,
+        })
+        .expect("the embedding process opens a real session")
+        .token;
+
+    let holders = onevcs::session_holders("project").expect("the library enumerates the holders");
+    assert_eq!(holders.len(), 2);
+    assert!(
+        holders
+            .windows(2)
+            .all(|pair| pair[0].token <= pair[1].token),
+        "holders are reported in token order"
+    );
+
+    let live = holders
+        .iter()
+        .find(|holder| holder.token == embedded)
+        .expect("the session this process opened is one of them");
+    assert_eq!(live.branch, "feature/embedded");
+    assert_eq!(live.state, Lifecycle::Open);
+    assert_eq!(live.liveness, Liveness::Live);
+    assert_eq!(live.liveness.as_str(), "live");
+    assert_eq!(live.owner_pid, std::process::id());
+    assert!(live.worktree.is_dir(), "the worktree it names is there");
+    assert!(!live.identity.is_empty());
+
+    let departed = holders
+        .iter()
+        .find(|holder| holder.token.0 == spawned)
+        .expect("the session the command opened is the other");
+    assert_eq!(departed.state, Lifecycle::Open);
+    assert_eq!(
+        departed.liveness,
+        Liveness::Stale,
+        "its owner exited when the command did"
+    );
+
+    // A holder is a session to act on rather than a line to read: the token the
+    // enumeration handed back is the one the rest of this surface takes.
+    let record = onevcs::session(&providers, &live.token).expect("the holder names a session");
+    assert_eq!(record.session.branch, "feature/embedded");
+    assert_eq!(record.lifecycle, Lifecycle::Open);
+    onevcs::close_session(&providers, &live.token).expect("and the caller can close it");
+
+    let after = onevcs::session_holders("project").expect("the holders are read again");
+    let closed = after
+        .iter()
+        .find(|holder| holder.token == live.token)
+        .expect("a closed session is still a holder: its branch is still the work");
+    assert_eq!(closed.state, Lifecycle::Closed);
+    assert_eq!(closed.liveness, Liveness::Stale);
+
+    // One decision, two surfaces: what the command prints is what the call returns.
+    let printed = fixture
+        .world
+        .onevcs()
+        .args(["session", "holders", "project", "--json"])
+        .output()
+        .expect("holders runs");
+    assert!(printed.status.success());
+    let rows: Vec<SessionHolder> = serde_json::from_slice(&printed.stdout)
+        .expect("the command prints the shape the library returns");
+    assert_eq!(rows, after);
+}
+
+#[test]
+fn the_library_refuses_a_repository_nothing_resolves_rather_than_answering_empty() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    inhabit(&fixture.world);
+
+    let refused = onevcs::session_holders("owner/name")
+        .expect_err("a repository nothing resolves is not an empty list");
+    assert!(
+        refused
+            .to_string()
+            .contains("is not a registered repository"),
+        "{refused}"
+    );
+    assert_eq!(
+        onevcs::session_holders("project").expect("a registered repository answers"),
+        Vec::new(),
+        "and one nobody holds is the empty list"
+    );
 }
 
 #[test]
