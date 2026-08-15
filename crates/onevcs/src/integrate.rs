@@ -127,24 +127,37 @@ pub fn run(
     let base = git::current_branch(root)?;
     if git::is_dirty(root)? {
         return Err(Error::Invalid {
-            reason: format!("the base worktree {} is dirty", root.display()),
+            reason: format!(
+                "the base worktree {} is dirty; the train advances that base and will not \
+                 build on work nobody recorded. Commit or stash what it holds, then re-run \
+                 `onevcs integrate {}`",
+                root.display(),
+                candidates.join(" "),
+            ),
         });
     }
     for branch in candidates {
         if !git::is_valid_branch_name(branch) {
             return Err(Error::Invalid {
-                reason: format!("{branch:?} is not a valid branch name"),
+                reason: format!(
+                    "{branch:?} is not a valid branch name; `onevcs recoverable` lists every \
+                     preserved branch by name and the checkout it is in"
+                ),
             });
         }
         if branch == &base {
             return Err(Error::Invalid {
-                reason: format!("the base branch {base:?} cannot also be a candidate"),
+                reason: format!(
+                    "the base branch {base:?} cannot also be a candidate; re-run `onevcs \
+                     integrate` naming only the branches to land on it"
+                ),
             });
         }
         if !git::branch_exists(root, branch) {
             return Err(Error::Invalid {
                 reason: format!(
-                    "{root:?} has no local branch {branch:?}",
+                    "{root:?} has no local branch {branch:?}; `onevcs recoverable` lists this \
+                     identity's unpublished branches and the checkout each is in",
                     root = root.display()
                 ),
             });
@@ -157,7 +170,9 @@ pub fn run(
         != candidates.len()
     {
         return Err(Error::Invalid {
-            reason: "a branch is offered to the train twice".to_owned(),
+            reason: "a branch is offered to the train twice; re-run `onevcs integrate` naming \
+                     each branch once, in the order they should land"
+                .to_owned(),
         });
     }
 
@@ -257,7 +272,11 @@ fn train(
     if push && ending.advanced() {
         if !has_remote {
             return Err(Error::Invalid {
-                reason: format!("{} has no origin to push to", root.display()),
+                reason: format!(
+                    "{} has no origin to push to; the base advanced locally, so re-run \
+                     `onevcs integrate` without --push, or give the checkout an origin",
+                    root.display()
+                ),
             });
         }
         let result = git::push(root, base, "origin", &environment)?;

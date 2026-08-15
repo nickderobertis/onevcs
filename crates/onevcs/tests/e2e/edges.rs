@@ -595,6 +595,9 @@ fn events_follow_returns_once_the_session_it_is_following_has_closed() {
 
 #[test]
 fn a_train_offered_something_it_cannot_run_says_which_and_why() {
+    // "Which and why" is half of it: each refusal also names the command that
+    // answers it, because an agent handed a diagnosis with no next command reaches
+    // for raw `git`, which is the one thing this tool exists to replace.
     let fixture =
         Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
     let checkout = fixture.checkout.clone();
@@ -608,7 +611,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is not a valid branch name"));
+        .stderr(predicate::str::contains("is not a valid branch name"))
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 
     fixture
         .world
@@ -617,7 +621,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("cannot also be a candidate"));
+        .stderr(predicate::str::contains("cannot also be a candidate"))
+        .stderr(predicate::str::contains("re-run `onevcs integrate`"));
 
     fixture
         .world
@@ -626,7 +631,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("has no local branch"));
+        .stderr(predicate::str::contains("has no local branch"))
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 
     fixture
         .world
@@ -638,7 +644,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("offered to the train twice"));
+        .stderr(predicate::str::contains("offered to the train twice"))
+        .stderr(predicate::str::contains("naming each branch once"));
 
     std::fs::write(checkout.join("stray.txt"), "stray\n").expect("a dirty base worktree");
     fixture
@@ -648,7 +655,10 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is dirty"));
+        .stderr(predicate::str::contains("is dirty"))
+        .stderr(predicate::str::contains(
+            "re-run `onevcs integrate claude/twice`",
+        ));
 }
 
 #[test]
@@ -689,7 +699,9 @@ fn recovering_a_branch_no_checkout_has_names_everywhere_it_looked() {
         ))
         .stderr(predicate::str::contains(
             fixture.checkout.to_string_lossy().into_owned(),
-        ));
+        ))
+        // …and the command that reports the branches it *would* have found.
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 
     fixture
         .world
@@ -702,7 +714,8 @@ fn recovering_a_branch_no_checkout_has_names_everywhere_it_looked() {
         ])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is not a valid branch name"));
+        .stderr(predicate::str::contains("is not a valid branch name"))
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 }
 
 #[test]
@@ -726,6 +739,9 @@ fn recovering_a_branch_with_nothing_ahead_of_its_base_says_there_is_nothing_to_r
         .code(2)
         .stderr(predicate::str::contains(
             "there is no preserved work to recover",
+        ))
+        .stderr(predicate::str::contains(
+            "`onevcs recoverable` lists the branches that do carry unpublished work",
         ));
 }
 
