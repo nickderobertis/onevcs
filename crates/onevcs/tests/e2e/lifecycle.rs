@@ -1012,7 +1012,14 @@ fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("direct integration is refused"))
-        .stderr(predicate::str::contains("repo_type: team"));
+        .stderr(predicate::str::contains("repo_type: team"))
+        // The refusal routes rather than only diagnosing: every hosted origin
+        // derives as team, so a refusal naming no command would leave `git push`
+        // and `gh pr create` as the exit for every finished branch here.
+        .stderr(predicate::str::contains(format!(
+            "`onevcs publish-branch claude/one --repo {}`",
+            checkout.display()
+        )));
 }
 
 #[test]
@@ -1485,7 +1492,14 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
         // settle.
         .code(3)
         .stderr(predicate::str::contains("sync conflict"))
-        .stderr(predicate::str::contains("retained for recovery"));
+        .stderr(predicate::str::contains("the branch is retained"))
+        // A deterministic refusal has to name what would change the answer: the
+        // bounded retry is spent, so re-running publishes nothing, and the exit is
+        // the verb that lands the branch once the conflict itself is resolved.
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/conflicting --repo {}`",
+            fixture.checkout.display()
+        )));
     assert!(!fixture.world.events_of(&token, "sync-conflict").is_empty());
     // The branch survives, which is what "retained" has to mean.
     assert!(fixture

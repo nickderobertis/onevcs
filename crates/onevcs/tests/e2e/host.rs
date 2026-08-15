@@ -30,8 +30,8 @@ use crate::world::{token_of, worktree_of, Check, World};
 /// A registered hosted repository publishing under `default_policy`.
 pub struct Hosted {
     pub world: World,
-    origin: std::path::PathBuf,
-    checkout: std::path::PathBuf,
+    pub origin: std::path::PathBuf,
+    pub checkout: std::path::PathBuf,
 }
 
 impl Hosted {
@@ -76,7 +76,7 @@ impl Hosted {
         token_of(&stdout)
     }
 
-    fn origin_log(&self) -> Vec<String> {
+    pub fn origin_log(&self) -> Vec<String> {
         self.world
             .git(&self.origin, &["log", "--format=%s", "main"])
             .lines()
@@ -85,7 +85,7 @@ impl Hosted {
     }
 }
 
-const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
+pub const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
 pub const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
 /// Published straight into the base behind a gate that is a command, so nothing on
 /// this path asks the host what checks a change request carries.

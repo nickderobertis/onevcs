@@ -106,18 +106,20 @@ pub fn run(
     if resolution.identity.repo_type == RepoType::Team {
         return Err(Error::Invalid {
             reason: format!(
-                "direct integration is refused for identity {:?} (repo_type: team); publish \
-                 through its change-request path",
-                resolution.key
+                "direct integration is refused for identity {:?} (repo_type: team); publish each \
+                 branch through its change-request path instead: {}",
+                resolution.key,
+                change_request_route(resolution, candidates),
             ),
         });
     }
     if resolution.identity.workflow == Workflow::Remote {
         return Err(Error::Invalid {
             reason: format!(
-                "direct integration is refused for identity {:?} (workflow: remote); publish \
-                 through its change-request path",
-                resolution.key
+                "direct integration is refused for identity {:?} (workflow: remote); publish each \
+                 branch through its change-request path instead: {}",
+                resolution.key,
+                change_request_route(resolution, candidates),
             ),
         });
     }
@@ -177,6 +179,26 @@ pub fn run(
     let outcome = train(resolution, &base, candidates, push, gate_override, stream);
     drop(turn);
     outcome
+}
+
+/// The exact command that publishes each candidate the train may not land.
+///
+/// The train is local-only and stays that way — it is built for cheap deterministic
+/// candidates and must not absorb a publication's work — so this refusal is a
+/// routing signpost. It names the invocation per candidate rather than the shape of
+/// one, because a refusal that names no command is what leaves `git push` and `gh pr
+/// create` as the way forward.
+fn change_request_route(resolution: &Resolution, candidates: &[String]) -> String {
+    candidates
+        .iter()
+        .map(|branch| {
+            format!(
+                "`onevcs publish-branch {branch} --repo {}`",
+                resolution.publication.display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn train(
@@ -376,7 +398,20 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
         let subject =
             match provenance::publication_subject(&worktree, base, "HEAD", None, trailers)? {
                 Ok(subject) => subject,
-                Err(reason) => return Ok(skipped(branch, &reason)),
+                // The train takes no title of its own — one title cannot describe
+                // every candidate — so the skip hands the branch to the verb that
+                // does, rather than reporting a synthesis failure with no way past
+                // it. A subject naming no change is a worse record than this skip.
+                Err(reason) => {
+                    return Ok(skipped(
+                        branch,
+                        &format!(
+                            "{reason}; publish it with `onevcs publish-branch {branch} --repo {} \
+                             --title <T>`",
+                            root.display()
+                        ),
+                    ))
+                }
             };
         let attested = provenance::attestation_trailers(&worktree, base, "HEAD", trailers)?;
         let message = publish::compose_message(&subject, &attested);

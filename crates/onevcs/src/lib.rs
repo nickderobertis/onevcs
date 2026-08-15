@@ -35,6 +35,7 @@
 #![warn(missing_docs)]
 
 mod app;
+mod branch;
 pub mod cli;
 mod error;
 mod event;
@@ -50,6 +51,7 @@ mod policy;
 mod provenance;
 mod providers;
 mod publish;
+mod publish_branch;
 mod queue;
 mod recover;
 pub mod registry;

@@ -43,6 +43,11 @@ mod library;
 #[cfg(unix)]
 mod lifecycle;
 mod packaging;
+// Unix only: its hosted journeys publish through the same substituted `gh` as
+// `host.rs`. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod publish_branch;
 #[cfg(unix)]
 mod registry;
 // `seam` proves each command reaches the implementation it was *handed*, which cannot

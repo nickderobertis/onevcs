@@ -384,26 +384,40 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     }
 }
 
+/// The subject a publication of one branch would carry, or the refusal that none
+/// of its commits can supply one.
+///
+/// Public to this crate because it is also a *precondition*: a branch-keyed verb
+/// asks it before it writes anything to the branch, so a refusal an explicit
+/// `--title` answers is met before the work rather than after a commit the operator
+/// then has to reason about.
+pub(crate) fn subject_for(
+    repo: &Path,
+    compared: &str,
+    branch: &str,
+    title: Option<&str>,
+    trailers: &provenance::Trailers,
+) -> Result<String> {
+    match provenance::publication_subject(repo, compared, branch, title, trailers)? {
+        Ok(subject) => Ok(subject),
+        Err(reason) => Err(Error::Invalid {
+            reason: format!(
+                "cannot publish {branch:?}: {reason}. A subject that names no change would make \
+                 the base branch a worse record than this refusal does."
+            ),
+        }),
+    }
+}
+
 /// The subject one publication commit carries, and what it must carry forward.
 fn describe(context: &Context<'_>, compared: &str) -> Result<(String, Vec<String>)> {
-    let subject = match provenance::publication_subject(
+    let subject = subject_for(
         &context.repo,
         compared,
         &context.branch,
         context.title.as_deref(),
         &context.provenance,
-    )? {
-        Ok(subject) => subject,
-        Err(reason) => {
-            return Err(Error::Invalid {
-                reason: format!(
-                    "cannot publish {:?}: {reason}. A subject that names no change would make \
-                     the base branch a worse record than this refusal does.",
-                    context.branch
-                ),
-            })
-        }
-    };
+    )?;
     let mut trailers = context.trailers.clone();
     trailers.extend(provenance::attestation_trailers(
         &context.repo,
@@ -484,11 +498,17 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
             "attempts": SYNC_ATTEMPTS,
         })),
     );
+    // The branch is retained rather than lost, and the refusal says what would
+    // change the answer: another attempt resolves nothing a bounded retry has
+    // already tried, and an operator told only that the two conflict is an operator
+    // reaching for raw `git` to land the work.
     Err(Error::SyncConflict {
         reason: format!(
-            "{compared} conflicts with {:?} after {SYNC_ATTEMPTS} bounded attempts; the branch \
-             is retained for recovery",
-            context.branch
+            "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
+             branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
+             and then land it with `onevcs publish-branch {branch} --repo {}`",
+            context.resolution.publication.display(),
+            branch = context.branch,
         ),
     })
 }

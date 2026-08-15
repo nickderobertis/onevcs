@@ -37,6 +37,8 @@ pub enum Command {
     },
     /// Verify a session's work and publish it under its policy.
     Publish(PublishArgs),
+    /// Verify and publish a completed branch no session holds.
+    PublishBranch(PublishBranchArgs),
     /// Verify and publish a preserved branch that was left behind.
     Recover(RecoverArgs),
     /// List preserved work that has not been published.
@@ -148,6 +150,23 @@ pub struct PublishArgs {
     pub title: Option<String>,
 }
 
+/// Arguments for `onevcs publish-branch`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct PublishBranchArgs {
+    /// The completed branch to verify and publish.
+    pub branch: String,
+    /// The checkout the branch can be reached from.
+    #[arg(long, value_name = "PATH")]
+    pub repo: PathBuf,
+    /// The change request's title.
+    #[arg(long, value_name = "T")]
+    pub title: Option<String>,
+    /// Override the policy the rules chose. It may narrow the stored policy but
+    /// never widen it past requiring approvals.
+    #[arg(long, value_name = "P")]
+    pub policy: Option<MergePolicy>,
+}
+
 /// Arguments for `onevcs recover`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RecoverArgs {
@@ -156,6 +175,10 @@ pub struct RecoverArgs {
     /// The checkout the branch can be reached from.
     #[arg(long, value_name = "PATH")]
     pub repo: PathBuf,
+    /// The published change's title, which replaces the subject synthesized from
+    /// the branch.
+    #[arg(long, value_name = "T")]
+    pub title: Option<String>,
 }
 
 /// Arguments for `onevcs recoverable`.

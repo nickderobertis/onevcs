@@ -25,6 +25,7 @@ use predicates::prelude::*;
 
 use crate::lifecycle::Fixture;
 use crate::registry::{configure_rules, point_at_rules};
+use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, World};
 
 #[test]
@@ -773,7 +774,18 @@ fn a_recovery_whose_base_conflicts_keeps_the_preserved_branch() {
         ])
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("retained for manual recovery"));
+        // Deterministic: the same two trees conflict on every re-run, so an
+        // operator told only that they conflict re-runs the same command forever.
+        // The refusal says so, says where the branch is, and names the command that
+        // lands it once the conflict itself is resolved.
+        .stderr(predicate::str::contains("re-running will conflict again"))
+        .stderr(predicate::str::contains(
+            fixture.checkout.to_string_lossy().into_owned(),
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs recover feature/clashing-recovery --repo {}`",
+            fixture.checkout.display()
+        )));
     assert!(fixture
         .world
         .git(
@@ -781,6 +793,65 @@ fn a_recovery_whose_base_conflicts_keeps_the_preserved_branch() {
             &["branch", "--list", "feature/clashing-recovery"]
         )
         .contains("feature/clashing-recovery"));
+
+    // And that exit terminates: resolving the conflict once where the branch is
+    // retained is all the re-run needs, and the work lands through onevcs rather
+    // than through a `git push` nobody gated.
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/clashing-recovery"],
+    );
+    let merge = fixture
+        .world
+        .git_raw(&fixture.checkout, &["merge", "--no-edit", "main"]);
+    assert!(!merge.status.success(), "the merge is the conflict itself");
+    std::fs::write(fixture.checkout.join("shared.txt"), "resolved by hand\n")
+        .expect("the resolution");
+    fixture.world.git(&fixture.checkout, &["add", "-A"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "chore: resolve the conflict with main",
+        ],
+    );
+    // The publication checkout is never worked in, so it goes back to its base
+    // before the verb that publishes onto it runs.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/clashing-recovery",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        landed.contains(&documented_trailer(
+            "Recovered-Incomplete",
+            &documented_default_prefix()
+        )),
+        "the recovery that finally landed still attests the step that stopped: {landed}"
+    );
 }
 
 #[test]
@@ -1024,8 +1095,15 @@ fn a_candidate_whose_content_the_base_already_carries_adds_no_second_commit() {
         .success()
         .stdout(predicate::str::contains("claude/redundant: already-merged"))
         .stdout(predicate::str::contains(
-            "claude/at-the-base: skipped (branch \"HEAD\" has no commit that describes a change)",
+            "claude/at-the-base: skipped (branch \"HEAD\" has no commit that describes a change",
         ))
+        // The train takes no title of its own, so the skip hands the branch to the
+        // verb that does rather than stating a synthesis failure with no way past
+        // it.
+        .stdout(predicate::str::contains(format!(
+            "publish it with `onevcs publish-branch claude/at-the-base --repo {} --title <T>`",
+            checkout.display()
+        )))
         .stdout(predicate::str::contains("Base advanced: no"));
 }
 
@@ -1065,7 +1143,13 @@ fn a_train_refuses_a_single_owner_identity_that_publishes_through_its_host() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("workflow: remote"));
+        .stderr(predicate::str::contains("workflow: remote"))
+        // …and the verb that *is* right for it is named with the arguments that
+        // run it, so the refusal is a route rather than a dead end.
+        .stderr(predicate::str::contains(format!(
+            "`onevcs publish-branch claude/one --repo {}`",
+            checkout.display()
+        )));
 }
 
 #[test]

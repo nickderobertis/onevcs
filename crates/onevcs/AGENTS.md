@@ -58,6 +58,27 @@ event it is. And the command prints the producer's own line rather than a
 re-serialization of what it parsed, so a filtered read is a subset of an unfiltered
 one byte for byte.
 
+## Three verbs land a branch, and provenance is what chooses between them
+
+`publish` takes a session token; `recover` and `publish-branch` take a branch name
+and are **one path** — `branch.rs` locates it, clones it, cuts a worktree, merges
+the change base, and hands it to `publish::run`. What separates them is provenance
+and nothing else: `recover` requires an unattested incomplete marker and writes the
+attestation that clears it, `publish-branch` requires that there is none. A second
+locate, clone, or base-merge beside that helper is the drift it exists to prevent.
+`integrate` stays the local-only merge train: it gates on the `repo_type` and
+`workflow` `register` derives, and its refusal routes to `publish-branch` rather
+than re-gating the branch itself.
+
+Which means **a refusal on this path is the guidance surface**, and each one names
+the command with its exact arguments, or the rules-file entry, that resolves it —
+`branch.rs` carries `Verb::command` so a shared refusal can spell whichever verb
+asked. A refusal that only diagnoses leaves an agent to invent a way forward, and
+what it invents is `git push` plus `gh pr create`, which is the whole thing this
+crate exists to make unnecessary. `tests/e2e/publish_branch.rs` runs several of
+those refusals' own printed commands, so a route that names something unrunnable
+fails there rather than in an operator's terminal.
+
 ## Tests are journeys, and there are no unit tests
 
 This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the

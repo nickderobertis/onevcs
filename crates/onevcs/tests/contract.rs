@@ -845,10 +845,40 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     );
 }
 
-/// Every command name the contract's usage block spells.
+/// Every command name the contract spells: the approved usage block, plus the
+/// usage an amendment adds beside it.
+///
+/// An amendment is reconciled with the code the same way the approved text is, so
+/// a verb it declares is a verb the parser must have — and, just as importantly, a
+/// verb the parser has and neither region spells is still a departure. The two
+/// regions are read together rather than the amendment being an exemption.
 fn documented_commands() -> BTreeSet<String> {
+    usage_blocks()
+        .iter()
+        .flat_map(|usage| commands_in(usage))
+        .collect()
+}
+
+/// Every usage block the contract spells, in both regions.
+fn usage_blocks() -> Vec<String> {
+    let mut blocks = vec![block("")];
+    for (language, body) in fenced_blocks(&regions().0) {
+        if language.is_empty()
+            && body
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("onevcs "))
+        {
+            blocks.push(body);
+        }
+    }
+    blocks
+}
+
+/// The command names one usage block spells.
+fn commands_in(usage: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    for line in block("").lines() {
+    for line in usage.lines() {
         for alternative in line.split('|') {
             let segment = alternative
                 .trim()
@@ -882,12 +912,13 @@ fn every_flag_the_contract_spells_exists_on_the_command_that_takes_it() {
     let mut implemented = BTreeSet::new();
     collect_long_flags(&Cli::command(), &mut implemented);
 
-    let usage = block("");
     let mut documented = BTreeSet::new();
-    for token in usage.split(|c: char| c.is_whitespace() || c == '[' || c == ']') {
-        if let Some(flag) = token.strip_prefix("--") {
-            if !flag.is_empty() {
-                documented.insert(flag.to_owned());
+    for usage in usage_blocks() {
+        for token in usage.split(|c: char| c.is_whitespace() || c == '[' || c == ']') {
+            if let Some(flag) = token.strip_prefix("--") {
+                if !flag.is_empty() {
+                    documented.insert(flag.to_owned());
+                }
             }
         }
     }

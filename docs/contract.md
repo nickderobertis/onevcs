@@ -359,6 +359,50 @@ here rather than resolved:
   what a session knows of the run around it, not about filtering, and is not
   answered here.
 
+**A completed branch that no session holds has a verb, and every refusal on the
+way to it names a command.** The contract gives a branch three ways to reach its
+base and leaves one state with none: `publish` takes a session token, `integrate`
+lands a branch on a **local** base, and `recover` publishes *interrupted* work. A
+complete, unpublished branch of an identity whose merge path is a change request
+is refused by `integrate` — which gates on the `repo_type` and `workflow` that
+`register` derives from the origin — and refused by `recover`, whose whole subject
+is the marker such a branch does not carry. Every hosted origin derives as
+`team`/`remote`, so that is every finished branch of every hosted repository, and
+the only exit left was raw `git push` plus `gh pr create` — the thing this crate
+exists to make unnecessary.
+
+```
+onevcs publish-branch BRANCH --repo PATH [--title T] [--policy P]
+onevcs recover BRANCH --repo PATH [--title T]
+```
+
+`publish-branch` answers the same `PublishOutcome` as `recover` and reports the
+same exit codes. It publishes under the identity's rules-resolved policy, and
+`--policy` narrows that policy under the constraint `publish` already enforces: it
+may narrow the stored policy but never widen it past requiring approvals. `--title`
+is the same `Subject` an explicit title has always been, checked where the command
+line hands it over, and it is now on `recover` too — so a preserved branch whose
+commit subjects are all too long is publishable without rewriting a commit on it.
+
+No new library surface: this is a second caller of `publish::run`, which was always
+branch-keyed. `recover` and `publish-branch` share one implementation of locate,
+clone, worktree, base-merge, gate, and publish; what separates them is provenance
+and nothing else. `recover` publishes a branch carrying an unattested incomplete
+marker and writes the attestation that clears it; `publish-branch` refuses one and
+names `recover` with the exact command, mirroring the handoff `recover` already
+gives a complete branch.
+
+The refusals are the guidance surface, so each one on this path names the command
+or the configuration edit that resolves it, and never leaves raw `git` or `gh` as
+the way forward: `integrate`'s two routing refusals name `onevcs publish-branch`
+per candidate; `recover`'s "no complete bar" names the rules-file entry that gives
+the identity a gate and `onevcs rules check`; a marker under an unreadable prefix
+names the `trailer_prefix` to set and the command that lands it afterwards; and a
+base that conflicts with the branch — the shape a branch whose recorded change base
+is missing or unreadable produces, since the root base is merged in its place —
+says that re-running cannot change the answer, where the branch is retained, and
+which command lands it once the conflict is resolved.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

@@ -109,25 +109,33 @@ pub fn documented_trailer(name: &str, prefix: &str) -> String {
 /// to this same block.
 pub fn commands() -> Vec<String> {
     let usage = contract();
-    let block = usage
+    // Every usage block, not the first: an amendment that adds a verb spells its own
+    // block above the approved text, and a reader of the first one alone would stop
+    // asserting the newest promise the moment it was made.
+    let blocks: Vec<&str> = usage
         .split("\n```\n")
-        .find(|block| {
+        .filter(|block| {
             block
                 .lines()
                 .next()
                 .is_some_and(|l| l.starts_with("onevcs "))
         })
-        .expect("the contract spells the command surface in a bare code block");
+        .collect();
+    assert!(
+        !blocks.is_empty(),
+        "the contract spells the command surface in a bare code block"
+    );
 
-    let mut names: Vec<String> = block
-        .lines()
+    let mut names: Vec<String> = blocks
+        .iter()
+        .flat_map(|block| block.lines())
         .flat_map(|line| line.split('|'))
         .filter_map(|alternative| {
             let segment = alternative.trim();
             let segment = segment.strip_prefix("onevcs ").unwrap_or(segment);
             segment.split_whitespace().next()
         })
-        .filter(|name| name.chars().all(|c| c.is_ascii_lowercase()))
+        .filter(|name| name.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
         .map(str::to_owned)
         .collect();
     names.sort_unstable();

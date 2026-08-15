@@ -99,6 +99,12 @@ pub struct Resolved {
     pub gate_from: String,
 }
 
+/// What [`load`] reports as the source when there is no rules file to read.
+///
+/// Named rather than spelled twice, because a refusal that tells an operator which
+/// file to edit has to be able to tell this apart from a path.
+pub const BUILT_IN_SOURCE: &str = "the built-in default policy";
+
 /// The policy the contract's `default:` names, for a registry with no rules file.
 pub fn built_in_default() -> Policy {
     Policy {
@@ -127,7 +133,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
                 rules: Vec::new(),
                 default: built_in_default(),
             },
-            "the built-in default policy".to_owned(),
+            BUILT_IN_SOURCE.to_owned(),
         ));
     }
     let raw = std::fs::read_to_string(&path).map_err(|e| Error::Invalid {
