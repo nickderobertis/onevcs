@@ -268,13 +268,13 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
     Ok(kind.exit_code())
 }
 
-/// Render one branch-keyed publication, the way `recover` and `publish-branch`
-/// both report one.
+/// Render what one branch-keyed verb did, the way `recover` and `publish-branch`
+/// both report it — merged, open, queued, or refused.
 ///
 /// The two commands differ in what they accept and in nothing they print: both
 /// answer with a [`PublishOutcome`] on stdout and the contract's exit code on a
 /// refusal, so a caller that drives one can read the other.
-fn landed(outcome: Result<PublishOutcome>) -> Result<u8> {
+fn report_publication(outcome: Result<PublishOutcome>) -> Result<u8> {
     match outcome {
         Ok(outcome) => {
             println!("{}", outcome.describe());
@@ -302,7 +302,7 @@ fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
     let title = explicit_title(args.title.as_ref())?;
     let token = format!("recover-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
-    landed(recover::run(
+    report_publication(recover::run(
         &registry,
         &args.repo,
         &args.branch,
@@ -317,7 +317,7 @@ fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result
     let title = explicit_title(args.title.as_ref())?;
     let token = format!("publish-branch-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
-    landed(publish_branch::run(
+    report_publication(publish_branch::run(
         &registry,
         &args.repo,
         &args.branch,

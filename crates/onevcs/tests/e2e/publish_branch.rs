@@ -973,6 +973,59 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         world.git(&origin, &["log", "-1", "--format=%s", "main"]),
         "feat: work under a spacey path"
     );
+
+    // The quote itself is the character single-quoting cannot simply wrap, and git
+    // accepts one in a branch name — so a branch carrying one is where a printed
+    // command silently stops being one argument.
+    let quoted_branch = "feature/it's-quoted";
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            &checkout.to_string_lossy(),
+            "--branch",
+            quoted_branch,
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    world.commit_file(
+        &worktree_of(&stdout),
+        "two.txt",
+        "two\n",
+        "feat: work on a quoted branch",
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &token_of(&stdout)])
+        .assert()
+        .success();
+
+    world
+        .onevcs()
+        .args(["integrate", quoted_branch])
+        .current_dir(&checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!(
+            r"`onevcs publish-branch 'feature/it'\''s-quoted' {quoted}`"
+        )));
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            quoted_branch,
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        world.git(&origin, &["log", "-1", "--format=%s", "main"]),
+        "feat: work on a quoted branch"
+    );
 }
 
 #[test]
