@@ -656,11 +656,9 @@ fn a_failing_required_check_stops_the_publication_and_names_it() {
         conclusion: Some("failure"),
         required: true,
     }]);
-    std::fs::write(
-        hosted.world.path("gh-state/log-gate.txt"),
-        "the required check found a regression\n",
-    )
-    .expect("a check log");
+    hosted
+        .world
+        .host_log("gate", "the required check found a regression\n");
     let token = hosted.change("feature/red", "feat: add the red thing");
 
     hosted
@@ -687,6 +685,99 @@ fn a_failing_required_check_stops_the_publication_and_names_it() {
         .assert()
         .success()
         .stdout(predicate::str::contains("found a regression"));
+}
+
+/// One job's log the way a real one arrives: with the colour its steps printed,
+/// which is what `gh` will not hand over unless it is asked to.
+const COLOURED_LOG: &str = "\u{1b}[0;32mthe gate passed\u{1b}[0m\n";
+
+#[test]
+fn a_check_log_that_carries_terminal_escape_sequences_is_stored_as_the_log_itself() {
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.host_log("gate", COLOURED_LOG);
+    hosted.world.guard_terminal_escapes();
+    let token = hosted.change("feature/coloured", "feat: add the coloured thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let checks = hosted.world.events_of(&token, "change-check");
+    let id = checks[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("a settled check carries its log");
+    let stored = std::fs::read_to_string(hosted.world.home().join("artifacts").join(id))
+        .expect("the stored artifact");
+    // Escape sequences and all: an operator holds this beside the run on GitHub.
+    assert_eq!(
+        stored, COLOURED_LOG,
+        "the artifact is the check's own log, unaltered"
+    );
+}
+
+#[test]
+fn a_gh_that_has_not_heard_of_the_escape_flag_is_asked_again_without_it() {
+    // The other generation of the same program, and the one a workstation still
+    // has: asking for the flag unconditionally would address nothing on it.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.host_log("gate", "the gate passed\n");
+    hosted.world.reject_the_escape_flag();
+    let token = hosted.change("feature/older-gh", "feat: add the older thing");
+
+    hosted
+        .world
+        .onevcs()
+        // The Actions API is the other of the two calls that fetch a log, and the
+        // only one a fine-grained token can make.
+        .env("ONEVCS_CHECK_SOURCE", "actions")
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let checks = hosted.world.events_of(&token, "change-check");
+    let id = checks[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("a settled check carries its log");
+    let stored = std::fs::read_to_string(hosted.world.home().join("artifacts").join(id))
+        .expect("the stored artifact");
+    assert_eq!(stored, "the gate passed\n");
+
+    // And it was asked for in that order: with the flag, then again without it. A
+    // flag a `gh` does not know is rejected while it parses its arguments, before
+    // it asks GitHub anything, which is why this way round costs one request on
+    // either generation.
+    let asked: Vec<String> = hosted
+        .world
+        .host_calls()
+        .into_iter()
+        .filter(|call| call.contains("/logs"))
+        .collect();
+    assert_eq!(asked.len(), 2, "the log was asked for twice: {asked:?}");
+    assert!(
+        asked[0].contains("--allow-escape-sequences"),
+        "the flag is asked for first: {asked:?}"
+    );
+    assert!(
+        !asked[1].contains("--allow-escape-sequences"),
+        "and dropped only once this gh said it did not know it: {asked:?}"
+    );
 }
 
 #[test]
@@ -870,33 +961,33 @@ fn a_check_whose_name_cannot_address_a_job_is_recorded_not_run() {
     }]);
     let token = hosted.change("feature/oddly-named", "feat: add the oddly gated thing");
 
-    // The publication is not undone over a log it could not read.
+    // The publication is not undone over a log it could not read, and the reason
+    // there is no log is said where the operator sees it rather than written into
+    // an artifact that would then read as the check's own output.
     hosted
         .world
         .onevcs()
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("merged at"));
+        .stdout(predicate::str::contains("merged at"))
+        .stderr(predicate::str::contains(
+            "could not produce a log for check \"-x\"",
+        ))
+        .stderr(predicate::str::contains("must not begin with '-'"));
 
     let checks = hosted.world.events_of(&token, "change-check");
     let reported = checks
         .iter()
         .find(|event| event["payload"]["name"] == "-x")
         .expect("the oddly named check is still reported");
-    let id = reported["artifacts"][0]["id"]
-        .as_str()
-        .expect("a settled check carries an artifact whatever its name");
-    hosted
-        .world
-        .onevcs()
-        .args(["artifact", "cat", id])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "could not produce a log for check \"-x\"",
-        ))
-        .stdout(predicate::str::contains("must not begin with '-'"));
+    assert!(
+        reported["artifacts"]
+            .as_array()
+            .expect("an array")
+            .is_empty(),
+        "a log that was never fetched is no artifact: {reported}"
+    );
 }
 
 #[test]
@@ -955,11 +1046,11 @@ fn a_change_request_the_host_reports_no_checks_on_is_bounded_rather_than_merged(
 #[test]
 fn a_check_whose_job_the_host_will_not_name_is_recorded_rather_than_undoing_the_merge() {
     // The log of a check is not the check: a host that reports the check and then
-    // will not say where it ran leaves the publication standing and the reason in
-    // the artifact. Four ways it can decline, because they are four different
-    // answers and an operator reading the artifact has to be told which one — in
-    // particular, a host that answered with something that is not a list of checks
-    // has not said this check has no job.
+    // will not say where it ran leaves the publication standing, and says why there
+    // is no log on stderr rather than in an artifact that would read as the log.
+    // Four ways it can decline, because they are four different answers and an
+    // operator has to be told which one — in particular, a host that answered with
+    // something that is not a list of checks has not said this check has no job.
     //
     // None of the four is answered from somewhere else instead: a second source is
     // asked only where the credential may never read the first, and a host that
@@ -990,19 +1081,18 @@ fn a_check_whose_job_the_host_will_not_name_is_recorded_rather_than_undoing_the_
             .args(["publish", &token])
             .assert()
             .success()
-            .stdout(predicate::str::contains("merged at"));
+            .stdout(predicate::str::contains("merged at"))
+            .stderr(predicate::str::contains("could not produce a log"))
+            .stderr(predicate::str::contains(reason));
 
         let checks = hosted.world.events_of(&token, "change-check");
-        let id = checks[0]["artifacts"][0]["id"]
-            .as_str()
-            .expect("a settled check carries an artifact whatever the host said");
-        hosted
-            .world
-            .onevcs()
-            .args(["artifact", "cat", id])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("could not produce a log"))
-            .stdout(predicate::str::contains(reason));
+        assert!(
+            checks[0]["artifacts"]
+                .as_array()
+                .expect("an array")
+                .is_empty(),
+            "{shape}: a log the host would not produce is no artifact: {}",
+            checks[0]
+        );
     }
 }
