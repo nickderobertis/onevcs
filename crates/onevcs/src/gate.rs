@@ -13,7 +13,6 @@
 //! key the publishing push never looks up, and re-judges findings the worker never
 //! saw and can no longer clear.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -97,16 +96,28 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
             command,
         };
     };
-    let mut child = match Command::new(program)
+    // Both pipes drained at once, as `gh::attempt` runs the host's command: a child
+    // cannot exit while a pipe nobody is reading is full, so reading standard output
+    // to EOF and only then standard error never reached the stream that was blocking
+    // the writer, and a gate loud enough to fill one buffer wedged forever. A wedged
+    // gate reads as a rejection of work it never actually judged.
+    //
+    // Deliberately not `git::run_with_env`'s pair of reader threads: those carry a
+    // bound and a process-group teardown, which git needs because a repository's
+    // `pre-push` hook is arbitrary and may hang. A `command:` gate *is* the
+    // repository's own complete verification and its duration is the work, so it is
+    // unbounded — and with nothing to time out, there is no second thing to drain
+    // around and no reason to read the pipes by hand.
+    let finished = match Command::new(program)
         .args(arguments)
         .current_dir(worktree)
         .envs(env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .output()
     {
-        Ok(child) => child,
+        Ok(finished) => finished,
         Err(error) => {
             return Verdict {
                 ruling: Ruling::Rejected,
@@ -115,17 +126,15 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
             }
         }
     };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    let status = child.wait();
+    // Decoded lossily rather than read as text, as `gh` answers are: a gate's bytes
+    // are evidence this crate transports rather than reads, and refusing a whole
+    // stream over one byte no UTF-8 sequence begins with would leave the verdict with
+    // nothing to explain it. Every byte is accounted for, undecodable ones as
+    // `U+FFFD`, and standard output still comes before standard error.
+    let stdout = String::from_utf8_lossy(&finished.stdout);
+    let stderr = String::from_utf8_lossy(&finished.stderr);
     Verdict {
-        ruling: Ruling::from_exit(status.map(|status| status.success()).unwrap_or(false)),
+        ruling: Ruling::from_exit(finished.status.success()),
         output: format!("{stdout}{stderr}"),
         command,
     }
