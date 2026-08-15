@@ -78,9 +78,12 @@ jobs:
       # taiki-e/install-action verifies the downloaded archive's checksum before
       # unpacking it; a `curl | tar` pipeline would execute an unauthenticated
       # download.
+      # cargo-semver-checks is what `semver_check = true` in release-plz.toml runs,
+      # so it has to be on this job's PATH; without it the bump falls back to the
+      # commit type alone and nothing says so.
       - uses: taiki-e/install-action@v2
         with:
-          tool: release-plz@${{ env.RELEASE_PLZ_VERSION }}
+          tool: release-plz@${{ env.RELEASE_PLZ_VERSION }},cargo-semver-checks
 
       - name: Tag and publish a merged version bump
         env:

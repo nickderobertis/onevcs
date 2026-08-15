@@ -130,6 +130,12 @@ not tell you:
   policy: `feat` → minor, `fix`/`perf`/`refactor`/`build` → patch, `!` or
   `BREAKING CHANGE` → minor; `chore`/`docs`/`ci`/`test`/`style` do not release.
   At 1.0 the usual semver regime takes over (`!` → major).
+- **The commit type is not the only thing that decides a bump.** `semver_check` is
+  on, so release-plz runs cargo-semver-checks against the last released version and
+  a surface break bumps whatever the type said. Keep cargo-semver-checks installed
+  in `release-plz.yml`: a job that has release-plz without it falls back to the
+  commit type and says nothing. `just semver-check` asks the same question before
+  you push, from the registry's baseline rather than the branch's.
 - **One version source.** `crates/onevcs/Cargo.toml` is it, for the CLI and
   everything packaged from it: the wheel takes it via maturin's
   `dynamic = ["version"]` and the npm packages via `scripts/npm-build.mjs`.

@@ -21,10 +21,12 @@
 # versioning/tagging from the registry push.
 publish = false
 
-# API breaking-change detection (cargo-semver-checks) needs an extra tool and
-# would block releases on any surface change; rely on review and the
-# conventional-commit type instead (a `!` or `BREAKING CHANGE:` still bumps).
-semver_check = false
+# API breaking-change detection: cargo-semver-checks compares the surface against
+# the last released version, and release-plz bumps on what it finds rather than on
+# the commit type alone — which cannot see a break the author did not mark.
+# release-plz.yml installs the tool beside release-plz; without it the check is
+# silently skipped.
+semver_check = true
 
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"

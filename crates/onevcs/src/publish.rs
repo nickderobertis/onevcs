@@ -370,7 +370,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
 
     sync(context, stream, &compared)?;
 
-    if git::log_messages(&context.repo, &compared, &context.branch)?.is_empty() {
+    if nothing_to_publish(context, &compared)? {
         return Ok(PublishOutcome::NothingToPublish);
     }
 
@@ -382,6 +382,28 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
         _ => publish_as_change(context, stream, &subject, &trailers, &environment),
     }
+}
+
+/// Whether the base already carries everything this branch has, once the base has
+/// been merged into it.
+///
+/// Two shapes, and only one of them is "no commits": a branch squash-merged under
+/// somebody else's change request keeps every commit it had and adds nothing to the
+/// tree, so the tree is what decides. Opening a change request for one produces an
+/// empty diff, which every path-filtered required check skips rather than runs and
+/// the host then blocks forever.
+///
+/// Asked here, on the one path both policies go through and before anything is
+/// pushed, so every caller of a publication gets it.
+fn nothing_to_publish(context: &Context<'_>, compared: &str) -> Result<bool> {
+    if git::log_messages(&context.repo, compared, &context.branch)?.is_empty() {
+        return Ok(true);
+    }
+    Ok(!git::trees_differ(
+        &context.repo,
+        compared,
+        &context.branch,
+    )?)
 }
 
 /// The subject one publication commit carries, and what it must carry forward.
