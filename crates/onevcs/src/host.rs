@@ -474,7 +474,7 @@ impl GitHub {
                      can ask for a log"
                 ))
             })?;
-        gh::invoke(&["run", "view", "--repo", &self.repo, "--log", "--job", job])
+        gh::invoke_content(&["run", "view", "--repo", &self.repo, "--log", "--job", job])
     }
 
     /// One check's log, from whichever source this credential can read.
@@ -672,7 +672,7 @@ impl GitHub {
                     cr.url
                 ))
             })?;
-        gh::invoke(&[
+        gh::invoke_content(&[
             "api",
             &format!("repos/{}/actions/jobs/{}/logs", self.repo, job.id),
         ])
@@ -986,18 +986,24 @@ impl RemoteHost for GitHub {
         }
     }
 
+    /// Store one check's log as an artifact, or refuse.
+    ///
+    /// A fetch that did not produce the log is an error and no artifact: an
+    /// artifact reads as what the check printed, so one holding the reason there is
+    /// none is a lie in the only record a consumer has. A caller that must not fail
+    /// over a missing log declines to fail over this error, as [`crate::publish`]
+    /// does.
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
-        // A name that cannot address a job is the same kind of event as a job whose
-        // log the host declined to produce, and is recorded the same way: as the
-        // artifact's content. Raising it would undo a publication over a log.
+        // A name that cannot address a job and a host that would not produce the log
+        // are the same event to a caller — there is no log — and read the same.
         let log = addressable(&check.name, "check name")
             .and_then(|()| self.log_of(cr, &check.name))
-            .unwrap_or_else(|error| {
-                format!(
-                    "the host could not produce a log for check {:?} on {}: {error}\n",
+            .map_err(|error| {
+                invalid(format!(
+                    "the host could not produce a log for check {:?} on {}: {error}",
                     check.name, cr.url
-                )
-            });
+                ))
+            })?;
         Ok(stream::store_artifact("log", &log)?.id)
     }
 
