@@ -28,14 +28,14 @@ use crate::registry::configure_rules;
 use crate::world::{token_of, worktree_of, Check, World};
 
 /// A registered hosted repository publishing under `default_policy`.
-struct Hosted {
-    world: World,
+pub struct Hosted {
+    pub world: World,
     origin: std::path::PathBuf,
     checkout: std::path::PathBuf,
 }
 
 impl Hosted {
-    fn new(default_policy: &str) -> Self {
+    pub fn new(default_policy: &str) -> Self {
         let world = World::new();
         let origin = world.bare_origin("hosted");
         let checkout = world.clone_of(&origin, "hosted");
@@ -62,7 +62,7 @@ impl Hosted {
     }
 
     /// A session with one commit on it, ready to publish.
-    fn change(&self, branch: &str, subject: &str) -> String {
+    pub fn change(&self, branch: &str, subject: &str) -> String {
         let assert = self
             .world
             .onevcs()
@@ -86,7 +86,7 @@ impl Hosted {
 }
 
 const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
-const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
+pub const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
 /// Published straight into the base behind a gate that is a command, so nothing on
 /// this path asks the host what checks a change request carries.
 const DIRECT: &str = "{publication: change-direct, approvals: none, gate: {command: [\"true\"]}}";

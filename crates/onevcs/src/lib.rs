@@ -61,7 +61,9 @@ mod vcs;
 mod workspace;
 
 pub use error::{Error, Result};
-pub use event::{ArtifactId, ArtifactRef, Envelope, EventKind, Labels, Source};
+pub use event::{
+    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Source,
+};
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, GitHub, Hosting,
     MergeOutcome, RemoteHost, Sha,

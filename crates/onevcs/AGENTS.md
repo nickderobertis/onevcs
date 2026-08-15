@@ -44,6 +44,20 @@ non-zero exit is a `PublishOutcome::Failed` rather than an `Err` — the two
 surfaces cannot disagree about which failures are which. `tests/e2e/library.rs`
 drives every one of them twice, on the providers and on real `Git` + `gh`.
 
+Reading events takes a filter on both surfaces — `EventStream::open_filtered` and
+`onevcs events --filter` — and the grammar is **shared with `oneagentgraph` and
+`onepipeline`**, fixed across the three. Do not extend it here: a field one of
+them understands and the others do not is a consumer's filter meaning three
+different things. Two rules follow from what filtering is for. A filter decides
+which events a consumer *wants*, never which lines of a file are worth reading, so
+it is applied after the refusals — a stream that is not what a writer left is
+refused whichever events were asked for. Both readers of a stream's *values* go
+through `stream::attributed`, which is where those two refusals live, so `--filter`
+and `EventStream` cannot come to differ about which line is unreadable or whose
+event it is. And the command prints the producer's own line rather than a
+re-serialization of what it parsed, so a filtered read is a subset of an unfiltered
+one byte for byte.
+
 ## Tests are journeys, and there are no unit tests
 
 This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the

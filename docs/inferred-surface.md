@@ -155,6 +155,27 @@ already printed — so what this record holds is why the surface is drawn where 
 | `Liveness` | `live` / `stale` | Reported rather than derived. A caller holding `owner_pid` cannot answer it — pids are reused, so a later process wearing a dead session's number reads as its owner — and the creation identity that settles it is on the private record. `as_str` is public with it so a caller renders the words the command does rather than inventing a second spelling. |
 | `session_holders(repo)` | `&str` in, `Vec<SessionHolder>` out | The command's operand and its output. It takes no `Providers`: the holders are the records under this host's state root, so there is nothing here for a supplied implementation to answer. |
 
+**Reading a session's events takes a filter, and the grammar was approved rather
+than inferred.** The matcher fields, what conjoins, and which of `include` and
+`exclude` wins are fixed across `onevcs`, `oneagentgraph`, and `onepipeline` and are
+written into `docs/contract.md`, held to the code by
+`the_amendment_declares_the_filter_a_stream_is_read_through` in `tests/contract.rs`.
+What is inferred here is only how this crate spells it:
+
+| Item | Shape | Why |
+| --- | --- | --- |
+| `EventMatcher` | one public type, all seven fields `Option` | The grammar names matchers and their fields but no type. A named type rather than a map is what lets a consumer build a filter as a value — which is the whole point of the typed seam — and `Option` per field is "unset asks nothing", which is what the grammar says each field means. |
+| `EventFilter::parse` | `&str` in, `Result<Self>` out | A consumer with a spec as text needs one entry point that refuses it the way the CLI does. It reads YAML, which is the language the grammar is written in and a superset of the JSON the CLI takes inline, so both forms are one parser rather than two that could disagree. |
+| `Deserialize for EventFilter` | routed through the same validation | Hand-written rather than derived, so a filter embedded in a consumer's own configuration is refused by the same rules, with the same message naming the same matcher. A derived one would name the field and not which matcher carried it. |
+| `--filter SPEC` | inline when it opens with `{`, a path otherwise | Decided by the text rather than by whether a file happens to exist, so what an invocation means does not change with the directory it runs in. The grammar's document is a mapping, so the two forms cannot collide. |
+
+Deliberately *not* public: `EventKind::wire`, the kebab-case spelling a `kind` glob
+is matched against — it is `Serialize`'s answer, reachable that way already, and
+`the_wire_spelling_of_every_kind_is_the_one_a_filter_matches` holds the two
+together. Nor is there an `EventFilter` on `Stream`, the writing half: filtering
+what a producer *records* is a different decision from filtering what a consumer
+reads, and the stream is the record of what happened.
+
 Deliberately *not* public: `workspace::Record` and `workspace::all`, which are the
 whole durable record — the run root, the per-session clone, the two checkouts, and a
 schema version this build refuses to read at any other value. Exporting them would
@@ -206,3 +227,23 @@ question was:
    implementation opened is not first-class. Closing it means a method on `Vcs`,
    which every implementor would have to write, so it is a contract amendment and a
    breaking release rather than a decision to take in passing.
+7. **The filter grammar has no version, and one cannot be added from here.** Every
+   other serialized shape in this crate is versioned, and each of those is written
+   and read by this repository alone. A filter is written by whoever configures a
+   run and read by `onevcs`, `oneagentgraph`, and `onepipeline`, so a `version` key
+   one of them writes and the others refuse is the shared grammar ceasing to be
+   shared. It is refused here like any other key the grammar does not have, which
+   is what makes an unversioned document fail closed rather than half-read, and the
+   amendment in `docs/contract.md` records the constraint. Versioning it is a
+   proposal to raise with the contract owner across the three repositories — one
+   spelling, one meaning for an absent version, one answer for what an older build
+   does with a newer document — not a decision to take in passing.
+8. **`onevcs` stamps none of the envelope's reserved label keys.** It stamps
+   `session` and `identity`, which are free-form extras, so a filter naming
+   `run_id`, `node`, `step`, `member`, or `persona` admits nothing this crate
+   produces — correctly, by the grammar's own rule, and the same answer a consumer
+   would get from any producer that did not know the run around it. Whether a
+   session should learn them (from its opener, or from the environment a run sets)
+   is a question about what a session knows, not about filtering, and it would
+   change the bytes of every stream — so it is reported here rather than taken in
+   passing.

@@ -78,6 +78,12 @@ fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
         ("sync", vec!["sync"]),
         ("sync", vec!["sync", "main"]),
         ("events", vec!["events", "s-7f3a", "--follow"]),
+        // The filter the contract's amendment adds beside `--follow`, in the inline
+        // form; `filter.rs` drives what it then admits.
+        (
+            "events",
+            vec!["events", "s-7f3a", "--follow", "--filter", "{}"],
+        ),
         ("artifact cat", vec!["artifact", "cat", "a-91"]),
         ("rules check", vec!["rules", "check", "onevcs"]),
     ]
