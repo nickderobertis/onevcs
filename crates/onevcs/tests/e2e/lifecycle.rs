@@ -338,7 +338,7 @@ fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_na
         .args(["publish", &token])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("fits the 72-character limit"))
+        .stderr(predicate::str::contains("fits the 120-character limit"))
         .stderr(predicate::str::contains("--title"));
 
     // A title that is only spacing is no more of a subject than none at all, and a
@@ -359,6 +359,57 @@ fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_na
         .assert()
         .success();
     assert_eq!(fixture.origin_log()[0], "feat: add the thing");
+}
+
+#[test]
+fn a_title_is_published_whole_up_to_the_limit_and_refused_one_character_past_it() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/titled"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    // A hundred characters: far past the 72 this used to hold a title to, which
+    // twice refused complete, gate-green work at publication — an hour after the
+    // constraint was knowable. It publishes, and it publishes *whole*: a
+    // description cut to fit names nothing on a base branch that is the record.
+    let within = format!("feat: {}", "a".repeat(100 - "feat: ".len()));
+    assert_eq!(within.len(), 100);
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token, "--title", &within])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        fixture.origin_log()[0],
+        within,
+        "the base carries the title whole"
+    );
+
+    // One character past the limit, which is the only interesting distance: the
+    // refusal names the length it got *and* the length it holds a title to, so an
+    // operator shortens by exactly what is needed rather than guessing. Refused
+    // before the session is even looked at, which is why the closed one above can
+    // ask it.
+    let over = format!("feat: {}", "a".repeat(121 - "feat: ".len()));
+    assert_eq!(over.len(), 121);
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token, "--title", &over])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "the explicit title is 121 characters, over the 120-character limit",
+        ));
+
+    // And the constant the binary just enforced is the one a consumer reads, at the
+    // path it reads it: `onepipeline` validates a plan's titles against
+    // `onevcs::provenance::SUBJECT_LIMIT` at load, an hour before a publication
+    // would — so the path has to resolve from outside this crate, not only within it.
+    assert_eq!(onevcs::provenance::SUBJECT_LIMIT, 120);
 }
 
 #[test]

@@ -79,7 +79,7 @@ fn a_change_request_whose_title_names_nothing_is_refused_as_the_real_host_refuse
     assert!(host.state().changes.is_empty());
 
     // How *long* a title may be is the host's own rule rather than this crate's rule
-    // for a commit subject — so one past the 72 characters a subject is bounded by
+    // for a commit subject — so one past the 120 characters a subject is bounded by
     // is opened, exactly as a real host opens it.
     let long = format!("feat: {}", "x".repeat(200));
     let opened = host

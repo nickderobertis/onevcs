@@ -175,7 +175,7 @@ pub struct HostState {
     // llmlint: ignore[invalid_states_unrepresentable] this records the `ChangeSpec.title`
     // the contract fixes as a `String`, so a validated type here would disagree with the
     // one it mirrors. `Subject` is not that type: it is `onevcs`'s rule for a *commit
-    // subject*, 72 characters, and a host's own limit is its own — spelling it here would
+    // subject*, 120 characters, and a host's own limit is its own — spelling it here would
     // refuse a seeded title a real host accepts, which is drift in the direction that
     // looks like rigour. What the host itself refuses is a title that names nothing, and
     // that is refused below and in `open_change`, at the boundary the value arrives at.
