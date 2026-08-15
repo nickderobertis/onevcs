@@ -104,8 +104,9 @@ not tell you:
 - **`just red-green` is the evidence, not a check.** A green test proves nothing on
   its own; it has to be observed red for its own behaviour first, and an
   observation that lives in a session's scrollback is not evidence. So each
-  behaviour has a mutation patch under `scripts/red-green/` naming the tests that
-  must fail without it, the recipe re-applies them all and records what each test
+  behaviour has a mutation patch under `scripts/red-green/` whose header names the
+  round and the tests that must fail without it. Every header is checked before any
+  round runs; the recipe then re-applies each patch and records what each test
   failed on in [`docs/red-green.md`](docs/red-green.md), and it fails when a test
   the branch adds is one no mutation can break. It is out of `check` and `gate`
   deliberately: it mutates the tree and takes minutes, and it is scoped to a

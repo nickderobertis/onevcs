@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 19. Tests observed red and then green: 31.
+Patches: 20. Tests observed red and then green: 33.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -34,17 +34,17 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 
 integrate's team and remote refusals go back to naming no command.
 
-- RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpmE3NhP/reviewed`)
-- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpbbPhsO/remote-owner`)
+- RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpGDWAmh/reviewed`)
+- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpp81k9y/remote-owner`)
 - RED `every_state_a_branch_can_be_in_has_a_verb_that_takes_it` — the train's refusal names no command: onevcs: invalid input: direct integration is refused for identity "github.com/acme-corp/hosted" (repo_
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpflExb7/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpjXBxEW/a checkout with spaces'`)
 
 ### `03-recovery-hands-every-branch-to-the-train`
 
 recover's handoff names `integrate` whatever the identity is, which is the verb half of them refuse.
 
 - RED `recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publish_it` — the handoff names no command: onevcs: invalid input: branch "feature/handed-over" carries no unattested incomplete provenance: it has commit
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpcXpCNI/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpCmXuCu/a checkout with spaces'`)
 
 ### `04-interrupted-work-published-as-finished`
 
@@ -69,13 +69,13 @@ the branch-keyed sync conflict goes back to stating that the two conflict.
 
 the publication path's sync conflict goes back to stating that the branch is retained.
 
-- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpD3yGTI/project`)
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpND3FEK/project`)
 
 ### `08-printed-commands-are-not-quoted`
 
 an argument a shell would split is printed as it is.
 
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpW0jx1d/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpRGBjsu/a checkout with spaces'`)
 
 ### `09-a-repository-path-read-lossily`
 
@@ -113,7 +113,7 @@ a publication stops running the gate the policy names.
 
 the refusal that nothing would be attested stops naming the rules entry that answers it.
 
-- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpRElobf/.onevcs/rules.yml)
+- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpDXG1uZ/.onevcs/rules.yml)
 
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
@@ -140,11 +140,18 @@ the branch-keyed refusals stop naming the command that lists the branches there 
 
 the train's no-subject skip goes back to reporting the synthesis failure alone.
 
-- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmphNHZXe/project --title <T>`
+- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpiDmHwf/project --title <T>`
 
 ### `19-the-verb-is-not-written-down`
 
 the command surface record stops naming publish-branch, which is the drift the two readers exist to catch.
 
-- RED `the_contract_and_clap_name_the_same_commands` — assertion `left == right` failed: docs/contract.md and the parser disagree about the command surface
+- RED `the_contract_and_clap_name_the_same_commands` — assertion `left == right` failed: the parser and the two documents that write the command surface down — docs/contract.md and docs/inferre
+
+### `20-a-round-header-is-not-checked`
+
+the harness stops checking a mutation patch header before it runs the round.
+
+- RED `a_round_with_no_one_subject_is_refused_before_any_of_them_runs` — expected a non-zero exit:
+- RED `a_round_that_names_no_test_or_names_one_twice_is_refused` — expected a non-zero exit:
 

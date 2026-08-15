@@ -99,11 +99,40 @@ pub struct Resolved {
     pub gate_from: String,
 }
 
-/// What [`load`] reports as the source when there is no rules file to read.
+/// Where the rules a repository resolved against came from.
 ///
-/// Named rather than spelled twice, because a refusal that tells an operator which
-/// file to edit has to be able to tell this apart from a path.
-pub const BUILT_IN_SOURCE: &str = "the built-in default policy";
+/// Two states, not one string: a *path* that was read, and the absence of any file
+/// at all. A refusal that tells an operator which file to edit has to tell those
+/// apart, and recovering that from the sentence a report prints is a comparison
+/// that goes wrong the first time the sentence is reworded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RulesSource {
+    /// The rules file at this path, which is what was read.
+    File(PathBuf),
+    /// No file: the built-in default the contract spells.
+    BuiltIn,
+}
+
+impl RulesSource {
+    /// The file an operator would edit to change this policy — the one that was
+    /// read, or the conventional path where one would go.
+    pub fn file(&self) -> Result<PathBuf> {
+        match self {
+            RulesSource::File(path) => Ok(path.clone()),
+            RulesSource::BuiltIn => default_path(),
+        }
+    }
+}
+
+/// How a report names it, which is the one sentence for either state.
+impl std::fmt::Display for RulesSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RulesSource::File(path) => write!(f, "{}", path.display()),
+            RulesSource::BuiltIn => f.write_str("the built-in default policy"),
+        }
+    }
+}
 
 /// The policy the contract's `default:` names, for a registry with no rules file.
 pub fn built_in_default() -> Policy {
@@ -117,7 +146,7 @@ pub fn built_in_default() -> Policy {
 }
 
 /// Load the rules a registry points at, or the built-in default.
-pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
+pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
     // The registry's own reference wins; otherwise the conventional file under the
     // state root, which is what a host configures without editing the document
     // `onevcs` maintains for itself.
@@ -133,7 +162,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
                 rules: Vec::new(),
                 default: built_in_default(),
             },
-            BUILT_IN_SOURCE.to_owned(),
+            RulesSource::BuiltIn,
         ));
     }
     let raw = std::fs::read_to_string(&path).map_err(|e| Error::Invalid {
@@ -153,7 +182,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, String)> {
         });
     }
     validate(&path, &file)?;
-    Ok((file, path.display().to_string()))
+    Ok((file, RulesSource::File(path)))
 }
 
 /// Reject a rules file whose own policy cannot be honoured.
@@ -213,7 +242,12 @@ fn validate(path: &Path, file: &RulesFile) -> Result<()> {
 }
 
 /// Resolve the policy for one repository: first matching rule wins.
-pub fn resolve(file: &RulesFile, source: &str, identity: &Normalized, checkout: &Path) -> Resolved {
+pub fn resolve(
+    file: &RulesFile,
+    source: &RulesSource,
+    identity: &Normalized,
+    checkout: &Path,
+) -> Resolved {
     for (index, rule) in file.rules.iter().enumerate() {
         if !matches(&rule.r#match, identity, checkout) {
             continue;
@@ -228,7 +262,7 @@ pub fn resolve(file: &RulesFile, source: &str, identity: &Normalized, checkout: 
                     .clone()
                     .unwrap_or_else(|| file.default.gate.clone()),
             },
-            source: source.to_owned(),
+            source: source.to_string(),
             matched: Some(Matched {
                 index: index + 1,
                 criteria: rule.r#match.clone(),
@@ -240,7 +274,7 @@ pub fn resolve(file: &RulesFile, source: &str, identity: &Normalized, checkout: 
     }
     Resolved {
         policy: file.default.clone(),
-        source: source.to_owned(),
+        source: source.to_string(),
         matched: None,
         publication_from: "the default".to_owned(),
         approvals_from: "the default".to_owned(),

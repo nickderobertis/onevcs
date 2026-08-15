@@ -916,7 +916,8 @@ fn the_contract_and_clap_name_the_same_commands() {
     assert_eq!(
         documented_commands(),
         implemented,
-        "docs/contract.md and the parser disagree about the command surface"
+        "the parser and the two documents that write the command surface down — \
+         docs/contract.md and docs/inferred-surface.md — disagree"
     );
 }
 

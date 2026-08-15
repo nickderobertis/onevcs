@@ -3,18 +3,28 @@
 # AGENTS.md says why it exists. Two constraints live here and nowhere else.
 #
 # It refuses a dirty tree: it applies and reverts mutations with `git checkout`,
-# which would take an operator's uncommitted work with it. And a mutation patch is
-# read for its `Mutation:` line and its `Red:` lines — one per test that must fail
-# without the behaviour — so a patch that names none is an error rather than a
-# round with nothing to observe.
+# which would take an operator's uncommitted work with it.
 #
-# Usage: scripts/red-green.sh [--record FILE] [--base REF]
+# A patch's header is input, and it is checked like input — every patch, before any
+# of them runs. `Mutation:` is what the transcript records as the round's subject
+# and `Red:` names each test that must fail without the behaviour, so a header that
+# is missing, blank, doubled, or repeats a test is refused here rather than
+# recorded as a round nothing can read.
+#
+# Usage: scripts/red-green.sh [--record FILE] [--base REF] [--patches DIR]
+#                             [--validate-only]
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || {
+  echo "red-green: the repository root is not reachable from $0" >&2
+  echo "ACTION: run this script from a checkout — 'just red-green' does that for you" >&2
+  exit 1
+}
 
 record=""
 base="origin/main"
+dir="scripts/red-green"
+validate_only=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --record)
@@ -31,12 +41,76 @@ while [ "$#" -gt 0 ]; do
         exit 2
       }
       base="$2"; shift 2 ;;
+    --patches)
+      [ "$#" -ge 2 ] || {
+        echo "--patches needs the directory the mutation patches are in" >&2
+        echo "ACTION: omit it — 'scripts/red-green' is the default and the committed one" >&2
+        exit 2
+      }
+      dir="$2"; shift 2 ;;
+    --validate-only)
+      validate_only=1; shift ;;
     *)
       echo "unknown option $1" >&2
-      echo "ACTION: run 'scripts/red-green.sh [--record FILE] [--base REF]'" >&2
+      echo "ACTION: run 'scripts/red-green.sh [--record FILE] [--base REF] [--patches DIR] [--validate-only]'" >&2
       exit 2 ;;
   esac
 done
+
+patches=("$dir"/*.patch)
+if [ ! -e "${patches[0]}" ]; then
+  echo "red-green: no mutation patches under $dir/" >&2
+  echo "ACTION: this evidence is a committed artifact; restore the directory from git" >&2
+  exit 1
+fi
+
+# The header of one patch, checked as the input it is. Every failure names the
+# patch and what to write in it, because the only reader that can fix a header is
+# whoever wrote the round.
+validate_header() {
+  local patch="$1" red
+  local -a mutations reds
+  mapfile -t mutations < <(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")
+  if [ "${#mutations[@]}" -ne 1 ]; then
+    echo "red-green: $patch carries ${#mutations[@]} 'Mutation:' lines, and a round has one subject" >&2
+    echo "ACTION: give it exactly one 'Mutation: <what this removes>' line above the diff — it is what docs/red-green.md records the round as" >&2
+    return 1
+  fi
+  if [ -z "${mutations[0]//[[:space:]]/}" ]; then
+    echo "red-green: $patch has a blank 'Mutation:' line" >&2
+    echo "ACTION: say what the mutation removes — a blank subject records a round the transcript cannot name" >&2
+    return 1
+  fi
+  mapfile -t reds < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
+  if [ "${#reds[@]}" -eq 0 ]; then
+    echo "red-green: $patch names no 'Red:' test" >&2
+    echo "ACTION: every patch says which tests it must turn red; add one 'Red: <test>' line per test" >&2
+    return 1
+  fi
+  for red in "${reds[@]}"; do
+    if [ -z "${red//[[:space:]]/}" ]; then
+      echo "red-green: $patch has a blank 'Red:' line" >&2
+      echo "ACTION: name the test on it — an empty name selects every test in the suite, which is not a round anybody can read" >&2
+      return 1
+    fi
+  done
+  local doubled
+  doubled="$(printf '%s\n' "${reds[@]}" | sort | uniq -d | head -1)"
+  if [ -n "$doubled" ]; then
+    echo "red-green: $patch names the test '$doubled' twice" >&2
+    echo "ACTION: name each test once — a repeated one is observed twice and recorded twice, which reads as two rounds" >&2
+    return 1
+  fi
+}
+
+for patch in "${patches[@]}"; do
+  validate_header "$patch" || exit 1
+done
+
+if [ -n "$validate_only" ]; then
+  echo "red-green: every patch header is well formed (${#patches[@]} in $dir)"
+  exit 0
+fi
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "red-green: the working tree has uncommitted changes" >&2
@@ -44,16 +118,23 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-patches=(scripts/red-green/*.patch)
-if [ ! -e "${patches[0]}" ]; then
-  echo "red-green: no mutation patches under scripts/red-green/" >&2
-  echo "ACTION: this evidence is a committed artifact; restore the directory from git" >&2
+# Every run's whole output, so a one-line verdict above has all of it behind it.
+log=".logs/red-green.log"
+if ! mkdir -p .logs || ! : >"$log"; then
+  echo "red-green: $log cannot be written" >&2
+  echo "ACTION: make .logs/ writable by this user (it is gitignored and owner-only), then re-run" >&2
   exit 1
 fi
 
-log=".logs/red-green.log"
-mkdir -p .logs
-: >"$log"
+# One line of the run's own record. Loud if it cannot be kept: a round nobody can
+# read afterwards is the failure this whole harness exists to prevent.
+note() {
+  if ! printf '%s\n' "$1" >>"$log"; then
+    echo "red-green: $log stopped being writable part way through the run" >&2
+    echo "ACTION: make .logs/ writable by this user and re-run — this run's record is incomplete" >&2
+    exit 1
+  fi
+}
 transcript=""
 covered=""
 
@@ -106,24 +187,25 @@ trap restore EXIT
 
 for patch in "${patches[@]}"; do
   name="$(basename "$patch" .patch)"
-  mutation="$(sed -n 's/^Mutation: //p' "$patch")"
-  mapfile -t reds < <(sed -n 's/^Red: //p' "$patch")
-  if [ "${#reds[@]}" -eq 0 ]; then
-    echo "red-green: $name names no Red: test" >&2
-    echo "ACTION: every patch says which tests it must turn red; add one 'Red: <test>' line per test" >&2
-    exit 1
-  fi
+  # Both were checked above, for every patch, before any of them ran.
+  mutation="$(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")"
+  mapfile -t reds < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
   if ! git apply --check "$patch" 2>>"$log"; then
     echo "red-green: $patch no longer applies" >&2
     echo "ACTION: the code it mutates has moved; re-make the patch against the current tree (apply the mutation by hand, 'git diff' it, keep the Mutation:/Red: header) and re-run" >&2
     exit 1
   fi
-  git apply "$patch"
+  if ! git apply "$patch"; then
+    echo "red-green: $patch could not be applied" >&2
+    echo "ACTION: check that nothing else is writing to the files it touches, then re-run; 'git status' says whether one is half applied" >&2
+    exit 1
+  fi
   transcript+="### \`$name\`"$'\n\n'"$mutation"$'\n\n'
   for test in "${reds[@]}"; do
     covered+="$test"$'\n'
     output="$(run_one "$test" || true)"
-    printf '=== %s / %s (mutated)\n%s\n' "$name" "$test" "$output" >>"$log"
+    note "=== $name / $test (mutated)
+$output"
     if grep -q "no tests to run" <<<"$output"; then
       restore
       echo "red-green: $name names a test that does not exist: $test" >&2
@@ -171,7 +253,8 @@ green=0
 while read -r test; do
   [ -n "$test" ] || continue
   output="$(run_one "$test" || true)"
-  printf '=== %s (unmutated)\n%s\n' "$test" "$output" >>"$log"
+  note "=== $test (unmutated)
+$output"
   if ! grep -q "1 test run: 1 passed" <<<"$output"; then
     echo "red-green: $test does not pass unmutated" >&2
     echo "ACTION: read $log — the tree is green only if every test observed red above also passes with the behaviour in place" >&2
@@ -181,7 +264,7 @@ while read -r test; do
 done < <(sort -u <<<"$covered")
 
 if [ -n "$record" ]; then
-  {
+  if ! {
     printf '# Red, then green\n\n'
     printf 'Every journey this branch adds, observed failing for the behaviour it is\n'
     printf 'about before it passed. Regenerate with `just red-green`, which re-applies\n'
@@ -189,7 +272,11 @@ if [ -n "$record" ]; then
     printf 'failed on, reverts it, and then runs the same tests green.\n\n'
     printf 'Patches: %s. Tests observed red and then green: %s.\n\n' "${#patches[@]}" "$green"
     printf '%s' "$transcript"
-  } >"$record"
+  } >"$record"; then
+    echo "red-green: the transcript could not be written to $record" >&2
+    echo "ACTION: name a writable path — 'just red-green' writes docs/red-green.md, which is the committed one — and re-run" >&2
+    exit 1
+  fi
 fi
 
 echo "red-green: ${#patches[@]} mutations, $green tests observed red then green"

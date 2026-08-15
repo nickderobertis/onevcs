@@ -78,9 +78,8 @@ pub struct Landing {
     /// The policy the identity's rules resolve to, and where each field came from.
     pub resolved: policy::Resolved,
     /// The rules file an operator would edit to change that policy — the one that
-    /// was read, or the conventional path where one would be, never the sentence
-    /// [`policy::load`] reports when it read none.
-    pub rules_file: String,
+    /// was read, or the conventional path where one would go.
+    pub rules_file: PathBuf,
     /// The policy this run publishes under, once `--policy` has narrowed it.
     pub effective: MergePolicy,
     /// The provenance vocabulary this host reads and writes.
@@ -102,6 +101,12 @@ pub struct Landing {
     /// below it rather than the root.
     pub change_base: Ref,
     /// The change base as it is actually compared: origin's copy where there is one.
+    // llmlint: ignore[invalid_states_unrepresentable] deliberately not a `Ref`, which
+    // is this crate's *branch name* — `branch`, `base`, and `change_base` beside it
+    // are ones. This is a comparison target, and the whole point of it is that it may
+    // be a remote-tracking ref instead: spelling it as a branch name is what would let
+    // it be passed where a branch is expected. `vcs::base_ref` answers a `String` for
+    // the same reason at every other caller.
     pub compared_change_base: String,
 }
 
@@ -129,7 +134,7 @@ pub fn prepare(
         ),
     })?;
     let resolution = store::resolve(registry, named)?;
-    let (file, source_name) = policy::load(registry)?;
+    let (file, rules_source) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     if !git::is_valid_branch_name(branch) {
         return Err(Error::Invalid {
@@ -140,12 +145,8 @@ pub fn prepare(
         });
     }
     let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &source_name, &normalized, &resolution.publication);
-    let rules_file = if source_name == policy::BUILT_IN_SOURCE {
-        policy::default_path()?.display().to_string()
-    } else {
-        source_name
-    };
+    let resolved = policy::resolve(&file, &rules_source, &normalized, &resolution.publication);
+    let rules_file = rules_source.file()?;
     let effective = publish::effective_policy(&resolved.policy, requested)?;
     let source = locate(registry, &resolution, branch)?;
 
@@ -265,7 +266,7 @@ impl Landing {
              which must declare version {} to carry that key; confirm it with `{}`, then land \
              it with `{}`. Until then nothing may publish it as though it were complete",
             self.branch,
-            self.rules_file,
+            self.rules_file.display(),
             policy::VERSION,
             self.rules_check(),
             self.command_for(Verb::Recover),

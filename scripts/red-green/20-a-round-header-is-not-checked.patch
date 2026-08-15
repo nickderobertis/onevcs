@@ -1,0 +1,19 @@
+Mutation: the harness stops checking a mutation patch header before it runs the round.
+Red: a_round_with_no_one_subject_is_refused_before_any_of_them_runs
+Red: a_round_that_names_no_test_or_names_one_twice_is_refused
+
+diff --git a/scripts/red-green.sh b/scripts/red-green.sh
+index 0185d29..7ca9e94 100755
+--- a/scripts/red-green.sh
++++ b/scripts/red-green.sh
+@@ -103,10 +103,6 @@ validate_header() {
+   fi
+ }
+ 
+-for patch in "${patches[@]}"; do
+-  validate_header "$patch" || exit 1
+-done
+-
+ if [ -n "$validate_only" ]; then
+   echo "red-green: every patch header is well formed (${#patches[@]} in $dir)"
+   exit 0

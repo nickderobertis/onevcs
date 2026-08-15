@@ -136,7 +136,7 @@ fn attests_nothing(landing: &branch::Landing) -> Option<String> {
          `gate: {{kind: pre-push}}` keeps the merge path as the gate once {} carries an \
          executable pre-push hook. Confirm it with `{}`, then re-run `{}`",
         landing.resolution.key,
-        landing.rules_file,
+        landing.rules_file.display(),
         landing.source.display(),
         landing.rules_check(),
         landing.command(),

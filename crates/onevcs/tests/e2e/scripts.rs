@@ -833,3 +833,100 @@ fn an_index_answering_about_another_crate_stops_the_release_by_saying_so() {
         "a document about another crate decides nothing about this one"
     );
 }
+
+/// A scratch directory of mutation patches, so the header checks can be driven
+/// without the committed evidence set — and without running a round, which takes
+/// minutes and mutates the tree.
+fn patch_dir(patches: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a scratch patch directory");
+    for (name, body) in patches {
+        std::fs::write(dir.path().join(name), body).expect("a mutation patch");
+    }
+    dir
+}
+
+/// A patch body that is a real diff, so what a journey below varies is the header
+/// and nothing else.
+const DIFF: &str = "\ndiff --git a/README.md b/README.md\n\
+                    --- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# onevcs\n+# mutated\n";
+
+fn validate(dir: &Path) -> Reported {
+    Run::script("scripts/red-green.sh")
+        .args(["--validate-only", "--patches"])
+        .arg(dir)
+        .output()
+}
+
+#[test]
+fn a_round_with_no_one_subject_is_refused_before_any_of_them_runs() {
+    // The `Mutation:` line is what `docs/red-green.md` records the round as, so a
+    // patch that carries none, carries a blank one, or carries two would leave the
+    // evidence naming nothing — or naming two things — for a run that took minutes
+    // and mutated the tree. It is input, and it is checked before the first patch
+    // is applied rather than when the transcript is written.
+    let good = format!("Mutation: it removes the thing\nRed: a_test\n{DIFF}");
+    validate(patch_dir(&[("01-good.patch", &good)]).path())
+        .succeeded()
+        .printed("every patch header is well formed");
+
+    for (body, said, action) in [
+        (
+            format!("Red: a_test\n{DIFF}"),
+            "carries 0 'Mutation:' lines",
+            "ACTION: give it exactly one 'Mutation: <what this removes>' line",
+        ),
+        (
+            format!("Mutation:   \nRed: a_test\n{DIFF}"),
+            "has a blank 'Mutation:' line",
+            "ACTION: say what the mutation removes",
+        ),
+        (
+            format!("Mutation: one thing\nMutation: another\nRed: a_test\n{DIFF}"),
+            "carries 2 'Mutation:' lines",
+            "ACTION: give it exactly one 'Mutation: <what this removes>' line",
+        ),
+    ] {
+        // Beside a well-formed one, so what is refused is the patch rather than the
+        // directory: one bad header stops the run, and the message names which.
+        let dir = patch_dir(&[("01-good.patch", &good), ("02-bad.patch", &body)]);
+        validate(dir.path())
+            .failed()
+            .said(said)
+            .said("02-bad.patch")
+            .said(action);
+    }
+}
+
+#[test]
+fn a_round_that_names_no_test_or_names_one_twice_is_refused() {
+    // The `Red:` lines are the round itself: each is a test that must fail without
+    // the behaviour. None is a round with nothing to observe; a blank one selects
+    // every test in the suite, because that is what an empty filter means; and a
+    // repeated one is observed twice and recorded twice, which reads as two rounds.
+    for (body, said, action) in [
+        (
+            format!("Mutation: it removes the thing\n{DIFF}"),
+            "names no 'Red:' test",
+            "ACTION: every patch says which tests it must turn red",
+        ),
+        (
+            format!("Mutation: it removes the thing\nRed:\n{DIFF}"),
+            "has a blank 'Red:' line",
+            "ACTION: name the test on it",
+        ),
+        (
+            format!("Mutation: it removes the thing\nRed: a_test\nRed: a_test\n{DIFF}"),
+            "names the test 'a_test' twice",
+            "ACTION: name each test once",
+        ),
+    ] {
+        validate(patch_dir(&[("01-bad.patch", &body)]).path())
+            .failed()
+            .said(said)
+            .said(action);
+    }
+
+    // …and two different tests in one round are what a patch is for.
+    let both = format!("Mutation: it removes the thing\nRed: one_test\nRed: another_test\n{DIFF}");
+    validate(patch_dir(&[("01-good.patch", &both)]).path()).succeeded();
+}
