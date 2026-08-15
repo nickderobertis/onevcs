@@ -84,9 +84,13 @@ fi
 # patch and what to write in it, because the only reader that can fix a header is
 # whoever wrote the round.
 validate_header() {
-  local patch="$1" red
-  local -a mutations reds
-  mapfile -t mutations < <(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")
+  local patch="$1" red line
+  local -a mutations=() reds=()
+  # Filled by `while read` rather than `mapfile`: that is bash 4, macOS ships bash
+  # 3.2, and there the *whole script* aborts on the first use of it — so a refusal
+  # this file exists to print never reaches the operator. Keep `mapfile` and
+  # `readarray` out of this tree; `tests/e2e/scripts.rs` fails if one returns.
+  while IFS= read -r line; do mutations+=("$line"); done < <(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")
   if [ "${#mutations[@]}" -ne 1 ]; then
     echo "red-green: $patch carries ${#mutations[@]} 'Mutation:' lines, and a round has one subject" >&2
     echo "ACTION: give it exactly one 'Mutation: <what this removes>' line above the diff — it is what docs/red-green.md records the round as" >&2
@@ -97,7 +101,7 @@ validate_header() {
     echo "ACTION: say what the mutation removes — a blank subject records a round the transcript cannot name" >&2
     return 1
   fi
-  mapfile -t reds < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
+  while IFS= read -r line; do reds+=("$line"); done < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
   if [ "${#reds[@]}" -eq 0 ]; then
     echo "red-green: $patch names no 'Red:' test" >&2
     echo "ACTION: every patch says which tests it must turn red; add one 'Red: <test>' line per test" >&2
@@ -153,7 +157,7 @@ if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*' ':(exclude)*/fi
   echo "ACTION: check that $base and the working tree are both readable, then re-run" >&2
   exit 1
 fi
-mapfile -t added < <(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)
+added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)"
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "red-green: the working tree has uncommitted changes" >&2
@@ -222,14 +226,18 @@ for patch in "${patches[@]}"; do
   fi
   paths+="$(awk '{print $3}' <<<"$listed")"$'\n'
 done
-mapfile -t touched < <(sort -u <<<"$paths" | grep .)
+touched=()
+while IFS= read -r line; do touched+=("$line"); done < <(sort -u <<<"$paths" | grep .)
 
 # Loud rather than best-effort: a run that cannot put the tree back has left a
 # mutation in it, which is the one failure here that outlives the run.
 restore() {
-  if ! git checkout -- "${touched[@]}"; then
+  # Expanded through `+` and `-` so an empty set is no arguments rather than an
+  # error: before bash 4.4 — and macOS is at 3.2 — `set -u` treats an empty array
+  # as unset, and this would abort the run in place of the refusal below.
+  if ! git checkout -- ${touched[@]+"${touched[@]}"}; then
     echo "red-green: the mutated files could not be restored" >&2
-    echo "ACTION: run 'git checkout -- ${touched[*]}' by hand before anything else — the working tree is carrying a mutation" >&2
+    echo "ACTION: run 'git checkout -- ${touched[*]-}' by hand before anything else — the working tree is carrying a mutation" >&2
     return 1
   fi
 }
@@ -238,7 +246,8 @@ trap restore EXIT
 for patch in "${patches[@]}"; do
   name="$(basename "$patch" .patch)"
   mutation="$(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")"
-  mapfile -t reds < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
+  reds=()
+  while IFS= read -r line; do reds+=("$line"); done < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
   if ! git apply --check "$patch" 2>>"$log"; then
     echo "red-green: $patch no longer applies" >&2
     echo "ACTION: the code it mutates has moved; re-make the patch against the current tree (apply the mutation by hand, 'git diff' it, keep the Mutation:/Red: header) and re-run" >&2
@@ -277,9 +286,10 @@ done
 # a test nothing can break. What they are was read before the rounds; this is the
 # judgement, which needs what the rounds covered.
 missing=""
-for test in "${added[@]}"; do
+while read -r test; do
+  [ -n "$test" ] || continue
   grep -qx "$test" <<<"$covered" || missing+="  $test"$'\n'
-done
+done <<<"$added"
 if [ -n "$missing" ]; then
   echo "red-green: these tests are new since $base and no patch turns them red:" >&2
   printf '%s' "$missing" >&2

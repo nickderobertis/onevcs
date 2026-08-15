@@ -2,19 +2,22 @@ Mutation: the harness reverts best-effort, so a tree left carrying a mutation sa
 Red: a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index fc122d7..c0f8edd 100755
+index c33cfee..12a8aec 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -192,11 +192,7 @@ mapfile -t touched < <(sort -u <<<"$paths" | grep .)
+@@ -232,14 +232,7 @@ while IFS= read -r line; do touched+=("$line"); done < <(sort -u <<<"$paths" | g
  # Loud rather than best-effort: a run that cannot put the tree back has left a
  # mutation in it, which is the one failure here that outlives the run.
  restore() {
--  if ! git checkout -- "${touched[@]}"; then
+-  # Expanded through `+` and `-` so an empty set is no arguments rather than an
+-  # error: before bash 4.4 — and macOS is at 3.2 — `set -u` treats an empty array
+-  # as unset, and this would abort the run in place of the refusal below.
+-  if ! git checkout -- ${touched[@]+"${touched[@]}"}; then
 -    echo "red-green: the mutated files could not be restored" >&2
--    echo "ACTION: run 'git checkout -- ${touched[*]}' by hand before anything else — the working tree is carrying a mutation" >&2
+-    echo "ACTION: run 'git checkout -- ${touched[*]-}' by hand before anything else — the working tree is carrying a mutation" >&2
 -    return 1
 -  fi
-+  git checkout -- "${touched[@]}" 2>/dev/null || true
++  git checkout -- ${touched[@]+"${touched[@]}"} 2>/dev/null || true
  }
  trap restore EXIT
  

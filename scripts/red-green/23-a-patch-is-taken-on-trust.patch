@@ -2,10 +2,10 @@ Mutation: the harness stops checking that a patch is one git can read and apply.
 Red: a_patch_git_cannot_read_or_apply_stops_the_run_naming_it
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index ab7ff42..8cad9cd 100755
+index c33cfee..84688d7 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -215,11 +215,7 @@ failure_line() {
+@@ -219,11 +219,7 @@ failure_line() {
  # hand-listed set would go stale the first time a patch reached a new file.
  paths=""
  for patch in "${patches[@]}"; do
@@ -17,11 +17,11 @@ index ab7ff42..8cad9cd 100755
 +  listed="$(git apply --numstat "$patch" 2>/dev/null || true)"
    paths+="$(awk '{print $3}' <<<"$listed")"$'\n'
  done
- mapfile -t touched < <(sort -u <<<"$paths" | grep .)
-@@ -239,16 +235,7 @@ for patch in "${patches[@]}"; do
-   name="$(basename "$patch" .patch)"
+ touched=()
+@@ -248,16 +244,7 @@ for patch in "${patches[@]}"; do
    mutation="$(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")"
-   mapfile -t reds < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
+   reds=()
+   while IFS= read -r line; do reds+=("$line"); done < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
 -  if ! git apply --check "$patch" 2>>"$log"; then
 -    echo "red-green: $patch no longer applies" >&2
 -    echo "ACTION: the code it mutates has moved; re-make the patch against the current tree (apply the mutation by hand, 'git diff' it, keep the Mutation:/Red: header) and re-run" >&2

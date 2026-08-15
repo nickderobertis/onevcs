@@ -2,12 +2,12 @@ Mutation: the harness stops refusing a tree that carries uncommitted work.
 Red: a_tree_or_a_log_the_harness_cannot_safely_use_stops_it_before_any_round
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index fc122d7..3fa7a77 100755
+index c33cfee..0e113cb 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -127,12 +127,6 @@ if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*')"; then
+@@ -159,12 +159,6 @@ if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*' ':(exclude)*/fi
  fi
- mapfile -t added < <(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)
+ added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)"
  
 -if [ -n "$(git status --porcelain)" ]; then
 -  echo "red-green: the working tree has uncommitted changes" >&2

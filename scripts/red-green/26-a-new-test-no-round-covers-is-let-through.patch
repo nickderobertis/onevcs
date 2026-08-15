@@ -2,13 +2,13 @@ Mutation: the harness stops holding this branch's new tests to a round that brea
 Red: a_test_added_since_the_base_that_no_mutation_breaks_fails_the_run
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index fc122d7..b88495f 100755
+index c33cfee..06d8b92 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -246,12 +246,6 @@ missing=""
- for test in "${added[@]}"; do
+@@ -290,12 +290,6 @@ while read -r test; do
+   [ -n "$test" ] || continue
    grep -qx "$test" <<<"$covered" || missing+="  $test"$'\n'
- done
+ done <<<"$added"
 -if [ -n "$missing" ]; then
 -  echo "red-green: these tests are new since $base and no patch turns them red:" >&2
 -  printf '%s' "$missing" >&2

@@ -1458,3 +1458,173 @@ fn a_transcript_that_cannot_be_written_is_a_failure_rather_than_a_silent_omissio
         .said("the transcript could not be written to nowhere/at/all.md")
         .said("ACTION: name a writable path");
 }
+
+/// A real bash with `mapfile` and `readarray` taken away, which is the shell macOS
+/// ships: both are bash 4 builtins and bash 3.2 has neither.
+///
+/// They are shadowed by exported *functions* rather than by substituting the shell,
+/// because bash looks a function up before a builtin and carries an exported one
+/// through the environment into the child it `exec`s — so the script under test runs
+/// in an ordinary bash that answers "command not found" to exactly what bash 3.2
+/// answers it to, with nothing else about the run altered.
+const WITHOUT_BASH_FOUR_BUILTINS: &str = concat!(
+    r#"mapfile() { echo "bash: mapfile: command not found" >&2; return 127; }; "#,
+    r#"readarray() { echo "bash: readarray: command not found" >&2; return 127; }; "#,
+    r#"export -f mapfile readarray; exec bash "$@""#,
+);
+
+fn without_bash_four_builtins(script: &Path, args: &[&str]) -> Reported {
+    let output = Command::new("bash")
+        .args(["-c", WITHOUT_BASH_FOUR_BUILTINS, "_"])
+        .arg(script)
+        .args(args)
+        .current_dir(workspace_root())
+        .output()
+        .expect("bash must be available to run this repository's scripts");
+    Reported::from(output)
+}
+
+#[test]
+fn the_harness_still_refuses_where_the_shell_has_no_bash_four_builtins() {
+    // `mapfile` is a bash 4 builtin, macOS ships bash 3.2, and a script that reaches
+    // for one there aborts on that line — *before* the refusal it exists to print.
+    // Which is how this repository's macOS job went red on a run every Linux job
+    // called green: the harness said `mapfile: command not found` where a journey
+    // was reading it for the argument it refused.
+    //
+    // Proved by running the committed script in a shell that has neither builtin,
+    // rather than by reading the script for them.
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    // First that the shell really is missing them — otherwise everything below is a
+    // green test of nothing.
+    let canary = scratch.path().join("canary.sh");
+    std::fs::write(
+        &canary,
+        "#!/usr/bin/env bash\nset -euo pipefail\n\
+         mapfile -t lines < <(printf 'one\\n')\nprintf 'read %s\\n' \"${#lines[@]}\"\n",
+    )
+    .expect("a canary script");
+    without_bash_four_builtins(&canary, &[])
+        .failed()
+        .said("mapfile: command not found");
+
+    // …and then that the harness's own refusals reach the operator there anyway.
+    let script = workspace_root().join("scripts/red-green.sh");
+    without_bash_four_builtins(&script, &["--base", "no-such-ref"])
+        .failed()
+        .said("no-such-ref does not name a commit here")
+        .said("ACTION: pass the ref this branch forked from");
+    // The header checks read every committed patch, so this is the whole of the
+    // reading the arrays do, over the real evidence set.
+    without_bash_four_builtins(&script, &["--validate-only"])
+        .succeeded()
+        .printed("every patch header is well formed");
+}
+
+/// Every shell script this repository runs, so a construct is caught wherever one
+/// is added rather than only in the file where one was found.
+fn shell_scripts(under: &Path, found: &mut Vec<PathBuf>) {
+    let entries = std::fs::read_dir(under).expect("scripts/ is part of this repository");
+    for entry in entries {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            shell_scripts(&path, found);
+        } else if path.extension().is_some_and(|it| it == "sh") {
+            found.push(path);
+        }
+    }
+}
+
+fn is_word_char(character: char) -> bool {
+    character.is_alphanumeric() || matches!(character, '_' | '-' | '.')
+}
+
+fn names_word(line: &str, word: &str) -> bool {
+    line.match_indices(word).any(|(at, _)| {
+        !line[..at].chars().next_back().is_some_and(is_word_char)
+            && !line[at + word.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_word_char)
+    })
+}
+
+/// `${name^^}` and `${name,,}`, distinguished from the expansions bash 3.2 does
+/// have — a case conversion is the operator immediately before the closing brace,
+/// applied to a name or a subscript, which `${v%,}` and `${v//,/;}` are not.
+fn converts_case(line: &str) -> bool {
+    line.match_indices("${").any(|(at, _)| {
+        let rest = &line[at + 2..];
+        let Some(close) = rest.find('}') else {
+            return false;
+        };
+        let inner = &rest[..close];
+        let name = inner.trim_end_matches(['^', ',']);
+        name.len() < inner.len()
+            && name
+                .chars()
+                .next_back()
+                .is_some_and(|it| it.is_alphanumeric() || it == '_' || it == ']')
+    })
+}
+
+/// What this line reaches for that bash 3.2 has no answer to, and what to write
+/// instead — the message is read by whoever added the line.
+fn bash_four_only(line: &str) -> Option<&'static str> {
+    for builtin in ["mapfile", "readarray"] {
+        if names_word(line, builtin) {
+            return Some("a bash 4 builtin — fill the array with `while IFS= read -r line; do a+=(\"$line\"); done < <(…)`");
+        }
+    }
+    for spelling in ["declare -A", "local -A", "typeset -A"] {
+        if line.contains(spelling) {
+            return Some("an associative array, which is bash 4 — key a sorted `name<TAB>value` stream instead");
+        }
+    }
+    converts_case(line).then_some(
+        "`${v^^}`/`${v,,}` case conversion, which is bash 4 — use `shopt -s nocasematch` or `tr`",
+    )
+}
+
+#[test]
+fn no_script_reaches_for_something_the_shell_macos_ships_does_not_have() {
+    // The runtime journey above proves one script on one path. This holds the whole
+    // tree to the same bar, including the constructs no run would fail loudly on:
+    // `${v^^}` fails at *expansion* time under bash 3.2, so what it guards silently
+    // becomes nothing rather than stopping.
+    //
+    // A comment naming one of these is the warning, not the use, so only what bash
+    // would execute is read.
+    let mut scripts = Vec::new();
+    shell_scripts(&workspace_root().join("scripts"), &mut scripts);
+    assert!(
+        scripts.len() > 1,
+        "the scan found no scripts, so it is asserting nothing"
+    );
+
+    let mut reached_for = Vec::new();
+    for script in &scripts {
+        let body = std::fs::read_to_string(script).expect("a readable script");
+        for (offset, line) in body.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            if let Some(what) = bash_four_only(line) {
+                let relative = script.strip_prefix(workspace_root()).unwrap_or(script);
+                reached_for.push(format!(
+                    "{}:{}: {what}\n  {}",
+                    relative.display(),
+                    offset + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        reached_for.is_empty(),
+        "macOS ships bash 3.2, where a script that reaches for one of these aborts \
+         before the diagnostic it exists to print:\n{}",
+        reached_for.join("\n")
+    );
+}
