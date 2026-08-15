@@ -74,6 +74,21 @@ refusal that only diagnoses leaves an agent to invent a way forward, and what it
 invents is `git push` plus `gh pr create` — the thing this crate exists to make
 unnecessary.
 
+**Syncing a branch has two shapes, and content decides which** (`publish::reconcile`,
+used by all three verbs). Ordinarily the base is merged into the branch. But a branch
+cut from the tip of the change below it — a stack — carries that change's every commit
+while the base, once it squash-merged, carries one commit with the same content and
+none of the same names; merging the two replays the whole parent against its own
+squashed equivalent and conflicts in every file both touched, again on every bounded
+retry. So when the base already carries everything the branch had before its own work,
+only that own work is replayed onto the base. The boundary is read off the branch —
+the newest commit on its own first-parent line whose whole content since the fork the
+base already carries — rather than out of a record, because no record survives all of
+the session that cut the branch, the checkout that kept it, and the clone publishing
+it: the incident this came from (2026-08-15, `onepipeline` #46) left a session record
+naming only `main`. Nothing here is a new event kind, deliberately: the contract fixes
+that list, and a successful sync has always been silent whichever shape it took.
+
 ## Tests are journeys, and there are no unit tests
 
 This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the
