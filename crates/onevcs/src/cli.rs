@@ -151,6 +151,14 @@ pub struct PublishArgs {
 }
 
 /// Arguments for `onevcs publish-branch`.
+// llmlint: ignore[invalid_states_unrepresentable] a branch and a title are Strings
+// here for the reason this module is the parser only: every command that takes
+// either — `publish`, `recover`, `sync`, `integrate` — carries it as typed text and
+// converts it at dispatch, into `Subject` and `workspace::Ref`, where the refusal
+// can name what to do about it. Parsing into those here would answer the same two
+// mistakes with clap's usage error instead, in two commands out of five, and a
+// branch name is decided by `git check-ref-format` — a subprocess, which argument
+// parsing must not run. `tests/e2e/publish_branch.rs` holds both refusals.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct PublishBranchArgs {
     /// The completed branch to verify and publish.
@@ -168,6 +176,10 @@ pub struct PublishBranchArgs {
 }
 
 /// Arguments for `onevcs recover`.
+// llmlint: ignore[invalid_states_unrepresentable] `--title` is typed text here for
+// the reason given on `PublishBranchArgs` above: it is converted into `Subject` at
+// dispatch, by the one conversion the library surface uses, so the refusal an
+// operator meets names the title they typed rather than clap's usage.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RecoverArgs {
     /// The preserved branch to verify and publish.
