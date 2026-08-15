@@ -12,6 +12,8 @@
 //! publishing a branch whose step never finished means writing an attestation, and
 //! only the verb that runs the gate to earn one may write it.
 
+use std::path::Path;
+
 use crate::branch::{self, Verb};
 use crate::error::{Error, Result};
 use crate::host::Hosting;
@@ -23,7 +25,7 @@ use crate::stream::Stream;
 /// Verify and publish a complete branch under its identity's policy.
 pub fn run(
     registry: &Registry,
-    repo: &str,
+    repo: &Path,
     branch: &str,
     title: Option<Subject>,
     policy: Option<MergePolicy>,

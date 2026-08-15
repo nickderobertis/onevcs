@@ -23,7 +23,7 @@ use crate::registry::{RepoType, Workflow};
 use crate::store::{self, Resolution};
 use crate::stream::{self, Stream};
 use crate::workspace::{object, Ref};
-use crate::{gate, git, home, ids, lock, policy, provenance, publish, queue};
+use crate::{gate, git, guidance, home, ids, lock, policy, provenance, publish, queue};
 
 /// What happened to one candidate of the train.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,10 +129,9 @@ pub fn run(
         return Err(Error::Invalid {
             reason: format!(
                 "the base worktree {} is dirty; the train advances that base and will not \
-                 build on work nobody recorded. Commit or stash what it holds, then re-run \
-                 `onevcs integrate {}`",
+                 build on work nobody recorded. Commit or stash what it holds, then re-run `{}`",
                 root.display(),
-                candidates.join(" "),
+                train_command(candidates),
             ),
         });
     }
@@ -204,16 +203,25 @@ pub fn run(
 /// one, because a refusal that names no command is what leaves `git push` and `gh pr
 /// create` as the way forward.
 fn change_request_route(resolution: &Resolution, candidates: &[String]) -> String {
+    let repo = resolution.publication.to_string_lossy();
     candidates
         .iter()
         .map(|branch| {
             format!(
-                "`onevcs publish-branch {branch} --repo {}`",
-                resolution.publication.display()
+                "`{}`",
+                guidance::command(["onevcs", "publish-branch", branch, "--repo", &repo])
             )
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// This same train, for a refusal that asks for it to be run again.
+fn train_command(candidates: &[String]) -> String {
+    let argv = ["onevcs", "integrate"]
+        .into_iter()
+        .chain(candidates.iter().map(String::as_str));
+    guidance::command(argv)
 }
 
 fn train(
@@ -341,8 +349,14 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
             &format!(
                 "provenance under the trailer prefix {prefix:?}, which this host is not \
                  configured to read; set trailer_prefix to {prefix:?} in the rules file, then \
-                 land it with `onevcs recover {branch} --repo {}`",
-                root.display()
+                 land it with `{}`",
+                guidance::command([
+                    "onevcs",
+                    "recover",
+                    branch,
+                    "--repo",
+                    &root.to_string_lossy()
+                ])
             ),
         ));
     }
@@ -354,10 +368,15 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
         return Ok(BranchOutcome {
             branch: Ref::from_git(branch),
             status: Status::Skipped(format!(
-                "incomplete provenance ({} unattested commit(s)); this branch belongs to \
-                 `onevcs recover {branch} --repo {}`",
+                "incomplete provenance ({} unattested commit(s)); this branch belongs to `{}`",
                 unattested.len(),
-                root.display()
+                guidance::command([
+                    "onevcs",
+                    "recover",
+                    branch,
+                    "--repo",
+                    &root.to_string_lossy()
+                ])
             )),
         });
     }
@@ -425,9 +444,14 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
                     return Ok(skipped(
                         branch,
                         &format!(
-                            "{reason}; publish it with `onevcs publish-branch {branch} --repo {} \
-                             --title <T>`",
-                            root.display()
+                            "{reason}; publish it with `{} --title <T>`",
+                            guidance::command([
+                                "onevcs",
+                                "publish-branch",
+                                branch,
+                                "--repo",
+                                &root.to_string_lossy()
+                            ])
                         ),
                     ))
                 }

@@ -299,13 +299,12 @@ fn explicit_title(title: Option<&String>) -> Result<Option<Subject>> {
 
 fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
-    let repo = args.repo.display().to_string();
     let title = explicit_title(args.title.as_ref())?;
     let token = format!("recover-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
     landed(recover::run(
         &registry,
-        &repo,
+        &args.repo,
         &args.branch,
         title,
         providers.hosting,
@@ -315,13 +314,12 @@ fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
 
 fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
-    let repo = args.repo.display().to_string();
     let title = explicit_title(args.title.as_ref())?;
     let token = format!("publish-branch-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
     landed(publish_branch::run(
         &registry,
-        &repo,
+        &args.repo,
         &args.branch,
         title,
         args.policy,

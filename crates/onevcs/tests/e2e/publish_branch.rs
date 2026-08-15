@@ -868,3 +868,136 @@ fn a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved()
         .stdout(predicate::str::contains("merged at"));
     assert_eq!(fixture.origin_log()[0], "feat: change the shared file");
 }
+
+#[test]
+fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
+    // A refusal's whole value is that its command can be run as printed, and a
+    // checkout under a path with a space in it is where an unquoted one stops being
+    // that: the shell would hand `--repo` the first word and the rest as branches.
+    let world = World::new();
+    let origin = world.bare_origin("spacey");
+    let checkout = world.path("a checkout with spaces");
+    world.git(
+        &world.path(""),
+        &[
+            "clone",
+            "-q",
+            &origin.to_string_lossy(),
+            &checkout.to_string_lossy(),
+        ],
+    );
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            // Hosted, so the train refuses it and has to route: the two refusals
+            // that name a command with this path in it are the ones under test.
+            "--origin",
+            "https://github.com/acme-corp/spacey.git",
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        format!(
+            "version: 1\nrules: []\ndefault: {}\n",
+            local_direct("[\"true\"]")
+        ),
+    );
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            &checkout.to_string_lossy(),
+            "--branch",
+            "feature/spacey",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    world.commit_file(
+        &worktree_of(&stdout),
+        "one.txt",
+        "one\n",
+        "feat: work under a spacey path",
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &token_of(&stdout)])
+        .assert()
+        .success();
+
+    // Both routes quote it: the train's, and `recover`'s handoff of a complete
+    // branch.
+    let quoted = format!("--repo '{}'", checkout.display());
+    world
+        .onevcs()
+        .args(["integrate", "feature/spacey"])
+        .current_dir(&checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!(
+            "`onevcs publish-branch feature/spacey {quoted}`"
+        )));
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/spacey",
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!(
+            "`onevcs publish-branch feature/spacey {quoted}`"
+        )));
+
+    // And the command they name is the command that works, run the way a shell
+    // hands it over: one argument, spaces and all.
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/spacey",
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        world.git(&origin, &["log", "-1", "--format=%s", "main"]),
+        "feat: work under a spacey path"
+    );
+}
+
+#[test]
+fn a_repository_path_that_is_not_text_is_refused_as_the_argument_it_is() {
+    // A path the operating system accepts and this build cannot read as text: run
+    // through a lossy rendering of itself it would name a checkout nobody
+    // registered, and the refusal would then be about the wrong thing entirely.
+    use std::os::unix::ffi::OsStrExt;
+
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let mut bytes = fixture.checkout.as_os_str().as_bytes().to_vec();
+    bytes.extend_from_slice(b"/\xff");
+    let unreadable = std::ffi::OsStr::from_bytes(&bytes);
+
+    for verb in ["publish-branch", "recover"] {
+        fixture
+            .world
+            .onevcs()
+            .arg(verb)
+            .arg("feature/whatever")
+            .arg("--repo")
+            .arg(unreadable)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("is not valid UTF-8"))
+            .stderr(predicate::str::contains("`onevcs repos`"));
+    }
+}

@@ -25,7 +25,9 @@ use crate::session::{Lifecycle, Provenance, SessionToken};
 use crate::store::Resolution;
 use crate::stream::{self, Stream};
 use crate::workspace::{object, Ref};
-use crate::{gate, gh, git, home, ids, lock, policy, provenance, queue, store, vcs, workspace};
+use crate::{
+    gate, gh, git, guidance, home, ids, lock, policy, provenance, queue, store, vcs, workspace,
+};
 
 /// How many times a base that moved under a publication is re-merged before the
 /// attempt is abandoned. Bounded, because a base advancing on every retry is a
@@ -506,8 +508,14 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
         reason: format!(
             "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
              branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
-             and then land it with `onevcs publish-branch {branch} --repo {}`",
-            context.resolution.publication.display(),
+             and then land it with `{}`",
+            guidance::command([
+                "onevcs",
+                "publish-branch",
+                &context.branch,
+                "--repo",
+                &context.resolution.publication.to_string_lossy(),
+            ]),
             branch = context.branch,
         ),
     })

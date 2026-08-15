@@ -14,7 +14,7 @@
 //! somewhere else, and a diagnosis with no next command is what sends them back
 //! to raw `git`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
@@ -27,7 +27,7 @@ use crate::rules::MergePolicy;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::workspace::{object, Ref};
-use crate::{git, home, ids, policy, provenance};
+use crate::{git, guidance, home, ids, policy, provenance};
 
 /// Which verb is landing the branch.
 ///
@@ -51,9 +51,11 @@ impl Verb {
         }
     }
 
-    /// The exact invocation that runs this verb over one branch again.
-    pub fn command(self, branch: &str, repo: &str) -> String {
-        format!("onevcs {} {branch} --repo {repo}", self.name())
+    /// The exact invocation that runs this verb over one branch again, quoted so
+    /// that running it as printed runs it over the same two arguments.
+    pub fn command(self, branch: &str, repo: &Path) -> String {
+        let repo = repo.to_string_lossy();
+        guidance::command(["onevcs", self.name(), branch, "--repo", &repo])
     }
 
     /// Where under the state root this verb's disposable clones live.
@@ -72,7 +74,7 @@ pub struct Landing {
     /// The identity the branch belongs to.
     pub resolution: Resolution,
     /// The repository as the operator named it, which is what `--repo` gets back.
-    pub repo_argument: String,
+    pub repo_argument: PathBuf,
     /// The policy the identity's rules resolve to, and where each field came from.
     pub resolved: policy::Resolved,
     /// The rules file an operator would edit to change that policy — the one that
@@ -111,11 +113,22 @@ pub struct Landing {
 pub fn prepare(
     registry: &Registry,
     verb: Verb,
-    repo: &str,
+    repo: &Path,
     branch: &str,
     requested: Option<MergePolicy>,
 ) -> Result<Landing> {
-    let resolution = store::resolve(registry, repo)?;
+    // A path this build cannot read as text is refused here rather than resolved
+    // through a lossy rendering of itself: the replacement characters name a
+    // checkout nobody registered, and the refusal would then be about the wrong
+    // thing entirely.
+    let named = repo.to_str().ok_or_else(|| Error::Invalid {
+        reason: format!(
+            "the repository path {} is not valid UTF-8, so it can name no registered checkout; \
+             `onevcs repos` lists them as they are recorded",
+            repo.display()
+        ),
+    })?;
+    let resolution = store::resolve(registry, named)?;
     let (file, source_name) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     if !git::is_valid_branch_name(branch) {
@@ -179,7 +192,7 @@ pub fn prepare(
     Ok(Landing {
         verb,
         resolution,
-        repo_argument: repo.to_owned(),
+        repo_argument: repo.to_path_buf(),
         resolved,
         rules_file,
         effective,
@@ -226,6 +239,15 @@ impl Landing {
         self.verb.command(&self.branch, &self.repo_argument)
     }
 
+    /// The invocation that reports which policy this repository resolves to.
+    ///
+    /// It takes the same argument this verb did, so an operator sent to it is sent
+    /// with what they already typed rather than with a second thing to work out.
+    pub fn rules_check(&self) -> String {
+        let repo = self.repo_argument.to_string_lossy();
+        guidance::command(["onevcs", "rules", "check", &repo])
+    }
+
     /// The invocation that runs the *other* branch-keyed verb over it.
     pub fn command_for(&self, verb: Verb) -> String {
         verb.command(&self.branch, &self.repo_argument)
@@ -240,13 +262,12 @@ impl Landing {
         format!(
             "branch {:?} carries provenance under the trailer prefix {prefix:?}, which this host \
              is not configured to read. Set trailer_prefix to {prefix:?} in the rules file at {}, \
-             which must declare version {} to carry that key; confirm it with `onevcs rules check \
-             {}`, then land it with `{}`. Until then nothing may publish it as though it were \
-             complete",
+             which must declare version {} to carry that key; confirm it with `{}`, then land \
+             it with `{}`. Until then nothing may publish it as though it were complete",
             self.branch,
             self.rules_file,
             policy::VERSION,
-            self.repo_argument,
+            self.rules_check(),
             self.command_for(Verb::Recover),
         )
     }

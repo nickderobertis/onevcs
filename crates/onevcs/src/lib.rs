@@ -42,6 +42,7 @@ mod event;
 mod gate;
 mod gh;
 mod git;
+mod guidance;
 mod home;
 mod host;
 mod ids;

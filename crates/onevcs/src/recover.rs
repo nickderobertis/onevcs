@@ -12,6 +12,8 @@
 //! worktree, merging the change base, running the gate, publishing — is
 //! [`crate::branch`], which `publish-branch` runs too.
 
+use std::path::Path;
+
 use serde_json::json;
 
 use crate::branch::{self, Verb};
@@ -28,7 +30,7 @@ use crate::{provenance, rules};
 /// Verify and publish a preserved branch.
 pub fn run(
     registry: &Registry,
-    repo: &str,
+    repo: &Path,
     branch: &str,
     title: Option<Subject>,
     hosting: &dyn Hosting,
@@ -105,7 +107,7 @@ fn complete_branch_verb(landing: &branch::Landing) -> String {
     if identity.repo_type == RepoType::Team || identity.workflow == Workflow::Remote {
         landing.command_for(Verb::PublishBranch)
     } else {
-        format!("onevcs integrate {}", landing.branch)
+        crate::guidance::command(["onevcs", "integrate", &landing.branch])
     }
 }
 
@@ -132,11 +134,11 @@ fn attests_nothing(landing: &branch::Landing) -> Option<String> {
          attestation would attest nothing. Give it one in the rules file at {}: a rule matching \
          this identity with `gate: {{command: [...]}}` names the bar itself, and \
          `gate: {{kind: pre-push}}` keeps the merge path as the gate once {} carries an \
-         executable pre-push hook. Confirm it with `onevcs rules check {}`, then re-run `{}`",
+         executable pre-push hook. Confirm it with `{}`, then re-run `{}`",
         landing.resolution.key,
         landing.rules_file,
         landing.source.display(),
-        landing.repo_argument,
+        landing.rules_check(),
         landing.command(),
     ))
 }
