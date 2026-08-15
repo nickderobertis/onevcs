@@ -1,0 +1,26 @@
+Mutation: an unusable stack pointer is refused as a bare name rather than as the trailer it came from.
+Red: a_recorded_base_that_is_not_a_branch_names_the_trailer_that_says_so
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index d8a08a9..d129de1 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -174,17 +174,7 @@ pub fn prepare(
+     // input to be checked rather than a name this process already decided.
+     let change_base = match provenance::recorded_change_base(&clone, &compared, branch, &trailers)?
+     {
+-        Some(recorded) => Ref::try_from(recorded).map_err(|reason| Error::Invalid {
+-            reason: format!(
+-                "branch {branch:?} records the base it was stacked on as {reason}: the {} trailer \
+-                 on its preserved commit is not a branch, so nothing here can tell which base it \
+-                 belongs on. `onevcs recoverable --json` reports the value as it stands; correct \
+-                 that trailer on the branch in {}, then land it with `{}`",
+-                trailers.change_base(),
+-                source.display(),
+-                verb.command(branch, repo),
+-            ),
+-        })?,
++        Some(recorded) => Ref::try_from(recorded).map_err(error::invalid)?,
+         None => base.clone(),
+     };
+     let compared_change_base = crate::vcs::base_ref(&clone, &change_base);

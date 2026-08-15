@@ -35,12 +35,14 @@
 #![warn(missing_docs)]
 
 mod app;
+mod branch;
 pub mod cli;
 mod error;
 mod event;
 mod gate;
 mod gh;
 mod git;
+mod guidance;
 mod home;
 mod host;
 mod ids;
@@ -50,6 +52,7 @@ mod policy;
 pub mod provenance;
 mod providers;
 mod publish;
+mod publish_branch;
 mod queue;
 mod recover;
 pub mod registry;

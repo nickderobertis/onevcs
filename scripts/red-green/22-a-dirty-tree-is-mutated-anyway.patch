@@ -1,0 +1,20 @@
+Mutation: the harness stops refusing a tree that carries uncommitted work.
+Red: a_tree_or_a_log_the_harness_cannot_safely_use_stops_it_before_any_round
+
+diff --git a/scripts/red-green.sh b/scripts/red-green.sh
+index c33cfee..0e113cb 100755
+--- a/scripts/red-green.sh
++++ b/scripts/red-green.sh
+@@ -159,12 +159,6 @@ if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*' ':(exclude)*/fi
+ fi
+ added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)"
+ 
+-if [ -n "$(git status --porcelain)" ]; then
+-  echo "red-green: the working tree has uncommitted changes" >&2
+-  echo "ACTION: commit or stash them first — this script reverts patches with 'git checkout', which would take them with it" >&2
+-  exit 1
+-fi
+-
+ # Every run's whole output, so a one-line verdict above has all of it behind it.
+ log=".logs/red-green.log"
+ if ! mkdir -p .logs || ! : >"$log"; then

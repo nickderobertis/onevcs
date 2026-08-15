@@ -27,6 +27,12 @@ onevcs publish "$token"                            # verify, then land it
 onevcs events "$token"                             # everything it did, as NDJSON
 ```
 
+A branch that outlived the session that cut it is landed by name instead, under
+that same rules-resolved policy: `onevcs publish-branch feature/thing --repo
+~/projects/widgets` for work that finished, and `onevcs recover` for a step that
+stopped half way, which publishes it with the attestation that a green gate
+cleared it. Whichever of the three refuses a branch names the one that takes it.
+
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.
 

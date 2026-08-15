@@ -1,0 +1,16 @@
+Mutation: the release smoke script's state-root failure goes back to restating the invariant.
+Red: a_state_root_the_binary_cannot_read_is_reported_with_what_to_do_about_it
+
+diff --git a/scripts/smoke-published.sh b/scripts/smoke-published.sh
+index 9537025..d877e10 100755
+--- a/scripts/smoke-published.sh
++++ b/scripts/smoke-published.sh
+@@ -104,7 +104,7 @@ done
+ # A command that reads the host's own state must actually run. `repos` is the
+ # read-only one: it creates nothing and reports whatever this machine has.
+ onevcs repos >/dev/null || fail "'onevcs repos' failed on a working installation" \
+-  "check that ONEVCS_HOME (otherwise ~/.onevcs) exists and this user may read and write it, then install again and re-run — $reinstall"
++  "the installed binary cannot read its own state root"
+ 
+ # A repository nobody registered is refused at the trust boundary, naming the
+ # problem. `|| status=$?` keeps `set -e` from aborting on the expected failure.

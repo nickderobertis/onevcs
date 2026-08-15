@@ -1,0 +1,43 @@
+Mutation: the branch-keyed refusals stop naming the command that lists the branches there are.
+Red: a_branch_no_checkout_has_is_refused_by_the_command_that_lists_the_ones_that_do
+Red: recovering_a_branch_no_checkout_has_names_everywhere_it_looked
+Red: recovering_a_branch_with_nothing_ahead_of_its_base_says_there_is_nothing_to_recover
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index d8a08a9..0f6db06 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -134,8 +134,7 @@ pub fn prepare(
+     if !git::is_valid_branch_name(branch) {
+         return Err(Error::Invalid {
+             reason: format!(
+-                "{branch:?} is not a valid branch name; `onevcs recoverable` lists every \
+-                 preserved branch by name and the checkout it is in"
++                "{branch:?} is not a valid branch name"
+             ),
+         });
+     }
+@@ -384,8 +383,7 @@ fn locate(registry: &Registry, resolution: &Resolution, branch: &str) -> Result<
+     }
+     Err(Error::Invalid {
+         reason: format!(
+-            "branch {branch:?} is in none of the checkouts of identity {:?}: {}. `onevcs \
+-             recoverable` lists every preserved branch and the checkout it is in",
++            "branch {branch:?} is in none of the checkouts of identity {:?}: {}",
+             resolution.key,
+             searched
+                 .iter()
+diff --git a/crates/onevcs/src/recover.rs b/crates/onevcs/src/recover.rs
+index e82312a..c23cea5 100644
+--- a/crates/onevcs/src/recover.rs
++++ b/crates/onevcs/src/recover.rs
+@@ -82,8 +82,7 @@ fn nothing_to_recover(landing: &branch::Landing) -> Result<String> {
+     }
+     if landing.ahead()?.is_empty() {
+         return Ok(format!(
+-            "branch {branch:?} has nothing ahead of {}; there is no preserved work to recover. \
+-             `onevcs recoverable` lists the branches that do carry unpublished work",
++            "branch {branch:?} has nothing ahead of {}; there is no preserved work to recover",
+             landing.change_base
+         ));
+     }

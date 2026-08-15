@@ -1,0 +1,19 @@
+Mutation: the harness stops checking that the transcript it was asked for can be written.
+Red: a_transcript_that_cannot_be_written_is_a_failure_rather_than_a_silent_omission
+
+diff --git a/scripts/red-green.sh b/scripts/red-green.sh
+index fc122d7..8ad5e6d 100755
+--- a/scripts/red-green.sh
++++ b/scripts/red-green.sh
+@@ -272,11 +272,6 @@ if [ -n "$record" ]; then
+   # Opened before it is composed into: bash reports a redirection failure on a
+   # group but leaves the group's own status alone, so a run that could not write
+   # its record would otherwise print the green line and exit 0.
+-  if ! : >"$record"; then
+-    echo "red-green: the transcript could not be written to $record" >&2
+-    echo "ACTION: name a writable path — 'just red-green' writes docs/red-green.md, which is the committed one — and re-run" >&2
+-    exit 1
+-  fi
+   {
+     printf '# Red, then green\n\n'
+     printf 'Every journey this branch adds, observed failing for the behaviour it is\n'

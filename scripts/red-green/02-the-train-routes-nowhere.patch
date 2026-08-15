@@ -1,0 +1,35 @@
+Mutation: integrate's team and remote refusals go back to naming no command.
+Red: the_train_refuses_an_identity_whose_changes_are_reviewed
+Red: a_train_refuses_a_single_owner_identity_that_publishes_through_its_host
+Red: every_state_a_branch_can_be_in_has_a_verb_that_takes_it
+Red: a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs
+
+diff --git a/crates/onevcs/src/integrate.rs b/crates/onevcs/src/integrate.rs
+index f50e9f4..92509bd 100644
+--- a/crates/onevcs/src/integrate.rs
++++ b/crates/onevcs/src/integrate.rs
+@@ -106,20 +106,18 @@ pub fn run(
+     if resolution.identity.repo_type == RepoType::Team {
+         return Err(Error::Invalid {
+             reason: format!(
+-                "direct integration is refused for identity {:?} (repo_type: team); publish each \
+-                 branch through its change-request path instead: {}",
++                "direct integration is refused for identity {:?} (repo_type: team); publish \
++                 through its change-request path",
+                 resolution.key,
+-                change_request_route(resolution, candidates),
+             ),
+         });
+     }
+     if resolution.identity.workflow == Workflow::Remote {
+         return Err(Error::Invalid {
+             reason: format!(
+-                "direct integration is refused for identity {:?} (workflow: remote); publish each \
+-                 branch through its change-request path instead: {}",
++                "direct integration is refused for identity {:?} (workflow: remote); publish \
++                 through its change-request path",
+                 resolution.key,
+-                change_request_route(resolution, candidates),
+             ),
+         });
+     }

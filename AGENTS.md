@@ -101,6 +101,13 @@ not tell you:
   they cover `onevcs-testing` too — which is why `crateSource` in `nx.json` names
   `crates/**/*` rather than only that project's own root. A second Nx project
   would run the same `--workspace` commands twice.
+- **`just red-green` is the evidence, not a check.** A green test proves nothing on
+  its own: it has to be observed red for its own behaviour first, and an
+  observation nobody can re-make is not evidence. So the observation is an
+  artifact — a mutation per behaviour in `scripts/red-green/`, recorded in
+  [`docs/red-green.md`](docs/red-green.md) — and a test no mutation can break fails
+  the recipe. Out of `check` and `gate` deliberately: it mutates the tree and takes
+  minutes.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.

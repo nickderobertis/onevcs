@@ -25,6 +25,7 @@ use predicates::prelude::*;
 
 use crate::lifecycle::Fixture;
 use crate::registry::{configure_rules, point_at_rules};
+use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, World};
 
 #[test]
@@ -258,7 +259,7 @@ fn a_gate_naming_a_command_this_host_does_not_have_fails_rather_than_passing() {
     assert!(verdicts[0]["payload"]["output"]
         .as_str()
         .expect("the gate's own output")
-        .contains("gate command not found"));
+        .contains("the gate command \"no-such-gate-command\" could not be run"));
 }
 
 #[test]
@@ -594,6 +595,9 @@ fn events_follow_returns_once_the_session_it_is_following_has_closed() {
 
 #[test]
 fn a_train_offered_something_it_cannot_run_says_which_and_why() {
+    // "Which and why" is half of it: each refusal also names the command that
+    // answers it, because an agent handed a diagnosis with no next command reaches
+    // for raw `git`, which is the one thing this tool exists to replace.
     let fixture =
         Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
     let checkout = fixture.checkout.clone();
@@ -607,7 +611,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is not a valid branch name"));
+        .stderr(predicate::str::contains("is not a valid branch name"))
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 
     fixture
         .world
@@ -616,7 +621,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("cannot also be a candidate"));
+        .stderr(predicate::str::contains("cannot also be a candidate"))
+        .stderr(predicate::str::contains("re-run `onevcs integrate`"));
 
     fixture
         .world
@@ -625,7 +631,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("has no local branch"));
+        .stderr(predicate::str::contains("has no local branch"))
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 
     fixture
         .world
@@ -637,7 +644,8 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("offered to the train twice"));
+        .stderr(predicate::str::contains("offered to the train twice"))
+        .stderr(predicate::str::contains("naming each branch once"));
 
     std::fs::write(checkout.join("stray.txt"), "stray\n").expect("a dirty base worktree");
     fixture
@@ -647,7 +655,24 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is dirty"));
+        .stderr(predicate::str::contains("is dirty"))
+        .stderr(predicate::str::contains(
+            "re-run `onevcs integrate claude/twice`",
+        ));
+
+    // …and the re-run it names is the run that was asked for: a `--push` dropped
+    // from the guidance would land the candidates locally and leave the operator
+    // believing the remote had them.
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "claude/twice", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "re-run `onevcs integrate claude/twice --push`",
+        ));
 }
 
 #[test]
@@ -688,7 +713,9 @@ fn recovering_a_branch_no_checkout_has_names_everywhere_it_looked() {
         ))
         .stderr(predicate::str::contains(
             fixture.checkout.to_string_lossy().into_owned(),
-        ));
+        ))
+        // …and the command that reports the branches it *would* have found.
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 
     fixture
         .world
@@ -701,7 +728,8 @@ fn recovering_a_branch_no_checkout_has_names_everywhere_it_looked() {
         ])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is not a valid branch name"));
+        .stderr(predicate::str::contains("is not a valid branch name"))
+        .stderr(predicate::str::contains("`onevcs recoverable`"));
 }
 
 #[test]
@@ -725,6 +753,9 @@ fn recovering_a_branch_with_nothing_ahead_of_its_base_says_there_is_nothing_to_r
         .code(2)
         .stderr(predicate::str::contains(
             "there is no preserved work to recover",
+        ))
+        .stderr(predicate::str::contains(
+            "`onevcs recoverable` lists the branches that do carry unpublished work",
         ));
 }
 
@@ -773,7 +804,18 @@ fn a_recovery_whose_base_conflicts_keeps_the_preserved_branch() {
         ])
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("retained for manual recovery"));
+        // Deterministic: the same two trees conflict on every re-run, so an
+        // operator told only that they conflict re-runs the same command forever.
+        // The refusal says so, says where the branch is, and names the command that
+        // lands it once the conflict itself is resolved.
+        .stderr(predicate::str::contains("re-running will conflict again"))
+        .stderr(predicate::str::contains(
+            fixture.checkout.to_string_lossy().into_owned(),
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs recover feature/clashing-recovery --repo {}`",
+            fixture.checkout.display()
+        )));
     assert!(fixture
         .world
         .git(
@@ -781,6 +823,65 @@ fn a_recovery_whose_base_conflicts_keeps_the_preserved_branch() {
             &["branch", "--list", "feature/clashing-recovery"]
         )
         .contains("feature/clashing-recovery"));
+
+    // And that exit terminates: resolving the conflict once where the branch is
+    // retained is all the re-run needs, and the work lands through onevcs rather
+    // than through a `git push` nobody gated.
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/clashing-recovery"],
+    );
+    let merge = fixture
+        .world
+        .git_raw(&fixture.checkout, &["merge", "--no-edit", "main"]);
+    assert!(!merge.status.success(), "the merge is the conflict itself");
+    std::fs::write(fixture.checkout.join("shared.txt"), "resolved by hand\n")
+        .expect("the resolution");
+    fixture.world.git(&fixture.checkout, &["add", "-A"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "chore: resolve the conflict with main",
+        ],
+    );
+    // The publication checkout is never worked in, so it goes back to its base
+    // before the verb that publishes onto it runs.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/clashing-recovery",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        landed.contains(&documented_trailer(
+            "Recovered-Incomplete",
+            &documented_default_prefix()
+        )),
+        "the recovery that finally landed still attests the step that stopped: {landed}"
+    );
 }
 
 #[test]
@@ -1054,8 +1155,15 @@ fn a_candidate_whose_content_the_base_already_carries_adds_no_second_commit() {
         .success()
         .stdout(predicate::str::contains("claude/redundant: already-merged"))
         .stdout(predicate::str::contains(
-            "claude/at-the-base: skipped (branch \"HEAD\" has no commit that describes a change)",
+            "claude/at-the-base: skipped (branch \"HEAD\" has no commit that describes a change",
         ))
+        // The train takes no title of its own, so the skip hands the branch to the
+        // verb that does rather than stating a synthesis failure with no way past
+        // it.
+        .stdout(predicate::str::contains(format!(
+            "publish it with `onevcs publish-branch claude/at-the-base --repo {} --title <T>`",
+            checkout.display()
+        )))
         .stdout(predicate::str::contains("Base advanced: no"));
 }
 
@@ -1095,7 +1203,13 @@ fn a_train_refuses_a_single_owner_identity_that_publishes_through_its_host() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("workflow: remote"));
+        .stderr(predicate::str::contains("workflow: remote"))
+        // …and the verb that *is* right for it is named with the arguments that
+        // run it, so the refusal is a route rather than a dead end.
+        .stderr(predicate::str::contains(format!(
+            "`onevcs publish-branch claude/one --repo {}`",
+            checkout.display()
+        )));
 }
 
 #[test]
@@ -2015,6 +2129,69 @@ fn closing_a_session_twice_is_not_an_error() {
             .assert()
             .success();
     }
+}
+
+#[test]
+fn a_train_asked_to_push_a_checkout_with_no_origin_says_what_to_run_instead() {
+    // The base did advance — the candidates landed on it locally — so the refusal
+    // is about `--push` alone, and it says which of the two things an operator can
+    // do next: run the same train without the flag, or give the checkout an origin.
+    let world = World::new();
+    let checkout = world.path("originless");
+    std::fs::create_dir_all(&checkout).expect("a checkout directory");
+    world.git(&checkout, &["init", "-q", "-b", "main"]);
+    world.commit_file(
+        &checkout,
+        "README.md",
+        "# originless\n",
+        "chore: seed the repository",
+    );
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            // A local identity with no remote at all: `register` reads the origin
+            // from the checkout otherwise, and this one has none.
+            "--origin",
+            &format!("file://{}", checkout.display()),
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        format!(
+            "version: 1\nrules: []\ndefault: {}\n",
+            crate::lifecycle::local_direct("[\"true\"]")
+        ),
+    );
+    world.git(&checkout, &["checkout", "-q", "-b", "claude/one", "main"]);
+    world.commit_file(&checkout, "one.txt", "one\n", "feat: the candidate");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+
+    world
+        .onevcs()
+        .args(["integrate", "claude/one", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("has no origin to push to"))
+        .stderr(predicate::str::contains(
+            "re-run `onevcs integrate` without --push",
+        ));
+
+    // …and that is a route rather than a diagnosis: the candidate did land on the
+    // local base, and the same train without the flag is the run that succeeds.
+    assert!(world
+        .git(&checkout, &["log", "--format=%s", "main"])
+        .contains("feat: the candidate"));
+    world
+        .onevcs()
+        .args(["integrate", "claude/one"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pushed: no"));
 }
 
 #[test]

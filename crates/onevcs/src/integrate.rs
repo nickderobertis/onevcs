@@ -23,7 +23,7 @@ use crate::registry::{RepoType, Workflow};
 use crate::store::{self, Resolution};
 use crate::stream::{self, Stream};
 use crate::workspace::{object, Ref};
-use crate::{gate, git, home, ids, lock, policy, provenance, publish, queue};
+use crate::{gate, git, guidance, home, ids, lock, policy, provenance, publish, queue};
 
 /// What happened to one candidate of the train.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,18 +106,20 @@ pub fn run(
     if resolution.identity.repo_type == RepoType::Team {
         return Err(Error::Invalid {
             reason: format!(
-                "direct integration is refused for identity {:?} (repo_type: team); publish \
-                 through its change-request path",
-                resolution.key
+                "direct integration is refused for identity {:?} (repo_type: team); publish each \
+                 branch through its change-request path instead: {}",
+                resolution.key,
+                change_request_route(resolution, candidates),
             ),
         });
     }
     if resolution.identity.workflow == Workflow::Remote {
         return Err(Error::Invalid {
             reason: format!(
-                "direct integration is refused for identity {:?} (workflow: remote); publish \
-                 through its change-request path",
-                resolution.key
+                "direct integration is refused for identity {:?} (workflow: remote); publish each \
+                 branch through its change-request path instead: {}",
+                resolution.key,
+                change_request_route(resolution, candidates),
             ),
         });
     }
@@ -125,24 +127,36 @@ pub fn run(
     let base = git::current_branch(root)?;
     if git::is_dirty(root)? {
         return Err(Error::Invalid {
-            reason: format!("the base worktree {} is dirty", root.display()),
+            reason: format!(
+                "the base worktree {} is dirty; the train advances that base and will not \
+                 build on work nobody recorded. Commit or stash what it holds, then re-run `{}`",
+                root.display(),
+                train_command(candidates, push),
+            ),
         });
     }
     for branch in candidates {
         if !git::is_valid_branch_name(branch) {
             return Err(Error::Invalid {
-                reason: format!("{branch:?} is not a valid branch name"),
+                reason: format!(
+                    "{branch:?} is not a valid branch name; `onevcs recoverable` lists every \
+                     preserved branch by name and the checkout it is in"
+                ),
             });
         }
         if branch == &base {
             return Err(Error::Invalid {
-                reason: format!("the base branch {base:?} cannot also be a candidate"),
+                reason: format!(
+                    "the base branch {base:?} cannot also be a candidate; re-run `onevcs \
+                     integrate` naming only the branches to land on it"
+                ),
             });
         }
         if !git::branch_exists(root, branch) {
             return Err(Error::Invalid {
                 reason: format!(
-                    "{root:?} has no local branch {branch:?}",
+                    "{root:?} has no local branch {branch:?}; `onevcs recoverable` lists this \
+                     identity's unpublished branches and the checkout each is in",
                     root = root.display()
                 ),
             });
@@ -155,7 +169,9 @@ pub fn run(
         != candidates.len()
     {
         return Err(Error::Invalid {
-            reason: "a branch is offered to the train twice".to_owned(),
+            reason: "a branch is offered to the train twice; re-run `onevcs integrate` naming \
+                     each branch once, in the order they should land"
+                .to_owned(),
         });
     }
 
@@ -177,6 +193,40 @@ pub fn run(
     let outcome = train(resolution, &base, candidates, push, gate_override, stream);
     drop(turn);
     outcome
+}
+
+/// The exact command that publishes each candidate the train may not land.
+///
+/// The train is local-only and stays that way — it is built for cheap deterministic
+/// candidates and must not absorb a publication's work — so this refusal is a
+/// routing signpost. It names the invocation per candidate rather than the shape of
+/// one, because a refusal that names no command is what leaves `git push` and `gh pr
+/// create` as the way forward.
+fn change_request_route(resolution: &Resolution, candidates: &[String]) -> String {
+    let repo = resolution.publication.to_string_lossy();
+    candidates
+        .iter()
+        .map(|branch| {
+            format!(
+                "`{}`",
+                guidance::command(["onevcs", "publish-branch", branch, "--repo", &repo])
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// This same train, for a refusal that asks for it to be run again.
+///
+/// `--push` travels with it: a re-run that quietly dropped it would land the
+/// candidates locally and leave the operator believing the remote had them.
+fn train_command(candidates: &[String], push: bool) -> String {
+    let mut argv: Vec<&str> = vec!["onevcs", "integrate"];
+    argv.extend(candidates.iter().map(String::as_str));
+    if push {
+        argv.push("--push");
+    }
+    guidance::command(argv)
 }
 
 fn train(
@@ -235,7 +285,11 @@ fn train(
     if push && ending.advanced() {
         if !has_remote {
             return Err(Error::Invalid {
-                reason: format!("{} has no origin to push to", root.display()),
+                reason: format!(
+                    "{} has no origin to push to; the base advanced locally, so re-run \
+                     `onevcs integrate` without --push, or give the checkout an origin",
+                    root.display()
+                ),
             });
         }
         let result = git::push(root, base, "origin", &environment)?;
@@ -300,8 +354,14 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
             &format!(
                 "provenance under the trailer prefix {prefix:?}, which this host is not \
                  configured to read; set trailer_prefix to {prefix:?} in the rules file, then \
-                 land it with `onevcs recover {branch} --repo {}`",
-                root.display()
+                 land it with `{}`",
+                guidance::command([
+                    "onevcs",
+                    "recover",
+                    branch,
+                    "--repo",
+                    &root.to_string_lossy()
+                ])
             ),
         ));
     }
@@ -313,10 +373,15 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
         return Ok(BranchOutcome {
             branch: Ref::from_git(branch),
             status: Status::Skipped(format!(
-                "incomplete provenance ({} unattested commit(s)); this branch belongs to \
-                 `onevcs recover {branch} --repo {}`",
+                "incomplete provenance ({} unattested commit(s)); this branch belongs to `{}`",
                 unattested.len(),
-                root.display()
+                guidance::command([
+                    "onevcs",
+                    "recover",
+                    branch,
+                    "--repo",
+                    &root.to_string_lossy()
+                ])
             )),
         });
     }
@@ -376,7 +441,25 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
         let subject =
             match provenance::publication_subject(&worktree, base, "HEAD", None, trailers)? {
                 Ok(subject) => subject,
-                Err(reason) => return Ok(skipped(branch, &reason)),
+                // The train takes no title of its own — one title cannot describe
+                // every candidate — so the skip hands the branch to the verb that
+                // does, rather than reporting a synthesis failure with no way past
+                // it. A subject naming no change is a worse record than this skip.
+                Err(reason) => {
+                    return Ok(skipped(
+                        branch,
+                        &format!(
+                            "{reason}; publish it with `{} --title <T>`",
+                            guidance::command([
+                                "onevcs",
+                                "publish-branch",
+                                branch,
+                                "--repo",
+                                &root.to_string_lossy()
+                            ])
+                        ),
+                    ))
+                }
             };
         let attested = provenance::attestation_trailers(&worktree, base, "HEAD", trailers)?;
         let message = publish::compose_message(&subject, &attested);

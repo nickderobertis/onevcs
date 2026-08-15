@@ -9,9 +9,9 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::cli::{
-    ArtifactCommand, Command, EventsArgs, IntegrateArgs, PublishArgs, RecoverArgs, RecoverableArgs,
-    RegisterArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
-    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, SyncArgs,
+    ArtifactCommand, Command, EventsArgs, IntegrateArgs, PublishArgs, PublishBranchArgs,
+    RecoverArgs, RecoverableArgs, RegisterArgs, ReposArgs, ResolveArgs, RulesCheckArgs,
+    RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
@@ -21,7 +21,9 @@ use crate::registry::{Registry, RepoType, Workflow};
 use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::{git, integrate, lock, policy, provenance, publish, recover, stream, workspace};
+use crate::{
+    git, integrate, lock, policy, provenance, publish, publish_branch, recover, stream, workspace,
+};
 
 /// Run one parsed command, returning its exit code.
 pub fn run(command: &Command, providers: &Providers<'_>) -> u8 {
@@ -51,6 +53,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             SessionCommand::Holders(args) => session_holders(args),
         },
         Command::Publish(args) => publish_session(args, providers),
+        Command::PublishBranch(args) => publish_branch(args, providers),
         Command::Recover(args) => recover_branch(args, providers),
         Command::Recoverable(args) => recoverable(args, providers),
         Command::Integrate(args) => integrate_branches(args),
@@ -228,12 +231,7 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
     // where a message is composed from it: a publication commits the session's work
     // and merges its base first, and a refusal after those is one an operator cannot
     // undo.
-    let title = args
-        .title
-        .clone()
-        .map(Subject::try_from)
-        .transpose()
-        .map_err(error::invalid)?;
+    let title = explicit_title(args.title.as_ref())?;
     let publication = crate::publish(
         providers,
         &SessionToken(args.token.clone()),
@@ -270,18 +268,14 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
     Ok(kind.exit_code())
 }
 
-fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
-    let registry = store::load()?;
-    let repo = args.repo.display().to_string();
-    let token = format!("recover-{}", policy::branch_slug(&args.branch));
-    let mut stream = Stream::open(&token)?;
-    match recover::run(
-        &registry,
-        &repo,
-        &args.branch,
-        providers.hosting,
-        &mut stream,
-    ) {
+/// Render what one branch-keyed verb did, the way `recover` and `publish-branch`
+/// both report it — merged, open, queued, or refused.
+///
+/// The two commands differ in what they accept and in nothing they print: both
+/// answer with a [`PublishOutcome`] on stdout and the contract's exit code on a
+/// refusal, so a caller that drives one can read the other.
+fn report_publication(outcome: Result<PublishOutcome>) -> Result<u8> {
+    match outcome {
         Ok(outcome) => {
             println!("{}", outcome.describe());
             Ok(0)
@@ -291,6 +285,47 @@ fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
             Ok(publish::exit_code(&error))
         }
     }
+}
+
+/// The title an explicit `--title` names, refused where the command line hands it
+/// over rather than where a message is composed from it.
+fn explicit_title(title: Option<&String>) -> Result<Option<Subject>> {
+    title
+        .cloned()
+        .map(Subject::try_from)
+        .transpose()
+        .map_err(error::invalid)
+}
+
+fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
+    let registry = store::load()?;
+    let title = explicit_title(args.title.as_ref())?;
+    let token = format!("recover-{}", policy::branch_slug(&args.branch));
+    let mut stream = Stream::open(&token)?;
+    report_publication(recover::run(
+        &registry,
+        &args.repo,
+        &args.branch,
+        title,
+        providers.hosting,
+        &mut stream,
+    ))
+}
+
+fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result<u8> {
+    let registry = store::load()?;
+    let title = explicit_title(args.title.as_ref())?;
+    let token = format!("publish-branch-{}", policy::branch_slug(&args.branch));
+    let mut stream = Stream::open(&token)?;
+    report_publication(publish_branch::run(
+        &registry,
+        &args.repo,
+        &args.branch,
+        title,
+        args.policy,
+        providers.hosting,
+        &mut stream,
+    ))
 }
 
 fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> {

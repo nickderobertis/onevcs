@@ -58,6 +58,22 @@ event it is. And the command prints the producer's own line rather than a
 re-serialization of what it parsed, so a filtered read is a subset of an unfiltered
 one byte for byte.
 
+## Three verbs land a branch, and provenance is what chooses between them
+
+`publish` takes a session token; `recover` and `publish-branch` take a branch name
+and are **one path** (`branch.rs`), because a second locate, clone, or base-merge
+beside it is drift nothing would catch. What separates them is provenance and
+nothing else: `recover` requires an unattested incomplete marker and writes the
+attestation that clears it, `publish-branch` requires that there is none.
+`integrate` stays the local-only merge train and routes to `publish-branch` rather
+than re-gating a branch itself.
+
+Which means **a refusal on this path is the guidance surface**: each one names the
+command with its exact arguments, or the rules-file entry, that resolves it. A
+refusal that only diagnoses leaves an agent to invent a way forward, and what it
+invents is `git push` plus `gh pr create` — the thing this crate exists to make
+unnecessary.
+
 ## Tests are journeys, and there are no unit tests
 
 This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the

@@ -137,3 +137,53 @@ fn the_smoke_script_reports_a_version_mismatch_rather_than_passing() {
         "the failure must name the version the registry claimed:\n{stderr}"
     );
 }
+
+/// The one way an install can be wrong that this build can genuinely be: pointed at
+/// a state root it cannot read.
+///
+/// Every other refusal in the script is about a binary that answers something this
+/// one does not — an older command surface, a wrong exit code — and there is no
+/// honest way to produce one from here. So this journey drives the compiled binary
+/// itself, with nothing around it, and the refusal it earns is a real one.
+#[test]
+fn a_state_root_the_binary_cannot_read_is_reported_with_what_to_do_about_it() {
+    let home = tempfile::tempdir().expect("a scratch state root");
+    std::fs::write(home.path().join("registry.json"), "{ not a registry")
+        .expect("a state root nothing can read");
+
+    let mut path = OsString::from(binary_dir());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let output = std::process::Command::new("bash")
+        .arg(workspace_root().join("scripts/smoke-published.sh"))
+        .arg("--expect-version")
+        .arg(env!("CARGO_PKG_VERSION"))
+        .arg("--label")
+        .arg("an install that cannot read its state root")
+        .env("PATH", path)
+        .env("ONEVCS_HOME", home.path())
+        .current_dir(workspace_root())
+        .output()
+        .expect("bash must be available to run the release smoke script");
+
+    assert!(
+        !output.status.success(),
+        "a binary that cannot read its own state root must fail the smoke test"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("'onevcs repos' failed on a working installation"),
+        "the failure must name the call that broke:\n{stderr}"
+    );
+    // The state root to look at, and the install to replace if that is not it —
+    // pinned to the version this run was told to expect, because "reinstall it" is
+    // three different commands and only one of them is the one they used.
+    assert!(
+        stderr.contains("ONEVCS_HOME (otherwise ~/.onevcs)")
+            && stderr.contains(&format!(
+                "cargo install onevcs --version '{}'",
+                env!("CARGO_PKG_VERSION")
+            )),
+        "the failure must name what to do about it:\n{stderr}"
+    );
+}

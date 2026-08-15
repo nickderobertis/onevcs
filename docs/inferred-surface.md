@@ -183,6 +183,41 @@ commit this crate to a private on-disk layout as a public type. `SessionHolder` 
 the projection of it that answers the question, and `Ref`, `Token`, `ProcessStart`,
 and `RECORD_VERSION` stay behind it for the same reason.
 
+## The command surface, where a branch state had no verb
+
+The contract's usage block gives a branch three ways to reach its base and leaves
+one state with none. `publish` takes a session token; `integrate` lands a branch on
+a **local** base and refuses an identity whose `repo_type` is `team` or whose
+`workflow` is `remote`; `recover` publishes *interrupted* work and refuses a branch
+carrying no unattested marker. A complete, unpublished branch whose session is gone
+is therefore refused by both — and since every hosted origin `register` sees derives
+as `team`/`remote`, that is every finished branch of every hosted repository, whose
+only remaining exit was raw `git push` plus `gh pr create`.
+
+The verb that answers it is **not in the approved text**, and the approved text is
+never edited, so it is recorded here as an inference awaiting confirmation:
+
+```
+onevcs publish-branch BRANCH --repo PATH [--title T] [--policy P]
+onevcs recover BRANCH --repo PATH [--title T]
+```
+
+`tests/contract.rs` reads this block beside the contract's own and holds the parser
+to the two together — the same equality as before, over both documents, so a command
+the parser has that neither writes down still fails the gate, and so does one either
+writes down that the parser does not have. `tests/e2e/support.rs` reads both for the
+same reason.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| `publish-branch BRANCH --repo PATH` | the operands `recover` already takes | It is the same question asked of a different provenance, so it is reached the same way: a branch by name, and a checkout that resolves the identity. Anything else would be a second way to say the same thing. |
+| `--policy P` | the option `publish` takes, under the same rule | The policy comes from the identity's rules; a per-run one may narrow it and never widen it past requiring approvals, which is `MergePolicy::narrow` rather than a second rule. |
+| `--title T` on both verbs | the `Subject` an explicit title has always been | `publish` has taken one since the contract was written, and the refusal it answers — no commit subject fits — is reachable from a preserved branch too, where the alternative is rewriting a commit on work that was interrupted. |
+| the answer | the same `PublishOutcome` and exit codes as `recover` | It is a second caller of the branch-keyed publication path, not a second publication. `recover` and `publish-branch` share one implementation of locate, clone, worktree, base-merge, gate, and publish; provenance is the whole of what separates them. |
+
+No public library item is added: `publish::run` was already branch-keyed, and both
+verbs are private modules behind it. What the CLI gains is the verb and two options.
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.
@@ -257,7 +292,16 @@ question was:
    proposal to raise with the contract owner across the three repositories — one
    spelling, one meaning for an absent version, one answer for what an older build
    does with a newer document — not a decision to take in passing.
-8. **`onevcs` stamps none of the envelope's reserved label keys.** It stamps
+8. **`onevcs publish-branch` is a verb the approved text does not name.** It
+   closes a state the contract left with no verb at all, and the shape above is
+   the one the downstream adoption node was written against — but the approved
+   text is committed verbatim and an extension to it is the contract owner's to
+   approve, so it is recorded in this document rather than written into
+   `docs/contract.md` beside the amendments that were. Confirming it means one
+   amendment naming the verb, its two options, and `recover`'s `--title`; until
+   then the surface is held to *this* record, which is what keeps the parser and
+   a written-down surface reconciled rather than the verb being undocumented.
+9. **`onevcs` stamps none of the envelope's reserved label keys.** It stamps
    `session` and `identity`, which are free-form extras, so a filter naming
    `run_id`, `node`, `step`, `member`, or `persona` admits nothing this crate
    produces — correctly, by the grammar's own rule, and the same answer a consumer

@@ -845,10 +845,53 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     );
 }
 
-/// Every command name the contract's usage block spells.
+/// Every command name the two documents spell.
+///
+/// The approved text is committed verbatim and is never edited, so a verb that
+/// closes a gap in it is recorded in `docs/inferred-surface.md` until the contract
+/// owner amends the contract. Both are read here, and the assertion over them stays
+/// the equality it was: a command the parser has that neither document writes down
+/// is a departure, and so is one either writes down that the parser does not have.
 fn documented_commands() -> BTreeSet<String> {
+    usage_blocks()
+        .iter()
+        .flat_map(|usage| commands_in(usage))
+        .collect()
+}
+
+/// Every usage block the two documents spell: the approved contract's, and the
+/// ones `docs/inferred-surface.md` records as an inference awaiting confirmation.
+fn usage_blocks() -> Vec<String> {
+    let mut blocks = vec![block("")];
+    let inferred = usage_in(&repo_file("docs/inferred-surface.md"));
+    assert!(
+        !inferred.is_empty(),
+        "docs/inferred-surface.md records no command surface; if the contract has \
+         since absorbed it, this reader is what has to move with it"
+    );
+    blocks.extend(inferred);
+    blocks
+}
+
+/// Every bare fenced block in a document that is spelled as `onevcs` usage.
+fn usage_in(doc: &str) -> Vec<String> {
+    fenced_blocks(doc)
+        .into_iter()
+        .filter(|(language, body)| {
+            language.is_empty()
+                && body
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.starts_with("onevcs "))
+        })
+        .map(|(_, body)| body)
+        .collect()
+}
+
+/// The command names one usage block spells.
+fn commands_in(usage: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    for line in block("").lines() {
+    for line in usage.lines() {
         for alternative in line.split('|') {
             let segment = alternative
                 .trim()
@@ -873,7 +916,8 @@ fn the_contract_and_clap_name_the_same_commands() {
     assert_eq!(
         documented_commands(),
         implemented,
-        "docs/contract.md and the parser disagree about the command surface"
+        "the parser and the two documents that write the command surface down — \
+         docs/contract.md and docs/inferred-surface.md — disagree"
     );
 }
 
@@ -882,12 +926,13 @@ fn every_flag_the_contract_spells_exists_on_the_command_that_takes_it() {
     let mut implemented = BTreeSet::new();
     collect_long_flags(&Cli::command(), &mut implemented);
 
-    let usage = block("");
     let mut documented = BTreeSet::new();
-    for token in usage.split(|c: char| c.is_whitespace() || c == '[' || c == ']') {
-        if let Some(flag) = token.strip_prefix("--") {
-            if !flag.is_empty() {
-                documented.insert(flag.to_owned());
+    for usage in usage_blocks() {
+        for token in usage.split(|c: char| c.is_whitespace() || c == '[' || c == ']') {
+            if let Some(flag) = token.strip_prefix("--") {
+                if !flag.is_empty() {
+                    documented.insert(flag.to_owned());
+                }
             }
         }
     }

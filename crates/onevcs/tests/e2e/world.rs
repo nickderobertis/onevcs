@@ -97,6 +97,35 @@ impl World {
         assert_cmd::Command::from_std(command)
     }
 
+    /// A shell in this world, for running a command *as it was printed*.
+    ///
+    /// The refusals this tool writes end in an invocation an operator pastes, and
+    /// pasting it means a shell reads the quoting. Handing the words to the binary
+    /// directly would prove the arguments and skip the thing under test.
+    pub fn shell(&self, command: &str) -> assert_cmd::Command {
+        let mut path = std::ffi::OsString::from(crate::support::binary_dir());
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        let mut spawned = std::process::Command::new("bash");
+        spawned
+            .arg("-c")
+            .arg(command)
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", &self.root)
+            .env("ONEVCS_HOME", self.home())
+            .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "60")
+            .env("ONEVCS_CHECKS_POLL_SECONDS", "0.02")
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20")
+            .env("ONEVCS_GH", self.path("bin/gh"))
+            .env("ONEVCS_FAKE_GH_STATE", self.path("gh-state"))
+            .current_dir(&self.root);
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            spawned.env("LLVM_PROFILE_FILE", profile);
+        }
+        assert_cmd::Command::from_std(spawned)
+    }
+
     /// Every advisory lock file this world's state root holds so far.
     ///
     /// A lock is named after a digest of what it guards, so which one guards a

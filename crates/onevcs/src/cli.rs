@@ -37,6 +37,8 @@ pub enum Command {
     },
     /// Verify a session's work and publish it under its policy.
     Publish(PublishArgs),
+    /// Verify and publish a completed branch no session holds.
+    PublishBranch(PublishBranchArgs),
     /// Verify and publish a preserved branch that was left behind.
     Recover(RecoverArgs),
     /// List preserved work that has not been published.
@@ -148,6 +150,38 @@ pub struct PublishArgs {
     pub title: Option<String>,
 }
 
+/// Arguments for `onevcs publish-branch`.
+///
+/// A branch and a title arrive as typed text, as they do on every other command
+/// that takes one, and are converted at dispatch — into the crate's validated ref
+/// and [`Subject`](crate::Subject) — where a refusal can name what to do about them.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct PublishBranchArgs {
+    /// The completed branch to verify and publish.
+    // llmlint: ignore[invalid_states_unrepresentable] this module is the parser only,
+    // and what makes a branch name valid is `git check-ref-format` — a subprocess,
+    // which argument parsing must not run. `branch::prepare` is the one boundary that
+    // decides it, for both verbs, and its refusal names `onevcs recoverable`;
+    // `tests/e2e/publish_branch.rs` holds it there.
+    pub branch: String,
+    /// The checkout the branch can be reached from.
+    #[arg(long, value_name = "PATH")]
+    pub repo: PathBuf,
+    /// The change request's title.
+    // llmlint: ignore[invalid_states_unrepresentable] `Subject` is what this becomes,
+    // by the same conversion the library surface uses, in `app::explicit_title` —
+    // before anything is cloned or committed. It is spelled the way `PublishArgs`
+    // spells the same option, so one option does not meet two refusals depending on
+    // which command took it: a title clap rejected would answer with usage text where
+    // `onevcs publish` answers with the title the operator typed.
+    #[arg(long, value_name = "T")]
+    pub title: Option<String>,
+    /// Override the policy the rules chose. It may narrow the stored policy but
+    /// never widen it past requiring approvals.
+    #[arg(long, value_name = "P")]
+    pub policy: Option<MergePolicy>,
+}
+
 /// Arguments for `onevcs recover`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RecoverArgs {
@@ -156,6 +190,14 @@ pub struct RecoverArgs {
     /// The checkout the branch can be reached from.
     #[arg(long, value_name = "PATH")]
     pub repo: PathBuf,
+    /// The published change's title, which replaces the subject synthesized from
+    /// the branch.
+    // llmlint: ignore[invalid_states_unrepresentable] typed text for the reason given
+    // on `PublishBranchArgs::title`: it becomes a `Subject` in `app::explicit_title`,
+    // and spelling it as one here would answer a blank title with clap's usage text
+    // where the other two commands name the title itself.
+    #[arg(long, value_name = "T")]
+    pub title: Option<String>,
 }
 
 /// Arguments for `onevcs recoverable`.

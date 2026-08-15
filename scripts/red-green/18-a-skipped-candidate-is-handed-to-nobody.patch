@@ -1,0 +1,30 @@
+Mutation: the train's no-subject skip goes back to reporting the synthesis failure alone.
+Red: a_candidate_whose_content_the_base_already_carries_adds_no_second_commit
+
+diff --git a/crates/onevcs/src/integrate.rs b/crates/onevcs/src/integrate.rs
+index f50e9f4..82eb871 100644
+--- a/crates/onevcs/src/integrate.rs
++++ b/crates/onevcs/src/integrate.rs
+@@ -440,21 +440,7 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
+                 // every candidate — so the skip hands the branch to the verb that
+                 // does, rather than reporting a synthesis failure with no way past
+                 // it. A subject naming no change is a worse record than this skip.
+-                Err(reason) => {
+-                    return Ok(skipped(
+-                        branch,
+-                        &format!(
+-                            "{reason}; publish it with `{} --title <T>`",
+-                            guidance::command([
+-                                "onevcs",
+-                                "publish-branch",
+-                                branch,
+-                                "--repo",
+-                                &root.to_string_lossy()
+-                            ])
+-                        ),
+-                    ))
+-                }
++                Err(reason) => return Ok(skipped(branch, &reason)),
+             };
+         let attested = provenance::attestation_trailers(&worktree, base, "HEAD", trailers)?;
+         let message = publish::compose_message(&subject, &attested);

@@ -1,0 +1,18 @@
+Mutation: the harness reads a runner's answer with whatever paint is on it.
+Red: a_runner_that_paints_its_summary_is_still_read_as_a_verdict
+
+diff --git a/scripts/red-green.sh b/scripts/red-green.sh
+index 904beb6..f86183b 100755
+--- a/scripts/red-green.sh
++++ b/scripts/red-green.sh
+@@ -161,9 +161,8 @@ covered=""
+ # force-colour variable is enough). A verdict read out of a coloured line is a
+ # verdict this harness would silently get wrong — the summary would no longer match,
+ # and every round would report the test as one the mutation did not break.
+-escape="$(printf '\033')"
+ run_one() {
+-  just test-one "$1" 2>&1 | sed "s/${escape}\[[0-9;]*[a-zA-Z]//g"
++  just test-one "$1" 2>&1
+ }
+ 
+ # What a failing test said, which is what makes a red run evidence rather than an

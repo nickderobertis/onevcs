@@ -1,0 +1,26 @@
+Mutation: the harness stops caring whether the test a round names exists, or goes red.
+Red: a_round_naming_a_test_that_does_not_exist_or_does_not_go_red_puts_the_tree_back
+
+diff --git a/scripts/red-green.sh b/scripts/red-green.sh
+index fc122d7..df4c515 100755
+--- a/scripts/red-green.sh
++++ b/scripts/red-green.sh
+@@ -221,18 +221,6 @@ for patch in "${patches[@]}"; do
+     output="$(run_one "$test" || true)"
+     note "=== $name / $test (mutated)
+ $output"
+-    if grep -q "no tests to run" <<<"$output"; then
+-      restore
+-      echo "red-green: $name names a test that does not exist: $test" >&2
+-      echo "ACTION: fix the 'Red: $test' line in $patch to name a test the suite has" >&2
+-      exit 1
+-    fi
+-    if ! grep -q "1 test run: 0 passed, 1 failed" <<<"$output"; then
+-      restore
+-      echo "red-green: $test did not fail under '$name'" >&2
+-      echo "ACTION: the test passes with the behaviour removed, so it asserts something else — read $log, then fix the test or the patch" >&2
+-      exit 1
+-    fi
+     transcript+="- RED \`$test\` — $(failure_line "$output")"$'\n'
+   done
+   transcript+=$'\n'

@@ -64,12 +64,45 @@ fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
             ],
         ),
         (
+            "publish-branch",
+            vec![
+                "publish-branch",
+                "feature",
+                "--repo",
+                "/home/agent/projects/onevcs",
+            ],
+        ),
+        (
+            "publish-branch",
+            vec![
+                "publish-branch",
+                "feature",
+                "--repo",
+                "/home/agent/projects/onevcs",
+                "--title",
+                "feat: publish the branch",
+                "--policy",
+                "change-open",
+            ],
+        ),
+        (
             "recover",
             vec![
                 "recover",
                 "feature",
                 "--repo",
                 "/home/agent/projects/onevcs",
+            ],
+        ),
+        (
+            "recover",
+            vec![
+                "recover",
+                "feature",
+                "--repo",
+                "/home/agent/projects/onevcs",
+                "--title",
+                "feat: recover the branch",
             ],
         ),
         ("recoverable", vec!["recoverable"]),
@@ -113,6 +146,7 @@ fn every_command_offers_its_own_help() {
         vec!["session", "close"],
         vec!["session", "holders"],
         vec!["publish"],
+        vec!["publish-branch"],
         vec!["recover"],
         vec!["recoverable"],
         vec!["integrate"],
@@ -203,6 +237,8 @@ fn a_missing_operand_fails_at_the_boundary() {
         vec!["integrate"],
         // `--repo` is required, unlike every other long option.
         vec!["recover", "feature"],
+        vec!["publish-branch", "feature"],
+        vec!["publish-branch"],
     ] {
         onevcs()
             .args(&argv)

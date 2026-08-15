@@ -121,7 +121,7 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
         Err(error) => {
             return Verdict {
                 ruling: Ruling::Rejected,
-                output: format!("gate command not found: {program:?} ({error})\n"),
+                output: format!("the gate command {program:?} could not be run: {error}\n"),
                 command,
             }
         }
