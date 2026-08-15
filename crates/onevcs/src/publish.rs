@@ -494,22 +494,99 @@ fn verify(
     })
 }
 
-/// Merge the current base into the branch, bounded, before anything is published.
+/// What bringing a branch level with what it lands on took, and whether it worked.
+pub(crate) struct Reconciled {
+    /// The commit whose history was dropped as already landed, when the branch had
+    /// to be replayed rather than merged. `None` is an ordinary merge.
+    pub replayed_from: Option<String>,
+    /// Whether the branch now carries what it lands on.
+    pub settled: bool,
+}
+
+/// Bring a branch level with the base it is published onto, once.
+///
+/// Two shapes, and which one is needed is a question about what the base already
+/// carries rather than a preference. Ordinarily the base is merged into the branch.
+/// But a branch cut from a stack parent whose own change request then squash-merged
+/// carries that parent's every commit while the base carries one commit with the
+/// same content and none of the same names — and merging the two replays the whole
+/// parent against its own squashed equivalent, which conflicts in every file both
+/// touched and conflicts again on every retry. So when the base already carries
+/// everything the branch had before its own work, only that own work is replayed
+/// onto the base: `git rebase --onto <base> <parent tip> <branch>`, which is what
+/// an operator ends up running by hand.
+///
+/// Shared by `publish` and by the branch-keyed verbs, so the two cannot come to
+/// disagree about which shape a branch needs.
+pub(crate) fn reconcile(
+    repo: &Path,
+    worktree: &Path,
+    compared: &str,
+    branch: &str,
+) -> Result<Reconciled> {
+    let replayed_from = landed_stack_base(repo, compared, branch)?;
+    let settled = match &replayed_from {
+        Some(parent) => git::rebase_onto(worktree, compared, parent, branch)?,
+        None => git::merge_into_branch(
+            worktree,
+            compared,
+            &format!("Merge {compared} into {branch}"),
+        )?,
+    };
+    Ok(Reconciled {
+        replayed_from,
+        settled,
+    })
+}
+
+/// The stack parent's tip on this branch, when the base has already landed it.
+///
+/// The recorded stack base is read off the branch's own history rather than
+/// remembered, for the reason every other provenance question here is: what the
+/// branch carries now is the only answer that stays true across the session that
+/// cut it, the checkout that kept it, and the clone publishing it. The tip it was
+/// cut from is the newest commit on the branch's own line whose whole content the
+/// base already carries — which is exactly what a squash-merge of the change below
+/// it leaves behind, and which nothing else on a branch with work still to land
+/// can be.
+///
+/// `None` — no such commit — is every ordinary branch, and it keeps the merge.
+fn landed_stack_base(repo: &Path, compared: &str, branch: &str) -> Result<Option<String>> {
+    // A base already in the branch has nothing to replay onto it, and a base that
+    // carries the branch's whole content has nothing left to land at all: both are
+    // the merge's own no-op, and asking anything further about them would rewrite a
+    // branch to answer a question nobody asked.
+    if git::is_ancestor(repo, compared, branch)? || !git::trees_differ(repo, compared, branch)? {
+        return Ok(None);
+    }
+    let Some(fork) = git::merge_base(repo, compared, branch)? else {
+        return Ok(None);
+    };
+    let own = git::commits_since(repo, compared, branch)?;
+    // Newest first, and never the branch's own tip: replaying from there would drop
+    // the whole branch rather than the part of it the base already has.
+    for candidate in own.iter().skip(1) {
+        if git::carries_changes(repo, compared, &fork, candidate)? {
+            return Ok(Some(candidate.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Sync the branch with the current base, bounded, before anything is published.
 fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()> {
     if !git::ref_exists(&context.repo, &format!("refs/remotes/{compared}"))
         && !git::branch_exists(&context.repo, compared)
     {
         return Ok(());
     }
+    let mut replayed_from = None;
     for attempt in 1..=SYNC_ATTEMPTS {
-        let merged = git::merge_into_branch(
-            &context.worktree,
-            compared,
-            &format!("Merge {compared} into {}", context.branch),
-        )?;
-        if merged {
+        let reconciled = reconcile(&context.repo, &context.worktree, compared, &context.branch)?;
+        if reconciled.settled {
             return Ok(());
         }
+        replayed_from = reconciled.replayed_from;
         if attempt < SYNC_ATTEMPTS && git::has_remote(&context.repo, "origin") {
             git::fetch(&context.repo, "origin")?;
         }
@@ -522,24 +599,38 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
             "attempts": SYNC_ATTEMPTS,
         })),
     );
+    let land = guidance::command([
+        "onevcs",
+        "publish-branch",
+        &context.branch,
+        "--repo",
+        &context.resolution.publication.to_string_lossy(),
+    ]);
     // The branch is retained rather than lost, and the refusal says what would
     // change the answer: another attempt resolves nothing a bounded retry has
     // already tried, and an operator told only that the two conflict is an operator
-    // reaching for raw `git` to land the work.
+    // reaching for raw `git` to land the work. Which resolution it names follows
+    // what was attempted — telling a branch whose stack parent has landed to merge
+    // the base is telling it to reproduce the conflict it is refusing.
     Err(Error::SyncConflict {
-        reason: format!(
-            "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
-             branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
-             and then land it with `{}`",
-            guidance::command([
-                "onevcs",
-                "publish-branch",
-                &context.branch,
-                "--repo",
-                &context.resolution.publication.to_string_lossy(),
-            ]),
-            branch = context.branch,
-        ),
+        reason: match replayed_from {
+            Some(parent) => {
+                format!(
+                "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
+                 branch is retained. {compared} already carries what {branch:?} was stacked on, so \
+                 only its own commits are replayed onto it. Resolve the conflict on it — replay it \
+                 with `{}` — and then land it with `{land}`",
+                guidance::command(["git", "rebase", "--onto", compared, &parent, &context.branch]),
+                branch = context.branch,
+            )
+            }
+            None => format!(
+                "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
+                 branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
+                 and then land it with `{land}`",
+                branch = context.branch,
+            ),
+        },
     })
 }
 

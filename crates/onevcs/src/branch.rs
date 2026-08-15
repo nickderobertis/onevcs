@@ -301,30 +301,57 @@ impl Landing {
     /// command that lands it afterwards, rather than leaving the work to be
     /// salvaged with raw `git` and `gh`.
     pub fn merge_change_base(&self, stream: &mut Stream) -> Result<()> {
-        let merged = git::merge_into_branch(
+        let reconciled = publish::reconcile(
+            &self.clone,
             &self.worktree,
             &self.compared_change_base,
-            &format!("Merge {} into {}", self.compared_change_base, self.branch),
+            &self.branch,
         )?;
-        if merged {
+        if reconciled.settled {
             return Ok(());
         }
         stream.emit(
             EventKind::SyncConflict,
             object(json!({"branch": self.branch, "base": self.change_base})),
         );
+        // Which resolution the refusal names follows what was attempted, for the
+        // reason the refusal exists at all: a branch whose stack parent has already
+        // landed is one that merging the base conflicts with by construction, so
+        // sending an operator to merge it is sending them to reproduce this.
         Err(Error::SyncConflict {
-            reason: format!(
-                "{compared} conflicts with {branch:?}, and re-running will conflict again: this \
-                 verb merges {compared} into the branch and nothing about either has changed. \
-                 The branch is retained in {source} — resolve the conflict on it there, by \
-                 merging {compared} into it and committing the resolution, and then land it with \
-                 `{command}`, which is what publishes it",
-                compared = self.compared_change_base,
-                branch = self.branch,
-                source = self.source.display(),
-                command = self.command(),
-            ),
+            reason: match reconciled.replayed_from {
+                Some(parent) => format!(
+                    "{compared} conflicts with {branch:?}, and re-running will conflict again: \
+                     {compared} already carries what {branch:?} was stacked on, so this verb \
+                     replays only its own commits onto {compared} and nothing about either has \
+                     changed. The branch is retained in {source} — resolve the conflict on it \
+                     there, by replaying it with `{replay}` and committing the resolution, and \
+                     then land it with `{command}`, which is what publishes it",
+                    compared = self.compared_change_base,
+                    branch = self.branch,
+                    source = self.source.display(),
+                    replay = guidance::command([
+                        "git",
+                        "rebase",
+                        "--onto",
+                        &self.compared_change_base,
+                        &parent,
+                        &self.branch,
+                    ]),
+                    command = self.command(),
+                ),
+                None => format!(
+                    "{compared} conflicts with {branch:?}, and re-running will conflict again: \
+                     this verb merges {compared} into the branch and nothing about either has \
+                     changed. The branch is retained in {source} — resolve the conflict on it \
+                     there, by merging {compared} into it and committing the resolution, and then \
+                     land it with `{command}`, which is what publishes it",
+                    compared = self.compared_change_base,
+                    branch = self.branch,
+                    source = self.source.display(),
+                    command = self.command(),
+                ),
+            },
         })
     }
 

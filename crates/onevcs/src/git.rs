@@ -703,6 +703,104 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     }
 }
 
+/// The commit two refs last had in common, or `None` when they share no history.
+pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String>> {
+    let output = run(&["merge-base", first, second], Some(cwd))?;
+    match output.status {
+        0 => Ok(Some(output.trimmed())),
+        1 => Ok(None),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "git merge-base {first} {second} failed: {}",
+                output.diagnostic()
+            ),
+        }),
+    }
+}
+
+/// The commits `branch` has and `base` does not, newest first, along the branch's
+/// own first-parent line.
+///
+/// First-parent, because the question every caller asks is where the branch's own
+/// history begins: a base merged into it earlier brings that base's commits along
+/// a second parent, and walking into them would answer about somebody else's work.
+pub fn commits_since(cwd: &Path, base: &str, branch: &str) -> Result<Vec<String>> {
+    let output = checked(
+        &["rev-list", "--first-parent", &format!("{base}..{branch}")],
+        Some(cwd),
+    )?;
+    Ok(output
+        .stdout
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Whether `base` already carries everything `commit` changed since `fork`.
+///
+/// Content rather than ancestry, for the reason [`trees_differ`] gives: a branch
+/// that reached the base as one squashed commit is an ancestor of nothing, and its
+/// individual commits are not in the base by any name it kept. What is true of it
+/// afterwards is that every path it touched reads on the base exactly as it reads
+/// on the commit — which is the question asked here, and asked over the paths that
+/// commit actually touched so that unrelated work landing on the base beside it
+/// does not change the answer.
+pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
+    let listed = checked(&["diff", "--name-only", "-z", fork, commit], Some(cwd))?;
+    // Pathspecs, not names: a path is a repository's own content and one beginning
+    // with `:` would otherwise be read as pathspec magic rather than as the file it
+    // names.
+    let touched: Vec<String> = listed
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| format!(":(literal){path}"))
+        .collect();
+    if touched.is_empty() {
+        return Ok(false);
+    }
+    let mut args = vec!["diff", "--quiet", commit, base, "--"];
+    args.extend(touched.iter().map(String::as_str));
+    let output = run(&args, Some(cwd))?;
+    match output.status {
+        0 => Ok(true),
+        1 => Ok(false),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "git diff {commit} {base} over {} paths failed: {}",
+                touched.len(),
+                output.diagnostic()
+            ),
+        }),
+    }
+}
+
+/// Replay `branch`'s commits after `upstream` onto `onto`, keeping nothing else.
+///
+/// Returns `false` only when the replay conflicted, and leaves the branch as it
+/// was in that case; every other git failure stays an error, so a caller does not
+/// mistake an invalid ref for a conflict it can report.
+pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Result<bool> {
+    let replayed = run(&["rebase", "--onto", onto, upstream, branch], Some(cwd))?;
+    if replayed.ok() {
+        return Ok(true);
+    }
+    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
+    let conflicted = unmerged.ok() && !unmerged.trimmed().is_empty();
+    // Whatever stopped it, the tree is left as it was found: a replay that halted
+    // mid-way is a repository nothing else in this crate knows how to read.
+    run(&["rebase", "--abort"], Some(cwd))?;
+    if conflicted {
+        return Ok(false);
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "git rebase --onto {onto} {upstream} {branch} failed: {}",
+            replayed.diagnostic()
+        ),
+    })
+}
+
 /// When a ref's commit was made, as whole seconds since the epoch.
 pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
     run(&["log", "-1", "--format=%ct", reference], Some(cwd))

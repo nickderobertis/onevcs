@@ -1990,6 +1990,232 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
     assert_eq!(fixture.origin_log()[0], "feat: change the shared file");
 }
 
+/// A session whose branch was cut from the tip of the change below it, published
+/// after that change squash-merged onto the base.
+///
+/// The shape every stacked change is in the moment the one below it lands, and the
+/// reason it is a trap: the branch carries the parent's every commit, the base
+/// carries one commit with the same content and none of the same names, so merging
+/// the base replays the whole parent against its own squashed equivalent.
+fn stacked_on_a_squash_merged_parent(fixture: &Fixture, branch: &str) -> (String, PathBuf) {
+    let world = &fixture.world;
+    let below = world.clone_of(&fixture.origin, "below");
+    world.git(&below, &["checkout", "-q", "-b", "feature/engine"]);
+    world.commit_file(
+        &below,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.commit_file(
+        &below,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(&below, &["push", "-q", "origin", "feature/engine"]);
+
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    world.git(&worktree, &["fetch", "-q", "origin", "feature/engine"]);
+    world.git(&worktree, &["reset", "--hard", "FETCH_HEAD"]);
+
+    // The change below lands the way a review host lands one: squashed.
+    world.git(&below, &["checkout", "-q", "main"]);
+    world.git(&below, &["merge", "--squash", "feature/engine"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.git(&below, &["push", "-q", "origin", "main"]);
+    (token, worktree)
+}
+
+#[test]
+fn a_stack_parent_that_squash_merged_is_replayed_out_of_the_branch_rather_than_merged() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/filter");
+    fixture.world.commit_file(
+        &worktree,
+        "engine.txt",
+        "the engine\nand its governor\nand a filter\n",
+        "feat: filter what the engine relays",
+    );
+
+    // Merging the base into this is unwinnable and stays unwinnable, which is what
+    // a bounded retry cannot settle: both sides wrote the same file out of nothing.
+    // Only the branch's own commits belong on the base, so only those are replayed.
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let subjects = fixture.origin_log();
+    assert_eq!(subjects[0], "feat: filter what the engine relays");
+    assert_eq!(
+        subjects.len(),
+        3,
+        "the change below landed once, not again under this one: {subjects:?}"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.origin, &["show", "main:engine.txt"]),
+        "the engine\nand its governor\nand a filter",
+        "and the base carries this branch's own work on top of it"
+    );
+}
+
+#[test]
+fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/clashing-filter");
+    fixture.world.commit_file(
+        &worktree,
+        "shared.txt",
+        "from the session\n",
+        "feat: filter what the engine relays",
+    );
+
+    // The base moves again, over a file this branch's own work also changed: a
+    // conflict correcting the ancestry cannot resolve, and the refusal for it names
+    // the replay rather than the merge — sending an operator to merge the base here
+    // is sending them to reproduce the thing that was refused.
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: change it differently",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "already carries what \"feature/clashing-filter\" was stacked on",
+        ))
+        .stderr(predicate::str::contains("the branch is retained"))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/clashing-filter --repo {}`",
+            fixture.checkout.display()
+        )));
+    assert!(fixture
+        .world
+        .git(
+            &fixture.checkout,
+            &["branch", "--list", "feature/clashing-filter"]
+        )
+        .contains("feature/clashing-filter"));
+
+    // Both commands it names are run as printed, which is the only claim worth
+    // making about a refusal: the replay it hands over is the one that reduces this
+    // to an ordinary conflict, and the verb beside it lands the work afterwards.
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    let spans: Vec<&str> = stderr.split('`').collect();
+    let replay = spans
+        .iter()
+        .find(|span| span.starts_with("git rebase --onto "))
+        .expect("the refusal names the replay that resolves it")
+        .to_string();
+    let land = spans
+        .iter()
+        .find(|span| span.starts_with("onevcs publish-branch"))
+        .expect("the refusal names the verb that publishes it")
+        .to_string();
+
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/clashing-filter"],
+    );
+    let argv: Vec<&str> = replay.split_whitespace().skip(1).collect();
+    assert!(
+        !fixture
+            .world
+            .git_raw(&fixture.checkout, &argv)
+            .status
+            .success(),
+        "the replay is the conflict itself"
+    );
+    std::fs::write(fixture.checkout.join("shared.txt"), "resolved by hand\n")
+        .expect("the resolution");
+    fixture.world.git(&fixture.checkout, &["add", "-A"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &["-c", "core.editor=true", "rebase", "--continue"],
+    );
+    // The publication checkout is never worked in, so it goes back to its base.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    fixture
+        .world
+        .shell(&land)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        fixture.origin_log()[0],
+        "feat: filter what the engine relays"
+    );
+}
+
+#[test]
+fn an_unstacked_branch_takes_a_base_that_advanced_as_the_merge_it_always_was() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/plain"]);
+    fixture.world.commit_file(
+        &worktree,
+        "own.txt",
+        "the session's work\n",
+        "feat: do the work",
+    );
+    let own = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+
+    // The base advances compatibly under it, which is the ordinary case and the one
+    // nothing about a stack may change.
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "other.txt",
+        "somebody else's work\n",
+        "feat: land something else",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    // Nothing here is replayed: the branch's own commit is the commit it was, and
+    // the base arrived on it as the merge it has always arrived as.
+    assert_eq!(
+        fixture.world.git(&worktree, &["log", "-1", "--format=%s"]),
+        "Merge origin/main into feature/plain"
+    );
+    assert_eq!(
+        fixture.world.git(&worktree, &["rev-parse", "HEAD^1"]),
+        own,
+        "the session's own commit was not rewritten"
+    );
+    assert_eq!(fixture.origin_log()[0], "feat: do the work");
+}
+
 #[test]
 fn closing_a_session_hands_its_branch_back_before_the_worktree_goes() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
