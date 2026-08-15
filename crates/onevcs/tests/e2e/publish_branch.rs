@@ -1139,3 +1139,115 @@ fn a_gate_that_rejects_a_branch_keeps_it_where_it_was_found() {
     assert_eq!(verdicts.len(), 1, "one gate ran: {verdicts:?}");
     assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
 }
+
+#[test]
+fn a_branch_the_host_holds_reports_the_merge_it_queued() {
+    // `change-auto` behind a gate this crate runs itself: the publication does not
+    // wait for the host, so the host takes the change and lands it when its own
+    // required check settles. The verb answers with what it left behind rather than
+    // claiming a merge.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    finished_hosted_branch(&hosted, "feature/held", "feat: add the held thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/held",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merge queued for"));
+    assert_eq!(
+        hosted.origin_log().len(),
+        1,
+        "the host has not landed it yet"
+    );
+    let stream = "publish-branch-feature-held";
+    assert!(!hosted.world.events_of(stream, "merge-queued").is_empty());
+    assert!(hosted.world.events_of(stream, "change-merged").is_empty());
+}
+
+#[test]
+fn a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body_for() {
+    // The one exit code this repository owns: the request parsed, the identity is
+    // well formed, and the policy is honourable — and this build has no
+    // implementation of the host it names. Handing a GitLab origin to `gh` would
+    // address a repository that is not there, under credentials that do not apply.
+    let world = World::new();
+    let origin = world.bare_origin("otherhost");
+    let checkout = world.clone_of(&origin, "otherhost");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://gitlab.com/acme-corp/otherhost.git",
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        "version: 1\nrules: []\n\
+         default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
+    );
+    world.install_fake_host(&origin);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "otherhost",
+            "--branch",
+            "feature/otherhost",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    world.commit_file(&worktree_of(&stdout), "one.txt", "one\n", "feat: add it");
+    world
+        .onevcs()
+        .args(["session", "close", &token_of(&stdout)])
+        .assert()
+        .success();
+
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/otherhost",
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(70)
+        .stderr(predicate::str::contains(
+            "RemoteHost for a host other than github.com is not implemented yet",
+        ));
+    assert_eq!(
+        world
+            .git(&origin, &["log", "--format=%s", "main"])
+            .lines()
+            .count(),
+        1,
+        "nothing may have landed"
+    );
+    // The branch is still where it was read out of: a publication that did not land
+    // is not also the thing that lost the work.
+    assert!(world
+        .git(&checkout, &["branch", "--list", "feature/otherhost"])
+        .contains("feature/otherhost"));
+}
