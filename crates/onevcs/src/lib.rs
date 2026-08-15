@@ -47,7 +47,7 @@ mod ids;
 mod integrate;
 mod lock;
 mod policy;
-mod provenance;
+pub mod provenance;
 mod providers;
 mod publish;
 mod queue;

@@ -39,3 +39,29 @@ The version lives in `crates/onevcs/Cargo.toml` and nowhere else. The wheel take
 it through maturin's `dynamic = ["version"]` and the npm packages through
 `scripts/npm-build.mjs`, so no human and no second manifest can disagree with the
 tag that was cut.
+
+## The publication subject limit is the operator's, and it has one source
+
+The operator raised it. The old value was the width a wrapped commit *body* is
+written to, which was never their rule for a subject, and it twice refused
+complete, gate-green work at publication; a description cut to fit is not on offer,
+so the refusal was the whole cost.
+
+`provenance::SUBJECT_LIMIT` is the only statement of the number, and `onepipeline`
+reads `onevcs::provenance::SUBJECT_LIMIT` at plan load to ask the same question
+this crate asks at publication rather than restating a value that drifts the first
+time it moves. That consumer is why the module is public at all: **`SUBJECT_LIMIT`
+is the only item of `crates/onevcs/src/provenance.rs` that is not `pub(crate)`**,
+and its name and path are fixed.
+
+## Nothing may open a change request for a branch with nothing to merge
+
+Three measured incidents across two repositories, all one shape: the session's work
+reached the base under somebody *else's* change request, and publishing the session
+afterwards opened a change request whose diff was empty. Every path-filtered
+required check skipped rather than ran, the host held the change BLOCKED with
+nothing left that could unblock it, and the node reported failure for work that had
+already shipped. So a publication asks the *tree*, not the history — a branch that
+landed keeps every one of its commits — and settles as `NothingToPublish`. The
+question is asked on the publication path itself rather than at a call site, so
+every caller gets it.

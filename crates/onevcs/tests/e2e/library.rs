@@ -550,6 +550,28 @@ fn the_checks_a_host_reports_say_which_of_its_sources_they_were_read_from() {
     let reason = refused.to_string();
     assert!(reason.contains("Actions: Read"), "{reason}");
     assert!(reason.contains("no Checks permission"), "{reason}");
+
+    // And a log neither source will produce is an error this caller gets, with
+    // nothing stored: an artifact reads as what the check printed.
+    let stored = || {
+        std::fs::read_dir(world.home().join("artifacts"))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    };
+    let before = stored();
+    let unproduced = host
+        .check_log(change, &complete.checks[0])
+        .expect_err("neither source can produce the log");
+    let reason = unproduced.to_string();
+    assert!(
+        reason.contains("could not produce a log for check \"gate\""),
+        "{reason}"
+    );
+    assert_eq!(
+        stored(),
+        before,
+        "a log that was not fetched is no artifact"
+    );
 }
 
 #[test]

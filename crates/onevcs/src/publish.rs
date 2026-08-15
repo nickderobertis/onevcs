@@ -370,7 +370,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
 
     sync(context, stream, &compared)?;
 
-    if git::log_messages(&context.repo, &compared, &context.branch)?.is_empty() {
+    if nothing_to_publish(context, &compared)? {
         return Ok(PublishOutcome::NothingToPublish);
     }
 
@@ -382,6 +382,28 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
         _ => publish_as_change(context, stream, &subject, &trailers, &environment),
     }
+}
+
+/// Whether the base already carries everything this branch has, once the base has
+/// been merged into it.
+///
+/// Two shapes, and only one of them is "no commits": a branch squash-merged under
+/// somebody else's change request keeps every commit it had and adds nothing to the
+/// tree, so the tree is what decides. Opening a change request for one produces an
+/// empty diff, which every path-filtered required check skips rather than runs and
+/// the host then blocks forever.
+///
+/// Asked here, on the one path both policies go through and before anything is
+/// pushed, so every caller of a publication gets it.
+fn nothing_to_publish(context: &Context<'_>, compared: &str) -> Result<bool> {
+    if git::log_messages(&context.repo, compared, &context.branch)?.is_empty() {
+        return Ok(true);
+    }
+    Ok(!git::trees_differ(
+        &context.repo,
+        compared,
+        &context.branch,
+    )?)
 }
 
 /// The subject one publication commit carries, and what it must carry forward.
@@ -706,11 +728,21 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
             }
             let mut artifacts = Vec::new();
             if check.settled() {
-                artifacts.push(crate::event::ArtifactRef {
-                    id: host.check_log(change, check)?,
-                    kind: "log".to_owned(),
-                    bytes: 0,
-                });
+                // The log records what the check printed; `conclusion`, already read,
+                // is what decides whether it blocks. So a host that will not hand
+                // one over is reported the way a stream that cannot be written is —
+                // on stderr, without failing the command over it.
+                match host.check_log(change, check) {
+                    Ok(id) => artifacts.push(crate::event::ArtifactRef {
+                        id,
+                        kind: "log".to_owned(),
+                        bytes: 0,
+                    }),
+                    Err(error) => eprintln!(
+                        "onevcs: warning: check {:?} on {} is recorded without its log: {error}",
+                        check.name, change.url
+                    ),
+                }
             }
             stream.emit_with(
                 EventKind::ChangeCheck,

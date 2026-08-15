@@ -14,12 +14,25 @@
 //! # One prefix, written and read
 //!
 //! Every key here is spelled `<prefix><name>`, and the prefix is configurable
-//! ([`Trailers`]) because a branch this crate did not write carries whatever prefix
-//! its writer used. Reading and writing take the same [`Trailers`], so a branch
+//! (`Trailers`) because a branch this crate did not write carries whatever prefix
+//! its writer used. Reading and writing take the same `Trailers`, so a branch
 //! preserved under a prefix is recognized, listed, and recovered under it. A marker
 //! written under a prefix this host is *not* configured with is neither read nor
-//! ignored: [`unrecognized`] reports it, so interrupted work cannot be published as
+//! ignored: `unrecognized` reports it, so interrupted work cannot be published as
 //! though it were complete merely because its vocabulary is unfamiliar.
+//!
+//! Those two are named in prose rather than linked, because the module is public
+//! and they are not — a rustdoc link from public documentation to a private item is
+//! a link a reader of the docs cannot follow.
+//!
+//! # One item of this module is public, and only one
+//!
+//! [`SUBJECT_LIMIT`] is the length a publication holds a commit subject to, and a
+//! consumer validating a plan *before* it runs has to ask the same question this
+//! crate will ask at publication — otherwise the refusal arrives an hour later, on
+//! work that is finished and gate-green. Everything else here is `pub(crate)`: the
+//! trailer vocabulary is this crate's own, and the module is public solely so that
+//! one constant has a stable path.
 
 use std::path::Path;
 
@@ -29,12 +42,12 @@ use crate::rules::{RulesFile, TrailerPrefix};
 use crate::session::Provenance;
 
 /// The prefix every provenance trailer key carries when nothing configures one.
-pub const DEFAULT_PREFIX: &str = "Onevcs-";
+pub(crate) const DEFAULT_PREFIX: &str = "Onevcs-";
 /// The subject the attestation commit carries.
-pub const ATTESTATION_SUBJECT: &str = "chore: attest verified recovery of preserved work";
+pub(crate) const ATTESTATION_SUBJECT: &str = "chore: attest verified recovery of preserved work";
 /// The suffix a marker's subject carries, which is what recognizes one written by a
 /// build that predates the trailer.
-pub const INCOMPLETE_SUFFIX: &str = "(incomplete step)";
+pub(crate) const INCOMPLETE_SUFFIX: &str = "(incomplete step)";
 
 /// The key of the marker trailer, after its prefix.
 const STATUS: &str = "Status";
@@ -47,7 +60,7 @@ const INCOMPLETE: &str = "incomplete";
 /// git trailer key is unrepresentable rather than discovered by whichever git
 /// command met it first.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Trailers {
+pub(crate) struct Trailers {
     prefix: TrailerPrefix,
     incomplete: String,
     change_base: String,
@@ -63,7 +76,7 @@ impl Default for Trailers {
 
 impl Trailers {
     /// The keys under one checked prefix.
-    pub fn new(prefix: &TrailerPrefix) -> Self {
+    pub(crate) fn new(prefix: &TrailerPrefix) -> Self {
         Self {
             prefix: prefix.clone(),
             incomplete: format!("{prefix}{STATUS}: {INCOMPLETE}"),
@@ -74,28 +87,28 @@ impl Trailers {
     }
 
     /// The prefix itself, for a refusal that names it.
-    pub fn prefix(&self) -> &TrailerPrefix {
+    pub(crate) fn prefix(&self) -> &TrailerPrefix {
         &self.prefix
     }
 
     /// Marks a commit as work a step did not finish.
-    pub fn incomplete(&self) -> &str {
+    pub(crate) fn incomplete(&self) -> &str {
         &self.incomplete
     }
 
     /// Records the change-request base a preserved branch was stacked on.
     /// Host-neutral, like every other name for the review unit.
-    pub fn change_base(&self) -> &str {
+    pub(crate) fn change_base(&self) -> &str {
         &self.change_base
     }
 
     /// One per incomplete marker a verified recovery cleared.
-    pub fn recovered(&self) -> &str {
+    pub(crate) fn recovered(&self) -> &str {
         &self.recovered
     }
 
     /// Records the change request a preserved branch was opened as.
-    pub fn change_url(&self) -> &str {
+    pub(crate) fn change_url(&self) -> &str {
         &self.change_url
     }
 }
@@ -112,7 +125,7 @@ impl Trailers {
 /// [`TrailerPrefix`] is where a configured one meets this; [`marker_prefix`] is
 /// where one read back out of a commit does, which is what keeps a line of prose
 /// from being read as somebody else's marker.
-pub fn validate_prefix(prefix: &str) -> std::result::Result<(), String> {
+pub(crate) fn validate_prefix(prefix: &str) -> std::result::Result<(), String> {
     if prefix.is_empty() {
         return Err(
             "it is empty, and the prefix is what keeps a repository's own trailers from being \
@@ -138,7 +151,7 @@ pub fn validate_prefix(prefix: &str) -> std::result::Result<(), String> {
 ///
 /// Infallible: the file could not have loaded carrying a prefix that spells no
 /// trailer key, so there is no second place for that refusal to be written.
-pub fn from_rules(file: &RulesFile) -> Trailers {
+pub(crate) fn from_rules(file: &RulesFile) -> Trailers {
     match file.trailer_prefix.as_ref() {
         Some(prefix) => Trailers::new(prefix),
         None => Trailers::default(),
@@ -150,14 +163,14 @@ pub fn from_rules(file: &RulesFile) -> Trailers {
 /// Read from the rules file rather than passed in, so every verb that touches
 /// provenance — and every caller embedding [`crate::Vcs`], whose methods carry no
 /// place to pass one — answers under the same vocabulary.
-pub fn configured() -> Result<Trailers> {
+pub(crate) fn configured() -> Result<Trailers> {
     let registry = crate::store::load()?;
     let (file, _source) = crate::policy::load(&registry)?;
     Ok(from_rules(&file))
 }
 
 /// Whether a commit message marks a step as having been left incomplete.
-pub fn is_incomplete(message: &str, trailers: &Trailers) -> bool {
+pub(crate) fn is_incomplete(message: &str, trailers: &Trailers) -> bool {
     message.contains(trailers.incomplete()) || message.contains(INCOMPLETE_SUFFIX)
 }
 
@@ -167,12 +180,16 @@ pub fn is_incomplete(message: &str, trailers: &Trailers) -> bool {
 /// A caller synthesizing a subject has to skip these: a marker's subject is itself
 /// a valid conventional commit, so a synthesizer that reads every commit folds the
 /// marker's own text into what it publishes.
-pub fn is_provenance(message: &str, trailers: &Trailers) -> bool {
+pub(crate) fn is_provenance(message: &str, trailers: &Trailers) -> bool {
     is_incomplete(message, trailers) || message.contains(trailers.recovered())
 }
 
 /// The message an incomplete-step commit carries.
-pub fn incomplete_message(summary: &str, change_base: Option<&str>, trailers: &Trailers) -> String {
+pub(crate) fn incomplete_message(
+    summary: &str,
+    change_base: Option<&str>,
+    trailers: &Trailers,
+) -> String {
     let mut message = format!(
         "chore: preserve {summary} {INCOMPLETE_SUFFIX}\n\n\
          Preserved by onevcs after the session did not complete.\n\n{}",
@@ -185,7 +202,7 @@ pub fn incomplete_message(summary: &str, change_base: Option<&str>, trailers: &T
 }
 
 /// Every incomplete marker in a base-relative history that no attestation covers.
-pub fn unattested(
+pub(crate) fn unattested(
     repo: &Path,
     base: &str,
     branch: &str,
@@ -210,7 +227,7 @@ pub fn unattested(
 /// buys is the refusal: a branch preserved by something spelling its trailers
 /// differently is interrupted work, and a build that simply could not read the
 /// marker would otherwise publish it as complete.
-pub fn unrecognized(
+pub(crate) fn unrecognized(
     repo: &Path,
     base: &str,
     branch: &str,
@@ -249,7 +266,7 @@ fn marker_prefix(line: &str) -> Option<TrailerPrefix> {
 /// branch's messages are written by whoever worked on it, and a value repeated
 /// verbatim into a publication commit would let any line spelled like a trailer
 /// claim a recovery that never happened.
-pub fn attestation_trailers(
+pub(crate) fn attestation_trailers(
     repo: &Path,
     base: &str,
     branch: &str,
@@ -276,7 +293,7 @@ fn attested_shas(commits: &[git::CommitMessage], trailers: &Trailers) -> Vec<Str
 }
 
 /// The change-request base the newest preserved incomplete commit recorded.
-pub fn recorded_change_base(
+pub(crate) fn recorded_change_base(
     repo: &Path,
     base: &str,
     branch: &str,
@@ -303,7 +320,7 @@ pub fn recorded_change_base(
 /// Returns the attestation's SHA, or `None` when the history had nothing left to
 /// attest. One shape, written in one place, is what lets
 /// [`attestation_trailers`] and [`unattested`] read the same thing.
-pub fn attest(repo: &Path, base: &str, trailers: &Trailers) -> Result<Option<String>> {
+pub(crate) fn attest(repo: &Path, base: &str, trailers: &Trailers) -> Result<Option<String>> {
     let mut missing = unattested(repo, base, "HEAD", trailers)?;
     if missing.is_empty() {
         return Ok(None);
@@ -321,7 +338,7 @@ pub fn attest(repo: &Path, base: &str, trailers: &Trailers) -> Result<Option<Str
 }
 
 /// Whether a branch's base-relative history carries an incomplete marker at all.
-pub fn provenance_of(
+pub(crate) fn provenance_of(
     repo: &Path,
     base: &str,
     branch: &str,
@@ -350,7 +367,7 @@ pub fn provenance_of(
 ///
 /// Blank before long: a title that is only spacing would publish a commit with no
 /// subject at all, which is the one shape a length check reads as fine.
-pub fn checked_subject(title: &str) -> std::result::Result<String, String> {
+pub(crate) fn checked_subject(title: &str) -> std::result::Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
         Err("the explicit title is blank".to_owned())
@@ -372,7 +389,7 @@ pub fn checked_subject(title: &str) -> std::result::Result<String, String> {
 /// branch that is the durable record. When no candidate fits, the caller is told to
 /// shorten a subject or pass an explicit title rather than being handed a generic
 /// one, because a subject naming no change is a worse record than a refusal.
-pub fn publication_subject(
+pub(crate) fn publication_subject(
     repo: &Path,
     base: &str,
     branch: &str,
@@ -411,7 +428,12 @@ pub fn publication_subject(
 }
 
 /// The limit a conventional-commit subject is held to.
-pub const SUBJECT_LIMIT: usize = 72;
+///
+/// Public, and the only public item here, because a consumer that validates work
+/// before running it has to ask the same question publication will: `onepipeline`
+/// reads this at plan load. Every enforcement site and every refusal interpolates
+/// it, so the value has one statement.
+pub const SUBJECT_LIMIT: usize = 120;
 
 /// How much a commit's type says about what the branch as a whole did.
 fn significance(subject: &str) -> u8 {

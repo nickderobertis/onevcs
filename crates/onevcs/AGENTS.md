@@ -163,6 +163,17 @@ script written beside them that answered to what they asked.
   substituted host recorded: the set of `gh api` paths reached is exactly that list,
   and no call names `statusCheckRollup`, `pr checks`, or `run view`. Add an endpoint
   to the read and add it there.
+- **A call whose output is content goes through `gh::invoke_content`, and a log
+  that did not arrive is never an artifact.** `gh` will not print content carrying
+  terminal escape sequences unless asked, and a CI job's log almost always carries
+  colour, so both calls that fetch one pass `--allow-escape-sequences` and fall back
+  once a `gh` predating the flag rejects it — that rejection comes while `gh` parses
+  its arguments, so either generation costs one request. What arrives is stored
+  unaltered; rendering an artifact safely belongs to whatever prints one. And a
+  fetch that failed is an error, never an artifact holding the reason: an artifact
+  reads as what the check printed. `publish` says so on stderr and records the check
+  without its log rather than failing, because the log is evidence and `conclusion`
+  is what decided the merge.
 
 ## Everything durable lives under one state root
 
