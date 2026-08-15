@@ -1054,3 +1054,88 @@ fn a_repository_path_that_is_not_text_is_refused_as_the_argument_it_is() {
             .stderr(predicate::str::contains("`onevcs repos`"));
     }
 }
+
+#[test]
+fn a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change() {
+    // Publishing squashes, so the base gets one subject: a description cut to fit
+    // names nothing, and a base branch is the durable record. The refusal names the
+    // flag that answers it, and the flag then publishes the branch.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let long = format!("feat: {}", "describe the whole change at length ".repeat(3));
+    assert!(long.len() > 72, "the subject must not fit: {long:?}");
+    finished_branch(&fixture, "feature/unsayable", &long);
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/unsayable",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("fits the 72-character limit"))
+        .stderr(predicate::str::contains("publish with --title"));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/unsayable",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+            "--title",
+            "feat: describe the whole change briefly",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        fixture.origin_log()[0],
+        "feat: describe the whole change briefly"
+    );
+}
+
+#[test]
+fn a_gate_that_rejects_a_branch_keeps_it_where_it_was_found() {
+    // Publishing a branch is a verification: the gate runs on the merged tree, and
+    // a branch it rejects reaches no base and is not also lost — the checkout it
+    // was read out of still has it, so the fix and the re-run are both possible.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    finished_branch(
+        &fixture,
+        "feature/rejected",
+        "feat: the thing the gate hates",
+    );
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/rejected",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 1 is the contract's code for a gate that rejected the change.
+        .code(1)
+        .stderr(predicate::str::contains("rejected \"feature/rejected\""));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+    assert!(fixture
+        .world
+        .git(&fixture.checkout, &["branch", "--list", "feature/rejected"])
+        .contains("feature/rejected"));
+
+    // The verdict is on the stream with its log, which is what makes the failure
+    // readable after the fact.
+    let verdicts = fixture
+        .world
+        .events_of("publish-branch-feature-rejected", "gate-verdict");
+    assert_eq!(verdicts.len(), 1, "one gate ran: {verdicts:?}");
+    assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
+}
