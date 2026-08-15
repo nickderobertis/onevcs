@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.7...onevcs-testing-v0.1.8) - 2026-08-15
+
+### Fixed
+
+- *(publish)* refuse an empty-diff PR; raise the title limit to 120 ([#30](https://github.com/nickderobertis/onevcs/pull/30))
+
 ## [0.1.3](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.2...onevcs-testing-v0.1.3) - 2026-08-12
 
 ### Added
