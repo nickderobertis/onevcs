@@ -54,9 +54,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 # What replaces the installed binary, pinned to the version this run expects when
-# it was told one. Built once, so a failure that can only be fixed by installing
-# again says how rather than leaving an operator to work out which of the three
-# install surfaces they used.
+# it was told one. A failure an operator can only answer by installing again says
+# how, rather than leaving them to work out which of the three install surfaces
+# they used.
 if [ -n "$expect_version" ]; then
   reinstall="pip install 'onevcs-cli==$expect_version', npm install -g 'onevcs-cli@$expect_version', or cargo install onevcs --version '$expect_version'"
 else
@@ -97,7 +97,7 @@ for command in register repos resolve session publish publish-branch recover rec
   case "$help" in
     *"$command"*) ;;
     *) fail "--help does not list the '$command' command" \
-         "the installed binary predates the documented command surface in docs/contract.md; install it again and re-run — $reinstall" ;;
+         "the installed binary predates the documented command surface in docs/contract.md" ;;
   esac
 done
 
@@ -111,17 +111,17 @@ onevcs repos >/dev/null || fail "'onevcs repos' failed on a working installation
 status=0
 message="$(onevcs resolve definitely-not-a-registered-repository 2>&1 >/dev/null | strip_cr)" || status=$?
 [ "$status" -eq 2 ] || fail "'onevcs resolve' exited $status, not 2" \
-  "an unregistered repository must be rejected where it enters; install again and re-run — $reinstall — and if this is the binary this repository just built, that exit code is store::resolve's to answer"
+  "an unregistered repository must be rejected where it enters"
 case "$message" in
   *"not a registered repository"*) ;;
   *) fail "'onevcs resolve' refused without saying why: '$message'" \
-       "the refusal must name the problem and the command that fixes it; install again and re-run — $reinstall — and if this is the binary this repository just built, fix the refusal store::resolve writes" ;;
+       "the refusal must name the problem and the command that fixes it" ;;
 esac
 
 # The boundary still rejects nonsense: a usage error is exit 2, not a refusal.
 status=0
 onevcs definitely-not-a-command >/dev/null 2>&1 || status=$?
 [ "$status" -eq 2 ] || fail "an unknown command exited $status, not 2" \
-  "argument validation must fail with clap's usage error before anything else runs; install again and re-run — $reinstall — and if this is the binary this repository just built, the parser in crates/onevcs/src/cli.rs is what regressed"
+  "argument validation must fail with clap's usage error before anything else runs"
 
 echo "$label: smoke test passed"

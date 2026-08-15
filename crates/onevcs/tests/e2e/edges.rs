@@ -659,6 +659,20 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
         .stderr(predicate::str::contains(
             "re-run `onevcs integrate claude/twice`",
         ));
+
+    // …and the re-run it names is the run that was asked for: a `--push` dropped
+    // from the guidance would land the candidates locally and leave the operator
+    // believing the remote had them.
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "claude/twice", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "re-run `onevcs integrate claude/twice --push`",
+        ));
 }
 
 #[test]

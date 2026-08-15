@@ -21,6 +21,19 @@ cd "$(dirname "$0")/.." || {
   exit 1
 }
 
+# A value beginning with '-' would be read as an option by whatever it is handed to
+# — git, sed, a shell redirection — rather than as the ref, path, or directory it was
+# meant to be. Refused where it arrives, because past here it is indistinguishable
+# from a flag this script never took.
+option_like() {
+  case "$2" in
+    -*)
+      echo "red-green: $1 was given $2, which begins with '-' and would be read as an option" >&2
+      echo "ACTION: pass a value — a ref, a file, or a directory — e.g. '--base origin/main'; none of them begin with '-'" >&2
+      exit 2 ;;
+  esac
+}
+
 record=""
 base="origin/main"
 dir="scripts/red-green"
@@ -33,6 +46,7 @@ while [ "$#" -gt 0 ]; do
         echo "ACTION: run 'just red-green', or 'scripts/red-green.sh --record docs/red-green.md'" >&2
         exit 2
       }
+      option_like "$1" "$2"
       record="$2"; shift 2 ;;
     --base)
       [ "$#" -ge 2 ] || {
@@ -40,6 +54,7 @@ while [ "$#" -gt 0 ]; do
         echo "ACTION: run 'scripts/red-green.sh --base origin/main', or omit it — that is the default" >&2
         exit 2
       }
+      option_like "$1" "$2"
       base="$2"; shift 2 ;;
     --patches)
       [ "$#" -ge 2 ] || {
@@ -47,6 +62,7 @@ while [ "$#" -gt 0 ]; do
         echo "ACTION: omit it — 'scripts/red-green' is the default and the committed one" >&2
         exit 2
       }
+      option_like "$1" "$2"
       dir="$2"; shift 2 ;;
     --validate-only)
       validate_only=1; shift ;;
@@ -93,6 +109,15 @@ validate_header() {
       echo "ACTION: name the test on it — an empty name selects every test in the suite, which is not a round anybody can read" >&2
       return 1
     fi
+    # It goes on to be a test filter, where anything but a name is an expression:
+    # a round that selected a *set* would report a verdict about tests it never
+    # named, and one that selected everything would report the suite's.
+    case "$red" in
+      *[!A-Za-z0-9_:]*)
+        echo "red-green: $patch names '$red', which is not a test name" >&2
+        echo "ACTION: name the test as it is declared — letters, digits, '_', and '::' — this goes into a test filter, and anything else selects tests nobody named" >&2
+        return 1 ;;
+    esac
   done
   local doubled
   doubled="$(printf '%s\n' "${reds[@]}" | sort | uniq -d | head -1)"
@@ -111,6 +136,24 @@ if [ -n "$validate_only" ]; then
   echo "red-green: every patch header is well formed (${#patches[@]} in $dir)"
   exit 0
 fi
+
+# What this branch adds, read before any round runs: a `--base` nobody can resolve
+# is an argument to fix, and meeting that after minutes of rounds is meeting it too
+# late.
+if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  echo "red-green: $base does not name a commit here" >&2
+  echo "ACTION: pass the ref this branch forked from — 'git fetch origin main' first if it is not in this clone, or --base <ref>" >&2
+  exit 1
+fi
+# Fixture directories are excluded: what is under one is another repository's
+# suite, carried as data for a journey here, and a `fn` line of it is not a test
+# this repository added — nothing in this workspace compiles or runs it.
+if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*' ':(exclude)*/fixture/*')"; then
+  echo "red-green: the diff against $base could not be read" >&2
+  echo "ACTION: check that $base and the working tree are both readable, then re-run" >&2
+  exit 1
+fi
+mapfile -t added < <(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "red-green: the working tree has uncommitted changes" >&2
@@ -140,8 +183,15 @@ covered=""
 
 # One test, run alone, through the project's own command surface — so what "run a
 # test" means is defined once, in the justfile, rather than a second time here.
+#
+# The answer is read as plain text: a runner decides on its own whether to paint its
+# summary, and something upstream can decide for it (a task runner exporting a
+# force-colour variable is enough). A verdict read out of a coloured line is a
+# verdict this harness would silently get wrong — the summary would no longer match,
+# and every round would report the test as one the mutation did not break.
+escape="$(printf '\033')"
 run_one() {
-  just test-one "$1" 2>&1
+  just test-one "$1" 2>&1 | sed "s/${escape}\[[0-9;]*[a-zA-Z]//g"
 }
 
 # What a failing test said, which is what makes a red run evidence rather than an
@@ -187,7 +237,6 @@ trap restore EXIT
 
 for patch in "${patches[@]}"; do
   name="$(basename "$patch" .patch)"
-  # Both were checked above, for every patch, before any of them ran.
   mutation="$(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")"
   mapfile -t reds < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
   if ! git apply --check "$patch" 2>>"$log"; then
@@ -225,18 +274,8 @@ $output"
 done
 
 # Every test this branch adds has to be in some patch's Red set: one that is not is
-# a test nothing can break.
-if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
-  echo "red-green: $base does not name a commit here" >&2
-  echo "ACTION: pass the ref this branch forked from — 'git fetch origin main' first if it is not in this clone, or --base <ref>" >&2
-  exit 1
-fi
-if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*')"; then
-  echo "red-green: the diff against $base could not be read" >&2
-  echo "ACTION: check that $base and the working tree are both readable, then re-run" >&2
-  exit 1
-fi
-mapfile -t added < <(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)
+# a test nothing can break. What they are was read before the rounds; this is the
+# judgement, which needs what the rounds covered.
 missing=""
 for test in "${added[@]}"; do
   grep -qx "$test" <<<"$covered" || missing+="  $test"$'\n'
@@ -264,7 +303,15 @@ $output"
 done < <(sort -u <<<"$covered")
 
 if [ -n "$record" ]; then
-  if ! {
+  # Opened before it is composed into: bash reports a redirection failure on a
+  # group but leaves the group's own status alone, so a run that could not write
+  # its record would otherwise print the green line and exit 0.
+  if ! : >"$record"; then
+    echo "red-green: the transcript could not be written to $record" >&2
+    echo "ACTION: name a writable path — 'just red-green' writes docs/red-green.md, which is the committed one — and re-run" >&2
+    exit 1
+  fi
+  {
     printf '# Red, then green\n\n'
     printf 'Every journey this branch adds, observed failing for the behaviour it is\n'
     printf 'about before it passed. Regenerate with `just red-green`, which re-applies\n'
@@ -272,11 +319,7 @@ if [ -n "$record" ]; then
     printf 'failed on, reverts it, and then runs the same tests green.\n\n'
     printf 'Patches: %s. Tests observed red and then green: %s.\n\n' "${#patches[@]}" "$green"
     printf '%s' "$transcript"
-  } >"$record"; then
-    echo "red-green: the transcript could not be written to $record" >&2
-    echo "ACTION: name a writable path — 'just red-green' writes docs/red-green.md, which is the committed one — and re-run" >&2
-    exit 1
-  fi
+  } >"$record"
 fi
 
 echo "red-green: ${#patches[@]} mutations, $green tests observed red then green"

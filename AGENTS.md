@@ -102,15 +102,12 @@ not tell you:
   `crates/**/*` rather than only that project's own root. A second Nx project
   would run the same `--workspace` commands twice.
 - **`just red-green` is the evidence, not a check.** A green test proves nothing on
-  its own; it has to be observed red for its own behaviour first, and an
-  observation that lives in a session's scrollback is not evidence. So each
-  behaviour has a mutation patch under `scripts/red-green/` whose header names the
-  round and the tests that must fail without it. Every header is checked before any
-  round runs; the recipe then re-applies each patch and records what each test
-  failed on in [`docs/red-green.md`](docs/red-green.md), and it fails when a test
-  the branch adds is one no mutation can break. It is out of `check` and `gate`
-  deliberately: it mutates the tree and takes minutes, and it is scoped to a
-  branch's own diff (`--base`).
+  its own: it has to be observed red for its own behaviour first, and an
+  observation nobody can re-make is not evidence. So the observation is an
+  artifact — a mutation per behaviour in `scripts/red-green/`, recorded in
+  [`docs/red-green.md`](docs/red-green.md) — and a test no mutation can break fails
+  the recipe. Out of `check` and `gate` deliberately: it mutates the tree and takes
+  minutes.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.

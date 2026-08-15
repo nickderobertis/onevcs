@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 20. Tests observed red and then green: 33.
+Patches: 31. Tests observed red and then green: 44.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -34,17 +34,17 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 
 integrate's team and remote refusals go back to naming no command.
 
-- RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpGDWAmh/reviewed`)
-- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpp81k9y/remote-owner`)
+- RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — the refusal routes claude/one nowhere:
+- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpNgQnU0/remote-owner`)
 - RED `every_state_a_branch_can_be_in_has_a_verb_that_takes_it` — the train's refusal names no command: onevcs: invalid input: direct integration is refused for identity "github.com/acme-corp/hosted" (repo_
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpjXBxEW/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpJN8hyl/a checkout with spaces'`)
 
 ### `03-recovery-hands-every-branch-to-the-train`
 
 recover's handoff names `integrate` whatever the identity is, which is the verb half of them refuse.
 
 - RED `recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publish_it` — the handoff names no command: onevcs: invalid input: branch "feature/handed-over" carries no unattested incomplete provenance: it has commit
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpCmXuCu/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmp3F6zgt/a checkout with spaces'`)
 
 ### `04-interrupted-work-published-as-finished`
 
@@ -69,13 +69,13 @@ the branch-keyed sync conflict goes back to stating that the two conflict.
 
 the publication path's sync conflict goes back to stating that the branch is retained.
 
-- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpND3FEK/project`)
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpfOYnEq/project`)
 
 ### `08-printed-commands-are-not-quoted`
 
 an argument a shell would split is printed as it is.
 
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpRGBjsu/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpYF67X5/a checkout with spaces'`)
 
 ### `09-a-repository-path-read-lossily`
 
@@ -113,7 +113,7 @@ a publication stops running the gate the policy names.
 
 the refusal that nothing would be attested stops naming the rules entry that answers it.
 
-- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpDXG1uZ/.onevcs/rules.yml)
+- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpx1RrxH/.onevcs/rules.yml)
 
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
@@ -140,7 +140,7 @@ the branch-keyed refusals stop naming the command that lists the branches there 
 
 the train's no-subject skip goes back to reporting the synthesis failure alone.
 
-- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpiDmHwf/project --title <T>`
+- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmprxrLli/project --title <T>`
 
 ### `19-the-verb-is-not-written-down`
 
@@ -154,4 +154,70 @@ the harness stops checking a mutation patch header before it runs the round.
 
 - RED `a_round_with_no_one_subject_is_refused_before_any_of_them_runs` — expected a non-zero exit:
 - RED `a_round_that_names_no_test_or_names_one_twice_is_refused` — expected a non-zero exit:
+
+### `21-a-round-is-not-put-back`
+
+the harness stops reverting a round once it is over.
+
+- RED `a_round_is_recorded_and_the_tree_is_left_as_it_was_found` — Unexpected failure: subject.txt says mutated
+
+### `22-a-dirty-tree-is-mutated-anyway`
+
+the harness stops refusing a tree that carries uncommitted work.
+
+- RED `a_tree_or_a_log_the_harness_cannot_safely_use_stops_it_before_any_round` — stderr does not report "the working tree has uncommitted changes":
+
+### `23-a-patch-is-taken-on-trust`
+
+the harness stops checking that a patch is one git can read and apply.
+
+- RED `a_patch_git_cannot_read_or_apply_stops_the_run_naming_it` — stderr does not report "is not a patch git can read":
+
+### `24-a-round-that-observed-nothing-is-counted`
+
+the harness stops caring whether the test a round names exists, or goes red.
+
+- RED `a_round_naming_a_test_that_does_not_exist_or_does_not_go_red_puts_the_tree_back` — stderr does not report "names a test that does not exist":
+
+### `25-the-green-half-is-never-run`
+
+the harness stops running the tests with the behaviour back in place.
+
+- RED `a_test_that_is_red_with_the_behaviour_in_place_fails_the_run` — expected a non-zero exit:
+
+### `26-a-new-test-no-round-covers-is-let-through`
+
+the harness stops holding this branch's new tests to a round that breaks them.
+
+- RED `a_test_added_since_the_base_that_no_mutation_breaks_fails_the_run` — expected a non-zero exit:
+
+### `27-the-base-is-taken-on-trust`
+
+the harness stops checking that the base it was given can be read.
+
+- RED `a_base_the_run_cannot_read_is_refused_where_it_is_named` — expected a non-zero exit:
+
+### `28-a-tree-that-cannot-be-put-back-is-shrugged-at`
+
+the harness reverts best-effort, so a tree left carrying a mutation says nothing.
+
+- RED `a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest` — stderr does not report "the mutated files could not be restored":
+
+### `29-a-transcript-nobody-could-write-is-not-noticed`
+
+the harness stops checking that the transcript it was asked for can be written.
+
+- RED `a_transcript_that_cannot_be_written_is_a_failure_rather_than_a_silent_omission` — stderr does not report "the transcript could not be written to nowhere/at/all.md":
+
+### `30-a-smoke-refusal-names-no-next-step`
+
+the release smoke script's state-root failure goes back to restating the invariant.
+
+- RED `a_state_root_the_binary_cannot_read_is_reported_with_what_to_do_about_it` — the failure must name what to do about it:
+
+### `31-a-painted-summary-is-read-as-paint`
+
+the harness reads a runner's answer with whatever paint is on it.
+
+- RED `a_runner_that_paints_its_summary_is_still_read_as_a_verdict` — expected success, got exit status: 1:
 

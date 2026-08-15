@@ -351,8 +351,12 @@ fn an_install_the_registry_never_serves_fails_with_the_last_attempt_in_full() {
     // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let (_dir, script) = flaky_command(u32::MAX);
 
+    // The bounds are chosen so that the *count* is decided by the arithmetic rather
+    // than by how loaded the machine is: after the second failure `SECONDS + delay`
+    // is over the budget however fast the attempts were, and the first attempt has
+    // three seconds of room before it could exhaust it on its own.
     Run::script("scripts/retry-install.sh")
-        .args(["--budget", "2", "--first-delay", "1", "--max-delay", "1"])
+        .args(["--budget", "5", "--first-delay", "2", "--max-delay", "4"])
         .args(["--label", "onevcs-cli 9.9.9 from the test registry"])
         .args(["--action", "check that the release job published it"])
         .arg("--")
@@ -919,6 +923,11 @@ fn a_round_that_names_no_test_or_names_one_twice_is_refused() {
             "names the test 'a_test' twice",
             "ACTION: name each test once",
         ),
+        (
+            format!("Mutation: it removes the thing\nRed: all() or test(a_test)\n{DIFF}"),
+            "which is not a test name",
+            "ACTION: name the test as it is declared",
+        ),
     ] {
         validate(patch_dir(&[("01-bad.patch", &body)]).path())
             .failed()
@@ -929,4 +938,523 @@ fn a_round_that_names_no_test_or_names_one_twice_is_refused() {
     // …and two different tests in one round are what a patch is for.
     let both = format!("Mutation: it removes the thing\nRed: one_test\nRed: another_test\n{DIFF}");
     validate(patch_dir(&[("01-good.patch", &both)]).path()).succeeded();
+}
+
+/// A miniature repository the whole harness can be run inside.
+///
+/// `scripts/red-green.sh` works in the repository it lives in — it `cd`s to its own
+/// parent — so the committed script, copied into a scratch repository, runs every
+/// branch of a real round in milliseconds. Nothing about the run is substituted:
+/// real patches, a real `git apply`, a real `just test-one` reaching that
+/// repository's own suite, and a file the mutation actually changes, so a round
+/// here observes a mutation the way a round in this repository does. What differs
+/// is the *scale* of the repository it runs in — one file of shell tests instead of
+/// a Rust workspace, which is what makes a round take a millisecond.
+struct Harness {
+    dir: tempfile::TempDir,
+}
+
+/// The scratch repository's own tests, as Rust tests run by the same runner and the
+/// same recipe body this repository uses.
+///
+/// Under `fixture/` because it is another repository's suite rather than one of
+/// this repository's tests — which is the distinction `red-green.sh` draws when it
+/// reads what this branch added, so that a `+fn name() {` line of it is not counted
+/// as a test here that no round covers.
+const TESTS: &str = include_str!("fixture/rounds.rs");
+
+/// The mutation every journey below uses unless it is about a broken patch: it
+/// changes the one file the stub reads, so the round is a real red-then-green.
+fn subject_patch(red: &[&str]) -> String {
+    let named: String = red.iter().map(|test| format!("Red: {test}\n")).collect();
+    format!(
+        "Mutation: it makes the subject say mutated.\n{named}\n\
+         diff --git a/subject.txt b/subject.txt\n\
+         --- a/subject.txt\n+++ b/subject.txt\n@@ -1 +1 @@\n-intact\n+mutated\n"
+    )
+}
+
+impl Harness {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("a scratch repository");
+        let root = dir.path();
+        for relative in ["scripts/red-green", "crates/x/tests", "tests", "src"] {
+            std::fs::create_dir_all(root.join(relative)).expect("a scratch directory");
+        }
+        std::fs::write(root.join(".gitignore"), ".logs\n/target\n").expect("a gitignore");
+        std::fs::write(root.join("subject.txt"), "intact\n").expect("the mutated file");
+        std::fs::write(
+            root.join("justfile"),
+            // The recipe body this repository's own justfile carries, verbatim.
+            "test-one name:\n    @name={{quote(name)}}; cargo nextest run --workspace --locked \
+             -E \"test($name)\" --no-fail-fast --status-level fail\n",
+        )
+        .expect("a justfile");
+        std::fs::write(root.join("tests/rounds.rs"), TESTS).expect("the scratch suite");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "//! Nothing: the tests are the point.\n",
+        )
+        .expect("a crate to hang the tests on");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"scratch\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+             publish = false\n\n[dependencies]\n",
+        )
+        .expect("a manifest");
+        std::fs::copy(
+            workspace_root().join("scripts/red-green.sh"),
+            root.join("scripts/red-green.sh"),
+        )
+        .expect("the script under test");
+        let script = root.join("scripts/red-green.sh");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("a written script")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("an executable script");
+
+        let harness = Self { dir };
+        // A lock file of its own, because the recipe runs `--locked` — with no
+        // dependencies this needs nothing but a moment.
+        harness.cargo(&["generate-lockfile", "--quiet"]);
+        harness.git(&["init", "-q", "-b", "main"]);
+        harness.commit("chore: seed the scratch repository");
+        // A ref of its own for the fork point, because a journey commits its patches
+        // afterwards and `HEAD~1` would then name one of those instead.
+        harness.git(&["tag", "the-fork-point"]);
+        // The second commit is what `--base the-fork-point` sees: a test added since the
+        // base, which is the set every patch's `Red:` lines have to cover.
+        harness.write(
+            "crates/x/tests/y.rs",
+            "#[test]\nfn a_test_no_mutation_breaks() {\n    assert!(std::path::Path::new(\"Cargo.toml\").exists());\n}\n",
+        );
+        // …and one that is a fixture rather than a test of that repository, which is
+        // the distinction the scan draws.
+        harness.write(
+            "crates/x/tests/fixture/borrowed.rs",
+            "#[test]\nfn a_test_of_some_other_repository() {\n    assert!(std::path::Path::new(\"Cargo.toml\").exists());\n}\n",
+        );
+        harness.commit("test: add one nothing can break");
+        harness
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn git(&self, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(self.root())
+            .status()
+            .expect("git must be installed");
+        assert!(
+            status.success(),
+            "git {args:?} failed in the scratch repository"
+        );
+    }
+
+    /// Cargo, with the instrumentation of the run *this* suite is part of cleared:
+    /// a nested build must not inherit a coverage profile or rustflags aimed at
+    /// another target directory.
+    fn cargo(&self, args: &[&str]) {
+        let status = Self::without_this_runs_instrumentation(Command::new("cargo"))
+            .args(args)
+            .current_dir(self.root())
+            .status()
+            .expect("cargo must be installed");
+        assert!(
+            status.success(),
+            "cargo {args:?} failed in the scratch repository"
+        );
+    }
+
+    fn without_this_runs_instrumentation(mut command: Command) -> Command {
+        for variable in [
+            "RUSTFLAGS",
+            "RUSTDOCFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_TARGET_DIR",
+            "LLVM_PROFILE_FILE",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+        ] {
+            command.env_remove(variable);
+        }
+        command
+    }
+
+    fn commit(&self, subject: &str) {
+        self.git(&["add", "-A"]);
+        self.git(&[
+            "-c",
+            "user.email=journey@example.invalid",
+            "-c",
+            "user.name=Journey",
+            "commit",
+            "-q",
+            "-m",
+            subject,
+        ]);
+    }
+
+    fn write(&self, relative: &str, body: &str) -> &Self {
+        let path = self.root().join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("a scratch directory");
+        }
+        std::fs::write(path, body).expect("a scratch file");
+        self
+    }
+
+    /// One mutation patch, in the directory the harness reads. Committed, as the
+    /// committed evidence set is: the script refuses a dirty tree, and a patch
+    /// nobody committed would make every journey below that refusal instead.
+    fn patch(&self, name: &str, body: &str) -> &Self {
+        self.write(&format!("scripts/red-green/{name}.patch"), body);
+        self.commit("test: add a mutation patch");
+        self
+    }
+
+    /// A script the stub runs once, between a round's apply and its restore.
+    fn hook(&self, body: &str) -> &Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        self.write("scripts/hook.sh", &format!("#!/usr/bin/env bash\n{body}\n"));
+        let path = self.root().join("scripts/hook.sh");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("a written hook")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("an executable hook");
+        self.commit("test: add the hook the stub runs");
+        self
+    }
+
+    fn run(&self, args: &[&str]) -> Reported {
+        self.run_with(args, &[])
+    }
+
+    /// The same, with something in the environment the run inherits — which is how
+    /// a task runner reaches the runner underneath this one.
+    fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> Reported {
+        let mut command = Self::without_this_runs_instrumentation(Command::new("bash"));
+        command
+            .arg(self.root().join("scripts/red-green.sh"))
+            .args(args)
+            .current_dir(self.root());
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        Reported::from(command.output().expect("bash runs the script under test"))
+    }
+
+    /// Whether the scratch tree carries no mutation, which is what "it put the tree
+    /// back" means.
+    /// Tracked files only: what a round must put back is what it changed, and the
+    /// transcript it was asked to write is a file it was asked to add.
+    fn tree_is_clean(&self) -> bool {
+        let output = Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=no"])
+            .current_dir(self.root())
+            .output()
+            .expect("git must be installed");
+        String::from_utf8_lossy(&output.stdout).trim().is_empty()
+    }
+
+    /// Leave the repository unable to answer about its own tracked files, which is
+    /// what a git command failing under the run looks like from outside.
+    fn break_the_index(&self) -> &Self {
+        let index = self.root().join(".git/index");
+        std::fs::remove_file(&index).expect("the index is there to break");
+        std::fs::create_dir(&index).expect("something that is not an index");
+        self
+    }
+
+    fn read(&self, relative: &str) -> String {
+        std::fs::read_to_string(self.root().join(relative)).unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_round_is_recorded_and_the_tree_is_left_as_it_was_found() {
+    // The whole of a round, end to end: the patch applies, the test it names is red
+    // with the mutation in and green with it out, the transcript records what the
+    // red run said, and the tree goes back to what it was.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+
+    let reported = harness.run(&["--base", "HEAD", "--record", "evidence.md"]);
+    if !reported.status.success() {
+        // The harness's own verdict says which round broke; the nested run's log
+        // says why, and it goes with the scratch repository when this returns.
+        eprintln!(
+            "the scratch run's log:\n{}",
+            harness.read(".logs/red-green.log")
+        );
+    }
+    reported
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
+
+    let recorded = harness.read("evidence.md");
+    assert!(
+        recorded.contains("### `01-subject`")
+            && recorded.contains("it makes the subject say mutated.")
+            && recorded.contains(
+                "RED `the_test_the_mutation_breaks` — Unexpected failure: subject.txt says mutated"
+            ),
+        "the transcript is the evidence, and this is what it recorded:\n{recorded}"
+    );
+    assert!(
+        harness.tree_is_clean(),
+        "a round that ran must leave the tree carrying no mutation"
+    );
+}
+
+#[test]
+fn a_runner_that_paints_its_summary_is_still_read_as_a_verdict() {
+    // A test runner decides for itself whether to colour its output, and something
+    // above it can decide for it — a task runner exporting a force-colour variable
+    // is enough, which is how this was found. A verdict read out of a painted line
+    // matches nothing, so every round would report its test as one the mutation did
+    // not break: a harness that always says the same wrong thing.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+
+    harness
+        .run_with(
+            &["--base", "HEAD", "--record", "evidence.md"],
+            &[("CLICOLOR_FORCE", "1")],
+        )
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
+    assert!(
+        harness
+            .read("evidence.md")
+            .contains("Unexpected failure: subject.txt says mutated"),
+        "the assertion is recorded as text, not as the paint around it"
+    );
+}
+
+#[test]
+fn a_tree_or_a_log_the_harness_cannot_safely_use_stops_it_before_any_round() {
+    // Both are refusals about the *tree*, before the first patch is applied: the
+    // script reverts with `git checkout`, which would take uncommitted work with it,
+    // and a run whose log cannot be written is a run whose evidence nobody can read.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    harness.write("subject.txt", "edited by hand\n");
+    // …and left uncommitted, which is the state the refusal is about.
+
+    harness
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said("the working tree has uncommitted changes")
+        .said("ACTION: commit or stash them first");
+
+    let clean = Harness::new();
+    clean.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    // A file where the log directory goes: `mkdir -p` fails for any user, which is
+    // what a directory nobody can create looks like from here.
+    clean.write(".logs", "not a directory\n");
+
+    clean
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said(".logs/red-green.log cannot be written")
+        .said("ACTION: make .logs/ writable");
+}
+
+#[test]
+fn a_patch_git_cannot_read_or_apply_stops_the_run_naming_it() {
+    // Two different failures, and the difference is the whole point of naming them
+    // apart: one is not a patch at all, the other is a patch whose code has moved.
+    let unreadable = Harness::new();
+    unreadable.patch(
+        "01-nonsense",
+        "Mutation: it is not a diff.\nRed: the_stub_test\n\nthis is not a patch\n",
+    );
+    unreadable
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said("is not a patch git can read")
+        .said("ACTION: re-make it");
+
+    let stale = Harness::new();
+    stale.patch(
+        "01-moved",
+        "Mutation: it mutates a line that is not there.\nRed: the_stub_test\n\n\
+         diff --git a/subject.txt b/subject.txt\n--- a/subject.txt\n+++ b/subject.txt\n\
+         @@ -1 +1 @@\n-something else entirely\n+mutated\n",
+    );
+    stale
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said("no longer applies")
+        .said("ACTION: the code it mutates has moved");
+    assert!(stale.tree_is_clean(), "nothing may be left applied");
+}
+
+#[test]
+fn a_round_naming_a_test_that_does_not_exist_or_does_not_go_red_puts_the_tree_back() {
+    // The two ways a round can be a round about nothing: it names a test the suite
+    // does not have, or it names one that passes with the behaviour removed. Both
+    // stop the run *and* revert the mutation, which is the recovery path that
+    // matters — the alternative is an operator's tree left carrying it.
+    for (test, said) in [
+        (
+            "a_test_this_repository_never_wrote",
+            "names a test that does not exist",
+        ),
+        ("a_test_that_never_fails", "did not fail under"),
+    ] {
+        let harness = Harness::new();
+        harness.patch("01-subject", &subject_patch(&[test]));
+
+        harness.run(&["--base", "HEAD"]).failed().said(said);
+        assert!(
+            harness.tree_is_clean(),
+            "the mutation must be reverted before the run gives up: {test}"
+        );
+        assert_eq!(
+            harness.read("subject.txt"),
+            "intact\n",
+            "the file the round mutated is back as it was: {test}"
+        );
+    }
+}
+
+#[test]
+fn a_test_that_is_red_with_the_behaviour_in_place_fails_the_run() {
+    // Red under the mutation is half the claim; the other half is green without it.
+    // A test that fails either way proves nothing about the behaviour, and the run
+    // says so rather than counting it.
+    let harness = Harness::new();
+    harness.patch("01-subject", &subject_patch(&["a_test_that_always_fails"]));
+
+    harness
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said("a_test_that_always_fails does not pass unmutated")
+        .said("ACTION: read .logs/red-green.log");
+    assert!(harness.tree_is_clean());
+}
+
+#[test]
+fn a_test_added_since_the_base_that_no_mutation_breaks_fails_the_run() {
+    // The closure the whole harness turns on: a journey nothing can break asserts
+    // nothing, so a test this branch adds and no patch names is reported by name.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+
+    let refusal = harness.run(&["--base", "the-fork-point"]);
+    refusal
+        .failed()
+        .said("no patch turns them red")
+        .said("a_test_no_mutation_breaks")
+        .said("ACTION: add a patch under scripts/red-green/");
+    // A fixture carried under `tests/` is another repository's suite, not one of
+    // these tests: counting it would demand a round about a test nothing here runs.
+    assert!(
+        !refusal.stderr.contains("a_test_of_some_other_repository"),
+        "a fixture is not a test this branch added:\n{}",
+        refusal.stderr
+    );
+}
+
+#[test]
+fn a_base_the_run_cannot_read_is_refused_where_it_is_named() {
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+
+    harness
+        .run(&["--base", "no-such-ref"])
+        .failed()
+        .said("no-such-ref does not name a commit here")
+        .said("ACTION: pass the ref this branch forked from");
+
+    // …and a value that would be read as an option by whatever it reaches is
+    // refused as the argument it is, before it becomes a flag to git.
+    harness
+        .run(&["--base", "--upload-pack=whatever"])
+        .failed()
+        .said("--base was given --upload-pack=whatever, which begins with '-'")
+        .said("ACTION: pass a value");
+    assert!(harness.tree_is_clean());
+
+    // …and a repository that cannot answer *what this branch added* is a failure the
+    // run reports rather than one it reads as "no tests were added" — which would be
+    // the closure below silently passing.
+    let broken = Harness::new();
+    broken.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    broken.break_the_index();
+    broken
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said("the diff against HEAD could not be read")
+        .said("ACTION: check that HEAD and the working tree are both readable");
+}
+
+#[test]
+fn a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest() {
+    // The failure that outlives the run: the mutation is applied, the round is over,
+    // and the file cannot be restored — so the operator's tree is carrying it. A
+    // best-effort revert here would leave that silent.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    // The index goes out from under the round, between its apply and its restore:
+    // `git checkout` cannot read one that is not a file, whoever is running.
+    harness.hook("rm -rf .git/index && mkdir .git/index");
+
+    harness
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said("the mutated files could not be restored")
+        .said("ACTION: run 'git checkout --");
+}
+
+#[test]
+fn a_transcript_that_cannot_be_written_is_a_failure_rather_than_a_silent_omission() {
+    // The record is the deliverable, so a run that did every round and could not
+    // write it down is a failed run — not a green line with nothing behind it.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+
+    harness
+        .run(&["--base", "HEAD", "--record", "nowhere/at/all.md"])
+        .failed()
+        .said("the transcript could not be written to nowhere/at/all.md")
+        .said("ACTION: name a writable path");
 }

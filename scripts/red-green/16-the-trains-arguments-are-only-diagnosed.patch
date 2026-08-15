@@ -3,7 +3,7 @@ Red: a_train_offered_something_it_cannot_run_says_which_and_why
 Red: a_train_asked_to_push_a_checkout_with_no_origin_says_what_to_run_instead
 
 diff --git a/crates/onevcs/src/integrate.rs b/crates/onevcs/src/integrate.rs
-index f50e9f4..99c78c9 100644
+index 7a2c382..07f88e7 100644
 --- a/crates/onevcs/src/integrate.rs
 +++ b/crates/onevcs/src/integrate.rs
 @@ -128,10 +128,8 @@ pub fn run(
@@ -14,7 +14,7 @@ index f50e9f4..99c78c9 100644
 -                 build on work nobody recorded. Commit or stash what it holds, then re-run `{}`",
 +                "the base worktree {} is dirty",
                  root.display(),
--                train_command(candidates),
+-                train_command(candidates, push),
              ),
          });
      }
@@ -57,7 +57,7 @@ index f50e9f4..99c78c9 100644
          });
      }
  
-@@ -281,8 +274,7 @@ fn train(
+@@ -286,8 +279,7 @@ fn train(
          if !has_remote {
              return Err(Error::Invalid {
                  reason: format!(

@@ -24,6 +24,22 @@ use crate::registry::configure_rules;
 use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, Check, World};
 
+/// What a command wrote to stderr, as a reader of the terminal sees it.
+fn stderr_of(assert: &assert_cmd::assert::Assert) -> String {
+    String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8")
+}
+
+/// The command a refusal printed, taken from between its backticks — so what a
+/// journey runs is the text an operator would paste rather than a restatement of
+/// it.
+fn printed_command(refusal: &str) -> String {
+    refusal
+        .split('`')
+        .find(|span| span.starts_with("onevcs "))
+        .unwrap_or_else(|| panic!("the refusal names no command:\n{refusal}"))
+        .to_owned()
+}
+
 /// A complete, unpublished branch of the local fixture: worked in a session, then
 /// closed without publishing, which is what hands the branch back to the checkout.
 fn finished_branch(fixture: &Fixture, branch: &str, subject: &str) {
@@ -395,6 +411,24 @@ fn a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long() {
         .code(2)
         .stderr(predicate::str::contains("fits the 72-character limit"))
         .stderr(predicate::str::contains("--title"));
+
+    // A title that could not be a subject is refused where the command line hands it
+    // over — the same conversion `publish` and `publish-branch` take it through, so
+    // one option does not mean two things depending on which verb took it.
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/verbose",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+            "--title",
+            "   ",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("the explicit title is blank"));
 
     fixture
         .world
@@ -772,6 +806,43 @@ fn an_identity_with_no_rules_file_publishes_under_the_built_in_default() {
         .assert()
         .success()
         .stdout(predicate::str::contains("change request open at"));
+
+    // …and a refusal that tells an operator which file to edit names the file they
+    // would create, not the sentence a report prints when there is none.
+    world.git(
+        &checkout,
+        &["checkout", "-q", "-b", "feature/foreign", "main"],
+    );
+    world.commit_file(&checkout, "two.txt", "two\n", "feat: add another thing");
+    world.git(
+        &checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/foreign\n\n{}",
+                documented_trailer("Status", "Qqq-")
+            ),
+        ],
+    );
+    world.git(&checkout, &["checkout", "-q", "main"]);
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/foreign",
+            "--repo",
+            &checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("Set trailer_prefix to \"Qqq-\""))
+        .stderr(predicate::str::contains(format!(
+            "in the rules file at {}",
+            world.home().join("rules.yml").display()
+        )));
 }
 
 #[test]
@@ -933,7 +1004,7 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
     // Both routes quote it: the train's, and `recover`'s handoff of a complete
     // branch.
     let quoted = format!("--repo '{}'", checkout.display());
-    world
+    let assert = world
         .onevcs()
         .args(["integrate", "feature/spacey"])
         .current_dir(&checkout)
@@ -942,6 +1013,7 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         .stderr(predicate::str::contains(format!(
             "`onevcs publish-branch feature/spacey {quoted}`"
         )));
+    let routed = printed_command(&stderr_of(&assert));
     world
         .onevcs()
         .args([
@@ -956,16 +1028,10 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
             "`onevcs publish-branch feature/spacey {quoted}`"
         )));
 
-    // And the command they name is the command that works, run the way a shell
-    // hands it over: one argument, spaces and all.
+    // And the command they name is the command that works — the text the refusal
+    // printed, handed to a shell, which is what pasting it means.
     world
-        .onevcs()
-        .args([
-            "publish-branch",
-            "feature/spacey",
-            "--repo",
-            &checkout.to_string_lossy(),
-        ])
+        .shell(&routed)
         .assert()
         .success()
         .stdout(predicate::str::contains("merged at"));
@@ -1002,23 +1068,22 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         .assert()
         .success();
 
-    world
+    let assert = world
         .onevcs()
         .args(["integrate", quoted_branch])
         .current_dir(&checkout)
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains(format!(
-            r"`onevcs publish-branch 'feature/it'\''s-quoted' {quoted}`"
-        )));
+        .code(2);
+    let routed = printed_command(&stderr_of(&assert));
+    // Closed, escaped, and reopened — the one spelling a shell reads back as the
+    // name that went in.
+    assert_eq!(
+        routed,
+        format!("onevcs publish-branch 'feature/it'\\''s-quoted' {quoted}"),
+        "the branch is not spelled as one argument"
+    );
     world
-        .onevcs()
-        .args([
-            "publish-branch",
-            quoted_branch,
-            "--repo",
-            &checkout.to_string_lossy(),
-        ])
+        .shell(&routed)
         .assert()
         .success()
         .stdout(predicate::str::contains("merged at"));
@@ -1079,6 +1144,26 @@ fn a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change() {
         .stderr(predicate::str::contains("fits the 72-character limit"))
         .stderr(predicate::str::contains("publish with --title"));
     assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+    // The branch is still where it was read out of: this refusal arrives after the
+    // change base has been merged in the run's own worktree, and a verb that
+    // refuses must not be the thing that moved the work.
+    assert!(fixture
+        .world
+        .git(
+            &fixture.checkout,
+            &["branch", "--list", "feature/unsayable"]
+        )
+        .contains("feature/unsayable"));
+    assert_eq!(
+        fixture.world.git(
+            &fixture.checkout,
+            &["log", "-1", "--format=%s", "feature/unsayable"]
+        ),
+        // git keeps no trailing space on a subject, and this one was built from a
+        // repeat: what is compared is the subject as the branch carries it.
+        long.trim(),
+        "the branch's own tip is untouched"
+    );
 
     fixture
         .world

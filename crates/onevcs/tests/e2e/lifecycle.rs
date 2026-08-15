@@ -1001,25 +1001,56 @@ fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
         ])
         .assert()
         .success();
-    world.git(&checkout, &["checkout", "-q", "-b", "claude/one", "main"]);
-    world.commit_file(&checkout, "one.txt", "one\n", "feat: something");
-    world.git(&checkout, &["checkout", "-q", "main"]);
+    for (branch, file) in [("claude/one", "one.txt"), ("claude/two", "two.txt")] {
+        world.git(&checkout, &["checkout", "-q", "-b", branch, "main"]);
+        world.commit_file(&checkout, file, "content\n", &format!("feat: {branch}"));
+        world.git(&checkout, &["checkout", "-q", "main"]);
+    }
 
-    world
+    let assert = world
         .onevcs()
-        .args(["integrate", "claude/one"])
+        .args(["integrate", "claude/one", "claude/two"])
         .current_dir(&checkout)
         .assert()
         .code(2)
         .stderr(predicate::str::contains("direct integration is refused"))
-        .stderr(predicate::str::contains("repo_type: team"))
-        // The refusal routes rather than only diagnosing: every hosted origin
-        // derives as team, so a refusal naming no command would leave `git push`
-        // and `gh pr create` as the exit for every finished branch here.
-        .stderr(predicate::str::contains(format!(
-            "`onevcs publish-branch claude/one --repo {}`",
-            checkout.display()
-        )));
+        .stderr(predicate::str::contains("repo_type: team"));
+    // The refusal routes rather than only diagnosing: every hosted origin derives
+    // as team, so a refusal naming no command would leave `git push` and `gh pr
+    // create` as the exit for every finished branch here. A train is offered
+    // several, and each one gets its own invocation — a single shape naming one of
+    // them would send the others nowhere.
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    for branch in ["claude/one", "claude/two"] {
+        assert!(
+            refusal.contains(&format!(
+                "`onevcs publish-branch {branch} --repo {}`",
+                checkout.display()
+            )),
+            "the refusal routes {branch} nowhere:\n{refusal}"
+        );
+    }
+
+    // …and each is a command that runs: the first is taken as printed.
+    let routed = refusal
+        .split('`')
+        .find(|span| span.starts_with("onevcs publish-branch claude/one"))
+        .expect("the refusal names a command");
+    let argv: Vec<&str> = routed.split_whitespace().skip(1).collect();
+    world.install_fake_host(&origin);
+    configure_rules(
+        &world,
+        format!(
+            "version: 1\nrules: []\ndefault: {}\n",
+            local_direct("[\"true\"]")
+        ),
+    );
+    world
+        .onevcs()
+        .args(&argv)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
 }
 
 #[test]
@@ -1483,7 +1514,7 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
     );
     fixture.world.git(&other, &["push", "-q", "origin", "main"]);
 
-    fixture
+    let assert = fixture
         .world
         .onevcs()
         .args(["publish", &token])
@@ -1509,6 +1540,59 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
             &["branch", "--list", "feature/conflicting"]
         )
         .contains("feature/conflicting"));
+
+    // …and the exit it names is one that ends the story: resolve the conflict once
+    // where the branch was handed back, paste the command, and the session's work
+    // lands — no `git push` anywhere in it.
+    let printed = String::from_utf8(assert.get_output().stderr.clone())
+        .expect("stderr is UTF-8")
+        .split('`')
+        .find(|span| span.starts_with("onevcs publish-branch"))
+        .expect("the refusal names a command")
+        .to_owned();
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/conflicting"],
+    );
+    assert!(
+        !fixture
+            .world
+            .git_raw(&fixture.checkout, &["merge", "--no-edit", "main"])
+            .status
+            .success(),
+        "the merge is the conflict itself"
+    );
+    std::fs::write(fixture.checkout.join("shared.txt"), "resolved by hand\n")
+        .expect("the resolution");
+    fixture.world.git(&fixture.checkout, &["add", "-A"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "chore: resolve the conflict with main",
+        ],
+    );
+    // The publication checkout is never worked in, so it goes back to its base.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    fixture
+        .world
+        .shell(&printed)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(fixture.origin_log()[0], "feat: change the shared file");
 }
 
 #[test]

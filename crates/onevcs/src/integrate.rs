@@ -131,7 +131,7 @@ pub fn run(
                 "the base worktree {} is dirty; the train advances that base and will not \
                  build on work nobody recorded. Commit or stash what it holds, then re-run `{}`",
                 root.display(),
-                train_command(candidates),
+                train_command(candidates, push),
             ),
         });
     }
@@ -217,10 +217,15 @@ fn change_request_route(resolution: &Resolution, candidates: &[String]) -> Strin
 }
 
 /// This same train, for a refusal that asks for it to be run again.
-fn train_command(candidates: &[String]) -> String {
-    let argv = ["onevcs", "integrate"]
-        .into_iter()
-        .chain(candidates.iter().map(String::as_str));
+///
+/// `--push` travels with it: a re-run that quietly dropped it would land the
+/// candidates locally and leave the operator believing the remote had them.
+fn train_command(candidates: &[String], push: bool) -> String {
+    let mut argv: Vec<&str> = vec!["onevcs", "integrate"];
+    argv.extend(candidates.iter().map(String::as_str));
+    if push {
+        argv.push("--push");
+    }
     guidance::command(argv)
 }
 
