@@ -2088,6 +2088,69 @@ fn closing_a_session_twice_is_not_an_error() {
 }
 
 #[test]
+fn a_train_asked_to_push_a_checkout_with_no_origin_says_what_to_run_instead() {
+    // The base did advance — the candidates landed on it locally — so the refusal
+    // is about `--push` alone, and it says which of the two things an operator can
+    // do next: run the same train without the flag, or give the checkout an origin.
+    let world = World::new();
+    let checkout = world.path("originless");
+    std::fs::create_dir_all(&checkout).expect("a checkout directory");
+    world.git(&checkout, &["init", "-q", "-b", "main"]);
+    world.commit_file(
+        &checkout,
+        "README.md",
+        "# originless\n",
+        "chore: seed the repository",
+    );
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            // A local identity with no remote at all: `register` reads the origin
+            // from the checkout otherwise, and this one has none.
+            "--origin",
+            &format!("file://{}", checkout.display()),
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        format!(
+            "version: 1\nrules: []\ndefault: {}\n",
+            crate::lifecycle::local_direct("[\"true\"]")
+        ),
+    );
+    world.git(&checkout, &["checkout", "-q", "-b", "claude/one", "main"]);
+    world.commit_file(&checkout, "one.txt", "one\n", "feat: the candidate");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+
+    world
+        .onevcs()
+        .args(["integrate", "claude/one", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("has no origin to push to"))
+        .stderr(predicate::str::contains(
+            "re-run `onevcs integrate` without --push",
+        ));
+
+    // …and that is a route rather than a diagnosis: the candidate did land on the
+    // local base, and the same train without the flag is the run that succeeds.
+    assert!(world
+        .git(&checkout, &["log", "--format=%s", "main"])
+        .contains("feat: the candidate"));
+    world
+        .onevcs()
+        .args(["integrate", "claude/one"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pushed: no"));
+}
+
+#[test]
 fn a_train_whose_push_the_merge_path_rejects_says_so_after_the_base_advanced() {
     let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
     fixture.world.install_pre_push(

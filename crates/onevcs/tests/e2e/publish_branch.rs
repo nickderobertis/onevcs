@@ -773,3 +773,98 @@ fn an_identity_with_no_rules_file_publishes_under_the_built_in_default() {
         .success()
         .stdout(predicate::str::contains("change request open at"));
 }
+
+#[test]
+fn a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved() {
+    // The other deterministic refusal on this path, met by the verb that publishes
+    // finished work: the base and the branch changed the same lines, so every
+    // re-run merges the same two trees and fails the same way. The message says so,
+    // says where the branch is, and names this verb's own invocation as the exit.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/clashing"]);
+    fixture.world.commit_file(
+        &worktree,
+        "shared.txt",
+        "from the session\n",
+        "feat: change the shared file",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: change it differently",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    let again = format!(
+        "onevcs publish-branch feature/clashing --repo {}",
+        fixture.checkout.display()
+    );
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/clashing",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("re-running will conflict again"))
+        .stderr(predicate::str::contains(format!("land it with `{again}`")));
+
+    // Resolve it once where the branch is retained, and the named command lands it.
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "feature/clashing"]);
+    assert!(
+        !fixture
+            .world
+            .git_raw(&fixture.checkout, &["merge", "--no-edit", "main"])
+            .status
+            .success(),
+        "the merge is the conflict itself"
+    );
+    std::fs::write(fixture.checkout.join("shared.txt"), "resolved by hand\n")
+        .expect("the resolution");
+    fixture.world.git(&fixture.checkout, &["add", "-A"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "chore: resolve the conflict with main",
+        ],
+    );
+    // The publication checkout is never worked in, so it goes back to its base.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    let argv: Vec<&str> = again.split_whitespace().skip(1).collect();
+    fixture
+        .world
+        .onevcs()
+        .args(&argv)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(fixture.origin_log()[0], "feat: change the shared file");
+}
