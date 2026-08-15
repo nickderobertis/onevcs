@@ -92,9 +92,51 @@ pub fn invoke(args: &[&str]) -> Result<String> {
     if answer.code == Some(0) {
         return Ok(answer.stdout);
     }
-    Err(Error::Invalid {
+    Err(refused(args, &answer))
+}
+
+/// What a `gh` call that did not succeed is reported as, naming what was run.
+fn refused(args: &[&str], answer: &Answer) -> Error {
+    Error::Invalid {
         reason: format!("gh {} failed: {}", args.join(" "), answer.detail()),
-    })
+    }
+}
+
+/// What a `gh` that guards its output takes to print content carrying terminal
+/// escape sequences anyway.
+const ALLOW_ESCAPES: &str = "--allow-escape-sequences";
+
+/// How a `gh` that has never heard of [`ALLOW_ESCAPES`] says so.
+fn unknown_flag(answer: &Answer) -> bool {
+    answer
+        .stderr
+        .contains(&format!("unknown flag: {ALLOW_ESCAPES}"))
+}
+
+/// Run one `gh` invocation whose standard output is *content* — a job's log —
+/// rather than `gh`'s own words about something.
+///
+/// `gh` will not print content carrying terminal escape sequences unless it is
+/// asked to, and a CI job's log almost always carries colour, so a log fetched
+/// without asking comes back as that refusal instead. This asks, and hands back
+/// what arrived without stripping anything: the caller stores a log as evidence,
+/// and rendering one safely belongs to whatever prints it.
+///
+/// The flag goes on first and the plain call is the fallback because a `gh` that
+/// does not know it rejects it while parsing its arguments, before asking GitHub
+/// anything — so either generation of `gh` costs one request. The other order
+/// would cost a `gh` that guards its output two.
+pub fn invoke_content(args: &[&str]) -> Result<String> {
+    let mut asked = args.to_vec();
+    asked.push(ALLOW_ESCAPES);
+    let answer = attempt(&asked)?;
+    if answer.code == Some(0) {
+        return Ok(answer.stdout);
+    }
+    if !unknown_flag(&answer) {
+        return Err(refused(&asked, &answer));
+    }
+    invoke(args)
 }
 
 /// Parse one `gh --json` response.

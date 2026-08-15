@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10](https://github.com/nickderobertis/onevcs/compare/v0.2.9...v0.2.10) - 2026-08-15
+
+### Fixed
+
+- *(gate)* drain both gate pipes so a loud gate cannot deadlock ([#34](https://github.com/nickderobertis/onevcs/pull/34))
+
+## [0.2.9](https://github.com/nickderobertis/onevcs/compare/v0.2.8...v0.2.9) - 2026-08-15
+
+### Fixed
+
+- *(github)* fetch a coloured check log; never store a failure as one ([#32](https://github.com/nickderobertis/onevcs/pull/32))
+
+## [0.2.8](https://github.com/nickderobertis/onevcs/compare/v0.2.7...v0.2.8) - 2026-08-15
+
+### Fixed
+
+- *(publish)* refuse an empty-diff PR; raise the title limit to 120 ([#30](https://github.com/nickderobertis/onevcs/pull/30))
+
 ## [0.2.7](https://github.com/nickderobertis/onevcs/compare/v0.2.6...v0.2.7) - 2026-08-15
 
 ### Added

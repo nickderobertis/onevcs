@@ -321,6 +321,45 @@ fn a_branch_that_adds_nothing_publishes_nothing() {
 }
 
 #[test]
+fn a_branch_whose_content_already_landed_publishes_nothing_and_runs_no_gate() {
+    // A branch that landed under another change keeps its commits and adds nothing
+    // to the tree, so the history cannot answer this and the tree has to. There is
+    // nothing left to verify either, which a gate that refuses everything is what
+    // proves: reaching it would fail a publication whose work is already on the base.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/landed-elsewhere"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture.world.commit_file(
+        &elsewhere,
+        "one.txt",
+        "one\n",
+        "feat: add the thing (via another change)",
+    );
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "nothing to publish: the base already carries this branch's content",
+        ));
+    assert!(
+        fixture.world.events_of(&token, "gate-started").is_empty(),
+        "there is nothing to verify, so nothing verified it"
+    );
+    assert_eq!(fixture.origin_log().len(), 2);
+}
+
+#[test]
 fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_name() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/unnameable"]);
@@ -338,7 +377,7 @@ fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_na
         .args(["publish", &token])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("fits the 72-character limit"))
+        .stderr(predicate::str::contains("fits the 120-character limit"))
         .stderr(predicate::str::contains("--title"));
 
     // A title that is only spacing is no more of a subject than none at all, and a
@@ -359,6 +398,73 @@ fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_na
         .assert()
         .success();
     assert_eq!(fixture.origin_log()[0], "feat: add the thing");
+}
+
+#[test]
+fn a_subject_is_published_whole_up_to_the_limit_and_refused_one_character_past_it() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let hundred = format!("feat: {}", "a".repeat(100 - "feat: ".len()));
+    assert_eq!(hundred.len(), 100);
+
+    // Well past the width a commit *body* wraps to, which is what a subject used to
+    // be held to. It publishes, and publishes whole: a description cut to fit names
+    // nothing on a base branch that is the durable record.
+    let (explicit, worktree) = fixture.open(&["--branch", "feature/titled"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &explicit, "--title", &hundred])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(fixture.origin_log()[0], hundred);
+
+    // The same limit decides the subject a publication *synthesizes* when no title
+    // is passed, which is the path most publications take — and this one is exactly
+    // the limit, the longest subject that may publish at all.
+    let synthesized = format!("feat: {}", "b".repeat(120 - "feat: ".len()));
+    assert_eq!(synthesized.len(), 120);
+    let (token, worktree) = fixture.open(&["--branch", "feature/untitled-but-long"]);
+    fixture
+        .world
+        .commit_file(&worktree, "two.txt", "two\n", &synthesized);
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    assert_eq!(fixture.origin_log()[0], synthesized);
+
+    // One character past the limit, which is the only interesting distance: the
+    // refusal names the length it got and the length it holds a title to, so an
+    // operator shortens by exactly what is needed. On a session of its own with
+    // work of its own, so the refusal is the length and nothing else about it.
+    let over = format!("feat: {}", "a".repeat(121 - "feat: ".len()));
+    assert_eq!(over.len(), 121);
+    let (overlong, worktree) = fixture.open(&["--branch", "feature/overlong-title"]);
+    fixture
+        .world
+        .commit_file(&worktree, "three.txt", "three\n", "feat: add a third thing");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &overlong, "--title", &over])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "the explicit title is 121 characters, over the 120-character limit",
+        ));
+    assert_eq!(fixture.origin_log()[0], synthesized);
+
+    // The constant the binary just enforced is the one a consumer reads, at the path
+    // it reads it: `onepipeline` validates a plan's titles against
+    // `onevcs::provenance::SUBJECT_LIMIT` at load, so the path has to resolve from
+    // outside this crate rather than only within it.
+    assert_eq!(onevcs::provenance::SUBJECT_LIMIT, 120);
 }
 
 #[test]
@@ -1469,6 +1575,65 @@ fn a_gate_that_fills_its_output_pipe_still_reaches_its_own_verdict() {
         evidence.len() > A_WEDGING_VOLUME,
         "the output must reach the volume that wedged the gate: {} bytes",
         evidence.len()
+    );
+}
+
+#[test]
+fn a_gate_whose_output_is_not_text_still_leaves_the_rest_of_it() {
+    // `\377` is a byte no UTF-8 sequence begins with — the shape a gate quoting a
+    // filename this host's locale cannot spell writes. Decoding the stream as text
+    // outright answers that byte by discarding every other byte with it, so the
+    // verdict would arrive with no evidence to explain it. One on each stream,
+    // because each is decoded on its own and either could drop the other's evidence.
+    let gate = "[\"sh\", \"-c\", \"printf 'the gate began \\\\377 its run\\\\n'; \
+                printf 'the gate read \\\\377 and could not name it\\\\n' >&2; \
+                echo the gate finished its run; exit 1\"]";
+    let fixture = Fixture::local(&local_direct(gate));
+    let (token, worktree) = fixture.open(&["--branch", "feature/undecodable"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .timeout(CAPTURE_BOUND)
+        .assert()
+        .code(1);
+
+    let verdicts = fixture.world.events_of(&token, "gate-verdict");
+    assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
+    let preserved = PathBuf::from(
+        verdicts[0]["payload"]["preserved_log"]
+            .as_str()
+            .expect("a preserved log path"),
+    );
+    // Readable as text at all is half the claim: every byte was accounted for, so
+    // what the gate wrote around the one it could not spell survived.
+    let evidence = std::fs::read_to_string(&preserved).expect("the preserved log is text");
+    let began = evidence
+        .find("the gate began ")
+        .expect("the output around its undecodable byte");
+    assert!(
+        evidence.contains(" its run") && evidence.contains("the gate finished its run"),
+        "the gate's output is in the evidence: {evidence:?}"
+    );
+    let read = evidence
+        .find("the gate read ")
+        .expect("the diagnostics around their undecodable byte");
+    assert!(
+        evidence.contains(" and could not name it"),
+        "the gate's diagnostics are in the evidence: {evidence:?}"
+    );
+    assert!(
+        began < read,
+        "standard output still comes before standard error: {evidence:?}"
+    );
+    assert_eq!(
+        evidence.matches('\u{fffd}').count(),
+        2,
+        "each stream's byte is marked rather than dropped silently: {evidence:?}"
     );
 }
 

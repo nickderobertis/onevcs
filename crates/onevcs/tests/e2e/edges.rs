@@ -975,7 +975,7 @@ fn a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it() {
 }
 
 #[test]
-fn a_host_that_cannot_produce_a_checks_log_says_so_in_the_artifact() {
+fn a_host_that_cannot_produce_a_checks_log_records_none_rather_than_its_refusal() {
     let world = World::new();
     let origin = world.bare_origin("logless");
     let checkout = world.clone_of(&origin, "logless");
@@ -998,7 +998,7 @@ fn a_host_that_cannot_produce_a_checks_log_says_so_in_the_artifact() {
     world.host_checks(&[crate::world::Check {
         name: "unreachable",
         status: "completed",
-        conclusion: Some("failure"),
+        conclusion: Some("success"),
         required: true,
     }]);
     // The host answers about the check and then refuses to hand over its log.
@@ -1013,19 +1013,49 @@ fn a_host_that_cannot_produce_a_checks_log_says_so_in_the_artifact() {
     let worktree = worktree_of(&assert.get_output().stdout);
     world.commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
 
-    world.onevcs().args(["publish", &token]).assert().code(1);
-    let checks = world.events_of(&token, "change-check");
-    let id = checks[0]["artifacts"][0]["id"]
-        .as_str()
-        .expect("a settled check still carries an artifact");
-    // The artifact exists and says why it is empty, rather than the event carrying
-    // a reference to nothing.
+    // The check's conclusion decided the merge and the host gave it, so the missing
+    // log leaves the publication standing and is reported where an operator sees it.
     world
         .onevcs()
-        .args(["artifact", "cat", id])
+        .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("could not produce a log"));
+        .stderr(predicate::str::contains(
+            "check \"unreachable\" on https://github.com/acme-corp/logless/pull/1 is recorded \
+             without its log",
+        ))
+        .stderr(predicate::str::contains(
+            "this repository keeps its check logs to itself",
+        ));
+
+    // And nothing was stored: an artifact holding "could not produce a log" reads
+    // as the check's own output to everything downstream of it.
+    let checks = world.events_of(&token, "change-check");
+    assert!(
+        checks[0]["artifacts"]
+            .as_array()
+            .expect("an array")
+            .is_empty(),
+        "a log that was not fetched is no artifact: {}",
+        checks[0]
+    );
+    let artifacts = world.home().join("artifacts");
+    let stored: Vec<String> = std::fs::read_dir(&artifacts)
+        .map(|entries| {
+            entries
+                .map(|entry| {
+                    std::fs::read_to_string(entry.expect("an entry").path())
+                        .expect("a stored artifact")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        stored
+            .iter()
+            .all(|artifact| !artifact.contains("could not produce a log")),
+        "no artifact may hold the refusal it was stored instead of: {stored:?}"
+    );
 }
 
 #[test]

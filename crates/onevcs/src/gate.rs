@@ -13,9 +13,8 @@
 //! key the publishing push never looks up, and re-judges findings the worker never
 //! saw and can no longer clear.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 use crate::error::{self, Result};
 use crate::rules::Gate;
@@ -97,14 +96,28 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
             command,
         };
     };
-    // Both pipes at once, as `git::run_with_env` drains git's: a child cannot exit
-    // while a pipe nobody is reading is full, so reading standard output to EOF first
-    // never reached the standard error that was blocking the writer. The readers go on
-    // before the gate exists, which leaves a host that cannot start one with no gate to
-    // stop and nothing undrained — one refusal covers both.
-    let started = start(program, arguments, worktree, env);
-    let (mut child, draining_out, draining_err) = match started {
-        Ok(started) => started,
+    // Both pipes drained at once, as `gh::attempt` runs the host's command: a child
+    // cannot exit while a pipe nobody is reading is full, so reading standard output
+    // to EOF and only then standard error never reached the stream that was blocking
+    // the writer, and a gate loud enough to fill one buffer wedged forever. A wedged
+    // gate reads as a rejection of work it never actually judged.
+    //
+    // Deliberately not `git::run_with_env`'s pair of reader threads: those carry a
+    // bound and a process-group teardown, which git needs because a repository's
+    // `pre-push` hook is arbitrary and may hang. A `command:` gate *is* the
+    // repository's own complete verification and its duration is the work, so it is
+    // unbounded — and with nothing to time out, there is no second thing to drain
+    // around and no reason to read the pipes by hand.
+    let finished = match Command::new(program)
+        .args(arguments)
+        .current_dir(worktree)
+        .envs(env.iter().cloned())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(finished) => finished,
         Err(error) => {
             return Verdict {
                 ruling: Ruling::Rejected,
@@ -113,68 +126,18 @@ pub fn run(worktree: &Path, argv: &[String], env: &[(String, String)]) -> Verdic
             }
         }
     };
-    let stdout = captured(draining_out);
-    let stderr = captured(draining_err);
-    // Unbounded, unlike git's: a `command:` gate is the repository's own complete
-    // verification, and its duration is the work.
-    let status = child.wait();
+    // Decoded lossily rather than read as text, as `gh` answers are: a gate's bytes
+    // are evidence this crate transports rather than reads, and refusing a whole
+    // stream over one byte no UTF-8 sequence begins with would leave the verdict with
+    // nothing to explain it. Every byte is accounted for, undecodable ones as
+    // `U+FFFD`, and standard output still comes before standard error.
+    let stdout = String::from_utf8_lossy(&finished.stdout);
+    let stderr = String::from_utf8_lossy(&finished.stderr);
     Verdict {
-        ruling: Ruling::from_exit(status.map(|status| status.success()).unwrap_or(false)),
+        ruling: Ruling::from_exit(finished.status.success()),
         output: format!("{stdout}{stderr}"),
         command,
     }
-}
-
-type Draining = std::thread::JoinHandle<std::io::Result<String>>;
-
-/// Start the gate with a reader already draining each of its pipes.
-///
-/// The `Command` is deliberately a temporary: it holds this process's ends of the two
-/// pipes, and they must close for the readers to reach EOF once the gate is done with
-/// them. Keeping it alive past this call is what would leave both readers waiting on
-/// pipes only this process still holds open.
-fn start(
-    program: &str,
-    arguments: &[String],
-    worktree: &Path,
-    env: &[(String, String)],
-) -> std::io::Result<(Child, Draining, Draining)> {
-    let (out_read, out_write) = std::io::pipe()?;
-    let (err_read, err_write) = std::io::pipe()?;
-    let draining_out = drain(out_read)?;
-    let draining_err = drain(err_read)?;
-    let child = Command::new(program)
-        .args(arguments)
-        .current_dir(worktree)
-        .envs(env.iter().cloned())
-        .stdin(Stdio::null())
-        .stdout(out_write)
-        .stderr(err_write)
-        .spawn()?;
-    Ok((child, draining_out, draining_err))
-}
-
-/// Put a reader of its own on one pipe, refusing rather than panicking when the host
-/// will not give this process a thread.
-fn drain(mut pipe: impl Read + Send + 'static) -> std::io::Result<Draining> {
-    std::thread::Builder::new().spawn(move || {
-        let mut buffer = String::new();
-        pipe.read_to_string(&mut buffer).map(|_| buffer)
-    })
-}
-
-/// What one reader carried: nothing, when the stream it drained was not text.
-///
-/// `read_to_string` restores the buffer it was handed rather than leaving a fragment
-/// of one, and a gate's output is evidence this crate transports rather than reads —
-/// so an unreadable stream contributes nothing here, as it always has, and the ruling
-/// comes from the child's own status either way.
-fn captured(draining: Draining) -> String {
-    draining
-        .join()
-        .ok()
-        .and_then(|read| read.ok())
-        .unwrap_or_default()
 }
 
 /// Whether a gate is one this crate runs itself, and with what argv.

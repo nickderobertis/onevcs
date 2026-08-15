@@ -218,6 +218,25 @@ same reason.
 No public library item is added: `publish::run` was already branch-keyed, and both
 verbs are private modules behind it. What the CLI gains is the verb and two options.
 
+## One public item the contract does not name, and why it is not an inference
+
+`provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.
+The contract names neither the constant nor the module, so this is the one place in
+the crate where a public item exists that it does not list, and it is recorded here
+rather than passed over.
+
+It is not a shape somebody inferred: the **operator** raised the limit and directed
+that `onepipeline` read it at `onevcs::provenance::SUBJECT_LIMIT` to validate a
+plan's titles at load, before a publication would meet the same rule. A consumer
+that restated the number instead would be a second copy of the rule that drifts the
+first time it moves, which is the failure the rest of this file exists to prevent.
+
+The exposure is the narrowest that gives the path: `provenance` is `pub mod`, and
+**every other item in it is `pub(crate)`** — the trailer vocabulary, `Trailers`, and
+the readers and writers around it are all still private. Widening any of them, or
+naming the constant in `docs/contract.md`, is a contract amendment and not a
+decision to take in passing.
+
 ## Open questions for the planner
 
 These are reported rather than resolved. One that has since been resolved is kept

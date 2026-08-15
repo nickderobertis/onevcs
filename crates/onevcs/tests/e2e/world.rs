@@ -335,6 +335,29 @@ impl World {
         std::fs::write(self.path("gh-state/no-logs"), "").expect("a host that keeps its logs");
     }
 
+    /// What the job behind one check printed, which is what its log is.
+    pub fn host_log(&self, check: &str, log: &str) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path(format!("gh-state/log-{check}.txt")), log).expect("a check log");
+    }
+
+    /// Make the substituted host guard its output the way a current `gh` does: a
+    /// log carrying terminal escape sequences is refused unless the call asked for
+    /// them.
+    pub fn guard_terminal_escapes(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/guards-escapes"), "")
+            .expect("a host that guards its output");
+    }
+
+    /// Make the substituted host a `gh` from before that flag existed, which
+    /// rejects it outright — the generation a workstation still has.
+    pub fn reject_the_escape_flag(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/no-escape-flag"), "")
+            .expect("a host that has not heard of the flag");
+    }
+
     /// Every call the substituted host has been asked to make, in order.
     ///
     /// What a journey about a credential's *reach* asserts over. Whether a build
@@ -440,6 +463,19 @@ mkdir -p "$STATE"
 # argument's own newlines are folded into spaces so one call stays one line.
 { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
 
+# Whether this call asked to be shown content carrying terminal escape sequences,
+# and whether this world's `gh` predates the flag. One that does rejects it here,
+# while parsing its arguments, rather than after asking GitHub anything.
+allow_escapes=0
+for argument in "$@"; do
+  [ "$argument" = "--allow-escape-sequences" ] || continue
+  allow_escapes=1
+done
+if [ "$allow_escapes" = "1" ] && [ -f "$STATE/no-escape-flag" ]; then
+  printf 'unknown flag: --allow-escape-sequences\n' >&2
+  exit 1
+fi
+
 ORIGIN="$(cat "$STATE/origin")"
 CHECKS="$STATE/checks.rows"
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
@@ -465,8 +501,12 @@ readable_rollup() {
 
 # One job's log, addressed by the job's **id** — the id a row has in this world,
 # which is what both `gh run view --job` and the Actions API answer to.
+#
+# The only answer here that is content rather than this host's own words, so the
+# only one the escape guard can fire on. It fires on what the content carries, the
+# way `gh` does, rather than on having been asked.
 job_log() {
-  local want="$1" name
+  local want="$1" name source
   if [ -f "$STATE/no-logs" ]; then
     printf 'this repository keeps its check logs to itself\n' >&2
     exit 1
@@ -476,11 +516,17 @@ job_log() {
     printf 'could not find any jobs with ID %s\n' "$want" >&2
     exit 1
   fi
-  if [ -f "$STATE/log-$name.txt" ]; then
-    cat "$STATE/log-$name.txt"
-  else
-    printf 'the host log for check %s\n' "$name"
+  source="$STATE/log-$name.txt"
+  if [ ! -f "$source" ]; then
+    source="$STATE/rendered-log"
+    printf 'the host log for check %s\n' "$name" >"$source"
   fi
+  if [ -f "$STATE/guards-escapes" ] && [ "$allow_escapes" = "0" ] \
+    && LC_ALL=C grep -q "$(printf '\033')" "$source"; then
+    printf 'the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway\n' >&2
+    exit 1
+  fi
+  cat "$source"
 }
 
 command="${1:-}"; shift || true

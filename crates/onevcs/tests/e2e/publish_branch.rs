@@ -40,6 +40,25 @@ fn printed_command(refusal: &str) -> String {
         .to_owned()
 }
 
+/// A commit subject too long to be published as one, and the limit that refused it.
+///
+/// Built from `SUBJECT_LIMIT` rather than from a copy of its value: the limit has
+/// been raised once already, and a journey carrying the old number does not fail
+/// when that happens — it publishes the subject it was written to watch refused, and
+/// says nothing.
+fn a_subject_that_cannot_fit() -> (String, usize) {
+    let limit = onevcs::provenance::SUBJECT_LIMIT;
+    let long = format!(
+        "feat: {}",
+        "describe the whole change at length ".repeat(limit / 24)
+    );
+    assert!(
+        long.len() > limit,
+        "the subject must not fit the {limit}-character limit: {long:?}"
+    );
+    (long, limit)
+}
+
 /// A complete, unpublished branch of the local fixture: worked in a session, then
 /// closed without publishing, which is what hands the branch back to the checkout.
 fn finished_branch(fixture: &Fixture, branch: &str, subject: &str) {
@@ -382,8 +401,7 @@ fn a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long() {
     // past it was rewriting a commit on preserved work.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/verbose"]);
-    let long = format!("feat: {}", "describe the whole change at length ".repeat(3));
-    assert!(long.len() > 72, "the subject must not fit: {long:?}");
+    let (long, limit) = a_subject_that_cannot_fit();
     fixture
         .world
         .commit_file(&worktree, "one.txt", "one\n", &long);
@@ -409,7 +427,9 @@ fn a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long() {
         ])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("fits the 72-character limit"))
+        .stderr(predicate::str::contains(format!(
+            "fits the {limit}-character limit"
+        )))
         .stderr(predicate::str::contains("--title"));
 
     // A title that could not be a subject is refused where the command line hands it
@@ -1126,8 +1146,7 @@ fn a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change() {
     // names nothing, and a base branch is the durable record. The refusal names the
     // flag that answers it, and the flag then publishes the branch.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
-    let long = format!("feat: {}", "describe the whole change at length ".repeat(3));
-    assert!(long.len() > 72, "the subject must not fit: {long:?}");
+    let (long, limit) = a_subject_that_cannot_fit();
     finished_branch(&fixture, "feature/unsayable", &long);
 
     fixture
@@ -1141,7 +1160,9 @@ fn a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change() {
         ])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("fits the 72-character limit"))
+        .stderr(predicate::str::contains(format!(
+            "fits the {limit}-character limit"
+        )))
         .stderr(predicate::str::contains("publish with --title"));
     assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
     // The branch is still where it was read out of: this refusal arrives after the
