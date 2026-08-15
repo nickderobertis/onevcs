@@ -76,6 +76,15 @@ impl Hosted {
         token_of(&stdout)
     }
 
+    /// Land content on the base from outside every session this fixture opened, as
+    /// somebody else's change request squash-merging does.
+    fn land_on_base(&self, file: &str, contents: &str, subject: &str) {
+        let elsewhere = self.world.clone_of(&self.origin, "elsewhere");
+        self.world.commit_file(&elsewhere, file, contents, subject);
+        self.world
+            .git(&elsewhere, &["push", "-q", "origin", "main"]);
+    }
+
     fn origin_log(&self) -> Vec<String> {
         self.world
             .git(&self.origin, &["log", "--format=%s", "main"])
@@ -734,6 +743,53 @@ fn a_change_that_is_already_open_is_adopted_rather_than_duplicated() {
     assert!(
         !hosted.world.path("gh-state/pr-2.env").exists(),
         "a second change request must not be opened for one head and base"
+    );
+}
+
+#[test]
+fn a_branch_whose_content_already_landed_opens_no_change_request() {
+    // The measured failure this guards, three times over two repositories: the
+    // session's work reached the base under *another* change request while this
+    // session still held the branch. Published anyway, the branch pushed and a
+    // change request opened whose diff was empty — so every path-filtered required
+    // check skipped rather than ran, the host held the change BLOCKED with nothing
+    // left that could unblock it, and the publication reported failure for work
+    // that had already shipped.
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted.change("feature/already-landed", "feat: add the thing");
+    hosted.land_on_base(
+        "one.txt",
+        "one\n",
+        "feat: add the thing (via another change)",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "nothing to publish: the base already carries this branch's content",
+        ));
+
+    assert!(
+        !hosted.world.path("gh-state/pr-1.env").exists(),
+        "no change request may be opened for a head with nothing to merge"
+    );
+    assert!(
+        !hosted
+            .world
+            .host_calls()
+            .iter()
+            .any(|call| call.starts_with("pr create")),
+        "the host was never asked to open one: {:?}",
+        hosted.world.host_calls()
+    );
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the base is the seed plus the change that really landed, and nothing else"
     );
 }
 

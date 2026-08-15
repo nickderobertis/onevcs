@@ -39,3 +39,15 @@ The version lives in `crates/onevcs/Cargo.toml` and nowhere else. The wheel take
 it through maturin's `dynamic = ["version"]` and the npm packages through
 `scripts/npm-build.mjs`, so no human and no second manifest can disagree with the
 tag that was cut.
+
+## Nothing may open a change request for a branch with nothing to merge
+
+Three measured incidents across two repositories, all one shape: the session's work
+reached the base under somebody *else's* change request, and publishing the session
+afterwards opened a change request whose diff was empty. Every path-filtered
+required check skipped rather than ran, the host held the change BLOCKED with
+nothing left that could unblock it, and the node reported failure for work that had
+already shipped. So a publication asks the *tree*, not the history — a branch that
+landed keeps every one of its commits — and settles as `NothingToPublish`. The
+question is asked on the publication path itself rather than at a call site, so
+every caller gets it.
