@@ -1216,6 +1216,57 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
 }
 
 #[test]
+fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes() {
+    // One vocabulary stated three times — the type's fields, the fields the parser
+    // accepts, and the list a refusal offers whoever mistyped one — and nothing but
+    // this holds them together. A field the type gains and the parser does not is a
+    // filter silently narrower than its author wrote; one the refusal omits sends an
+    // operator looking for a field that is right there.
+    //
+    // The literal is exhaustive on purpose: a field added to `EventMatcher` fails to
+    // compile here rather than passing a gate that never looked at it.
+    let every_field = EventMatcher {
+        source: Some(Source::Vcs),
+        kind: Some("push".to_owned()),
+        run_id: Some("R".to_owned()),
+        node: Some("service".to_owned()),
+        step: Some("implement".to_owned()),
+        member: Some("worker".to_owned()),
+        persona: Some("engineer".to_owned()),
+    };
+    let Value::Object(written) = serde_json::to_value(&every_field).expect("a matcher serializes")
+    else {
+        panic!("a matcher is written as a mapping of its fields");
+    };
+    let has: BTreeSet<&str> = written.keys().map(String::as_str).collect();
+
+    // The list the refusal names, read out of the refusal rather than repeated here.
+    let refused = EventFilter::parse("include: [{kinds: push}]")
+        .expect_err("a matcher field the grammar does not have is refused")
+        .to_string();
+    let listed = refused
+        .rsplit_once('(')
+        .and_then(|(_, tail)| tail.split_once(')'))
+        .unwrap_or_else(|| panic!("the refusal names no field list: {refused}"))
+        .0
+        .to_owned();
+    let names: BTreeSet<&str> = listed.split(", ").collect();
+    assert_eq!(
+        names, has,
+        "the fields a refusal names and the fields a matcher has disagree: {refused}"
+    );
+
+    // And every one of them is a field the parser takes, so what the refusal offers
+    // is the accepted vocabulary rather than a list standing beside it.
+    for field in has {
+        let value = if field == "source" { "vcs" } else { "anything" };
+        let spec = format!("include: [{{{field}: {value}}}]");
+        EventFilter::parse(&spec)
+            .unwrap_or_else(|refusal| panic!("the parser takes no {field}: {refusal}"));
+    }
+}
+
+#[test]
 fn the_wire_spelling_of_every_kind_is_the_one_a_filter_matches() {
     // A filter's `kind` is matched against a spelling the type answers directly,
     // never against a serialization — so nothing but this holds it to the one the

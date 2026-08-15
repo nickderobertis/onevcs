@@ -184,6 +184,11 @@ impl EventKind {
 }
 
 /// The fields one matcher may name, in the order a refusal lists them.
+///
+/// `every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes`
+/// in `tests/contract.rs` holds this list, [`EventMatcher`]'s own fields, and the
+/// fields the parser below accepts to being the one vocabulary — so a field added
+/// to the type cannot reach an operator unnamed, or be named and not taken.
 const MATCHER_FIELDS: &str = "source, kind, run_id, node, step, member, persona";
 
 /// Which events of a stream a consumer wants, in the grammar the three producing
@@ -373,12 +378,14 @@ fn matcher(
     let mut matcher = EventMatcher::default();
     for (field, value) in fields {
         match field.as_str() {
+            // The families are named by serde's own refusal rather than restated
+            // here: [`Source`]'s derive already spells every one it has, and a second
+            // copy is a list that a family added to the enum leaves behind.
             "source" => {
-                matcher.source = Some(serde_json::from_value(value.clone()).map_err(|_| {
-                    format!(
-                        "{named} names source {value}, which is not vcs, agentgraph, or pipeline"
-                    )
-                })?);
+                matcher.source = Some(
+                    serde_json::from_value(value.clone())
+                        .map_err(|failure| format!("{named} names no source family: {failure}"))?,
+                );
             }
             "kind" => matcher.kind = Some(text(value, &named, field)?),
             "run_id" => matcher.run_id = Some(text(value, &named, field)?),

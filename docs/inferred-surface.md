@@ -164,7 +164,7 @@ What is inferred here is only how this crate spells it:
 
 | Item | Shape | Why |
 | --- | --- | --- |
-| `EventMatcher` | one public type, all seven fields `Option` | The grammar names matchers and their fields but no type. A named type rather than a map is what lets a consumer build a filter as a value — which is the whole point of the typed seam — and `Option` per field is "unset asks nothing", which is what the grammar says each field means. |
+| `EventMatcher` | one public type, every field `Option` | The grammar names matchers and their fields but no type. A named type rather than a map is what lets a consumer build a filter as a value — which is the whole point of the typed seam — and `Option` per field is "unset asks nothing", which is what the grammar says each field means. |
 | `EventFilter::parse` | `&str` in, `Result<Self>` out | A consumer with a spec as text needs one entry point that refuses it the way the CLI does. It reads YAML, which is the language the grammar is written in and a superset of the JSON the CLI takes inline, so both forms are one parser rather than two that could disagree. |
 | `Deserialize for EventFilter` | routed through the same validation | Hand-written rather than derived, so a filter embedded in a consumer's own configuration is refused by the same rules, with the same message naming the same matcher. A derived one would name the field and not which matcher carried it. |
 | `--filter SPEC` | inline when it opens with `{`, a path otherwise | Decided by the text rather than by whether a file happens to exist, so what an invocation means does not change with the directory it runs in. The grammar's document is a mapping, so the two forms cannot collide. |

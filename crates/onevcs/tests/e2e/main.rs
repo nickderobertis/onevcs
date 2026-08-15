@@ -17,11 +17,8 @@ mod cli;
 mod comparison;
 #[cfg(unix)]
 mod edges;
-// Unix only. `filter` reads real streams — written by real sessions, real gates, and
-// real pushes into real bare origins — back through the real binary. One of its
-// journeys needs a change request to exist, which is the one boundary an offline gate
-// cannot drive, so that journey publishes through the same substituted `gh` as
-// `host.rs` and `lifecycle.rs`. Its own header carries the reason in full.
+// Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
+// own header carries the reason in full.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod filter;
