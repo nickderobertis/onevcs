@@ -9,11 +9,12 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::cli::{
-    ArtifactCommand, Command, IntegrateArgs, PublishArgs, RecoverArgs, RecoverableArgs,
+    ArtifactCommand, Command, EventsArgs, IntegrateArgs, PublishArgs, RecoverArgs, RecoverableArgs,
     RegisterArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
     SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
+use crate::event::EventFilter;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::{Registry, RepoType, Workflow};
@@ -54,7 +55,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::Recoverable(args) => recoverable(args, providers),
         Command::Integrate(args) => integrate_branches(args),
         Command::Sync(args) => sync(args),
-        Command::Events(args) => events(&args.token, args.follow, providers),
+        Command::Events(args) => events(args, providers),
         Command::Artifact { command } => match command {
             ArtifactCommand::Cat(args) => artifact(&args.id),
         },
@@ -369,19 +370,31 @@ fn sync(args: &SyncArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
+fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
+    let token = args.token.as_str();
+    // Read before the stream is opened, so a spec that is not a filter is refused
+    // as the argument it is rather than after a first batch of events has already
+    // been written to stdout under it.
+    let filter = args.filter.as_deref().map(load_filter).transpose()?;
     // The bytes rather than the values [`crate::EventStream`] hands back: a stream
     // is written by whichever process produced it, and this command is a reader of
     // one file rather than a validator of it — a line it could not parse is still a
-    // line its reader wants to see.
+    // line its reader wants to see. Under `--filter` it is one line further: an
+    // event has to be *read* to be judged, so a line this build cannot parse is
+    // refused there, naming it, rather than passed through (which would report an
+    // event the filter never admitted) or dropped (which would hide one).
     let mut reader = stream::Reader::open(token)?;
     let session = SessionToken(token.to_owned());
+    // One-based and counted across every batch, so a refusal names the line of the
+    // file rather than of the read it happened to arrive in — the same numbering
+    // `EventStream::read` refuses by.
+    let mut line_number = 0usize;
     loop {
         // Ask first, then drain. Closing providers append `session-closed` before
         // publishing the closed lifecycle, so once closure is visible this read is
         // guaranteed to include the terminator. Reading first leaves a race in
         // which close happens between the drain and the state query.
-        let closed = follow
+        let closed = args.follow
             && providers
                 .vcs
                 .session(&session)
@@ -389,12 +402,29 @@ fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
                 .unwrap_or(true);
         let mut out = std::io::stdout().lock();
         for line in reader.lines()? {
+            line_number += 1;
+            if let Some(filter) = &filter {
+                // Read as a value, and therefore checked as one — by the same seam
+                // `EventStream` reads through, so the two surfaces refuse the same
+                // line for the same reason. Unfiltered, nothing here is read and the
+                // line is passed on as the file's own bytes; with a filter, a line
+                // that is not an envelope cannot be judged, and one attributed to
+                // another session would be judged against a consumer's statement
+                // about *this* one.
+                if !filter.matches(&stream::attributed(&line, token, line_number)?) {
+                    continue;
+                }
+            }
+            // The line as it was written, never a re-serialization of what was just
+            // parsed: a filtered stream is a subset of the unfiltered one byte for
+            // byte, including whatever a later build's envelope carries that this
+            // one does not name.
             writeln!(out, "{line}").map_err(|e| {
                 error::invalid(format!("cannot write the event stream for {token:?}: {e}"))
             })?;
         }
         drop(out);
-        if !follow || closed {
+        if !args.follow || closed {
             return Ok(0);
         }
         // `--follow` on a session that has already closed would otherwise never
@@ -403,6 +433,21 @@ fn events(token: &str, follow: bool, providers: &Providers<'_>) -> Result<u8> {
         // followed to its end rather than to the first question it cannot answer.
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+/// The filter `--filter SPEC` names.
+///
+/// A spec that opens with `{` is the filter itself, inline; anything else is the
+/// path of a file holding one. Decided by the text rather than by whether a file
+/// happens to be there, so what an invocation means does not change with the
+/// working directory it is run from.
+fn load_filter(spec: &str) -> Result<EventFilter> {
+    if spec.trim_start().starts_with('{') {
+        return EventFilter::parse(spec);
+    }
+    let path = Path::new(spec);
+    let raw = std::fs::read_to_string(path).map_err(error::at("read the event filter at", path))?;
+    EventFilter::parse(&raw)
 }
 
 fn artifact(id: &str) -> Result<u8> {

@@ -82,6 +82,20 @@ the session that wrote it — so a caller following several publications at once
 tell them apart. The command line is a rendering of these rather than a second
 path through them.
 
+A consumer that wants some of what a session writes reads it through the filter
+grammar the three producing libraries share — `EventStream::open_filtered(&token,
+filter)`, or `onevcs events TOKEN --filter SPEC` with the spec inline as JSON or in
+a file. An envelope passes when it matches any `include` matcher (or `include` is
+absent) and no `exclude` matcher, matching `source` by family, `kind` by glob
+(`change-*`), and the reserved label keys exactly:
+
+```yaml
+include:
+  - {source: vcs, kind: "gate-*"}
+exclude:
+  - {kind: lock-wait}
+```
+
 Before a caller has a token, `session_holders(repo)` answers who is in a
 repository: one `SessionHolder` per recorded session, carrying the token the calls
 above take, the branch and worktree it holds, and whether its owner is still

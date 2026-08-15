@@ -192,6 +192,10 @@ pub struct EventsArgs {
     /// Keep reading as the session writes.
     #[arg(long)]
     pub follow: bool,
+    /// Report only the events a filter spec admits: the spec inline as JSON when
+    /// it opens with `{`, otherwise the path of a file holding one.
+    #[arg(long, value_name = "SPEC")]
+    pub filter: Option<String>,
 }
 
 /// The `onevcs artifact` subcommands.

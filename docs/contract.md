@@ -227,6 +227,138 @@ That is the command's own limit, unchanged; routing enumeration through the seam
 would add a required method to a trait consumers implement, and is the next
 question rather than this one.
 
+<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the duplication is the
+approved contract's own mechanism rather than a missing gate, and this amendment cannot
+close it from inside one of the three repositories. The envelope section below the rule
+already fixes it: those types are duplicated per crate with deliberately no shared util
+crate, and "a cross-repo contract test asserts this crate's envelope serialization
+against the spec fixtures committed in docs/contract.md". The filter follows that
+pattern, as the paragraph below says. So the authoritative artifact for *this* copy is
+the fixture below, which `a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set`
+and `the_amendment_declares_the_filter_a_stream_is_read_through` in tests/contract.rs
+hold the code to — extracted, never restated — and the cross-repository half is that same
+committed fixture read by the contract owner's test. A shared artifact here would be
+exactly the shared source the contract refuses. -->
+
+**Reading a session's events takes a filter, and it is the grammar the three
+producing libraries share.** The contract gives both surfaces one answer: every
+event the session wrote. Consumers read the same stream under different attention
+budgets — a monitor wants the activity, a planner wants the decisions and the
+settlements — and the composition layer (`onepipeline`) that narrowed it for them
+would be re-implementing, once per source, the only thing a source can do that a
+consumer cannot: not send the event at all. So filtering is owned by each stream
+source, and the grammar is the approved one, identical in `onevcs`,
+`oneagentgraph`, and `onepipeline`:
+
+```yaml
+include:            # list of matchers; absent or empty = everything passes include
+  - {source: vcs, kind: "gate-*"}
+exclude:            # list of matchers; a match here always rejects (wins over include)
+  - {kind: lock-wait}
+```
+
+The three copies are held together the way the envelope's already are: each
+repository commits this fixture in its own contract, its own suite holds its own
+code to its own copy, and the cross-repo contract test reads those committed
+fixtures. There is nothing here to import and nothing to generate from — that is
+the point of "duplicate these types; there is deliberately no shared util crate" —
+so a departure from the grammar is raised with the contract owner as a proposal,
+never taken here.
+
+An envelope passes when it matches any `include` matcher — or `include` is absent
+or empty — and matches no `exclude` matcher. Matcher fields are all optional and
+conjoin within one matcher: `source` is the envelope's source family, by exact
+equality; `kind` is a glob over the event kind's kebab-case wire string, so
+`change-*` is `change-opened`, `change-check`, and `change-merged`; and `run_id`,
+`node`, `step`, `member`, and `persona` are exact equality against the envelope's
+reserved `labels` keys, where a matcher naming a label the envelope did not stamp
+does not match it. Deliberately **not** in the grammar: `stream`, which is a
+producing process's id rather than a family, and payload fields, which differ per
+kind. The envelope types are duplicated per repository by design, held together by
+a cross-repo contract test rather than by a shared util crate; the filter type
+follows the same pattern.
+
+```rust
+impl EventStream {                           // `open`, `session`, `read` unchanged, plus:
+    pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self>;
+}
+pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }
+pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,
+                          pub run_id: Option<String>, pub node: Option<String>,
+                          pub step: Option<String>, pub member: Option<String>,
+                          pub persona: Option<String> }
+impl EventFilter {
+    pub fn parse(spec: &str) -> Result<Self>;            // the JSON or YAML above
+    pub fn matches(&self, envelope: &Envelope) -> bool;
+}
+```
+
+The command gains the same filter as an argument: `onevcs events TOKEN [--follow]
+[--filter SPEC]`, where SPEC is the spec inline as JSON when it opens with `{` and
+the path of a file holding one otherwise — decided by the text, so what an
+invocation means does not change with the directory it is run from. It applies
+identically to a followed read and a one-shot one, and the events it admits are
+printed as the bytes the producer wrote rather than as a re-serialization, so a
+filtered stream is a subset of the unfiltered one byte for byte.
+
+Additive throughout: `open` is `open_filtered` with `EventFilter::default()`, which
+admits everything, and a command with no `--filter` reads exactly what it read
+before. A spec that names a field the grammar does not have, a matcher that is not
+a mapping, or an `include`/`exclude` that is not a list is refused where the spec is
+read, naming the matcher — never read leniently as match-nothing or
+match-everything, for the reason the rules loader refuses an unusable bound: both
+of those are answers a consumer acts on without ever being told it asked for
+something else. Under `--filter` the command reads every line as a value, and is
+therefore held to what a reader of values is held to: a line this build cannot
+parse, and a line carrying an event of another stream, are both refused where they
+are read, naming the line — the same two refusals `EventStream::read` gives,
+through the same seam. Unfiltered the command reads nothing and prints the line as
+the file's own bytes, which is unchanged. The reason the filtered path cannot keep
+that posture is what a filter would otherwise do with such a line: judge one
+session's event against a statement its consumer made about another, and then
+report it as this session's or drop it in silence. Both are answers about an event
+nobody read.
+
+**The grammar carries no version, and this crate does not give it one.** Every
+other serialized shape here is versioned — the envelope at `v: 1`, the rules file
+at 2, the registry at 5 — and each of those is written and read by this repository
+alone, so this repository can bump it. A filter is not: it is written by whoever
+configures a run and read by all three libraries, so a `version` key one of them
+writes and the others refuse is the shared grammar ceasing to be shared, and the
+failure lands on the consumer that did nothing wrong. Adding one here would be
+exactly the unilateral change the grammar is fixed against.
+
+So the constraint is stated rather than closed, and what makes an unversioned
+document safe is the refusal above: an unknown top-level key — `version` included —
+is refused rather than ignored, so a spec written for a grammar this build does not
+have fails closed at the boundary instead of being half-read as a narrower filter
+than its author wrote. `a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set`
+in `tests/contract.rs` holds both halves: nothing this crate writes carries a
+version, and a document that names one is refused. Versioning the grammar is a
+**proposal to raise with the contract owner across the three repositories** — it
+needs one spelling, one meaning for an absent version, and one answer for what an
+older build does with a newer document — and until then, the compatible way to
+extend a filter is a new matcher field agreed in the same place, which an older
+build already refuses rather than misreads.
+
+Two things this crate cannot compile exactly as the grammar is written, recorded
+here rather than resolved:
+
+- **`onevcs events` has one output mode, so "both output modes" is one.** The
+  command renders NDJSON and nothing else — this crate has no text rendering of an
+  event stream to keep in step, unlike `session holders` and `recoverable`, which
+  are `--json`-or-human. The filter therefore applies to the one rendering there
+  is; a text rendering added later renders the same filtered events, which is the
+  shared envelope contract's own rule.
+- **`onevcs` stamps none of the reserved label keys today.** It stamps `session`
+  and `identity`, which are free-form extras, so a `run_id`, `node`, `step`,
+  `member`, or `persona` matcher admits no envelope this crate currently produces —
+  correctly, by the grammar's own "a matcher naming a label the envelope did not
+  stamp does not match it". The keys are in the matcher because the envelope is
+  shared and enrichers stamp them; making `onevcs` stamp them is a question about
+  what a session knows of the run around it, not about filtering, and is not
+  answered here.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

@@ -17,6 +17,11 @@ mod cli;
 mod comparison;
 #[cfg(unix)]
 mod edges;
+// Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
+// own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod filter;
 // Unix only: these drive a substituted `gh` and real `pre-push` hooks, both POSIX
 // shell. See `world.rs`.
 // `honesty` compares the real backend against the test one, so one of its two runs

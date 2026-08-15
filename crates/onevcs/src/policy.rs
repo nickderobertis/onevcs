@@ -282,7 +282,11 @@ fn matches(criteria: &RuleMatch, identity: &Normalized, checkout: &Path) -> bool
 /// Deliberately not a full glob: the contract's own fixture uses `*` and nothing
 /// else, and a matcher with more syntax than the thing it matches is a place for a
 /// rule to mean something its author did not write.
-fn glob(pattern: &str, value: &str) -> bool {
+///
+/// Shared with [`EventMatcher`](crate::EventMatcher), whose `kind` is a glob over
+/// the same syntax: two spellings of "what `*` means here" would be two answers
+/// waiting to differ.
+pub(crate) fn glob(pattern: &str, value: &str) -> bool {
     let mut segments = pattern.split('*');
     // `split` always yields at least one segment, so the literal prefix exists even
     // for a pattern that is nothing but `*`.

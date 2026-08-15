@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde_json::{Map, Value};
 
 use crate::error::{self, Result};
-use crate::event::{ArtifactId, ArtifactRef, Envelope, EventKind, Labels, Source};
+use crate::event::{ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Source};
 use crate::session::SessionToken;
 use crate::{home, ids};
 
@@ -192,10 +192,17 @@ impl Reader {
 /// rather than assumed, so a caller following several publications at once can tell
 /// whose event it is holding. Reading again yields whatever has been appended
 /// since, which is what `--follow` does with a loop around it.
+///
+/// A consumer that wants some of what a session writes opens it with an
+/// [`EventFilter`] instead, and gets the same stream with the events it did not ask
+/// for left out. Filtering belongs to the source rather than to whoever composes
+/// several of them: a monitor and a planner read the same session under different
+/// attention budgets, and neither of them should have to re-implement this.
 #[derive(Debug)]
 pub struct EventStream {
     session: SessionToken,
     reader: Reader,
+    filter: EventFilter,
 }
 
 impl EventStream {
@@ -204,9 +211,23 @@ impl EventStream {
     /// A session that has emitted nothing has no stream, and is refused by name
     /// rather than answered with an empty reader that would never say why.
     pub fn open(session: &SessionToken) -> Result<Self> {
+        Self::open_filtered(session, EventFilter::default())
+    }
+
+    /// Open the stream one session writes, reading it through a filter.
+    ///
+    /// The filter arrives as a value rather than as text so that a consumer
+    /// composing several sources — `onepipeline` follows sessions through this seam
+    /// — passes the one it was configured with straight through, instead of
+    /// spelling a spec for each source to parse again.
+    ///
+    /// [`open`](EventStream::open) is this with [`EventFilter::default`], which
+    /// admits everything: an unfiltered stream is the same stream it always was.
+    pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self> {
         Ok(Self {
             session: session.clone(),
             reader: Reader::open(&session.0)?,
+            filter,
         })
     }
 
@@ -216,7 +237,8 @@ impl EventStream {
         &self.session
     }
 
-    /// The events appended since the last read, in order.
+    /// The events appended since the last read, in order, that this stream's
+    /// filter admits.
     pub fn read(&mut self) -> Result<Vec<Envelope>> {
         let mut events = Vec::new();
         // One-based, and counted across every read, so a refusal names the line of
@@ -224,29 +246,49 @@ impl EventStream {
         let mut line_number = self.reader.read;
         for line in self.reader.lines()? {
             line_number += 1;
-            // A blank line is not an event, and skipping one would be this reader
-            // deciding that some of the file is not worth reading — which is the one
-            // thing a typed reader must not do. A writer appends whole envelopes, so
-            // a blank line is a stream that is not what any writer left.
-            let envelope: Envelope = serde_json::from_str(&line).map_err(|e| {
-                error::invalid(format!(
-                    "line {line_number} of the stream for {:?} is not an event envelope: {e}",
-                    self.session.0
-                ))
-            })?;
-            // The attribution is the point of a typed reader, so it is checked at the
-            // boundary: an envelope naming another stream in this file is a record
-            // nothing can be concluded from, not one to hand on as this session's.
-            if envelope.stream != self.session.0 {
-                return Err(error::invalid(format!(
-                    "line {line_number} of the stream for {:?} carries an event of stream {:?}",
-                    self.session.0, envelope.stream
-                )));
+            let envelope = attributed(&line, &self.session.0, line_number)?;
+            // Filtered last, and only after both refusals above: a filter says which
+            // events a consumer wants, never which lines of the file are worth
+            // reading. A stream that is not what a writer left is a refusal whichever
+            // events were asked for.
+            if !self.filter.matches(&envelope) {
+                continue;
             }
             events.push(envelope);
         }
         Ok(events)
     }
+}
+
+/// One line of a stream as the envelope it has to be, refused if it is not one or
+/// if it belongs to another session.
+///
+/// Both readers that take a stream's *values* share this: [`EventStream`], and
+/// `onevcs events --filter`, which has to read an event to judge it. Two refusals,
+/// and neither is a filter's business.
+///
+/// A blank line is not an event either, and skipping one would be a reader deciding
+/// that some of the file is not worth reading — the one thing a reader of values
+/// must not do. A writer appends whole envelopes, so a blank line is a stream that
+/// is not what any writer left.
+///
+/// The attribution is the point: an envelope naming another stream in this file is a
+/// record nothing can be concluded from, not one to hand on as this session's — and
+/// a *filter* judging one session's event against another session's is the shape a
+/// consumer following several publications can never detect afterwards.
+pub fn attributed(line: &str, session: &str, line_number: usize) -> Result<Envelope> {
+    let envelope: Envelope = serde_json::from_str(line).map_err(|e| {
+        error::invalid(format!(
+            "line {line_number} of the stream for {session:?} is not an event envelope: {e}"
+        ))
+    })?;
+    if envelope.stream != session {
+        return Err(error::invalid(format!(
+            "line {line_number} of the stream for {session:?} carries an event of stream {:?}",
+            envelope.stream
+        )));
+    }
+    Ok(envelope)
 }
 
 /// The file one session's stream lives in.

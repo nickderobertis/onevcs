@@ -27,10 +27,10 @@ use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
-    Envelope, Error, EventKind, FailureKind, Git, GitHub, Labels, Lifecycle, Liveness,
-    MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome,
-    PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session, SessionHolder,
-    SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
+    Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, Labels,
+    Lifecycle, Liveness, MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication,
+    PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session,
+    SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -88,11 +88,6 @@ fn block(language: &str) -> String {
     only_block(language, &regions().1, "the approved contract")
 }
 
-/// The single block written in `language` in the amendments above the rule.
-fn amendment_block(language: &str) -> String {
-    only_block(language, &regions().0, "the contract's amendments")
-}
-
 /// The one `rust` block in the amendments that declares `marker`.
 ///
 /// Amendments accumulate, and each one that widens the surface spells its own
@@ -100,15 +95,28 @@ fn amendment_block(language: &str) -> String {
 /// only one of its language, which stopped being true with the second such
 /// amendment.
 fn amendment_declaring(marker: &str) -> String {
+    amendment_block_declaring("rust", marker)
+}
+
+/// The one `yaml` block in the amendments that spells `marker`.
+///
+/// The same move the Rust blocks made, one amendment later: the version 2 rules
+/// file was the only YAML fixture above the rule until the filter grammar landed
+/// beside it, and "the only block of its language" stopped identifying either.
+fn amendment_yaml_spelling(marker: &str) -> String {
+    amendment_block_declaring("yaml", marker)
+}
+
+fn amendment_block_declaring(language: &str, marker: &str) -> String {
     let matching: Vec<String> = fenced_blocks(&regions().0)
         .into_iter()
-        .filter(|(language, body)| language == "rust" && body.contains(marker))
+        .filter(|(found, body)| found == language && body.contains(marker))
         .map(|(_, body)| body)
         .collect();
     assert_eq!(
         matching.len(),
         1,
-        "exactly one amendment must declare {marker:?}; found {}",
+        "exactly one `{language}` amendment must declare {marker:?}; found {}",
         matching.len()
     );
     matching.into_iter().next().expect("checked above")
@@ -422,7 +430,7 @@ fn documented_trailer_prefix() -> (String, String) {
 #[test]
 fn the_version_2_fixture_round_trips_with_the_prefix_the_amendment_documents() {
     let (key, default) = documented_trailer_prefix();
-    let fixture = amendment_block("yaml");
+    let fixture = amendment_yaml_spelling("trailer_prefix");
     let rules: RulesFile =
         serde_yaml_ng::from_str(&fixture).expect("the version 2 fixture must deserialize");
 
@@ -1105,6 +1113,378 @@ fn the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers() {
     }
 }
 
+/// The envelope fixture as a value, with the labels the contract stamps on it.
+fn envelope(source: &str, kind: &str) -> Envelope {
+    serde_json::from_value(envelope_fixture(source, kind)).expect("the fixture deserializes")
+}
+
+/// The envelope fixture with none of its labels, which is what a producer that
+/// knew nothing about the run around it stamps.
+fn unlabelled(source: &str, kind: &str) -> Envelope {
+    Envelope {
+        labels: Labels::default(),
+        ..envelope(source, kind)
+    }
+}
+
+#[test]
+fn the_amendment_declares_the_filter_a_stream_is_read_through() {
+    // Reconciled the way the three amendments above are: every field is named where
+    // the type is built, and the amendment is held to declaring it. What is worth
+    // gating beyond that is the *grammar* — it is shared with two other repositories
+    // and fixed across them, so the fixture the amendment spells is parsed here and
+    // asked what it admits, rather than described.
+    let filter = EventFilter {
+        include: vec![EventMatcher {
+            source: Some(Source::Vcs),
+            kind: Some("gate-*".to_owned()),
+            run_id: Some("R".to_owned()),
+            node: Some("service".to_owned()),
+            step: Some("implement".to_owned()),
+            member: Some("worker".to_owned()),
+            persona: Some("engineer".to_owned()),
+        }],
+        exclude: vec![EventMatcher {
+            kind: Some("lock-wait".to_owned()),
+            ..EventMatcher::default()
+        }],
+    };
+    assert!(filter.matches(&envelope("vcs", "gate-verdict")));
+
+    let grammar = amendment_yaml_spelling("exclude:");
+    let parsed = EventFilter::parse(&grammar).expect("the grammar fixture must parse");
+    assert_eq!(
+        parsed,
+        EventFilter {
+            include: vec![EventMatcher {
+                source: Some(Source::Vcs),
+                kind: Some("gate-*".to_owned()),
+                ..EventMatcher::default()
+            }],
+            exclude: vec![EventMatcher {
+                kind: Some("lock-wait".to_owned()),
+                ..EventMatcher::default()
+            }],
+        },
+        "the filter and the grammar the amendment spells disagree"
+    );
+    // And it means what the amendment says it means, on the envelope fixture beside
+    // it: the glob admits both gate kinds, a kind outside it is not included, and
+    // the excluded kind is rejected however it was included.
+    assert!(parsed.matches(&envelope("vcs", "gate-started")));
+    assert!(parsed.matches(&envelope("vcs", "gate-verdict")));
+    assert!(!parsed.matches(&envelope("vcs", "push")));
+    assert!(!parsed.matches(&envelope("agentgraph", "gate-verdict")));
+    assert!(!parsed.matches(&envelope("vcs", "lock-wait")));
+
+    let declarations = amendment_declaring("pub struct EventFilter");
+    for declared in [
+        "pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self>;",
+        "pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }",
+        "pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,",
+        "pub run_id: Option<String>, pub node: Option<String>,",
+        "pub step: Option<String>, pub member: Option<String>,",
+        "pub persona: Option<String> }",
+        "pub fn parse(spec: &str) -> Result<Self>;",
+        "pub fn matches(&self, envelope: &Envelope) -> bool;",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+
+    // The command takes the same filter, so the flag the amendment spells is a flag
+    // the parser has — the approved usage block above the rule spells no `--filter`,
+    // and this is what stands in its place.
+    let mut flags = BTreeSet::new();
+    collect_long_flags(
+        Cli::command()
+            .get_subcommands()
+            .find(|command| command.get_name() == "events")
+            .expect("the parser has an events command"),
+        &mut flags,
+    );
+    assert!(
+        flags.contains("filter"),
+        "`onevcs events` takes no --filter: {flags:?}"
+    );
+    assert!(
+        regions().0.contains("[--filter SPEC]"),
+        "the amendment no longer spells the command's filter argument"
+    );
+}
+
+#[test]
+fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes() {
+    // One vocabulary stated three times — the type's fields, the fields the parser
+    // accepts, and the list a refusal offers whoever mistyped one — and nothing but
+    // this holds them together. A field the type gains and the parser does not is a
+    // filter silently narrower than its author wrote; one the refusal omits sends an
+    // operator looking for a field that is right there.
+    //
+    // The literal is exhaustive on purpose: a field added to `EventMatcher` fails to
+    // compile here rather than passing a gate that never looked at it.
+    let every_field = EventMatcher {
+        source: Some(Source::Vcs),
+        kind: Some("push".to_owned()),
+        run_id: Some("R".to_owned()),
+        node: Some("service".to_owned()),
+        step: Some("implement".to_owned()),
+        member: Some("worker".to_owned()),
+        persona: Some("engineer".to_owned()),
+    };
+    let Value::Object(written) = serde_json::to_value(&every_field).expect("a matcher serializes")
+    else {
+        panic!("a matcher is written as a mapping of its fields");
+    };
+    let has: BTreeSet<&str> = written.keys().map(String::as_str).collect();
+
+    // The list the refusal names, read out of the refusal rather than repeated here.
+    let refused = EventFilter::parse("include: [{kinds: push}]")
+        .expect_err("a matcher field the grammar does not have is refused")
+        .to_string();
+    let listed = refused
+        .rsplit_once('(')
+        .and_then(|(_, tail)| tail.split_once(')'))
+        .unwrap_or_else(|| panic!("the refusal names no field list: {refused}"))
+        .0
+        .to_owned();
+    let names: BTreeSet<&str> = listed.split(", ").collect();
+    assert_eq!(
+        names, has,
+        "the fields a refusal names and the fields a matcher has disagree: {refused}"
+    );
+
+    // And every one of them is a field the parser takes, so what the refusal offers
+    // is the accepted vocabulary rather than a list standing beside it.
+    for field in has {
+        let value = if field == "source" { "vcs" } else { "anything" };
+        let spec = format!("include: [{{{field}: {value}}}]");
+        EventFilter::parse(&spec)
+            .unwrap_or_else(|refusal| panic!("the parser takes no {field}: {refusal}"));
+    }
+}
+
+#[test]
+fn the_wire_spelling_of_every_kind_is_the_one_a_filter_matches() {
+    // A filter's `kind` is matched against a spelling the type answers directly,
+    // never against a serialization — so nothing but this holds it to the one the
+    // envelope travels as. Every kind, because a kind spelled two ways is a filter
+    // that silently admits nothing for exactly one of them.
+    for kind in all_event_kinds() {
+        let spelled = kind_name(kind);
+        let filter = EventFilter {
+            include: vec![EventMatcher {
+                kind: Some(spelled.clone()),
+                ..EventMatcher::default()
+            }],
+            exclude: Vec::new(),
+        };
+        assert!(
+            filter.matches(&envelope("vcs", &spelled)),
+            "a filter naming {spelled} does not admit an event of that kind"
+        );
+        for other in all_event_kinds().into_iter().filter(|other| *other != kind) {
+            assert!(
+                !filter.matches(&envelope("vcs", &kind_name(other))),
+                "a filter naming {spelled} also admits {}",
+                kind_name(other)
+            );
+        }
+    }
+}
+
+#[test]
+fn an_envelope_passes_a_filter_by_the_grammar_the_amendment_spells() {
+    // The four rules the grammar fixes, each on the documented envelope: include is
+    // any-of, an absent include is everything, exclude wins, and the fields of one
+    // matcher conjoin.
+    let any_of = EventFilter::parse("include: [{kind: session-opened}, {kind: session-closed}]")
+        .expect("a filter of two matchers");
+    assert!(any_of.matches(&envelope("vcs", "session-opened")));
+    assert!(any_of.matches(&envelope("vcs", "session-closed")));
+    assert!(!any_of.matches(&envelope("vcs", "fetch")));
+
+    let everything =
+        EventFilter::parse("exclude: [{kind: fetch}]").expect("an exclude-only filter");
+    assert!(everything.matches(&envelope("pipeline", "session-opened")));
+    assert!(!everything.matches(&envelope("vcs", "fetch")));
+    // An empty include is the same statement as an absent one.
+    assert!(EventFilter::parse("include: []\nexclude: []")
+        .expect("an empty filter")
+        .matches(&envelope("vcs", "fetch")));
+    assert!(EventFilter::default().matches(&envelope("vcs", "fetch")));
+
+    let both =
+        EventFilter::parse("include: [{kind: \"change-*\"}]\nexclude: [{kind: change-check}]")
+            .expect("a filter that narrows what it includes");
+    assert!(both.matches(&envelope("vcs", "change-opened")));
+    assert!(both.matches(&envelope("vcs", "change-merged")));
+    assert!(
+        !both.matches(&envelope("vcs", "change-check")),
+        "exclude wins over include"
+    );
+
+    // Every field a matcher sets must match, and a label the producer did not stamp
+    // is a miss rather than a wildcard.
+    let conjoined = EventFilter::parse("include: [{source: vcs, node: service, step: implement}]")
+        .expect("a matcher of three fields");
+    assert!(conjoined.matches(&envelope("vcs", "push")));
+    assert!(!conjoined.matches(&envelope("agentgraph", "push")));
+    assert!(!conjoined.matches(&unlabelled("vcs", "push")));
+    for (spec, admitted) in [
+        ("include: [{run_id: R}]", true),
+        ("include: [{run_id: other}]", false),
+        ("include: [{member: worker}]", true),
+        ("include: [{persona: engineer}]", true),
+        ("include: [{persona: reviewer}]", false),
+    ] {
+        assert_eq!(
+            EventFilter::parse(spec)
+                .expect("a label matcher")
+                .matches(&envelope("vcs", "push")),
+            admitted,
+            "{spec} disagrees with the labels the envelope fixture carries"
+        );
+    }
+}
+
+#[test]
+fn a_filter_spec_the_grammar_does_not_name_is_refused_where_it_is_read() {
+    // Read leniently, each of these means everything or nothing — and a consumer
+    // acts on either without ever being told it asked for something else. The same
+    // posture the rules loader takes to a bound it cannot read.
+    let cases = [
+        // A matcher field nobody declared, which is usually a typo for one that matters.
+        (
+            "include: [{kind: fetch}, {kinds: push}]",
+            "include matcher 2",
+        ),
+        ("exclude: [{payload: {}}]", "exclude matcher 1"),
+        // The label the envelope has and the grammar deliberately does not.
+        ("include: [{round: 2}]", "include matcher 1"),
+        // A matcher that is not a mapping of fields.
+        ("include: [fetch]", "include matcher 1"),
+        ("exclude: [[{kind: fetch}]]", "exclude matcher 1"),
+        // A source outside the three families.
+        ("include: [{source: onevcs}]", "include matcher 1"),
+        // A field compared as a string, given something that is not one.
+        ("include: [{kind: 7}]", "include matcher 1"),
+        ("exclude: [{node: [service]}]", "exclude matcher 1"),
+        // A list that is not one — including the empty value, which means the
+        // opposite thing to each of the two people who read it.
+        ("include: {kind: fetch}", "`include`"),
+        ("exclude:", "`exclude`"),
+        // A document that is not a filter at all, and one naming neither list.
+        ("- {kind: fetch}", "mapping of `include` and `exclude`"),
+        ("includes: [{kind: fetch}]", "\"includes\""),
+    ];
+    for (spec, named) in cases {
+        let refused = EventFilter::parse(spec)
+            .expect_err(&format!("this must be refused:\n{spec}"))
+            .to_string();
+        assert!(
+            refused.contains(named),
+            "the refusal of {spec:?} does not name {named}: {refused}"
+        );
+    }
+
+    // And the same document, refused the same way where a consumer embeds it in a
+    // configuration of its own rather than handing over the text.
+    let embedded = serde_json::from_value::<EventFilter>(json!({"include": [{"kinds": "push"}]}))
+        .expect_err("a filter is refused wherever it is deserialized")
+        .to_string();
+    assert!(embedded.contains("include matcher 1"), "{embedded}");
+}
+
+#[test]
+fn a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set() {
+    // A filter is a value a consumer stores, ships, and reads back — `onepipeline`
+    // carries one through a configuration of its own — so what this crate writes has
+    // to be exactly what it reads. The fixture is the one the amendment spells,
+    // extracted rather than repeated, which is the same reconciliation the rules
+    // file gets.
+    let fixture = amendment_yaml_spelling("exclude:");
+    let filter = EventFilter::parse(&fixture).expect("the grammar fixture parses");
+
+    let expected: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&fixture).expect("the fixture is YAML");
+    let round_tripped = serde_yaml_ng::to_value(&filter).expect("a filter serializes back to YAML");
+    assert_eq!(
+        round_tripped, expected,
+        "the filter lost or added a field on its way back to the grammar"
+    );
+    assert_eq!(
+        serde_yaml_ng::from_value::<EventFilter>(round_tripped).expect("and reads back"),
+        filter,
+        "what this crate writes is not what it reads"
+    );
+
+    // The golden shape a consumer meets over JSON, field for field. It is also the
+    // omission assertion for a matcher: the fixture's matchers set two fields and
+    // one, and the five and six they leave unset are absent rather than null — a
+    // `node: null` reaching a stricter reader is a filter that stopped parsing, and
+    // reaching a lenient one is a filter that quietly matches nothing.
+    let as_json = serde_json::to_value(&filter).expect("a filter serializes as JSON");
+    assert_eq!(
+        as_json,
+        json!({
+            "include": [{"source": "vcs", "kind": "gate-*"}],
+            "exclude": [{"kind": "lock-wait"}],
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<EventFilter>(as_json).expect("and reads back"),
+        filter
+    );
+
+    // An empty filter writes neither list. "Absent or empty" is one statement to a
+    // reader of this grammar, but a filter that grew an `include: []` every time it
+    // passed through a configuration would be telling every *other* reader that
+    // somebody had narrowed something.
+    let empty = EventFilter::default();
+    assert_eq!(
+        serde_json::to_value(&empty).expect("an empty filter serializes"),
+        json!({})
+    );
+    let written = serde_yaml_ng::to_string(&empty).expect("an empty filter serializes as YAML");
+    assert!(
+        !written.contains("include") && !written.contains("exclude"),
+        "an empty filter wrote a list nobody set:\n{written}"
+    );
+    assert_eq!(
+        EventFilter::parse(&written).expect("an empty filter reads back"),
+        empty
+    );
+
+    // And a filter that only excludes writes only an exclude, so the two halves are
+    // independently omitted rather than as a pair.
+    let exclude_only = EventFilter::parse("exclude: [{step: implement}]").expect("a filter");
+    assert_eq!(
+        serde_json::to_value(&exclude_only).expect("it serializes"),
+        json!({"exclude": [{"step": "implement"}]})
+    );
+
+    // The grammar carries no version field, and that is deliberate across all three
+    // repositories rather than an omission this crate could close on its own: a
+    // version one of them writes and the others refuse is a filter that stops being
+    // shared. So nothing here writes one, and a document that names one is refused
+    // by the same rule as any other key the grammar does not have — fail-closed,
+    // which is what makes an unversioned document safe to hand between builds.
+    assert!(
+        !expected
+            .as_mapping()
+            .expect("the fixture is a mapping")
+            .contains_key("version"),
+        "the grammar fixture names a version; the shared grammar has none"
+    );
+    let versioned = EventFilter::parse("version: 1\ninclude: []")
+        .expect_err("a version nobody agreed on is not read as one")
+        .to_string();
+    assert!(versioned.contains("\"version\""), "{versioned}");
+}
+
 /// Every ending a publication has, proven exhaustive by the match below: adding a
 /// variant without listing it here stops compiling.
 fn all_publish_outcomes() -> Vec<&'static str> {
@@ -1131,6 +1511,46 @@ fn all_publish_outcomes() -> Vec<&'static str> {
             PublishOutcome::Failed { .. } => "Failed",
         })
         .collect()
+}
+
+#[test]
+fn the_readme_teaches_the_filter_grammar_the_contract_fixes() {
+    // The README shows a consumer the grammar, which is the second copy of it in
+    // this repository — and the one nothing would otherwise reconcile, since the
+    // suite reads its fixtures out of docs/contract.md. It is held to the contract's
+    // copy by what it *means* rather than by its bytes: the README leaves out the
+    // comments that explain the two lists, which is the difference between teaching
+    // and declaring, and is the only difference allowed to exist.
+    let readme = repo_file("README.md");
+    let shown: Vec<String> = fenced_blocks(&readme)
+        .into_iter()
+        .filter(|(language, body)| language == "yaml" && body.contains("exclude:"))
+        .map(|(_, body)| body)
+        .collect();
+    assert_eq!(
+        shown.len(),
+        1,
+        "the README must show the filter grammar exactly once; found {}",
+        shown.len()
+    );
+    let taught = EventFilter::parse(&shown[0]).expect("the README's filter must be one");
+    assert_eq!(
+        taught,
+        EventFilter::parse(&amendment_yaml_spelling("exclude:")).expect("the contract's fixture"),
+        "README.md and docs/contract.md teach different filters"
+    );
+
+    // And the entry points it names are the ones a consumer has, so the example is
+    // reachable from the surface rather than from a surface it once had.
+    for named in [
+        "EventStream::open_filtered(&token,",
+        "onevcs events TOKEN --filter SPEC",
+    ] {
+        assert!(
+            readme.contains(named),
+            "the README no longer shows a consumer how to reach the filter: {named}"
+        );
+    }
 }
 
 #[test]

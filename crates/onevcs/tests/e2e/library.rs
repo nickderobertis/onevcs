@@ -26,9 +26,9 @@
 // journey in this suite uses.
 
 use onevcs::{
-    CheckSource, EventStream, FailureKind, Git, GitHub, Identity, MergePolicy, Providers,
-    PublishOutcome, PublishRequest, RemoteHost, Retention, Session, SessionRequest, SessionToken,
-    Vcs,
+    CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub, Identity,
+    MergePolicy, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Session,
+    SessionRequest, SessionToken, Source, Vcs,
 };
 use onevcs_testing::{MemoryHost, MemoryVcs, VcsState};
 
@@ -1101,4 +1101,147 @@ fn an_event_stream_refuses_an_envelope_that_belongs_to_another_session() {
     assert!(reason.contains("line 2"), "{reason}");
     assert!(reason.contains(&mine.token.0), "{reason}");
     assert!(reason.contains(&theirs.token.0), "{reason}");
+}
+
+#[test]
+fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+    let session = open(&vcs, "feature/filtered");
+
+    // The filter arrives as a value rather than as text, which is the point of the
+    // typed seam: a consumer composing several sources — `onepipeline` follows
+    // sessions through this one — passes the filter it was configured with straight
+    // through instead of spelling a spec for each source to parse again.
+    let mut planner = EventStream::open_filtered(
+        &session.token,
+        EventFilter {
+            include: vec![EventMatcher {
+                source: Some(Source::Vcs),
+                kind: Some("session-*".to_owned()),
+                ..EventMatcher::default()
+            }],
+            exclude: Vec::new(),
+        },
+    )
+    .expect("the session's stream, filtered");
+    let mut monitor = EventStream::open(&session.token).expect("the same stream, unfiltered");
+    assert_eq!(planner.session(), &session.token);
+
+    // Both cursors are at the start of the same file, and each answers what it was
+    // opened for: a narrow reader is not a reader of a different stream.
+    let opening = planner.read().expect("the events so far, filtered");
+    assert_eq!(
+        opening.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        vec![onevcs::EventKind::SessionOpened]
+    );
+    assert_eq!(opening[0].stream, session.token.0);
+    assert_eq!(
+        monitor
+            .read()
+            .expect("the events so far")
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![onevcs::EventKind::SessionOpened],
+        "an unfiltered stream is the same stream it always was"
+    );
+
+    // Publish and close, then read both again: the filter applies to every later
+    // read as well, and the events it drops are dropped rather than deferred.
+    onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("the publication runs");
+    onevcs::close_session(&providers, &session.token).expect("the session closes");
+
+    assert_eq!(
+        planner
+            .read()
+            .expect("what the planner asked for")
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![onevcs::EventKind::SessionClosed],
+        "the change request the monitor sees is not what this reader asked for"
+    );
+    assert_eq!(
+        monitor
+            .read()
+            .expect("everything since")
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            onevcs::EventKind::ChangeOpened,
+            onevcs::EventKind::SessionClosed
+        ]
+    );
+
+    // A filter that admits nothing admits nothing, rather than reverting to
+    // everything the way an unreadable one silently would.
+    let nothing = EventFilter {
+        include: vec![EventMatcher {
+            source: Some(Source::Pipeline),
+            ..EventMatcher::default()
+        }],
+        exclude: Vec::new(),
+    };
+    assert!(EventStream::open_filtered(&session.token, nothing.clone())
+        .expect("the stream")
+        .read()
+        .expect("no event of another source is in it")
+        .is_empty());
+
+    // And a filter never decides which lines of the file are worth reading: a stream
+    // that is not what a writer left is refused whichever events were asked for.
+    //
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test,
+    // as in the two journeys above: no public interface of this crate can write a line
+    // that is not an envelope, nor one session's envelope into another's file, so the
+    // only way to hold a filtered reader to refusing either is to put it there.
+    let path = world
+        .home()
+        .join("streams")
+        .join(format!("{}.ndjson", session.token.0));
+    let intruder = open(&vcs, "feature/theirs");
+    let theirs = std::fs::read_to_string(
+        world
+            .home()
+            .join("streams")
+            .join(format!("{}.ndjson", intruder.token.0)),
+    )
+    .expect("their stream");
+    std::fs::write(&path, &theirs).expect("a stream to cross-contaminate");
+
+    // The misattributed line here is a `session-opened`, which the filter below
+    // excludes — so if attribution were checked after filtering, this would be
+    // dropped in silence and the read would answer an empty, healthy-looking batch.
+    let excluding_theirs = EventFilter {
+        include: Vec::new(),
+        exclude: vec![EventMatcher {
+            kind: Some("session-*".to_owned()),
+            ..EventMatcher::default()
+        }],
+    };
+    let refused = EventStream::open_filtered(&session.token, excluding_theirs)
+        .expect("the stream is still there")
+        .read()
+        .expect_err("an event of another session is refused before a filter can drop it");
+    let reason = refused.to_string();
+    assert!(reason.contains(&session.token.0), "{reason}");
+    assert!(reason.contains(&intruder.token.0), "{reason}");
+
+    std::fs::write(&path, "{\"v\": 1}\n").expect("a stream to corrupt");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let refused = EventStream::open_filtered(&session.token, nothing)
+        .expect("the stream is still there")
+        .read()
+        .expect_err("a line that is not an envelope is refused, filter or no filter");
+    assert!(refused.to_string().contains("line 1"), "{refused}");
 }
