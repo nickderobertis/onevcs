@@ -63,7 +63,6 @@ fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
                 "feat: add the seam",
             ],
         ),
-        // The verb the amendment adds beside `publish`, with each of its options.
         (
             "publish-branch",
             vec![

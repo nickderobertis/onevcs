@@ -53,6 +53,16 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# What replaces the installed binary, pinned to the version this run expects when
+# it was told one. Built once, so a failure that can only be fixed by installing
+# again says how rather than leaving an operator to work out which of the three
+# install surfaces they used.
+if [ -n "$expect_version" ]; then
+  reinstall="pip install 'onevcs-cli==$expect_version', npm install -g 'onevcs-cli@$expect_version', or cargo install onevcs --version '$expect_version'"
+else
+  reinstall="pip install --upgrade onevcs-cli, npm install -g onevcs-cli@latest, or cargo install onevcs --force"
+fi
+
 if ! command -v onevcs >/dev/null 2>&1; then
   fail "no 'onevcs' on PATH" \
     "install it first — 'pip install onevcs-cli', 'npm install -g onevcs-cli', or 'cargo install onevcs'"
@@ -87,7 +97,7 @@ for command in register repos resolve session publish publish-branch recover rec
   case "$help" in
     *"$command"*) ;;
     *) fail "--help does not list the '$command' command" \
-         "the installed binary predates the documented command surface in docs/contract.md" ;;
+         "the installed binary predates the documented command surface in docs/contract.md; install it again and re-run — $reinstall" ;;
   esac
 done
 
