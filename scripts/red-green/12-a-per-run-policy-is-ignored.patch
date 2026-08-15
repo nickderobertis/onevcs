@@ -1,0 +1,19 @@
+Mutation: --policy stops narrowing the policy the rules resolved.
+Red: a_per_run_policy_narrows_the_rules_resolved_one_and_never_widens_it
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index d8a08a9..d8b7bee 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -146,7 +146,10 @@ pub fn prepare(
+     } else {
+         source_name
+     };
+-    let effective = publish::effective_policy(&resolved.policy, requested)?;
++    let effective = publish::effective_policy(&resolved.policy, {
++        let _ = requested;
++        None
++    })?;
+     let source = locate(registry, &resolution, branch)?;
+ 
+     let run_root = home::workspaces_dir()?.join(verb.runs()).join(format!(

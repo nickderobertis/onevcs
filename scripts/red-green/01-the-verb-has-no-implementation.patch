@@ -1,0 +1,37 @@
+Mutation: publish-branch answers NotImplemented, which is the state before this branch: the verb parses and nothing is behind it.
+Red: a_complete_branch_of_a_local_identity_lands_on_its_base
+Red: a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_require
+Red: a_complete_branch_of_a_remote_identity_is_landed_by_the_host
+Red: a_branch_the_host_holds_reports_the_merge_it_queued
+Red: a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body_for
+Red: an_identity_with_no_rules_file_publishes_under_the_built_in_default
+Red: publishing_a_branch_refuses_interrupted_work_and_names_the_verb_that_lands_it
+Red: a_branch_no_checkout_has_is_refused_by_the_command_that_lists_the_ones_that_do
+Red: an_explicit_title_is_the_subject_a_branch_publishes_under
+Red: a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change
+Red: a_per_run_policy_narrows_the_rules_resolved_one_and_never_widens_it
+Red: a_gate_that_rejects_a_branch_keeps_it_where_it_was_found
+Red: a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved
+Red: a_marker_under_an_unreadable_prefix_is_never_published_as_a_finished_branch
+Red: a_repository_path_that_is_not_text_is_refused_as_the_argument_it_is
+Red: a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs
+Red: every_state_a_branch_can_be_in_has_a_verb_that_takes_it
+Red: recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publish_it
+
+diff --git a/crates/onevcs/src/publish_branch.rs b/crates/onevcs/src/publish_branch.rs
+index 3a7a24e..e3f7fdd 100644
+--- a/crates/onevcs/src/publish_branch.rs
++++ b/crates/onevcs/src/publish_branch.rs
+@@ -32,6 +32,12 @@ pub fn run(
+     hosting: &dyn Hosting,
+     stream: &mut Stream,
+ ) -> Result<PublishOutcome> {
++    if true {
++        let _ = (&title, &policy, &stream);
++        return Err(Error::NotImplemented {
++            operation: "publish-branch",
++        });
++    }
+     let landing = branch::prepare(registry, Verb::PublishBranch, repo, branch, policy)?;
+ 
+     let unattested = landing.unattested()?;

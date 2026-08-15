@@ -1,0 +1,20 @@
+Mutation: the branch-keyed verbs stop carrying --title into the publication.
+Red: an_explicit_title_is_the_subject_a_branch_publishes_under
+Red: a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change
+Red: a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index d8a08a9..954a2cb 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -337,6 +337,10 @@ impl Landing {
+         hosting: &dyn Hosting,
+         stream: &mut Stream,
+     ) -> Result<PublishOutcome> {
++        let title = {
++            let _ = title;
++            None
++        };
+         let context = publish::Context {
+             resolution: self.resolution.clone(),
+             policy: self.resolved.policy.clone(),

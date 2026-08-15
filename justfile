@@ -154,6 +154,23 @@ smoke-real:
     @cargo nextest run --workspace --locked -E 'binary(smoke)' --no-capture --no-fail-fast \
       --status-level all
 
+# The tiers above run every test; this drives one, with the summary line that says
+# whether it passed. It exists as a recipe because `scripts/red-green.sh` needs it,
+# and a second hand-rolled `cargo nextest` invocation beside those tiers would be a
+# second definition of what running a test means.
+# Run one journey by name, e.g. `just test-one a_session_cuts_a_borrowing_clone`.
+test-one name:
+    @name={{quote(name)}}; cargo nextest run --workspace --locked -E "test($name)" --no-fail-fast --status-level fail
+
+# Outside `check` on purpose: it mutates the tree one behaviour at a time and takes
+# minutes. What it produces is `docs/red-green.md`, the committed record that every
+# journey this branch adds was observed failing for its own behaviour before it
+# passed — re-made rather than trusted. Needs a clean tree and a `--base` the branch
+# forked from.
+# Re-make the red/green evidence for the tests this branch adds.
+red-green base="origin/main":
+    @./scripts/red-green.sh --record docs/red-green.md --base {{quote(base)}}
+
 # Drives the compiled binary as a subprocess — never an in-process `main()`.
 # The end-to-end binary journeys in isolation (also run by `test`/`check`).
 test-e2e:

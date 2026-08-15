@@ -1,0 +1,16 @@
+Mutation: publish-branch stops looking for a marker written under a prefix this host cannot read.
+Red: a_marker_under_an_unreadable_prefix_is_never_published_as_a_finished_branch
+
+diff --git a/crates/onevcs/src/publish_branch.rs b/crates/onevcs/src/publish_branch.rs
+index 3a7a24e..eaa05b4 100644
+--- a/crates/onevcs/src/publish_branch.rs
++++ b/crates/onevcs/src/publish_branch.rs
+@@ -47,7 +47,7 @@ pub fn run(
+             ),
+         });
+     }
+-    if let Some(prefix) = landing.unrecognized()?.first() {
++    if let Some(prefix) = None::<&crate::rules::TrailerPrefix> {
+         // A marker under a prefix this host does not read is still a marker, and it
+         // is the one shape that would otherwise be published here as finished work:
+         // nothing recognizes it, so nothing refuses it.

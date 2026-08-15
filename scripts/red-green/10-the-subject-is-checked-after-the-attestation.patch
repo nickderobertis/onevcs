@@ -1,0 +1,16 @@
+Mutation: recover stops asking whether a subject exists before it writes to the branch.
+Red: a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long
+
+diff --git a/crates/onevcs/src/recover.rs b/crates/onevcs/src/recover.rs
+index e82312a..d91f701 100644
+--- a/crates/onevcs/src/recover.rs
++++ b/crates/onevcs/src/recover.rs
+@@ -50,7 +50,7 @@ pub fn run(
+     // Before the attestation rather than inside the publication: a branch none of
+     // whose subjects fit is answered by `--title`, and an operator who has to pass
+     // one should meet that refusal on the branch as they left it.
+-    landing.check_subject(title.as_ref())?;
++    let _ = &title;
+ 
+     // The attestation is written before the publication, so a rejected push leaves
+     // a branch whose marker is cleared by a verdict that was actually reached.

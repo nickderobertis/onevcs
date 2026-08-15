@@ -1,0 +1,23 @@
+Mutation: the refusal that nothing would be attested stops naming the rules entry that answers it.
+Red: an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one
+
+diff --git a/crates/onevcs/src/recover.rs b/crates/onevcs/src/recover.rs
+index e82312a..7bc32ad 100644
+--- a/crates/onevcs/src/recover.rs
++++ b/crates/onevcs/src/recover.rs
+@@ -131,14 +131,7 @@ fn attests_nothing(landing: &branch::Landing) -> Option<String> {
+     }
+     Some(format!(
+         "identity {:?} names no complete bar and its merge path runs no gate, so a recovery \
+-         attestation would attest nothing. Give it one in the rules file at {}: a rule matching \
+-         this identity with `gate: {{command: [...]}}` names the bar itself, and \
+-         `gate: {{kind: pre-push}}` keeps the merge path as the gate once {} carries an \
+-         executable pre-push hook. Confirm it with `{}`, then re-run `{}`",
++         attestation would attest nothing",
+         landing.resolution.key,
+-        landing.rules_file,
+-        landing.source.display(),
+-        landing.rules_check(),
+-        landing.command(),
+     ))
+ }
