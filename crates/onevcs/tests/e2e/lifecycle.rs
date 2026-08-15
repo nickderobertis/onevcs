@@ -400,18 +400,25 @@ fn a_subject_is_published_whole_up_to_the_limit_and_refused_one_character_past_i
 
     // One character past the limit, which is the only interesting distance: the
     // refusal names the length it got and the length it holds a title to, so an
-    // operator shortens by exactly what is needed.
+    // operator shortens by exactly what is needed. On a session of its own with
+    // work of its own, so the refusal is the length and nothing else about it.
     let over = format!("feat: {}", "a".repeat(121 - "feat: ".len()));
     assert_eq!(over.len(), 121);
+    let (overlong, worktree) = fixture.open(&["--branch", "feature/overlong-title"]);
+    fixture
+        .world
+        .commit_file(&worktree, "three.txt", "three\n", "feat: add a third thing");
     fixture
         .world
         .onevcs()
-        .args(["publish", &explicit, "--title", &over])
+        .args(["publish", &overlong, "--title", &over])
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
             "the explicit title is 121 characters, over the 120-character limit",
         ));
+    // Nothing landed, so the refusal really did stop the publication.
+    assert_eq!(fixture.origin_log()[0], synthesized);
 
     // The constant the binary just enforced is the one a consumer reads, at the path
     // it reads it: `onepipeline` validates a plan's titles against
