@@ -53,6 +53,13 @@ fn contract() -> String {
         .expect("the contract must be readable")
 }
 
+/// What the contract left to inference, which is where a verb that closes a gap in
+/// it is written down until the contract owner amends the approved text.
+fn inferred_surface() -> String {
+    std::fs::read_to_string(workspace_root().join("docs/inferred-surface.md"))
+        .expect("the inferred-surface record must be readable")
+}
+
 /// The default provenance trailer prefix the contract documents.
 ///
 /// The value every existing checkout inherits when nothing is configured is the
@@ -108,10 +115,11 @@ pub fn documented_trailer(name: &str, prefix: &str) -> String {
 /// with it however wrong both were. `tests/contract.rs` is what holds the parser
 /// to this same block.
 pub fn commands() -> Vec<String> {
-    let usage = contract();
-    // Every usage block, not the first: an amendment that adds a verb spells its own
-    // block above the approved text, and a reader of the first one alone would stop
+    // Both documents, and every usage block in them: the approved text is never
+    // edited, so a verb that closes a gap in it is written down in
+    // `docs/inferred-surface.md` — and a reader of the contract alone would stop
     // asserting the newest promise the moment it was made.
+    let usage = format!("{}\n{}", contract(), inferred_surface());
     let blocks: Vec<&str> = usage
         .split("\n```\n")
         .filter(|block| {

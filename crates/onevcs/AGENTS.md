@@ -60,6 +60,12 @@ one byte for byte.
 
 ## Three verbs land a branch, and provenance is what chooses between them
 
+`publish-branch` is **not in the approved contract**, which is never edited: its
+usage block is recorded in [`docs/inferred-surface.md`](../../docs/inferred-surface.md)
+as an inference awaiting an amendment, and `tests/contract.rs` and
+`tests/e2e/support.rs` read that block beside the contract's own — so the parser is
+still held to a written-down surface by the same equality, over two documents.
+
 `publish` takes a session token; `recover` and `publish-branch` take a branch name
 and are **one path** — `branch.rs` locates it, clones it, cuts a worktree, merges
 the change base, and hands it to `publish::run`. What separates them is provenance

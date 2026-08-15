@@ -845,13 +845,13 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     );
 }
 
-/// Every command name the contract spells: the approved usage block, plus the
-/// usage an amendment adds beside it.
+/// Every command name the two documents spell.
 ///
-/// An amendment is reconciled with the code the same way the approved text is, so
-/// a verb it declares is a verb the parser must have — and, just as importantly, a
-/// verb the parser has and neither region spells is still a departure. The two
-/// regions are read together rather than the amendment being an exemption.
+/// The approved text is committed verbatim and is never edited, so a verb that
+/// closes a gap in it is recorded in `docs/inferred-surface.md` until the contract
+/// owner amends the contract. Both are read here, and the assertion over them stays
+/// the equality it was: a command the parser has that neither document writes down
+/// is a departure, and so is one either writes down that the parser does not have.
 fn documented_commands() -> BTreeSet<String> {
     usage_blocks()
         .iter()
@@ -859,20 +859,33 @@ fn documented_commands() -> BTreeSet<String> {
         .collect()
 }
 
-/// Every usage block the contract spells, in both regions.
+/// Every usage block the two documents spell: the approved contract's, and the
+/// ones `docs/inferred-surface.md` records as an inference awaiting confirmation.
 fn usage_blocks() -> Vec<String> {
     let mut blocks = vec![block("")];
-    for (language, body) in fenced_blocks(&regions().0) {
-        if language.is_empty()
-            && body
-                .lines()
-                .next()
-                .is_some_and(|line| line.starts_with("onevcs "))
-        {
-            blocks.push(body);
-        }
-    }
+    let inferred = usage_in(&repo_file("docs/inferred-surface.md"));
+    assert!(
+        !inferred.is_empty(),
+        "docs/inferred-surface.md records no command surface; if the contract has \
+         since absorbed it, this reader is what has to move with it"
+    );
+    blocks.extend(inferred);
     blocks
+}
+
+/// Every bare fenced block in a document that is spelled as `onevcs` usage.
+fn usage_in(doc: &str) -> Vec<String> {
+    fenced_blocks(doc)
+        .into_iter()
+        .filter(|(language, body)| {
+            language.is_empty()
+                && body
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.starts_with("onevcs "))
+        })
+        .map(|(_, body)| body)
+        .collect()
 }
 
 /// The command names one usage block spells.
