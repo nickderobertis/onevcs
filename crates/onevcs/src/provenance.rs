@@ -429,12 +429,10 @@ pub(crate) fn publication_subject(
 
 /// The limit a conventional-commit subject is held to.
 ///
-/// 120 rather than the 72 a wrapped commit body is written to: the operator's
-/// decision, made after complete, gate-green work was refused at publication for a
-/// constraint that was knowable an hour earlier. Every enforcement site and every
-/// refusal interpolates this constant, so the value moves in one place — and a
-/// consumer that validates a plan before running it (`onepipeline` reads this at
-/// plan load) asks the same question this crate would.
+/// Public, and the only public item here, because a consumer that validates work
+/// before running it has to ask the same question publication will: `onepipeline`
+/// reads this at plan load. Every enforcement site and every refusal interpolates
+/// it, so the value has one statement.
 pub const SUBJECT_LIMIT: usize = 120;
 
 /// How much a commit's type says about what the branch as a whole did.

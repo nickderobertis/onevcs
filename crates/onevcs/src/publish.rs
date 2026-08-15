@@ -387,20 +387,14 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
 /// Whether the base already carries everything this branch has, once the base has
 /// been merged into it.
 ///
-/// Two shapes, and only one of them is "no commits". A branch whose content already
-/// **landed** — squash-merged under a change request somebody else opened, which is
-/// how one session's work reaches the base while another still holds it — keeps
-/// every one of its commits and adds nothing to the tree. Asked to publish that,
-/// this used to push the branch and open a change request whose diff was empty:
-/// every path-filtered required check skipped rather than ran, the host held the
-/// change BLOCKED with nothing left that could unblock it, and the publication
-/// failed for work that had already shipped. So the tree is asked, not the history,
-/// and the answer is [`PublishOutcome::NothingToPublish`] — the same ending an empty
-/// branch reaches, describing itself as the base already carrying this content.
+/// Two shapes, and only one of them is "no commits": a branch squash-merged under
+/// somebody else's change request keeps every commit it had and adds nothing to the
+/// tree, so the tree is what decides. Opening a change request for one produces an
+/// empty diff, which every path-filtered required check skips rather than runs and
+/// the host then blocks forever.
 ///
-/// It is asked here, on the one path both policies go through, before the branch is
-/// pushed and before any host is asked for anything — so every caller of a
-/// publication gets the guard rather than the caller that remembered it.
+/// Asked here, on the one path both policies go through and before anything is
+/// pushed, so every caller of a publication gets it.
 fn nothing_to_publish(context: &Context<'_>, compared: &str) -> Result<bool> {
     if git::log_messages(&context.repo, compared, &context.branch)?.is_empty() {
         return Ok(true);

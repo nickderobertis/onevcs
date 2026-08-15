@@ -132,11 +132,9 @@ not tell you:
   At 1.0 the usual semver regime takes over (`!` → major).
 - **The commit type is not the only thing that decides a bump.** `semver_check` is
   on, so release-plz runs cargo-semver-checks against the last released version and
-  a surface break bumps accordingly whatever the type said. It was off, and 0.2.1
-  shipped three new *required* `Vcs` trait methods as a `fix` — a break for every
-  consumer that had supplied one. `release-plz.yml` installs the tool beside
-  release-plz; a job that has release-plz and not it silently falls back to the
-  type alone.
+  a surface break bumps whatever the type said. Keep cargo-semver-checks installed
+  in `release-plz.yml`: a job that has release-plz without it falls back to the
+  commit type and says nothing.
 - **One version source.** `crates/onevcs/Cargo.toml` is it, for the CLI and
   everything packaged from it: the wheel takes it via maturin's
   `dynamic = ["version"]` and the npm packages via `scripts/npm-build.mjs`.

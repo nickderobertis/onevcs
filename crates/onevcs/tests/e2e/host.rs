@@ -748,13 +748,11 @@ fn a_change_that_is_already_open_is_adopted_rather_than_duplicated() {
 
 #[test]
 fn a_branch_whose_content_already_landed_opens_no_change_request() {
-    // The measured failure this guards, three times over two repositories: the
-    // session's work reached the base under *another* change request while this
-    // session still held the branch. Published anyway, the branch pushed and a
-    // change request opened whose diff was empty — so every path-filtered required
-    // check skipped rather than ran, the host held the change BLOCKED with nothing
-    // left that could unblock it, and the publication reported failure for work
-    // that had already shipped.
+    // The session's work reached the base under *another* change request while this
+    // session still held the branch, so the branch has commits and no diff. The
+    // change request that used to open for it could never merge: an empty diff skips
+    // every path-filtered required check, and the host blocks on checks that will
+    // not run.
     let hosted = Hosted::new(REVIEWED);
     let token = hosted.change("feature/already-landed", "feat: add the thing");
     hosted.land_on_base(

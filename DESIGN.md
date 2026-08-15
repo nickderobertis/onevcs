@@ -40,17 +40,19 @@ it through maturin's `dynamic = ["version"]` and the npm packages through
 `scripts/npm-build.mjs`, so no human and no second manifest can disagree with the
 tag that was cut.
 
-## A publication subject may be 120 characters
+## The publication subject limit is the operator's, and it has one source
 
-Raised from 72, which is the width a wrapped commit *body* is written to and was
-never the operator's rule for a subject. 72 twice refused complete, gate-green work
-at publication — roughly fifty minutes after the constraint was knowable — and a
-description cut to fit is not on offer, so the refusal was the whole cost.
-`provenance::SUBJECT_LIMIT` is where it lives, and `onepipeline` reads it at plan
-load to ask the same question this crate will ask at publication. That consumer is
-why the module is public at all: **`SUBJECT_LIMIT` is the only item of
-`crates/onevcs/src/provenance.rs` that is not `pub(crate)`**, and its name and path
-are fixed.
+The operator raised it. The old value was the width a wrapped commit *body* is
+written to, which was never their rule for a subject, and it twice refused
+complete, gate-green work at publication; a description cut to fit is not on offer,
+so the refusal was the whole cost.
+
+`provenance::SUBJECT_LIMIT` is the only statement of the number, and `onepipeline`
+reads `onevcs::provenance::SUBJECT_LIMIT` at plan load to ask the same question
+this crate asks at publication rather than restating a value that drifts the first
+time it moves. That consumer is why the module is public at all: **`SUBJECT_LIMIT`
+is the only item of `crates/onevcs/src/provenance.rs` that is not `pub(crate)`**,
+and its name and path are fixed.
 
 ## Nothing may open a change request for a branch with nothing to merge
 
