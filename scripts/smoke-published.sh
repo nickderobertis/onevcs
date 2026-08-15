@@ -104,24 +104,24 @@ done
 # A command that reads the host's own state must actually run. `repos` is the
 # read-only one: it creates nothing and reports whatever this machine has.
 onevcs repos >/dev/null || fail "'onevcs repos' failed on a working installation" \
-  "the installed binary cannot read its own state root"
+  "check that ONEVCS_HOME (otherwise ~/.onevcs) exists and this user may read and write it, then install again and re-run — $reinstall"
 
 # A repository nobody registered is refused at the trust boundary, naming the
 # problem. `|| status=$?` keeps `set -e` from aborting on the expected failure.
 status=0
 message="$(onevcs resolve definitely-not-a-registered-repository 2>&1 >/dev/null | strip_cr)" || status=$?
 [ "$status" -eq 2 ] || fail "'onevcs resolve' exited $status, not 2" \
-  "an unregistered repository must be rejected where it enters"
+  "an unregistered repository must be rejected where it enters; install again and re-run — $reinstall — and if this is the binary this repository just built, that exit code is store::resolve's to answer"
 case "$message" in
   *"not a registered repository"*) ;;
   *) fail "'onevcs resolve' refused without saying why: '$message'" \
-       "the refusal must name the problem and the command that fixes it" ;;
+       "the refusal must name the problem and the command that fixes it; install again and re-run — $reinstall — and if this is the binary this repository just built, fix the refusal store::resolve writes" ;;
 esac
 
 # The boundary still rejects nonsense: a usage error is exit 2, not a refusal.
 status=0
 onevcs definitely-not-a-command >/dev/null 2>&1 || status=$?
 [ "$status" -eq 2 ] || fail "an unknown command exited $status, not 2" \
-  "argument validation must fail with clap's usage error before anything else runs"
+  "argument validation must fail with clap's usage error before anything else runs; install again and re-run — $reinstall — and if this is the binary this repository just built, the parser in crates/onevcs/src/cli.rs is what regressed"
 
 echo "$label: smoke test passed"
