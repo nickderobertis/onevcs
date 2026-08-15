@@ -321,6 +321,45 @@ fn a_branch_that_adds_nothing_publishes_nothing() {
 }
 
 #[test]
+fn a_branch_whose_content_already_landed_publishes_nothing_and_runs_no_gate() {
+    // A branch that landed under another change keeps its commits and adds nothing
+    // to the tree, so the history cannot answer this and the tree has to. There is
+    // nothing left to verify either, which a gate that refuses everything is what
+    // proves: reaching it would fail a publication whose work is already on the base.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/landed-elsewhere"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture.world.commit_file(
+        &elsewhere,
+        "one.txt",
+        "one\n",
+        "feat: add the thing (via another change)",
+    );
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "nothing to publish: the base already carries this branch's content",
+        ));
+    assert!(
+        fixture.world.events_of(&token, "gate-started").is_empty(),
+        "there is nothing to verify, so nothing verified it"
+    );
+    assert_eq!(fixture.origin_log().len(), 2);
+}
+
+#[test]
 fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_name() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/unnameable"]);
