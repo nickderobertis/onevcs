@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10](https://github.com/nickderobertis/onevcs/compare/v0.2.9...v0.2.10) - 2026-08-15
+
+### Fixed
+
+- *(gate)* drain both gate pipes so a loud gate cannot deadlock ([#34](https://github.com/nickderobertis/onevcs/pull/34))
+
 ## [0.2.9](https://github.com/nickderobertis/onevcs/compare/v0.2.8...v0.2.9) - 2026-08-15
 
 ### Fixed
