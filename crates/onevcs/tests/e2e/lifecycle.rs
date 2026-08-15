@@ -423,8 +423,10 @@ fn a_subject_is_published_whole_up_to_the_limit_and_refused_one_character_past_i
     assert_eq!(fixture.origin_log()[0], hundred);
 
     // The same limit decides the subject a publication *synthesizes* when no title
-    // is passed, which is the path most publications take.
-    let synthesized = format!("feat: {}", "b".repeat(100 - "feat: ".len()));
+    // is passed, which is the path most publications take — and this one is exactly
+    // the limit, the longest subject that may publish at all.
+    let synthesized = format!("feat: {}", "b".repeat(120 - "feat: ".len()));
+    assert_eq!(synthesized.len(), 120);
     let (token, worktree) = fixture.open(&["--branch", "feature/untitled-but-long"]);
     fixture
         .world
@@ -456,7 +458,6 @@ fn a_subject_is_published_whole_up_to_the_limit_and_refused_one_character_past_i
         .stderr(predicate::str::contains(
             "the explicit title is 121 characters, over the 120-character limit",
         ));
-    // Nothing landed, so the refusal really did stop the publication.
     assert_eq!(fixture.origin_log()[0], synthesized);
 
     // The constant the binary just enforced is the one a consumer reads, at the path

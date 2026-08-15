@@ -31,6 +31,7 @@
       "Bash(just msrv)",
       "Bash(just upgrade)",
       "Bash(just deps-check)",
+      "Bash(just semver-check)",
       "Bash(just affected-crate)",
       "Bash(just nx show projects)",
       "Bash(just nx graph)",

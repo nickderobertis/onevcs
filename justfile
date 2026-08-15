@@ -183,6 +183,13 @@ deps-check:
     @# would leave a failing gate with no actionable detail.
     @cargo machete
 
+# Separate from `check`: fetching the baseline needs the network, and the answer
+# is about the last release rather than about this branch.
+# What `semver_check = true` makes release-plz ask, asked before you push.
+semver-check:
+    @command -v cargo-semver-checks >/dev/null || { echo "cargo-semver-checks not installed: cargo install cargo-semver-checks --locked" >&2; exit 1; }
+    @cargo semver-checks check-release --workspace
+
 # Reads the floor from Cargo.toml's `rust-version`; that toolchain must be
 # installed (`rustup toolchain install <version>`). Warnings are errors here too.
 # Build under the declared MSRV.
