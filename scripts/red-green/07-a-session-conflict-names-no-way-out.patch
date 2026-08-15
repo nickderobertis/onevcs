@@ -2,23 +2,16 @@ Mutation: the publication path's sync conflict goes back to stating that the bra
 Red: a_base_that_conflicts_with_the_branch_reports_its_own_exit_code
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index d1a5be7..df749b9 100644
+index b0e2e5b..f79e2ee 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -507,15 +507,7 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
-     Err(Error::SyncConflict {
-         reason: format!(
-             "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
--             branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
--             and then land it with `{}`",
--            guidance::command([
--                "onevcs",
--                "publish-branch",
--                &context.branch,
--                "--repo",
--                &context.resolution.publication.to_string_lossy(),
--            ]),
-+             branch is retained for recovery",
-             branch = context.branch,
-         ),
-     })
+@@ -626,8 +626,7 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
+             }
+             None => format!(
+                 "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
+-                 branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
+-                 and then land it with `{land}`",
++                 branch is retained for recovery",
+                 branch = context.branch,
+             ),
+         },

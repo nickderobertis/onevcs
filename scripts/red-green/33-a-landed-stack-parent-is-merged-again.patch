@@ -1,0 +1,17 @@
+Mutation: a stack parent the base already carries is merged into the branch like anything else.
+Red: a_stack_parent_that_squash_merged_is_replayed_out_of_the_branch_rather_than_merged
+Red: a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index b0e2e5b..2109d33 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -524,7 +524,7 @@ pub(crate) fn reconcile(
+     compared: &str,
+     branch: &str,
+ ) -> Result<Reconciled> {
+-    let replayed_from = landed_stack_base(repo, compared, branch)?;
++    let replayed_from: Option<String> = None;
+     let settled = match &replayed_from {
+         Some(parent) => git::rebase_onto(worktree, compared, parent, branch)?,
+         None => git::merge_into_branch(

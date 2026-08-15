@@ -3,24 +3,24 @@ Red: a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved
 Red: a_recovery_whose_base_conflicts_keeps_the_preserved_branch
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index d8a08a9..3678d20 100644
+index 34f4540..c4cd3fb 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -314,15 +314,10 @@ impl Landing {
-         );
-         Err(Error::SyncConflict {
-             reason: format!(
--                "{compared} conflicts with {branch:?}, and re-running will conflict again: this \
--                 verb merges {compared} into the branch and nothing about either has changed. \
--                 The branch is retained in {source} — resolve the conflict on it there, by \
--                 merging {compared} into it and committing the resolution, and then land it with \
--                 `{command}`, which is what publishes it",
-+                "{compared} conflicts with {branch:?}; the preserved branch is retained for \
-+                 manual recovery",
-                 compared = self.compared_change_base,
-                 branch = self.branch,
--                source = self.source.display(),
--                command = self.command(),
-             ),
+@@ -341,15 +341,10 @@ impl Landing {
+                     command = self.command(),
+                 ),
+                 None => format!(
+-                    "{compared} conflicts with {branch:?}, and re-running will conflict again: \
+-                     this verb merges {compared} into the branch and nothing about either has \
+-                     changed. The branch is retained in {source} — resolve the conflict on it \
+-                     there, by merging {compared} into it and committing the resolution, and then \
+-                     land it with `{command}`, which is what publishes it",
++                    "{compared} conflicts with {branch:?}; the preserved branch is retained for \
++                     manual recovery",
+                     compared = self.compared_change_base,
+                     branch = self.branch,
+-                    source = self.source.display(),
+-                    command = self.command(),
+                 ),
+             },
          })
-     }
