@@ -1331,6 +1331,236 @@ fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
     assert!(assert.get_output().stdout.len() > 4096);
 }
 
+/// Lines enough to put several pipe buffers through one of a gate's streams. A
+/// Linux pipe holds 64 KiB unless an operator has raised it, and a line here is
+/// around sixty bytes.
+const PIPE_FILLING_LINES: usize = 3000;
+/// The volume the merge-path failure was measured at: twice a pipe's default
+/// capacity, which is what a gate wedged writing.
+const A_WEDGING_VOLUME: usize = 128 * 1024;
+/// Enough to prove the quiet stream was captured too, and nothing like a buffer.
+const FEW_LINES: usize = 3;
+/// The bound a capture journey drives its publication under.
+///
+/// Not a bound the tool has — a `command:` gate is the repository's own complete
+/// verification and is deliberately unbounded. It is here so a capture that wedges
+/// fails as a killed publication naming what wedged it, rather than hanging the
+/// suite until CI's own timeout.
+const CAPTURE_BOUND: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The diagnostics come last on purpose: a child cannot exit while a pipe nobody is
+/// draining is full, so this is the shape that wedges a capture reading one pipe to
+/// EOF before it touches the other — the shape a test runner reporting per-test
+/// status has.
+fn noisy_gate(output: usize, diagnostics: usize, status: i32) -> String {
+    format!(
+        "[\"sh\", \"-c\", \"echo the gate began its run; \
+         i=0; while [ $i -lt {output} ]; do echo the gate is reporting line $i of what it did; \
+         i=$((i+1)); done; \
+         j=0; while [ $j -lt {diagnostics} ]; \
+         do echo the gate is complaining about line $j of what it read >&2; j=$((j+1)); done; \
+         echo the gate finished its run; exit {status}\"]"
+    )
+}
+
+fn evidence_of_a_noisy_gate(gate: &str, branch: &str, code: i32) -> String {
+    let fixture = Fixture::local(&local_direct(gate));
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .timeout(CAPTURE_BOUND)
+        .assert();
+    assert!(
+        assert.get_output().status.code().is_some(),
+        "the publication was killed at the journey's bound: a gate that writes past \
+         one pipe buffer wedged the capture reading it"
+    );
+    assert.code(code);
+
+    let verdicts = fixture.world.events_of(&token, "gate-verdict");
+    assert_eq!(
+        verdicts[0]["payload"]["verdict"],
+        if code == 0 { "pass" } else { "fail" },
+        "the ruling is the gate's own exit status: {}",
+        verdicts[0]["payload"]
+    );
+    let preserved = PathBuf::from(
+        verdicts[0]["payload"]["preserved_log"]
+            .as_str()
+            .expect("a preserved log path"),
+    );
+    let evidence = std::fs::read_to_string(&preserved).expect("the preserved log");
+
+    let id = verdicts[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("a stored log");
+    let stored = fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&stored.get_output().stdout),
+        evidence,
+        "the artifact and the preserved log are one run"
+    );
+
+    // Whichever pipe filled, output stays ahead of diagnostics and both are whole.
+    let began = evidence
+        .find("the gate began its run")
+        .expect("the gate's first line of output");
+    let finished = evidence
+        .find("the gate finished its run")
+        .expect("the gate's last line of output, written after it filled a pipe");
+    let complained = evidence
+        .find("the gate is complaining about line 0 ")
+        .expect("the gate's first line of diagnostics");
+    assert!(
+        began < finished && finished < complained,
+        "the capture concatenates all of standard output before standard error"
+    );
+    evidence
+}
+
+#[test]
+fn a_gate_that_fills_its_diagnostic_pipe_still_reaches_its_own_verdict() {
+    let evidence = evidence_of_a_noisy_gate(
+        &noisy_gate(FEW_LINES, PIPE_FILLING_LINES, 0),
+        "feature/loud-diagnostics",
+        0,
+    );
+
+    assert_eq!(
+        evidence
+            .matches("the gate is complaining about line")
+            .count(),
+        PIPE_FILLING_LINES,
+        "every diagnostic line the gate wrote is in the evidence"
+    );
+    assert!(
+        evidence.len() > A_WEDGING_VOLUME,
+        "the diagnostics must reach the volume that wedged the gate: {} bytes",
+        evidence.len()
+    );
+}
+
+#[test]
+fn a_gate_that_fills_its_output_pipe_still_reaches_its_own_verdict() {
+    let evidence = evidence_of_a_noisy_gate(
+        // Rejecting, so the volume is proved against the ruling that strands work.
+        &noisy_gate(PIPE_FILLING_LINES, FEW_LINES, 1),
+        "feature/loud-output",
+        1,
+    );
+
+    assert_eq!(
+        evidence.matches("the gate is reporting line").count(),
+        PIPE_FILLING_LINES,
+        "every line of output the gate wrote is in the evidence"
+    );
+    assert!(
+        evidence.len() > A_WEDGING_VOLUME,
+        "the output must reach the volume that wedged the gate: {} bytes",
+        evidence.len()
+    );
+}
+
+#[test]
+fn a_gate_that_fills_both_pipes_still_reaches_its_own_verdict() {
+    let evidence = evidence_of_a_noisy_gate(
+        &noisy_gate(PIPE_FILLING_LINES, PIPE_FILLING_LINES, 0),
+        "feature/loud-everything",
+        0,
+    );
+
+    assert_eq!(
+        evidence.matches("the gate is reporting line").count(),
+        PIPE_FILLING_LINES
+    );
+    assert_eq!(
+        evidence
+            .matches("the gate is complaining about line")
+            .count(),
+        PIPE_FILLING_LINES
+    );
+    assert!(
+        evidence.len() > 2 * A_WEDGING_VOLUME,
+        "both streams must reach the volume that wedged the gate: {} bytes",
+        evidence.len()
+    );
+}
+
+#[test]
+fn the_integrate_train_judges_a_loud_candidate_rather_than_wedging_on_it() {
+    // The train runs the same gate over every candidate it judges, so a capture that
+    // wedges strands a whole train rather than one publication. This gate rules on
+    // what the candidate's tree holds, which is how its verdict is shown to have
+    // survived the volume: the second candidate is the one carrying `second.txt`.
+    let gate = format!(
+        "[\"sh\", \"-c\", \"j=0; while [ $j -lt {PIPE_FILLING_LINES} ]; \
+         do echo the gate is complaining about line $j of what it read >&2; j=$((j+1)); done; \
+         echo the gate finished its run; test ! -f second.txt\"]"
+    );
+    let fixture = Fixture::local(&local_direct(&gate));
+    let checkout = fixture.checkout.clone();
+    let world = &fixture.world;
+    for (branch, file, subject) in [
+        (
+            "claude/loud-first",
+            "first.txt",
+            "feat: the first candidate",
+        ),
+        (
+            "claude/loud-second",
+            "second.txt",
+            "fix: the second candidate",
+        ),
+    ] {
+        world.git(&checkout, &["checkout", "-q", "-b", branch, "main"]);
+        world.commit_file(&checkout, file, "value\n", subject);
+    }
+    world.git(&checkout, &["checkout", "-q", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args(["integrate", "claude/loud-first", "claude/loud-second"])
+        .current_dir(&checkout)
+        .timeout(CAPTURE_BOUND)
+        .assert();
+    assert!(
+        assert.get_output().status.code().is_some(),
+        "the train was killed at the journey's bound: a loud candidate's gate wedged \
+         the capture reading it"
+    );
+    assert
+        .success()
+        .stdout(predicate::str::contains("claude/loud-first: merged"))
+        .stdout(predicate::str::contains("claude/loud-second: skipped"))
+        .stdout(predicate::str::contains("gate-failed"));
+
+    // Only what the loud gate cleared reached the base.
+    let subjects: Vec<String> = world
+        .git(&checkout, &["log", "--format=%s", "main"])
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        subjects,
+        vec![
+            "feat: the first candidate".to_owned(),
+            "chore: seed the repository".to_owned(),
+        ],
+        "{subjects:?}"
+    );
+}
+
 #[test]
 fn an_artifact_nobody_stored_is_a_usage_error() {
     let world = World::new();

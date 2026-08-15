@@ -259,7 +259,7 @@ fn a_gate_naming_a_command_this_host_does_not_have_fails_rather_than_passing() {
     assert!(verdicts[0]["payload"]["output"]
         .as_str()
         .expect("the gate's own output")
-        .contains("gate command not found"));
+        .contains("the gate command \"no-such-gate-command\" could not be run"));
 }
 
 #[test]
