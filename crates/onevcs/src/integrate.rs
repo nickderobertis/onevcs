@@ -298,15 +298,22 @@ fn train(
             object(json!({
                 "branch": base,
                 "remote": "origin",
-                "accepted": result.is_ok(),
+                "accepted": result.accepted(),
             })),
         );
-        result.map_err(|output| Error::GateFailed {
-            reason: format!(
-                "the push of {base:?} was rejected by the merge path: {}",
-                output.lines().next_back().unwrap_or("").trim()
-            ),
-        })?;
+        if !result.accepted() {
+            return Err(Error::GateFailed {
+                reason: format!(
+                    "the push of {base:?} was rejected by the merge path: {}",
+                    result.refusal().unwrap_or_else(|| result
+                        .output()
+                        .lines()
+                        .next_back()
+                        .unwrap_or("")
+                        .trim())
+                ),
+            });
+        }
         ending = Ending::AdvancedAndPushed;
     }
     let _ = std::fs::remove_dir_all(&workspace);

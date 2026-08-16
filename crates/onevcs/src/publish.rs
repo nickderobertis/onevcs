@@ -902,13 +902,9 @@ fn publish_locally(
                 environment,
             )?;
             record_push(context, stream, &pushed)?;
-            pushed.map_err(|output| Error::GateFailed {
-                reason: format!(
-                    "the publishing push of {:?} was rejected by the merge path: {}",
-                    context.branch,
-                    output.lines().next_back().unwrap_or("").trim()
-                ),
-            })?;
+            if !pushed.accepted() {
+                return Err(rejected(context, &pushed));
+            }
             fast_forward_publication(publication, context.target.base())?;
             stream.emit(
                 EventKind::MergeCompleted,
@@ -923,6 +919,60 @@ fn publish_locally(
 
     drop(turn);
     outcome
+}
+
+/// A push the merge path refused, reported as what git said it was.
+///
+/// This is also what an *unclassified* rejection is reported as, deliberately: it
+/// names the push and hands over git's own per-ref summary without deciding what
+/// produced it. The fallback below it is for a failure that never reached a ref at
+/// all — no credential, no remote — where git's last line is the whole answer.
+fn rejected(context: &Context<'_>, pushed: &git::Pushed) -> Error {
+    Error::GateFailed {
+        reason: format!(
+            "the publishing push of {:?} was rejected by the merge path: {}",
+            context.branch,
+            pushed.refusal().unwrap_or_else(|| pushed
+                .output()
+                .lines()
+                .next_back()
+                .unwrap_or("")
+                .trim())
+        ),
+    }
+}
+
+/// Whether git turned this push down *because the lease was stale*, decided from
+/// what git and the remote report and never from the prose beside it.
+///
+/// Two structural facts have to agree, because neither alone is enough. git has to
+/// have declined this very ref: its `--porcelain` line for the branch carries the
+/// `!` flag, which rules out a push that failed before any ref was negotiated. And
+/// the lease has to be genuinely stale: `--force-with-lease=<branch>:<seen>` is
+/// declined exactly when the remote's value for the branch is not `<seen>`, so the
+/// remote's own answer to "where is this branch" settles whether that is what
+/// happened. A remote that will not say leaves the rejection unclassified, which is
+/// reported as itself — assuming a stale lease from an answer nobody gave is the
+/// same mistake as reading it out of a message a locale could translate.
+fn declined_the_lease(
+    context: &Context<'_>,
+    pushed: &git::Pushed,
+    replaced: &str,
+    environment: &[(String, String)],
+) -> Result<bool> {
+    if !pushed.refused_branch(&context.branch) {
+        return Ok(false);
+    }
+    Ok(
+        match git::remote_tip(&context.worktree, "origin", &context.branch, environment)? {
+            git::RemoteTip::At(tip) => tip != replaced,
+            // The host no longer has the branch at all, which is not where this run
+            // last saw it either — the lease named a commit, and git declines it
+            // against a ref that is gone just as it does against one that moved.
+            git::RemoteTip::Absent => true,
+            git::RemoteTip::Unknown => false,
+        },
+    )
 }
 
 /// Push the branch, open or adopt its change request, and ask the host to land it.
@@ -949,23 +999,21 @@ fn publish_as_change(
         environment,
     )?;
     record_push(context, stream, &pushed)?;
-    if let Err(output) = pushed {
-        // Which refusal this is depends on what git declined. A lease it turned down
-        // it names — "stale info" is the phrase, and it means somebody else's commit
-        // is on this branch while the work here is a replay that would have written
-        // over it. Every other rejection of the same push is what it has always been:
-        // a credential, a hook, or the host's own policy, and reading one of those as
-        // a branch that moved would send an operator to reconcile histories that
-        // never diverged.
-        let declined_the_lease = replacing.is_some() && output.contains("stale info");
-        let Some(replaced) = replacing.filter(|_| declined_the_lease) else {
-            return Err(Error::GateFailed {
-                reason: format!(
-                    "the publishing push of {:?} was rejected by the merge path: {}",
-                    context.branch,
-                    output.lines().next_back().unwrap_or("").trim()
-                ),
-            });
+    if !pushed.accepted() {
+        // Which refusal this is depends on what git declined, and that is decided
+        // from what git and the host *report* rather than from the sentence either
+        // wrote. A declined lease means somebody else's commit is on this branch
+        // while the work here is a replay that would have written over it. Every
+        // other rejection of the same push is what it has always been — a
+        // credential, a hook, or the host's own policy — and so is every rejection
+        // this cannot tell apart: reading one of those as a branch that moved would
+        // send an operator to reconcile histories that never diverged.
+        let declined = match replacing {
+            Some(replaced) => declined_the_lease(context, &pushed, replaced, environment)?,
+            None => false,
+        };
+        let Some(replaced) = replacing.filter(|_| declined) else {
+            return Err(rejected(context, &pushed));
         };
         return Err(Error::SyncConflict {
             reason: format!(
@@ -1161,15 +1209,13 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
     }
 }
 
-fn record_push(
-    context: &Context<'_>,
-    stream: &mut Stream,
-    pushed: &std::result::Result<String, String>,
-) -> Result<()> {
-    let (ruling, output) = match pushed {
-        Ok(output) => (gate::Ruling::Passed, output),
-        Err(output) => (gate::Ruling::Rejected, output),
+fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed) -> Result<()> {
+    let ruling = if pushed.accepted() {
+        gate::Ruling::Passed
+    } else {
+        gate::Ruling::Rejected
     };
+    let output = pushed.output();
     stream.emit(
         EventKind::Push,
         object(json!({

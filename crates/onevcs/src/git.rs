@@ -958,17 +958,62 @@ pub fn merge_ff_only(cwd: &Path, reference: &str) -> Result<()> {
     checked(&["merge", "--ff-only", reference], Some(cwd)).map(|_| ())
 }
 
-/// Push a branch, returning everything the push wrote.
+/// What a push did, in the form git reports rather than in the prose beside it.
 ///
-/// That text is the merge path's own verification evidence: a repository whose
-/// `pre-push` hook runs its complete gate reports that run here, and callers
-/// preserve it whether the push passed or was rejected.
-pub fn push(
-    cwd: &Path,
-    branch: &str,
-    remote: &str,
-    env: &[(String, String)],
-) -> Result<std::result::Result<String, String>> {
+/// Two things a caller needs, and they are not the same thing. `output` is
+/// everything the push wrote, kept whole because a `pre-push` hook runs the
+/// repository's complete gate and reports that run here — it is the merge path's
+/// only verification evidence, and callers preserve it whether the push passed or
+/// was rejected. `refused` is which refs git itself declined to update, read out of
+/// `--porcelain`'s one line per ref: `<flag>\t<from>:<to>\t<summary>`, where `!` is
+/// the flag for a ref git turned down. That flag and that ref name are git's
+/// machine-readable answer — no locale renames them and no hook's message can
+/// produce them — so a decision about *why* a push failed is made from them and
+/// never from the sentence a human would read.
+#[derive(Debug, Clone)]
+pub struct Pushed {
+    accepted: bool,
+    output: String,
+    refused: Vec<String>,
+}
+
+impl Pushed {
+    /// Whether git accepted the push whole.
+    pub fn accepted(&self) -> bool {
+        self.accepted
+    }
+
+    /// Everything the push wrote, porcelain and diagnostics together.
+    pub fn output(&self) -> &str {
+        &self.output
+    }
+
+    /// Whether git declined to update one particular remote branch.
+    ///
+    /// The ref is spelled as git spells it in the porcelain line — fully, as
+    /// `refs/heads/<branch>` — so a caller asks about the branch it pushed rather
+    /// than about a substring that could match another.
+    pub fn refused_branch(&self, branch: &str) -> bool {
+        let reference = format!("refs/heads/{branch}");
+        self.refused.contains(&reference)
+    }
+
+    /// Why the push was refused, as git's own per-ref summary, for a human to read.
+    ///
+    /// The summary is *reported*, never classified on: `--porcelain` puts the ref
+    /// status on stdout and git's usual `! [rejected] …` line then never reaches
+    /// stderr, so without this a rejection would read only as "failed to push some
+    /// refs".
+    pub fn refusal(&self) -> Option<&str> {
+        self.output
+            .lines()
+            .find(|line| line.starts_with("!\t"))
+            .and_then(|line| line.split('\t').nth(2))
+    }
+}
+
+/// Push a branch, returning everything the push wrote.
+pub fn push(cwd: &Path, branch: &str, remote: &str, env: &[(String, String)]) -> Result<Pushed> {
     push_replacing(cwd, branch, remote, None, env)
 }
 
@@ -986,17 +1031,75 @@ pub fn push_replacing(
     remote: &str,
     replacing: Option<&str>,
     env: &[(String, String)],
-) -> Result<std::result::Result<String, String>> {
+) -> Result<Pushed> {
     let lease = replacing.map(|seen| format!("--force-with-lease={branch}:{seen}"));
-    let mut args = vec!["push", remote, branch];
+    let mut args = vec!["push", "--porcelain", remote, branch];
     if let Some(lease) = lease.as_deref() {
         args.insert(1, lease);
     }
     let output = run_with_env(&args, Some(cwd), env)?;
-    Ok(if output.ok() {
-        Ok(output.combined())
-    } else {
-        Err(output.combined())
+    Ok(Pushed {
+        accepted: output.ok(),
+        refused: refused_refs(&output.stdout),
+        output: output.combined(),
+    })
+}
+
+/// The remote refs a `--porcelain` push reported it declined to update.
+fn refused_refs(porcelain: &str) -> Vec<String> {
+    porcelain
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            // A ref name cannot contain a colon, so the first one separates the two
+            // halves of `<from>:<to>` and the remote's is what follows it.
+            (fields.next()? == "!")
+                .then(|| fields.next()?.split_once(':').map(|(_, to)| to.to_owned()))
+                .flatten()
+        })
+        .collect()
+}
+
+/// What a remote has for one branch, as it answers now.
+///
+/// Three answers rather than two: a remote that has no such branch and a remote
+/// that could not be asked at all are different facts, and collapsing them is how a
+/// caller comes to decide something from an answer nobody gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteTip {
+    /// The remote answered, and the branch is at this commit.
+    At(String),
+    /// The remote answered, and has no branch of that name.
+    Absent,
+    /// The remote could not be asked, so nothing about it is known here.
+    Unknown,
+}
+
+/// Ask the remote itself where a branch is, in its machine-readable form.
+///
+/// `ls-remote --exit-code` separates the three answers by exit status rather than
+/// by output: `0` is a branch it has, `2` is a remote that answered and has none,
+/// and anything else is a remote that could not be reached or would not say.
+pub fn remote_tip(
+    cwd: &Path,
+    remote: &str,
+    branch: &str,
+    env: &[(String, String)],
+) -> Result<RemoteTip> {
+    let reference = format!("refs/heads/{branch}");
+    let listing = run_with_env(
+        &["ls-remote", "--exit-code", remote, &reference],
+        Some(cwd),
+        env,
+    )?;
+    Ok(match listing.status {
+        0 => listing
+            .stdout
+            .split_whitespace()
+            .next()
+            .map_or(RemoteTip::Unknown, |sha| RemoteTip::At(sha.to_owned())),
+        2 => RemoteTip::Absent,
+        _ => RemoteTip::Unknown,
     })
 }
 
