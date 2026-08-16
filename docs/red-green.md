@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 34. Tests observed red and then green: 49.
+Patches: 34. Tests observed red and then green: 53.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -35,16 +35,16 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 integrate's team and remote refusals go back to naming no command.
 
 - RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — the refusal routes claude/one nowhere:
-- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpxgbqXb/remote-owner`)
+- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpMyVUQp/remote-owner`)
 - RED `every_state_a_branch_can_be_in_has_a_verb_that_takes_it` — the train's refusal names no command: onevcs: invalid input: direct integration is refused for identity "github.com/acme-corp/hosted" (repo_
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmptCytdx/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmp9Puhd9/a checkout with spaces'`)
 
 ### `03-recovery-hands-every-branch-to-the-train`
 
 recover's handoff names `integrate` whatever the identity is, which is the verb half of them refuse.
 
 - RED `recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publish_it` — the handoff names no command: onevcs: invalid input: branch "feature/handed-over" carries no unattested incomplete provenance: it has commit
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpF08XCv/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpQSnWc6/a checkout with spaces'`)
 
 ### `04-interrupted-work-published-as-finished`
 
@@ -69,13 +69,13 @@ the branch-keyed sync conflict goes back to stating that the two conflict.
 
 the publication path's sync conflict goes back to stating that the branch is retained.
 
-- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpMwk2I4/project`)
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpKVYF1U/project`)
 
 ### `08-printed-commands-are-not-quoted`
 
 an argument a shell would split is printed as it is.
 
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpgVytkO/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpuqxoZD/a checkout with spaces'`)
 
 ### `09-a-repository-path-read-lossily`
 
@@ -113,7 +113,7 @@ a publication stops running the gate the policy names.
 
 the refusal that nothing would be attested stops naming the rules entry that answers it.
 
-- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpyVUyvT/.onevcs/rules.yml)
+- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpghu78d/.onevcs/rules.yml)
 
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
@@ -140,7 +140,7 @@ the branch-keyed refusals stop naming the command that lists the branches there 
 
 the train's no-subject skip goes back to reporting the synthesis failure alone.
 
-- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmph5OOpr/project --title <T>`
+- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpbw4hqW/project --title <T>`
 
 ### `19-the-verb-is-not-written-down`
 
@@ -234,6 +234,10 @@ a stack parent the base already carries is merged into the branch like anything 
 
 - RED `a_stack_parent_that_squash_merged_is_replayed_out_of_the_branch_rather_than_merged` — Unexpected failure.
 - RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected stderr, failed var.contains(already carries what "feature/clashing-filter" was stacked on)
+- RED `a_stack_parent_the_base_already_carries_is_replayed_by_the_verb_that_publishes_it` — Unexpected failure.
+- RED `a_replay_conflict_in_a_named_branchs_own_work_names_the_replay_that_resolves_it` — Unexpected stderr, failed var.contains(already carries what "feature/named-clash" was stacked on)
+- RED `a_recovery_whose_stack_parent_already_landed_is_replayed_onto_the_base` — Unexpected failure.
+- RED `a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay` — Unexpected stderr, failed var.contains(already carries what "feature/recovered-clash" was stacked on)
 
 ### `34-every-branch-is-replayed-from-its-fork`
 
