@@ -92,6 +92,47 @@ fn a_change_request_whose_title_names_nothing_is_refused_as_the_real_host_refuse
 }
 
 #[test]
+fn a_change_request_records_the_body_it_was_opened_with_and_none_when_it_had_none() {
+    let _home = Home::new();
+    let host = MemoryHost::new();
+
+    // Nothing is refused about a body — a host places no shape on prose — so what
+    // there is to hold is that the three cases stay three: a body, an empty one, and
+    // none at all.
+    let drafted = "Because the reviewer has to read something.\n";
+    let bodied = host
+        .open_change(ChangeSpec {
+            body: Some(drafted.to_owned()),
+            ..spec("feature/bodied")
+        })
+        .expect("opened");
+    assert_eq!(host.state().bodies[&bodied.id], drafted);
+
+    // An explicitly empty body is a body the caller passed, and it is recorded as
+    // one: a caller that sent an empty string said something, and a journey that
+    // could not tell it from silence could not assert what its own code did.
+    let empty = host
+        .open_change(ChangeSpec {
+            body: Some(String::new()),
+            ..spec("feature/empty-body")
+        })
+        .expect("opened");
+    assert_eq!(host.state().bodies[&empty.id], "");
+
+    let none = host
+        .open_change(ChangeSpec {
+            body: None,
+            ..spec("feature/no-body")
+        })
+        .expect("opened");
+    assert!(
+        !host.state().bodies.contains_key(&none.id),
+        "a change request opened with no body records none: {:?}",
+        host.state().bodies
+    );
+}
+
+#[test]
 fn a_change_request_is_opened_found_again_and_merged() {
     let _home = Home::new();
     let factory = MemoryHost::new();

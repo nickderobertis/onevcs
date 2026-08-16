@@ -1,0 +1,21 @@
+Mutation: recovery stops writing the attestation commit that carries the cleared marker forward.
+Red: a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all
+
+diff --git a/crates/onevcs/src/provenance.rs b/crates/onevcs/src/provenance.rs
+index 3c7f303..4abc287 100644
+--- a/crates/onevcs/src/provenance.rs
++++ b/crates/onevcs/src/provenance.rs
+@@ -330,11 +330,8 @@ pub(crate) fn attest(repo: &Path, base: &str, trailers: &Trailers) -> Result<Opt
+         .iter()
+         .map(|sha| format!("{} {sha}", trailers.recovered()))
+         .collect();
+-    git::commit_empty(
+-        repo,
+-        &format!("{ATTESTATION_SUBJECT}\n\n{}", attested.join("\n")),
+-    )
+-    .map(Some)
++    let _ = (repo, attested);
++    Ok(None)
+ }
+ 
+ /// Whether a branch's base-relative history carries an incomplete marker at all.

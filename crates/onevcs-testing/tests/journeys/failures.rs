@@ -235,11 +235,12 @@ fn a_seeded_document_holding_a_session_nothing_could_act_on_is_refused() {
         .to_string()
         .contains("git would not accept"));
 
-    // A head or a title recorded for a change request nobody opened is a record no
-    // call could ever reach, so it is refused rather than carried.
+    // A head, a title, or a body recorded for a change request nobody opened is a
+    // record no call could ever reach, so it is refused rather than carried.
     for stray in [
         r#""heads": {"9": "feature/one"}"#,
         r#""titles": {"9": "feat: x"}"#,
+        r#""bodies": {"9": "Because the reviewer has to read something."}"#,
     ] {
         std::fs::write(&host, format!(r#"{{{opened}, {stray}}}"#)).expect("a written document");
         let refused = FileHost::create(&host)

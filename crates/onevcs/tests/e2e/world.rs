@@ -421,6 +421,26 @@ impl World {
             .expect("a host that has not heard of the flag");
     }
 
+    /// The body one change request was opened with, as the host was given it.
+    ///
+    /// Read off the host's own state rather than off what a journey passed in, so
+    /// what is asserted is what `gh pr create` was actually told. The program
+    /// records it with a newline of `printf`'s own, which is taken back off here —
+    /// one, exactly, so a body that ends in a blank line still reads as one.
+    pub fn change_request_body(&self, number: usize) -> String {
+        let path = self.path(format!("gh-state/pr-{number}.body"));
+        let recorded = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "the host records the body of every change request it opens; {} is unreadable: \
+                 {error}",
+                path.display()
+            )
+        });
+        recorded
+            .strip_suffix('\n')
+            .map_or(recorded.clone(), str::to_owned)
+    }
+
     /// Every call the substituted host has been asked to make, in order.
     ///
     /// What a journey about a credential's *reach* asserts over. Whether a build

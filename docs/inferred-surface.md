@@ -95,7 +95,11 @@ that widening needs, and each is the smallest thing that could answer the questi
 it exists for. The declarations themselves live in `docs/contract.md` and are held
 to the code by `the_amendment_declares_the_types_the_widened_seam_gained` in
 `tests/contract.rs`; the column below records only *why* each shape was chosen,
-which is what this file is for.
+which is what this file is for. The one row that names a field list a consumer
+reads before it builds anything — `PublishRequest` — is reconciled with the type
+itself by `the_inferred_surface_row_lists_the_fields_publish_request_actually_has`
+beside it, so the rationale cannot come to describe options the request does not
+take.
 
 <!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the table below is a
 reviewer's record of which lines are approved and which are an inference, not a second
@@ -107,7 +111,7 @@ for the same reason. -->
 | Type | Inferred shape | Why |
 | --- | --- | --- |
 | `SessionRecord` | `session`, `identity`, `lifecycle`, `provenance` | What every command that takes a token needed off the private record and could not derive from a `Session`: which repository it belongs to, whether it is still open, and whether its branch carries an incomplete-step marker. |
-| `PublishRequest` | `policy`, `title` | Exactly the options `onevcs publish` takes beyond the token. `title` is a `Subject` rather than a `String`: a publication commits and merges before it composes a message, so the check has to be in the conversion that builds the request rather than where the message is composed. |
+| `PublishRequest` | `policy`, `title`, `body` | Exactly the options `onevcs publish` takes beyond the token. `title` is a `Subject` rather than a `String`: a publication commits and merges before it composes a message, so the check has to be in the conversion that builds the request rather than where the message is composed. `body` is a plain `String` for the opposite reason — a host places no shape on prose, so there is nothing for a conversion to check and an unusable body does not exist. |
 | `Publication` | `session`, `branch`, `policy`, `outcome` | What a caller journals about a publication: which session and branch, the policy it was actually taken under (after the rules file and any narrowing), and what happened. |
 | `PublishOutcome` | `merged` / `change-open` / `queued` / `nothing-to-publish` / `failed` | The four endings the CLI printed as prose, plus the failure it printed to stderr and reported as an exit code. `Retention` is on the failure because the branch is the only record of the work, and whether it survived is the first thing a caller asks. |
 

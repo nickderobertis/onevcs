@@ -585,6 +585,130 @@ fn a_reviewed_change_is_pushed_and_left_open() {
 }
 
 #[test]
+fn the_command_line_gives_a_change_request_its_body_as_text_or_as_a_file() {
+    // Both forms of the same option, because they are the same option: a body is
+    // multi-line prose, and the file is how one that was actually drafted arrives.
+    let hosted = Hosted::new(REVIEWED);
+    let typed = hosted.change("feature/typed-body", "feat: add the typed thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &typed, "--body", "One line, as typed."])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    assert_eq!(hosted.world.change_request_body(1), "One line, as typed.");
+
+    let drafted = "## What\n\nA body with headings, blank lines, and a trailing newline.\n\n\
+                   ## Why\n\nBecause `--body` is not where Markdown survives.\n";
+    let file = hosted.world.path("drafted-body.md");
+    std::fs::write(&file, drafted).expect("a drafted body");
+    let from_file = hosted.change("feature/filed-body", "feat: add the filed thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish",
+            &from_file,
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    // Whole and unaltered: the file's own bytes are what the host was given.
+    assert_eq!(hosted.world.change_request_body(2), drafted);
+
+    // A path that is not there names itself rather than the option, and the session
+    // is still there to publish afterwards.
+    let missing = hosted.change("feature/missing-body", "feat: add the unbodied thing");
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish",
+            &missing,
+            "--body-file",
+            &hosted.world.path("nobody-wrote-this.md").to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot read the change request's body from",
+        ))
+        .stderr(predicate::str::contains("nobody-wrote-this.md"));
+    assert!(
+        !hosted.world.path("gh-state/pr-3.env").exists(),
+        "a body that could not be read opens no change request"
+    );
+}
+
+#[test]
+fn naming_the_body_twice_is_refused_by_name_before_anything_is_published() {
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted.change("feature/two-bodies", "feat: add the twice-described thing");
+    let file = hosted.world.path("drafted-body.md");
+    std::fs::write(&file, "The body that was drafted.\n").expect("a drafted body");
+
+    // Two bodies is a caller that meant one of them. Refused by name, and the
+    // refusal names the invocation that keeps each one rather than diagnosing.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish",
+            &token,
+            "--body",
+            "The body that was typed.",
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--body and --body-file"))
+        .stderr(predicate::str::contains(format!(
+            "onevcs publish {token} --body-file {}",
+            file.display()
+        )))
+        .stderr(predicate::str::contains(format!(
+            "onevcs publish {token} --body TEXT"
+        )));
+
+    // Nothing was published: no change request was opened and the branch never
+    // reached the origin, so the refusal is one an operator can simply re-run past.
+    assert!(
+        !hosted.world.path("gh-state/pr-1.env").exists(),
+        "a refused publication opens no change request"
+    );
+    assert!(
+        !hosted
+            .world
+            .git_raw(
+                &hosted.origin,
+                &["rev-parse", "--verify", "refs/heads/feature/two-bodies"]
+            )
+            .status
+            .success(),
+        "a refused publication pushes nothing"
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--body-file", &file.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    // The file's own bytes, its trailing newline included.
+    assert_eq!(
+        hosted.world.change_request_body(1),
+        "The body that was drafted.\n"
+    );
+}
+
+#[test]
 fn an_automated_change_merges_once_every_required_check_is_green() {
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[

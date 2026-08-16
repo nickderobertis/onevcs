@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "authenticated_user": "seeded-user",
+  "changes": [
+    {
+      "id": "1",
+      "url": "https://github.com/acme-corp/widgets/pull/1",
+      "head_sha": "def456",
+      "base": "main"
+    }
+  ],
+  "heads": {
+    "1": "feature/seeded"
+  },
+  "titles": {
+    "1": "feat: the seeded change"
+  },
+  "bodies": {
+    "1": "The body the caller drafted.\n"
+  },
+  "checks": {
+    "1": [
+      {
+        "name": "gate",
+        "status": "completed",
+        "conclusion": "success",
+        "required": true
+      },
+      {
+        "name": "coverage",
+        "status": "in_progress",
+        "conclusion": null,
+        "required": false
+      }
+    ]
+  },
+  "check_logs": {
+    "1": {
+      "gate": "everything passed\n"
+    }
+  },
+  "check_sources": [
+    "actions",
+    "branch-rules"
+  ],
+  "merges": {
+    "1": {
+      "merged": "abc123"
+    }
+  }
+}

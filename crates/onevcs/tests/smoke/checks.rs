@@ -136,6 +136,10 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
             &PublishRequest {
                 policy: None,
                 title: Some(Subject::try_from(title.clone()).expect("a usable title")),
+                // No body, which is what every caller that drafts none passes: the
+                // real `gh pr create` is asked for a change request with an empty
+                // one, and this tier is where that call is actually made.
+                body: None,
             },
             providers.hosting,
         )

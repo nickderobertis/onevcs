@@ -396,6 +396,7 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
         &PublishRequest {
             policy: Some(MergePolicy::ChangeOpen),
             title: Some(subject("feat: the narrowed thing")),
+            body: None,
         },
     )
     .expect("the publication runs");
@@ -413,6 +414,7 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
         &PublishRequest {
             policy: Some(MergePolicy::LocalDirect),
             title: None,
+            body: None,
         },
     )
     .expect_err("a widening is refused rather than published");
@@ -649,12 +651,27 @@ fn a_title_that_could_not_be_a_subject_is_refused_where_the_request_is_built() {
     assert_eq!(&*subject, "feat: the thing");
     assert_eq!(subject.to_string(), "feat: the thing");
     // And it survives the trip a request takes through JSON, refusing there too.
+    // The body rides beside it and is prose, so it is checked nowhere: the one thing
+    // that can go wrong with a body is not being sent, and a request that names none
+    // writes none rather than an empty one.
     let request = PublishRequest {
         policy: None,
         title: Some(subject),
+        body: Some("## Why\n\nBecause the reviewer has to read something.\n".to_owned()),
     };
     let json = serde_json::to_string(&request).expect("a request serializes");
-    assert_eq!(json, r#"{"title":"feat: the thing"}"#);
+    assert_eq!(
+        json,
+        r###"{"title":"feat: the thing","body":"## Why\n\nBecause the reviewer has to read something.\n"}"###
+    );
+    assert_eq!(
+        serde_json::to_string(&PublishRequest {
+            title: None,
+            ..request.clone()
+        })
+        .expect("a request serializes"),
+        r###"{"body":"## Why\n\nBecause the reviewer has to read something.\n"}"###
+    );
     assert_eq!(
         serde_json::from_str::<PublishRequest>(&json).expect("and reads back"),
         request
@@ -685,6 +702,7 @@ fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
         &PublishRequest {
             policy: None,
             title: Some(subject("feat: the title the caller asked for")),
+            body: None,
         },
     )
     .expect("the publication runs");
@@ -698,6 +716,80 @@ fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
     let title = std::fs::read_to_string(world.path("gh-state/pr-1.title"))
         .expect("the host records the title it was given");
     assert_eq!(title.trim(), "feat: the title the caller asked for");
+}
+
+/// A body of the shape a caller actually drafts: several lines of Markdown, a
+/// heading, and a blank line the crate must not eat.
+const DRAFTED: &str = "## What\n\nThe seam a caller passes a body through.\n\n## Why\n\nA \
+                       reviewer opening this learns something the title did not say.\n";
+
+#[test]
+fn a_requested_body_is_what_the_change_request_is_opened_with_verbatim() {
+    // The seam this exists for: the layer that knows what a change is *for* is the
+    // caller, and until it could pass a body every change request this crate opened
+    // carried the same three composed lines.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/bodied");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: the thing the body describes",
+    );
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: Some(DRAFTED.to_owned()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(matches!(
+        published.outcome,
+        PublishOutcome::ChangeOpen { .. }
+    ));
+
+    // Byte for byte, blank lines and all: a body a caller drafted that arrives
+    // reflowed, prefixed, or with a section appended is a body it did not write.
+    assert_eq!(world.change_request_body(1), DRAFTED);
+}
+
+#[test]
+fn a_publication_given_no_body_opens_a_change_request_with_no_body_at_all() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/bodiless");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: the thing that describes itself",
+    );
+
+    onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+
+    // Nothing, rather than the scaffold that used to stand in for one: the subject
+    // echoed back under `## What`, `Published by onevcs.` under `## Why`, and the
+    // publication's trailers under `## Additional info`. A reviewer reading that
+    // learned nothing, so an absent body is absent.
+    let body = world.change_request_body(1);
+    assert!(
+        body.is_empty(),
+        "a publication that was given no body composes none: {body:?}"
+    );
 }
 
 #[test]

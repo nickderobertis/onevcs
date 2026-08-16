@@ -1,0 +1,15 @@
+Mutation: the body map is written whether or not it holds anything, so a document names a field no scenario asked for.
+Red: an_empty_state_is_written_as_its_golden_and_omits_every_field_it_does_not_hold
+
+diff --git a/crates/onevcs-testing/src/state.rs b/crates/onevcs-testing/src/state.rs
+index e5f02d1..f7bd25f 100644
+--- a/crates/onevcs-testing/src/state.rs
++++ b/crates/onevcs-testing/src/state.rs
+@@ -211,7 +211,6 @@ pub struct HostState {
+     /// nowhere else to read it. A change request with no entry was opened with no
+     /// body at all, which is what a publication nobody gave one does — the two are
+     /// different scenarios, and an empty string is the first rather than the second.
+-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+     pub bodies: BTreeMap<ChangeId, String>,
+     /// The checks the host reports on each change request. A change with no entry
+     /// has no checks, which is what a repository with no CI reports.
