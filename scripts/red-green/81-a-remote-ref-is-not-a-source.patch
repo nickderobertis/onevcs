@@ -2,13 +2,13 @@ Mutation: import stops taking a remote ref as a source, leaving a branch only th
 Red: a_branch_is_imported_from_another_checkout_and_from_a_remote_ref
 
 diff --git a/crates/onevcs/src/import.rs b/crates/onevcs/src/import.rs
-index 06503c5..ec4b5e3 100644
+index 97ddb1a..580c2d3 100644
 --- a/crates/onevcs/src/import.rs
 +++ b/crates/onevcs/src/import.rs
 @@ -292,30 +292,6 @@ fn source_of(
          return Ok(Source::Repository(PathBuf::from(from)));
      }
-     let remotes = git::remotes(destination);
+     let remotes = git::remotes(destination)?;
 -    if remotes.iter().any(|remote| remote == from) {
 -        return Ok(Source::Remote {
 -            remote: from.to_owned(),
