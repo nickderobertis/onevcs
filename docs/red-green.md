@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 87. Tests observed red and then green: 110.
+Patches: 89. Tests observed red and then green: 112.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -580,10 +580,23 @@ status hands a stream's recorded branch to git without asking whether it is a br
 the status report stops declaring its schema version, so a consumer reads a shape it inferred from the keys it could find.
 
 - RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the report declares the version the surface record documents
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — assertion `left == right` failed: the full golden and the report it reads back as disagree
 
 ### `87-a-field-that-holds-nothing-is-written-as-null`
 
 the status report writes an optional field even when it holds nothing, so a consumer that never heard of a session is handed one that is null.
 
 - RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the object a report with nothing optional in it writes is its checked-in golden; re-make crates/onevcs/tes
+
+### `88-a-version-this-build-cannot-read-is-read-anyway`
+
+the report's schema version stops being checked where the object is read, so a document written to a shape this build does not have is read as one it does.
+
+- RED `a_report_declaring_a_version_this_build_does_not_read_is_refused_where_it_is_read` — a version this build does not read is refused: Report { version: ReportVersion(0), reference: Reference { given: "feature/full", kind: Branc
+
+### `89-a-field-a-report-omits-cannot-be-read-back`
+
+a field the report leaves out when it holds nothing becomes one a reader requires, so the very bytes this build writes are bytes it cannot read.
+
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — the full golden reads back as a report: missing field `notes` at line 78 column 1
 
