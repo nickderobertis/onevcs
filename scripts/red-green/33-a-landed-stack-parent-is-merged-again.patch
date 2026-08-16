@@ -6,15 +6,16 @@ Red: a_replay_conflict_in_a_named_branchs_own_work_names_the_replay_that_resolve
 Red: a_recovery_whose_stack_parent_already_landed_is_replayed_onto_the_base
 Red: a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index b38dea0..e9a224d 100644
+index e903e73..64474ca 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -536,7 +536,7 @@ pub(crate) fn reconcile(
+@@ -540,7 +540,7 @@ pub(crate) fn reconcile(
      compared: &str,
      branch: &str,
  ) -> Result<Reconciled> {
--    let (shape, integrated) = match landed_stack_base(repo, compared, branch)? {
+-    let (shape, integrated) = match landed_history_boundary(repo, compared, branch)? {
 +    let (shape, integrated) = match None::<String> {
          Some(parent) => (
              Reconciliation::Replay {
