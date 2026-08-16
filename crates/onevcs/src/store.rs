@@ -439,6 +439,24 @@ pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
     })
 }
 
+/// Resolve a `--repo PATH` argument to the identity and checkout it selects.
+///
+/// The path is read as text first, and one this build cannot read is refused here
+/// rather than resolved through a lossy rendering of itself: the replacement
+/// characters name a checkout nobody registered, and the refusal would then be
+/// about the wrong thing entirely. Every verb that takes `--repo` comes through
+/// this, so a path none of them can read is refused the same way by all of them.
+pub fn resolve_path(registry: &Registry, repo: &Path) -> Result<Resolution> {
+    let named = repo.to_str().ok_or_else(|| Error::Invalid {
+        reason: format!(
+            "the repository path {} is not valid UTF-8, so it can name no registered checkout; \
+             `onevcs repos` lists them as they are recorded",
+            repo.display()
+        ),
+    })?;
+    resolve(registry, named)
+}
+
 fn build(registry: &Registry, alias: &str, checkout: &Checkout) -> Result<Resolution> {
     let identity = registry
         .identities

@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 79. Tests observed red and then green: 104.
+Patches: 95. Tests observed red and then green: 117.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -499,6 +499,14 @@ a host that would not say where the branch is is read as one that has no such br
 
 - RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
 
+### `74-a-change-request-url-is-not-a-reference`
+
+status resolves a change request's URL as no reference at all, which is the state before this branch: the URL is the host's name for the work and nothing here reads it.
+
+- RED `every_spelling_of_one_piece_of_work_resolves_to_the_same_report` — Unexpected failure.
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(is a name git would not accept)
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected failure.
+
 ### `74-a-session-is-cut-from-a-stale-local-base`
 
 the clone takes the lender's local branches for origin's own refs.
@@ -511,11 +519,29 @@ a pinned branch a session already holds is not resumed.
 
 - RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — Unexpected failure.
 
+### `75-an-ambiguous-reference-answers-with-the-first-candidate`
+
+status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
+
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected return code, failed var == 2
+
+### `76-a-branch-a-session-still-holds-is-handed-to-the-verb-for-preserved-work`
+
+status stops noticing that an open session holds the branch, so it names the verb that publishes work nobody holds.
+
+- RED `work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it` — assertion `left == right` failed: an open session's branch is published through the session
+
 ### `76-an-occupied-session-is-taken-up-anyway`
 
 the occupancy question is asked about a run root nobody is in.
 
 - RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — Unexpected failure.
+
+### `77-a-base-that-carries-the-work-is-read-as-unpublished`
+
+status stops reading a landing off the base's content, which is the answer a squash-merge leaves and the one a planner got wrong.
+
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — assertion `left == right` failed
 
 ### `77-an-unpinned-request-takes-up-somebody-elses-session`
 
@@ -523,15 +549,90 @@ a request that pinned no branch resumes whatever session it finds.
 
 - RED `a_session_that_pins_no_branch_is_cut_fresh_every_time` — assertion `left != right` failed
 
+### `78-a-host-that-could-not-be-asked-is-read-as-one-with-nothing-to-say`
+
+status reports a host it could not reach as a host that answered there is nothing, so a gap in the report reads as an answer.
+
+- RED `a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_rest` — assertion `left == right` failed
+
 ### `78-an-ambiguous-pin-picks-one-by-coin-toss`
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
 a pin resumes a record without asking whether it is the session asked for, or still there.
 
 - RED `a_pin_resumes_only_the_session_it_asked_for` — assertion `left != right` failed: a closed session is not resumed
+
+### `79-a-source-nobody-named-is-not-searched-for`
+
+import stops searching everywhere the identity keeps work when nobody passed --from, which is every branch a run left in its own clone.
+
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected failure.
+- RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected failure.
+
+### `80-a-name-the-destination-has-checked-out-is-written-anyway`
+
+import stops refusing the one name a checkout has checked out, so a ref write leaves a working tree describing a commit the branch no longer names.
+
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
+### `81-a-remote-ref-is-not-a-source`
+
+import stops taking a remote ref as a source, leaving a branch only the origin has reachable by no verb.
+
+- RED `a_branch_is_imported_from_another_checkout_and_from_a_remote_ref` — Unexpected failure.
+
+### `82-an-alternate-name-is-dropped`
+
+import writes the branch's own name whatever --as asked for, so work whose name is already spent has nowhere to go.
+
+- RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected stdout, failed var.contains(imported preserved/held)
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
+### `83-a-name-is-overwritten-with-whatever-arrives`
+
+import stops refusing a non-fast-forward, so a name a checkout holds work under is written over by whatever the source has.
+
+- RED `an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose` — Unexpected return code, failed var == 2
+
+### `84-every-gate-verdict-is-read-as-a-pass`
+
+status stops reading what a gate-verdict event actually said, so a refusal and a word this build does not know both report as a pass.
+
+- RED `the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names` — assertion `left == right` failed
+
+### `85-a-branch-a-stream-names-is-taken-on-trust`
+
+status hands a stream's recorded branch to git without asking whether it is a branch name at all.
+
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(is a name git would not accept)
+
+### `86-the-report-does-not-say-which-shape-it-is`
+
+the status report stops declaring its schema version, so a consumer reads a shape it inferred from the keys it could find.
+
+- RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the report declares the version the surface record documents
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — assertion `left == right` failed: the full golden and the report it reads back as disagree
+
+### `87-a-field-that-holds-nothing-is-written-as-null`
+
+the status report writes an optional field even when it holds nothing, so a consumer that never heard of a session is handed one that is null.
+
+- RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the object a report with nothing optional in it writes is its checked-in golden; re-make crates/onevcs/tes
+
+### `88-a-version-this-build-cannot-read-is-read-anyway`
+
+the report's schema version stops being checked where the object is read, so a document written to a shape this build does not have is read as one it does.
+
+- RED `a_report_declaring_a_version_this_build_does_not_read_is_refused_where_it_is_read` — a version this build does not read is refused: Report { version: ReportVersion(0), reference: Reference { given: "feature/full", kind: Branc
+
+### `89-a-field-a-report-omits-cannot-be-read-back`
+
+a field the report leaves out when it holds nothing becomes one a reader requires, so the very bytes this build writes are bytes it cannot read.
+
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — the full golden reads back as a report: missing field `notes` at line 78 column 1
 

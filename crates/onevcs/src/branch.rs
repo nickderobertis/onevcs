@@ -146,18 +146,9 @@ pub fn prepare(
     branch: &str,
     requested: Option<MergePolicy>,
 ) -> Result<Landing> {
-    // A path this build cannot read as text is refused here rather than resolved
-    // through a lossy rendering of itself: the replacement characters name a
-    // checkout nobody registered, and the refusal would then be about the wrong
-    // thing entirely.
-    let named = repo.to_str().ok_or_else(|| Error::Invalid {
-        reason: format!(
-            "the repository path {} is not valid UTF-8, so it can name no registered checkout; \
-             `onevcs repos` lists them as they are recorded",
-            repo.display()
-        ),
-    })?;
-    let resolution = store::resolve(registry, named)?;
+    // A path this build cannot read as text is refused where every `--repo` is,
+    // rather than resolved through a lossy rendering of itself.
+    let resolution = store::resolve_path(registry, repo)?;
     let (file, rules_source) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     if !git::is_valid_branch_name(branch) {
@@ -518,7 +509,11 @@ impl Landing {
 /// somewhere else. So the first copy holding work wins, and a spent one is taken
 /// only when every copy is spent — where "nothing to publish" is the true answer,
 /// and a better one than a branch nobody has.
-fn locate(
+///
+/// `onevcs import` reaches it too, for the source it takes when nobody named one:
+/// finding a branch wherever this identity left it is one question, and a second
+/// search beside this one would answer it differently the first time either moved.
+pub(crate) fn locate(
     registry: &Registry,
     resolution: &Resolution,
     branch: &str,

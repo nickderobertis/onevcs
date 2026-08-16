@@ -2,14 +2,14 @@ Mutation: the command surface record stops naming publish-branch, which is the d
 Red: the_contract_and_clap_name_the_same_commands
 
 diff --git a/docs/inferred-surface.md b/docs/inferred-surface.md
-index 0fc8367..48c1671 100644
+index edad356..71e72d1 100644
 --- a/docs/inferred-surface.md
 +++ b/docs/inferred-surface.md
-@@ -198,7 +198,6 @@ The verb that answers it is **not in the approved text**, and the approved text
+@@ -202,7 +202,6 @@ The verb that answers it is **not in the approved text**, and the approved text
  never edited, so it is recorded here as an inference awaiting confirmation:
  
  ```
 -onevcs publish-branch BRANCH --repo PATH [--title T] [--policy P]
  onevcs recover BRANCH --repo PATH [--title T]
- ```
- 
+ onevcs status REF [--json]
+ onevcs import BRANCH --repo PATH [--from SOURCE] [--as NAME]

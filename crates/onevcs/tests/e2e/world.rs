@@ -402,6 +402,28 @@ impl World {
             .expect("a host that answers partially");
     }
 
+    /// Tell the substituted host that somebody closed a change request without
+    /// merging it, which is an action on the host and no verb of this crate's.
+    ///
+    /// Said the way every other thing this world tells the host is said — a file
+    /// the program reads — rather than by editing the record the host keeps of what
+    /// it opened.
+    // llmlint: ignore-block[tests_mirror_real_usage] there is no user-facing interface to
+    // drive: closing a change request without merging it is something a *person* does on
+    // GitHub, and this crate deliberately has no verb that closes one — so the only way a
+    // journey can put the host in that state is to say so where this world says everything
+    // else it tells the host. It is the same affordance as `host_checks`,
+    // `answer_malformed`, and `refuse_check_logs` above, in the same directory, read by
+    // the same program: the substituted host's *input* language, not its private record.
+    // The behaviour under test is what `onevcs status` concludes from a host that reports
+    // no open change request, and that conclusion is reached through the real binary.
+    pub fn close_change_request(&self, number: usize) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path(format!("gh-state/closed-{number}")), "")
+            .expect("a change request somebody closed without merging it");
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
     /// Make the substituted host accept a merge and then not perform it.
     pub fn accept_merges_without_performing_them(&self) {
         std::fs::write(self.path("gh-state/refuse-merge"), "")
@@ -865,6 +887,9 @@ case "$subcommand" in
       [ -e "$record" ] || continue
       . "$record"
       [ "$PR_STATE" = "OPEN" ] || continue
+      # Somebody closed it without merging it, which is a thing that happens to a
+      # change request and leaves the branch exactly where it was.
+      [ ! -f "$STATE/closed-$PR_NUMBER" ] || continue
       [ "$PR_HEAD" = "$head" ] || continue
       [ "$PR_BASE" = "$base" ] || continue
       case "$malformed" in
@@ -912,6 +937,7 @@ case "$subcommand" in
     ;;
   view)
     . "$STATE/pr-$number.env"
+    if [ -f "$STATE/closed-$number" ]; then PR_STATE=CLOSED; fi
     # `gh` returns exactly the fields it was asked for, and so does this: a caller
     # that reads a field out of an answer it never requested is a caller that works
     # here and fails against the real host.
