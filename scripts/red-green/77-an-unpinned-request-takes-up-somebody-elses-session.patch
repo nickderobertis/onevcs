@@ -2,10 +2,10 @@ Mutation: a request that pinned no branch resumes whatever session it finds.
 Red: a_session_that_pins_no_branch_is_cut_fresh_every_time
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index 322ecf5..c18baa8 100644
+index 58cf575..f2e34c2 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
-@@ -717,12 +717,10 @@ fn resumable(
+@@ -713,9 +713,7 @@ fn resumable(
      request: &SessionRequest,
      execution: &Path,
  ) -> Result<Option<(Record, lock::Guard)>> {
@@ -13,10 +13,15 @@ index 322ecf5..c18baa8 100644
 -        return Ok(None);
 -    };
 +    let branch = request.branch.as_deref().unwrap_or_default();
+     // The base this request is for, resolved the way the cut below resolves it, so an
+     // unnamed one is the identity's root *now* rather than whatever a record was cut
+     // from when its root may have been another branch. A root nobody can name is a
+@@ -729,7 +727,7 @@ fn resumable(
+     };
      let mut held = all()?.into_iter().filter(|record| {
          record.identity == resolution.key
 -            && *record.branch == *branch
 +            && (branch.is_empty() || *record.branch == *branch)
+             && *record.base == *wanted
              // Closing a session is the statement that it is finished: it hands the
              // branch back to the execution checkout and lets its worktree go. A name
-             // taken again after that is a new session under a spent name, which is a
