@@ -2,13 +2,13 @@ Mutation: a request that pinned no branch resumes whatever session it finds.
 Red: a_session_that_pins_no_branch_is_cut_fresh_every_time
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index d91e6b6..3442fbe 100644
+index 322ecf5..c18baa8 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
-@@ -710,12 +710,10 @@ fn resumable(
+@@ -717,12 +717,10 @@ fn resumable(
      request: &SessionRequest,
      execution: &Path,
- ) -> Result<Option<Record>> {
+ ) -> Result<Option<(Record, lock::Guard)>> {
 -    let Some(branch) = request.branch.as_deref() else {
 -        return Ok(None);
 -    };
