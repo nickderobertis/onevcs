@@ -1,22 +1,16 @@
-Mutation: status reports a host it could not reach as a host that answered, so a gap in the report reads as an answer.
+Mutation: status reports a host it could not reach as a host that answered there is nothing, so a gap in the report reads as an answer.
 Red: a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_rest
 
 diff --git a/crates/onevcs/src/status.rs b/crates/onevcs/src/status.rs
-index e930250..f2ae273 100644
+index 8da2809..1d82137 100644
 --- a/crates/onevcs/src/status.rs
 +++ b/crates/onevcs/src/status.rs
-@@ -493,9 +493,12 @@ struct HostAnswer {
+@@ -558,7 +558,7 @@ impl HostAnswer {
  /// command that produces nothing. A local identity has no host at all, which is
  /// the same shape of gap and says so in the same place.
  fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting) -> HostAnswer {
--    let unavailable = |open: Option<String>, because: String| HostAnswer {
-+    let unavailable = |open: Option<String>, _because: String| HostAnswer {
-         open,
--        checks: ChecksReport::Unavailable { because },
-+        checks: ChecksReport::Reported {
-+            checks: Vec::new(),
-+            sources: Vec::new(),
-+        },
-     };
-     let nothing_to_report = |open: Option<String>| HostAnswer {
-         open,
+-    let unasked = |because: String| HostAnswer::Unasked { because };
++    let unasked = |_because: String| HostAnswer::NothingOpen;
+     let Some(slug) = gh::slug(identity) else {
+         return unasked(format!(
+             "identity {identity:?} is not a {} repository, so no host answers for it",
