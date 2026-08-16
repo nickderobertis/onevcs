@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 48. Tests observed red and then green: 73.
+Patches: 68. Tests observed red and then green: 94.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -228,7 +228,132 @@ the harness goes back to a builtin the shell macOS ships does not have.
 - RED `the_harness_still_refuses_where_the_shell_has_no_bash_four_builtins` — stderr does not report "no-such-ref does not name a commit here":
 - RED `no_script_reaches_for_something_the_shell_macos_ships_does_not_have` — macOS ships bash 3.2, where a script that reaches for one of these aborts before the diagnostic it exists to print:
 
-### `33-a-landed-stack-parent-is-merged-again`
+### `33-work-left-in-a-run-clone-is-not-searched-for`
+
+the search for an identity stops at its registered checkouts.
+
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — the run clone is where the branch is: No preserved unpublished branches in <tmp>/project — the identity of <tmp>/project, the registered c
+
+### `34-the-command-a-row-names-cannot-land-it`
+
+finished work is offered to the local train instead of the verb that lands one branch.
+
+- RED `recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns` — assertion `left == right` failed
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — assertion `left == right` failed: 1 preserved unpublished branch(es) in <tmp>/project — the identity of <tmp>/project, the registered chec
+- RED `session_events_match_across_backends` — assertion `left == right` failed: Git offers finished work the verb that lands one branch
+
+### `35-a-scoped-answer-reads-as-the-whole-hosts`
+
+the report does not say which identity it answered for.
+
+- RED `a_scoped_recoverable_answer_names_the_identity_it_covers` — Unexpected stdout, failed var.contains(No preserved unpublished branches in)
+
+### `36-a-pin-is-cut-fresh-and-says-nothing`
+
+a pinned branch name is taken on trust.
+
+- RED `a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh` — Unexpected return code, failed var == 2
+
+### `37-a-spent-name-answers-for-a-live-one`
+
+the first repository to hold a name answers for it, spent or not.
+
+- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
+
+### `38-a-spent-copy-of-a-name-is-published`
+
+a branch is located by name alone, spent copy or not.
+
+- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — Unexpected stdout, failed var.contains(merged at)
+
+### `39-a-base-nobody-can-reach-judges-the-branch`
+
+a base the repository cannot reach is used to judge it anyway.
+
+- RED `a_run_clone_that_cannot_reach_the_base_is_judged_against_the_one_it_can` — Unexpected failure.
+
+### `40-the-callers-body-is-dropped`
+
+a publication stops carrying the caller's body into the change request it opens.
+
+- RED `a_requested_body_is_what_the_change_request_is_opened_with_verbatim` — assertion `left == right` failed
+- RED `the_command_line_gives_a_change_request_its_body_as_text_or_as_a_file` — assertion `left == right` failed
+
+### `41-a-body-is-composed-when-nobody-passed-one`
+
+the composed scaffold comes back for a publication that was given no body.
+
+- RED `a_publication_given_no_body_opens_a_change_request_with_no_body_at_all` — a publication that was given no body composes none: "## What\n\nfeat: the thing that describes itself\n\n## Why\n\nPublished by onevcs.\n"
+- RED `a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all` — assertion `left == right` failed: a recovery composes no body either
+- RED `a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_require` — assertion `left == right` failed: a branch-keyed publication composes no body
+
+### `42-two-bodies-are-accepted`
+
+naming the body twice stops being refused, and one of the two is silently taken.
+
+- RED `naming_the_body_twice_is_refused_by_name_before_anything_is_published` — Unexpected return code, failed var == 2
+
+### `43-the-provider-drops-the-callers-body`
+
+the testing repository stops handing the caller's body to the host it publishes through.
+
+- RED `a_requested_title_and_body_are_the_ones_the_host_is_given` — no entry found for key
+
+### `44-an-option-publish-takes-is-not-written-down`
+
+the amendment stops naming one of the options `onevcs publish` takes.
+
+- RED `the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_not` — assertion `left == right` failed: the amendment and `onevcs publish` disagree about which options it takes beyond the approved two
+
+### `45-a-recovery-attests-nothing`
+
+recovery stops writing the attestation commit that carries the cleared marker forward.
+
+- RED `a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all` — the pushed branch must carry the recovery forward:
+
+### `46-the-previous-version-is-refused-rather-than-read`
+
+the readable range narrows back to one version, so a scenario written by the build before this one is refused.
+
+- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 2; this b
+
+### `47-a-carried-forward-document-keeps-the-version-it-arrived-at`
+
+a document read at an older version is not carried forward, so the next write declares a version it is not.
+
+- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — assertion `left == right` failed
+
+### `48-the-version-floor-is-not-a-floor`
+
+the oldest readable version stops being a floor, so a version 1 document is read instead of refused.
+
+- RED `a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name` — a document at version 1 is one nothing here reads
+
+### `49-an-added-field-is-written-even-when-it-holds-nothing`
+
+the body map is written whether or not it holds anything, so a document names a field no scenario asked for.
+
+- RED `an_empty_state_is_written_as_its_golden_and_omits_every_field_it_does_not_hold` — assertion `left == right` failed: the host state a fresh provider writes is its checked-in golden
+
+### `50-an-empty-body-is-recorded-as-no-body`
+
+the testing host stops telling an empty body from an absent one, and records neither.
+
+- RED `a_change_request_records_the_body_it_was_opened_with_and_none_when_it_had_none` — no entry found for key
+
+### `51-a-body-about-a-change-nobody-opened-is-carried`
+
+a seeded body about a change request nobody opened stops being refused.
+
+- RED `a_seeded_document_holding_a_session_nothing_could_act_on_is_refused` — a record about a change nobody opened: Host { store: FileStore { path: "<tmp>/host.json", marker: PhantomData<onevcs_testing::state::HostSta
+
+### `52-the-record-names-an-option-publish-does-not-take`
+
+the inferred-surface record's field list stops matching the request a publication takes.
+
+- RED `the_inferred_surface_row_lists_the_fields_publish_request_actually_has` — assertion `left == right` failed: docs/inferred-surface.md and PublishRequest disagree about which options a publication takes
+
+### `53-a-landed-stack-parent-is-merged-again`
 
 a root that already carries the change below a stack is merged into like anything else.
 
@@ -243,25 +368,25 @@ a root that already carries the change below a stack is merged into like anythin
 - RED `a_publish_branch_replay_conflict_names_its_own_command` — Unexpected return code, failed var == 3
 - RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — Unexpected failure.
 
-### `34-a-stack-inferred-from-content`
+### `54-a-stack-inferred-from-content`
 
 a branch is stacked whenever its content looks stacked, rather than when its record says so.
 
 - RED `a_branch_the_base_independently_matches_is_still_merged_because_no_record_stacks_it` — assertion `left == right` failed: the base arrived as the merge it always arrives as
 
-### `35-an-unreadable-path-list-is-read-as-no-change`
+### `55-an-unreadable-path-list-is-read-as-no-change`
 
 a path list this process could not take whole is answered as a commit that changed nothing.
 
 - RED `a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone` — Unexpected failure.
 
-### `37-a-stack-is-never-written-down`
+### `56-a-stack-is-never-written-down`
 
 the tip a session was cut from is never written down, so no session records a stack.
 
 - RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"<token>","identity":"<tmp>/project","alias":"project","branch":"feature/above","base
 
-### `38-a-recorded-stack-is-taken-on-trust`
+### `57-a-recorded-stack-is-taken-on-trust`
 
 every check on a recorded stack past the record itself is dropped.
 
@@ -270,69 +395,70 @@ every check on a recorded stack past the record itself is dropped.
 - RED `a_stack_merged_with_its_own_commits_keeps_targeting_the_stack` — assertion `left == right` failed
 - RED `a_stack_that_shares_no_history_with_the_root_keeps_targeting_the_stack` — assertion `left == right` failed
 
-### `39-a-root-nobody-can-name-is-guessed`
+### `58-a-root-nobody-can-name-is-guessed`
 
 a root the publication checkout cannot name is guessed at instead.
 
 - RED `a_root_the_publication_checkout_cannot_name_leaves_the_stack_where_it_is` — Unexpected failure.
 
-### `40-a-vanished-recorded-base-is-handed-to-git`
+### `59-a-vanished-recorded-base-is-handed-to-git`
 
 a recorded base nothing resolves is handed to git as a revision instead of refused.
 
 - RED `a_recorded_base_no_ref_resolves_names_what_would_restore_it` — Unexpected stderr, failed var.contains(records the base it was stacked on as "feature/gone")
 - RED `a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command` — Unexpected stderr, failed var.contains(records the base it was stacked on as "feature/gone")
 
-### `41-an-unreadable-stack-tip-is-read-as-no-stack`
+### `60-an-unreadable-stack-tip-is-read-as-no-stack`
 
 a recorded stack tip this clone does not have is read as no stack at all.
 
 - RED `a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name` — Unexpected stderr, failed var.contains(names "0000000000000000000000000000000000000000" as the commit branch "feature/above" was cut from)
 
-### `42-a-renames-source-is-never-compared`
+### `61-a-renames-source-is-never-compared`
 
 a rename is compared under the name git reports it as, and not under the one it left.
 
 - RED `a_stack_that_renamed_a_file_the_root_still_has_keeps_targeting_the_stack` — assertion `left == right` failed
 
-### `43-a-recorded-path-is-this-runs-own`
+### `62-a-recorded-path-is-this-runs-own`
 
 a recorded diagnostic keeps the values only this run would spell.
 
 - RED `a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently` — every value only this run would spell is a placeholder, and what it said is not:
 
-### `44-a-moved-base-is-not-re-judged`
+### `63-a-moved-base-is-not-re-judged`
 
 a base that moved after the gate is neither re-synced nor re-judged.
 
 - RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — assertion `left == right` failed: the gate judged the base it landed on, not only the base it started from
 
-### `45-an-unreadable-listing-is-read-as-carried`
+### `64-an-unreadable-listing-is-read-as-carried`
 
 a listing that did not arrive whole is answered as content the base carries.
 
 - RED `an_unreadable_listing_and_a_root_that_moved_on_leaves_the_stack_where_it_is` — Unexpected failure.
 
-### `46-a-root-nobody-can-name-refuses-the-session`
+### `65-a-root-nobody-can-name-refuses-the-session`
 
 a session naming its own base is refused when nothing can name the identity's root.
 
 - RED `a_session_whose_root_nobody_can_name_records_no_stack_and_publishes_as_one` — Unexpected failure.
 
-### `47-a-replayed-branch-is-pushed-as-a-fast-forward`
+### `66-a-replayed-branch-is-pushed-as-a-fast-forward`
 
 a branch whose history a replay rewrote is pushed as though it had not been.
 
 - RED `a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it_lands` — Unexpected failure.
 - RED `a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
+- RED `a_recovery_that_replays_a_branch_the_host_has_replaces_it_there` — Unexpected failure.
 
-### `48-a-lease-names-the-hosts-own-commit`
+### `67-a-lease-names-the-hosts-own-commit`
 
 the lease names whatever the host has now, rather than the commit this run replaces.
 
 - RED `a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
 
-### `49-a-refused-push-is-read-as-a-moved-branch`
+### `68-a-refused-push-is-read-as-a-moved-branch`
 
 every push a leased publication has refused is read as a branch somebody moved.
 
