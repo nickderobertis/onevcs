@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 40. Tests observed red and then green: 63.
+Patches: 41. Tests observed red and then green: 64.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -35,16 +35,16 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 integrate's team and remote refusals go back to naming no command.
 
 - RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — the refusal routes claude/one nowhere:
-- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmp6nEoYh/remote-owner`)
+- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpbnasAK/remote-owner`)
 - RED `every_state_a_branch_can_be_in_has_a_verb_that_takes_it` — the train's refusal names no command: onevcs: invalid input: direct integration is refused for identity "github.com/acme-corp/hosted" (repo_
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpTUSlZl/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpPsBogh/a checkout with spaces'`)
 
 ### `03-recovery-hands-every-branch-to-the-train`
 
 recover's handoff names `integrate` whatever the identity is, which is the verb half of them refuse.
 
 - RED `recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publish_it` — the handoff names no command: onevcs: invalid input: branch "feature/handed-over" carries no unattested incomplete provenance: it has commit
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmp0UKGEY/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpbE3P77/a checkout with spaces'`)
 
 ### `04-interrupted-work-published-as-finished`
 
@@ -69,13 +69,13 @@ the branch-keyed sync conflict goes back to stating that the two conflict.
 
 the publication path's sync conflict goes back to stating that the branch is retained.
 
-- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpmuELFs/project`)
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpbuKSYe/project`)
 
 ### `08-printed-commands-are-not-quoted`
 
 an argument a shell would split is printed as it is.
 
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpiWvg0E/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpgg0C3t/a checkout with spaces'`)
 
 ### `09-a-repository-path-read-lossily`
 
@@ -113,7 +113,7 @@ a publication stops running the gate the policy names.
 
 the refusal that nothing would be attested stops naming the rules entry that answers it.
 
-- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpbRKlFL/.onevcs/rules.yml)
+- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpMGH3l7/.onevcs/rules.yml)
 
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
@@ -140,7 +140,7 @@ the branch-keyed refusals stop naming the command that lists the branches there 
 
 the train's no-subject skip goes back to reporting the synthesis failure alone.
 
-- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpku93EK/project --title <T>`
+- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpKXzzmg/project --title <T>`
 
 ### `19-the-verb-is-not-written-down`
 
@@ -239,7 +239,7 @@ a root that already carries the change below a stack is merged into like anythin
 - RED `a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay` — Unexpected return code, failed var == 3
 - RED `a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_root` — Unexpected failure.
 - RED `a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root` — Unexpected failure.
-- RED `a_hosted_stack_the_root_independently_matches_is_answered_the_same_way` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("2026-08-16T01:55:41.665Z"), "stream": String("s-e8004e1b9ead"), "se
+- RED `a_hosted_stack_the_root_independently_matches_is_answered_the_same_way` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("2026-08-16T02:02:34.036Z"), "stream": String("s-bbc0e89de2dc"), "se
 
 ### `34-a-stack-inferred-from-content`
 
@@ -257,7 +257,7 @@ a path list this process could not take whole is answered as a commit that chang
 
 the tip a session was cut from is never written down, so no session records a stack.
 
-- RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"s-9393a882b50c","identity":"/tmp/.tmpeUYSlH/project","alias":"project","branch":"fea
+- RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"s-563d00af1133","identity":"/tmp/.tmpz2JUam/project","alias":"project","branch":"fea
 
 ### `38-a-recorded-stack-is-taken-on-trust`
 
@@ -285,4 +285,10 @@ a recorded base nothing resolves is handed to git as a revision instead of refus
 a recorded stack tip this clone does not have is read as no stack at all.
 
 - RED `a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name` — Unexpected stderr, failed var.contains(names "0000000000000000000000000000000000000000" as the commit branch "feature/above" was cut from)
+
+### `42-a-renames-source-is-never-compared`
+
+a rename is compared under the name git reports it as, and not under the one it left.
+
+- RED `a_stack_that_renamed_a_file_the_root_still_has_keeps_targeting_the_stack` — assertion `left == right` failed
 
