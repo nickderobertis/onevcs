@@ -2,11 +2,12 @@ Mutation: the lease names whatever the host has now, rather than the commit this
 Red: a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it
 
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index d35ae4b..16881b7 100644
+index 66e3c81..7c3a964 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -528,7 +528,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
+@@ -535,7 +535,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
      // fetch that is about to update it: a publication that replays its own commits
      // pushes over that copy, and what it may replace is what it had already seen —
      // never whatever arrived in between, which is the thing worth refusing over.
@@ -15,7 +16,7 @@ index d35ae4b..16881b7 100644
      if git::has_remote(&context.repo, "origin") {
          // Outside every exclusive section, deliberately.
          git::fetch(&context.repo, "origin")?;
-@@ -565,8 +565,9 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
+@@ -572,8 +572,9 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
      }
  
      let push = match (&replay, &last_seen) {
@@ -25,5 +26,5 @@ index d35ae4b..16881b7 100644
 +            replaced: git::tip(&context.repo, &format!("origin/{}", context.branch))
 +                .unwrap_or_default(),
          },
-         _ => Push::Forward,
-     };
+         // Otherwise it is whatever the caller knows: a branch-keyed verb replays
+         // before it hands a publication here, and its branch is rewritten just the

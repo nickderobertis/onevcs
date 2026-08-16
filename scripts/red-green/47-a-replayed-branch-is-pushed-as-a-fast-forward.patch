@@ -4,6 +4,7 @@ Red: a_review_opened_against_the_change_below_is_reopened_against_the_root_once_
 
 Red: a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it
 
+Red: a_recovery_that_replays_a_branch_the_host_has_replaces_it_there
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
 index d35ae4b..ea3630c 100644
