@@ -239,7 +239,7 @@ a root that already carries the change below a stack is merged into like anythin
 - RED `a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay` — Unexpected return code, failed var == 3
 - RED `a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_root` — Unexpected failure.
 - RED `a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root` — Unexpected failure.
-- RED `a_hosted_stack_the_root_independently_matches_is_answered_the_same_way` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("2026-08-16T02:35:55.108Z"), "stream": String("s-00f272c12ea3"), "se
+- RED `a_hosted_stack_the_root_independently_matches_is_answered_the_same_way` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("<time>"), "stream": String("<token>"), "seq": Number(5), "source": 
 - RED `a_publish_branch_replay_conflict_names_its_own_command` — Unexpected return code, failed var == 3
 
 ### `34-a-stack-inferred-from-content`
@@ -258,7 +258,7 @@ a path list this process could not take whole is answered as a commit that chang
 
 the tip a session was cut from is never written down, so no session records a stack.
 
-- RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"s-04ca41c447e2","identity":"<tmp>/project","alias":"project","branch":"feature/above
+- RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"<token>","identity":"<tmp>/project","alias":"project","branch":"feature/above","base
 
 ### `38-a-recorded-stack-is-taken-on-trust`
 
@@ -296,7 +296,7 @@ a rename is compared under the name git reports it as, and not under the one it 
 
 ### `43-a-recorded-path-is-this-runs-own`
 
-a recorded diagnostic keeps the scratch path the run happened to use.
+a recorded diagnostic keeps the values only this run would spell.
 
-- RED `a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently` — the run's own directory is a placeholder, and what it said is not:
+- RED `a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently` — every value only this run would spell is a placeholder, and what it said is not:
 
