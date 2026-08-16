@@ -646,9 +646,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
 /// Whether a session was cut for this request or was one it resumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reuse {
-    /// A private clone and a worktree were cut for it.
     Cut,
-    /// It is a session that already existed, re-attached to.
     Resumed,
 }
 
@@ -745,14 +743,16 @@ fn resumable(
     // Free right now, asked the way `adopt` asks it a moment later: a session
     // somebody is working in is not one to take a worktree out from under.
     //
-    // llmlint: ignore[changed_behavior_has_e2e] the journey is
+    // The journey is
     // `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing`,
     // and it makes the run root occupied the only way anything can. A lease cannot
     // outlive the command that took it — the agent works in the worktree long after
     // `session open` has exited — so there is no live shared holder for a journey to
     // stand up, and this question answering `None` is what "somebody is in here"
     // already means to `adopt` and `close`.
+    // llmlint: ignore-block[changed_behavior_has_e2e] see the note directly above.
     Ok(lock::try_shared(&candidate.lease())?.map(|lease| (candidate, lease)))
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
 /// Take up a session that already exists, as the request that pinned its branch.

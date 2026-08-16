@@ -426,8 +426,6 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
 /// borrows its object store, so every commit these refs name is already reachable
 /// and git transfers nothing.
 pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<()> {
-    // A checkout with no origin has no such refs to lend, and asking git to copy
-    // none of them would only be a command that says nothing.
     if has_remote(source, "origin") {
         let source_arg = git_path(source).to_string_lossy();
         checked(
