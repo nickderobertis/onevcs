@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 83. Tests observed red and then green: 108.
+Patches: 85. Tests observed red and then green: 109.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -504,7 +504,7 @@ a host that would not say where the branch is is read as one that has no such br
 status resolves a change request's URL as no reference at all, which is the state before this branch: the URL is the host's name for the work and nothing here reads it.
 
 - RED `every_spelling_of_one_piece_of_work_resolves_to_the_same_report` — Unexpected failure.
-- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(was opened through `onevcs` on this host)
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(which is not a branch name git would accept)
 - RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected failure.
 
 ### `75-an-ambiguous-reference-answers-with-the-first-candidate`
@@ -562,4 +562,16 @@ import writes the branch's own name whatever --as asked for, so work whose name 
 import stops refusing a non-fast-forward, so a name a checkout holds work under is written over by whatever the source has.
 
 - RED `an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose` — Unexpected return code, failed var == 2
+
+### `84-every-gate-verdict-is-read-as-a-pass`
+
+status stops reading what a gate-verdict event actually said, so a refusal and a word this build does not know both report as a pass.
+
+- RED `the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names` — assertion `left == right` failed
+
+### `85-a-branch-a-stream-names-is-taken-on-trust`
+
+status hands a stream's recorded branch to git without asking whether it is a branch name at all.
+
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(which is not a branch name git would accept)
 
