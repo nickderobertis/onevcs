@@ -1551,6 +1551,108 @@ fn a_recorded_base_no_ref_resolves_names_what_would_restore_it() {
 }
 
 #[test]
+fn a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command() {
+    // The same refusal the other verb meets, on work that is already complete: what
+    // separates the two here is only the command an operator is sent back with, and a
+    // refusal that named the wrong one would send them to the verb that rejects this
+    // branch.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let prefix = documented_default_prefix();
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/orphaned-complete"],
+    );
+    world.commit_file(&fixture.checkout, "one.txt", "one\n", "feat: add the thing");
+    world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/orphaned-complete\n\n{}\n{} feature/gone",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    attest_the_marker(&fixture, "feature/orphaned-complete");
+
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/orphaned-complete",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "records the base it was stacked on as \"feature/gone\"",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/orphaned-complete --repo {}`",
+            fixture.checkout.display()
+        )));
+}
+
+#[test]
+fn a_publish_branch_replay_conflict_names_its_own_command() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/attested-clash");
+    attest_the_marker(&fixture, "feature/attested-clash");
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/attested-clash"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "shared.txt",
+        "from the branch\n",
+        "feat: share something too",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: change it differently",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/attested-clash",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "already carries what \"feature/attested-clash\" was stacked on",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/attested-clash --repo {}`",
+            fixture.checkout.display()
+        )));
+    let refusal = stderr_of(&assert);
+    assert!(
+        refusal.contains("git rebase --onto origin/main "),
+        "the refusal names the replay that resolves it:\n{refusal}"
+    );
+}
+
+#[test]
 fn a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-filter");

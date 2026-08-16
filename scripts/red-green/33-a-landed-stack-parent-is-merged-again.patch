@@ -7,6 +7,7 @@ Red: a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay
 Red: a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_root
 Red: a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root
 Red: a_hosted_stack_the_root_independently_matches_is_answered_the_same_way
+Red: a_publish_branch_replay_conflict_names_its_own_command
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
 index 7782dcb..f4348d1 100644

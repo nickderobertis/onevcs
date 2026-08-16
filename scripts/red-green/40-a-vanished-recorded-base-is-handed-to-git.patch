@@ -1,5 +1,6 @@
 Mutation: a recorded base nothing resolves is handed to git as a revision instead of refused.
 Red: a_recorded_base_no_ref_resolves_names_what_would_restore_it
+Red: a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
 index 908b526..5a4fa11 100644
