@@ -113,6 +113,18 @@ could not reach it, so two things are stated rather than left to be inferred.
   and origin's own copy, and refuses unless the base already carries what the name
   means. The bar is not that the name is unused; it is that the session carries
   whatever the name refers to.
+- **…and a pin an open session already holds is that session, resumed.** A retry of
+  the same node arrives as the same pin, and cutting it a second run root leaves the
+  first one behind holding the same branch at an older tip — two directories that
+  both answer to the branch somebody is watching, and a clone per attempt. So
+  `workspace::open` asks first whether exactly one *open* session of this identity
+  holds that branch, cut from the same base in the same execution checkout, with its
+  run root intact and its lease free; if one does, it re-attaches through
+  `workspace::adopt` rather than cutting, and says `"reused": true` in the
+  `session-opened` payload. Anything else — occupied, reclaimed, ambiguous, closed —
+  cuts fresh, because reuse is an optimisation and must never be why a session will
+  not open. A closed session is deliberately not one of them: closing hands the
+  branch back and is the statement that the session is finished.
 
 ## Tests are journeys, and there are no unit tests
 

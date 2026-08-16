@@ -142,6 +142,199 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
 }
 
 #[test]
+fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // Somebody else's change lands on origin. The registered checkout is not touched
+    // by that, so its own `main` is now behind — which is where an execution
+    // checkout sits between one publication and the next.
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture.world.commit_file(
+        &elsewhere,
+        "landed.txt",
+        "landed\n",
+        "feat: land somebody else's change",
+    );
+    fixture.world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    let stale = fixture.world.git(&fixture.checkout, &["rev-parse", "main"]);
+    let tip = fixture.world.git(&fixture.origin, &["rev-parse", "main"]);
+    assert_ne!(
+        stale, tip,
+        "the premise: the execution checkout's own base is behind origin"
+    );
+
+    let (_token, worktree) = fixture.open(&["--branch", "feature/from-origin"]);
+
+    assert_eq!(
+        fixture.world.git(&worktree, &["rev-parse", "HEAD"]),
+        tip,
+        "the worktree is cut at what origin holds, not at what the lender remembers"
+    );
+    assert!(
+        worktree.join("landed.txt").is_file(),
+        "the work already on the base is in the tree the session works in"
+    );
+
+    // The whole session reads that ref, not only the cut: `origin/<base>..HEAD` is
+    // what its work is judged and gated against.
+    let clone = worktree.parent().expect("a run root").join("clone");
+    assert_eq!(
+        fixture.world.git(&clone, &["rev-parse", "origin/main"]),
+        tip,
+        "every diff base the session computes addresses that same commit"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&clone, &["rev-list", "--count", "origin/main..HEAD"]),
+        "0",
+        "a fresh session is ahead of its base by nothing at all"
+    );
+
+    // Refs were updated and nothing was fetched over the wire: the clone still holds
+    // no object of its own and still borrows the lender's.
+    assert!(
+        clone.join(".git/objects/info/alternates").is_file(),
+        "the clone must borrow, not copy"
+    );
+    assert_eq!(
+        std::fs::read_dir(clone.join(".git/objects/pack"))
+            .into_iter()
+            .flatten()
+            .count(),
+        0,
+        "opening a session must not re-download the repository"
+    );
+
+    // And the lender is left as it was, beyond the fetch opening a session already
+    // performed: other sessions read this checkout while this one runs.
+    assert_eq!(fixture.world.git(&fixture.checkout, &["rev-parse", "main"]), stale);
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["status", "--porcelain"]),
+        ""
+    );
+}
+
+#[test]
+fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (first, worktree) = fixture.open(&["--branch", "feature/resumed"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the first half");
+    // The half the run was interrupted before committing.
+    std::fs::write(worktree.join("two.txt"), "two\n").expect("uncommitted work");
+
+    // The retry of a node arrives as the same pin, and it is the same session.
+    let (second, resumed) = fixture.open(&["--branch", "feature/resumed"]);
+    assert_eq!(
+        second, first,
+        "a pinned branch a session holds is that session"
+    );
+    assert_eq!(resumed, worktree, "and the tree the work is in is its tree");
+    assert!(
+        resumed.join("one.txt").is_file() && resumed.join("two.txt").is_file(),
+        "every half of the interrupted work is still where it was left"
+    );
+    let runs = worktree
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the identity's run roots");
+    assert_eq!(
+        std::fs::read_dir(runs).expect("the run roots are readable").count(),
+        1,
+        "one run root, rather than one per attempt"
+    );
+
+    // The dirty half is committed behind the incomplete-step marker, by the one path
+    // that writes that commit — so a recovery reads the same marker it always does.
+    let preserved = fixture.world.events_of(&first, "commit-preserved");
+    assert_eq!(preserved[0]["payload"]["provenance"], "incomplete-step");
+    assert!(fixture
+        .world
+        .git(&worktree, &["log", "-1", "--format=%B"])
+        .contains("Onevcs-Status: incomplete"));
+
+    // …and the stream says which of the two openings cut a session and which took
+    // one up, so a reader following the run can tell.
+    let opened = fixture.world.events_of(&first, "session-opened");
+    assert_eq!(opened.len(), 2, "both openings are on the one stream");
+    assert!(
+        opened[0]["payload"]["reused"].is_null(),
+        "the first cut a session: {:?}",
+        opened[0]["payload"]
+    );
+    assert_eq!(opened[1]["payload"]["reused"], true);
+    assert_eq!(
+        opened[1]["payload"]["worktree"],
+        worktree.to_string_lossy().into_owned()
+    );
+}
+
+#[test]
+fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let before = fixture.world.locks();
+    let (first, worktree) = fixture.open(&["--branch", "feature/busy"]);
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    // Somebody is working in there. Resuming is an optimisation, and an optimisation
+    // that cannot be taken must never be a session that will not open.
+    let occupant = World::occupy(lease);
+
+    let (second, cut) = fixture.open(&["--branch", "feature/busy"]);
+    assert_ne!(second, first, "a session nobody could take up is cut fresh");
+    assert_ne!(cut, worktree);
+    assert_eq!(
+        fixture.world.git(&cut, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feature/busy"
+    );
+    let opened = fixture.world.events_of(&second, "session-opened");
+    assert!(
+        opened[0]["payload"]["reused"].is_null(),
+        "a fresh cut claims no reuse: {:?}",
+        opened[0]["payload"]
+    );
+    drop(occupant);
+}
+
+#[test]
+fn a_session_that_pins_no_branch_is_cut_fresh_every_time() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (first, worktree) = fixture.open(&[]);
+    // Work, so the run root it holds outlives the reclamation the next open runs and
+    // the two can be compared at all.
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+    let generated = fixture
+        .world
+        .git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]);
+
+    let (second, cut) = fixture.open(&[]);
+    assert_ne!(second, first);
+    assert_ne!(cut, worktree, "an unpinned request is nobody else's session");
+    assert_ne!(
+        fixture.world.git(&cut, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        generated,
+        "a generated branch name is the token's own"
+    );
+    let runs = worktree
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the identity's run roots");
+    assert_eq!(
+        std::fs::read_dir(runs).expect("the run roots are readable").count(),
+        2,
+        "two sessions, two run roots"
+    );
+}
+
+#[test]
 fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_checkout() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/adds"]);
@@ -1369,7 +1562,11 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
     let world = &fixture.world;
 
     // The work a stopped run left in its clone, which is where a pin most often
-    // points: an operator has just been told the branch is theirs to finish.
+    // points: an operator has just been told the branch is theirs to finish. A
+    // session this host could take up is taken up rather than refused, so the state
+    // the refusal is about is the one where it cannot be — here, somebody else is
+    // already inside that run root.
+    let before = world.locks();
     let (_token, worktree) = fixture.open(&["--branch", "feature/fifteen-commits"]);
     world.commit_file(
         &worktree,
@@ -1377,6 +1574,11 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
         "the work\n",
         "feat: the work that must not go missing",
     );
+    let opened: Vec<_> = world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    let occupant = World::occupy(lease);
     world
         .onevcs()
         .args([
@@ -1506,6 +1708,7 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
             branch
         );
     }
+    drop(occupant);
 }
 
 #[test]

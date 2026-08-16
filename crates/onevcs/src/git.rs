@@ -406,6 +406,51 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
         &["remote", "set-url", "origin", origin_arg.as_ref()],
         Some(dest),
     )?;
+    carry_remote_refs(source, dest, base)?;
+    carry_hooks(source, dest)?;
+    Ok(())
+}
+
+/// Give the clone the lender's *remote-tracking* refs rather than its local branches.
+///
+/// Cloning from a local path maps the lender's **local branches** into the clone's
+/// `refs/remotes/origin/*`, and consults the lender's own remote-tracking refs
+/// nowhere: a clone of a checkout whose `main` is behind therefore reads
+/// `origin/main` as a commit origin left long ago, however recently the lender
+/// fetched. Everything a session computes afterwards is addressed from that ref —
+/// where its worktree is cut, every `origin/<base>..HEAD` its work is judged by, the
+/// base the merge-path gate replays against — so the clone is given the lender's
+/// view of origin here, once, before anything reads it.
+///
+/// A ref update and not a second download: the lender has just fetched and the clone
+/// borrows its object store, so every commit these refs name is already reachable
+/// and git transfers nothing.
+pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<()> {
+    // A checkout with no origin has no such refs to lend, and asking git to copy
+    // none of them would only be a command that says nothing.
+    if has_remote(source, "origin") {
+        let source_arg = git_path(source).to_string_lossy();
+        checked(
+            &[
+                "fetch",
+                "--no-tags",
+                &source_arg,
+                // Forced, because these are remote-tracking refs rather than
+                // history: what origin holds now is the answer even where the
+                // lender's local branch of that name is not an ancestor of it.
+                //
+                // Deliberately not pruned. What the clone already holds is the
+                // lender's *local* branches under these same names, and for a
+                // branch origin has never seen that mapping is the clone's only
+                // route to it — a session stacked on the change below it is cut
+                // from exactly such a branch. Copying over them takes nothing away.
+                "+refs/remotes/origin/*:refs/remotes/origin/*",
+            ],
+            Some(dest),
+        )?;
+    }
+    // After the copy, which overwrites `origin/HEAD` with whatever the lender's own
+    // copy of it resolved to — a plain ref where this needs a symbolic one.
     checked(
         &[
             "symbolic-ref",
@@ -414,7 +459,6 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
         ],
         Some(dest),
     )?;
-    carry_hooks(source, dest)?;
     Ok(())
 }
 
