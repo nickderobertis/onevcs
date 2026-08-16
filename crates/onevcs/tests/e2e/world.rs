@@ -402,6 +402,28 @@ impl World {
             .expect("a host that answers partially");
     }
 
+    /// Make the substituted host report a change request as closed rather than
+    /// open, which is what somebody closing one without merging it leaves.
+    ///
+    /// The host's own action and no verb of this crate's: nothing here closes a
+    /// change request, so a journey that needs one closed says so where the host's
+    /// state lives.
+    pub fn close_change_request(&self, number: usize) {
+        let path = self.path(format!("gh-state/pr-{number}.env"));
+        let record = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "the host records every change request it opens; {} is unreadable: {error}",
+                path.display()
+            )
+        });
+        assert!(
+            record.contains("PR_STATE=OPEN"),
+            "change request {number} is not open, so closing it is not what this models: {record}"
+        );
+        std::fs::write(&path, record.replace("PR_STATE=OPEN", "PR_STATE=CLOSED"))
+            .expect("a change request somebody closed without merging it");
+    }
+
     /// Make the substituted host accept a merge and then not perform it.
     pub fn accept_merges_without_performing_them(&self) {
         std::fs::write(self.path("gh-state/refuse-merge"), "")

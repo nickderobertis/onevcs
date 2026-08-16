@@ -93,6 +93,35 @@ cwd. The train is deliberately not what it names, even for finished work:
 refuses a team or remote identity outright, so it lands none of the branches this
 report is most often read about — the ones a run left in its own clone.
 
+## Two verbs that read and plumb, so nothing has to reach for raw `git` or `gh`
+
+`status` and `import` exist because an agent that needed either answered it outside
+this boundary. Three things about them are easy to undo by accident.
+
+- **`status` reads landing off content, never off ancestry or off the host.**
+  Publication squashes, so a branch that landed is an ancestor of nothing
+  afterwards — the base simply carries what it changed, which is the same question
+  `vcs::collect` excludes a branch on. Reading the absence of an open change
+  request instead is what reported an already-merged change as unpublished, and it
+  is the defect the verb exists to close. `recoverable` was never blind to any of
+  this; what was missing is that its *exclusion reason* — landed, still held by an
+  open session, or genuinely preserved — was legible nowhere.
+- **A change request's URL is resolvable only through the event stream**, because
+  nothing on a branch carries it. That is the one spelling `status` cannot answer
+  for a change something else opened, and it is recorded as an open question in
+  `docs/inferred-surface.md` rather than closed by inventing a trailer or a trait
+  method.
+- **`import` writes refs and nothing else.** It fetches into a scratch ref, judges
+  there, and points the destination's ref at the result — so no working tree in any
+  registered checkout moves, and a name the destination has *checked out* is refused
+  rather than written. It refuses a non-fast-forward by naming the commits that
+  would go, because the way through is `--as`, and that is only the right way
+  through once an operator can see what the name they asked for already holds.
+
+Where it looks for a branch nobody named is `branch::locate`, which is where the
+two publishing verbs look. One search over the places an identity keeps work — run
+clones included — so a branch a verb can land is a branch this can reach.
+
 ## What a report answers about, and what a name already means
 
 Preserved work goes missing through silence rather than through a search that

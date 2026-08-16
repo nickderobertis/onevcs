@@ -43,6 +43,10 @@ pub enum Command {
     Recover(RecoverArgs),
     /// List preserved work that has not been published.
     Recoverable(RecoverableArgs),
+    /// Report everything onevcs knows about one piece of work.
+    Status(StatusArgs),
+    /// Make a branch reachable from an identity's registered checkouts.
+    Import(ImportArgs),
     /// Merge finished branches into their base, in order.
     Integrate(IntegrateArgs),
     /// Fast-forward a publication checkout to its origin.
@@ -222,6 +226,48 @@ pub struct RecoverableArgs {
     /// Report as JSON rather than as a human table.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Arguments for `onevcs status`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct StatusArgs {
+    /// The work to report on: a change request's URL, a session token, a branch
+    /// name, or a commit — read in that order.
+    // llmlint: ignore[invalid_states_unrepresentable] four spellings share this one
+    // operand deliberately, and which one a value is cannot be decided by a parser: a
+    // session token names a file under the state root, a branch name is decided by
+    // `git check-ref-format`, and a commit is one a repository has. `status::resolve`
+    // is the boundary that decides, and its refusal names every candidate rather
+    // than answering with clap's usage text.
+    pub reference: String,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs import`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ImportArgs {
+    /// The branch to make reachable.
+    // llmlint: ignore[invalid_states_unrepresentable] a branch name is decided by
+    // `git check-ref-format`, which is a subprocess argument parsing must not run —
+    // the same reason `PublishBranchArgs::branch` is typed text. `import::run` is the
+    // one boundary that decides it, and its refusal names the command that lists the
+    // branches there are.
+    pub branch: String,
+    /// The checkout whose identity the branch is imported into.
+    #[arg(long, value_name = "PATH")]
+    pub repo: PathBuf,
+    /// Where to read it from: the path of a checkout or a run clone, or a remote
+    /// ref. Omitted, everywhere this identity keeps work is searched.
+    #[arg(long, value_name = "SOURCE")]
+    pub from: Option<String>,
+    /// An alternate local name to import it under, for when the original is spent.
+    // llmlint: ignore[invalid_states_unrepresentable] the same boundary as `branch`
+    // above, and the same reason: git's own parser decides it, in `import::run`,
+    // where the refusal can name the option that carried it.
+    #[arg(long, value_name = "NAME")]
+    pub r#as: Option<String>,
 }
 
 /// Arguments for `onevcs integrate`.

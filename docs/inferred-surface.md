@@ -204,6 +204,8 @@ never edited, so it is recorded here as an inference awaiting confirmation:
 ```
 onevcs publish-branch BRANCH --repo PATH [--title T] [--policy P]
 onevcs recover BRANCH --repo PATH [--title T]
+onevcs status REF [--json]
+onevcs import BRANCH --repo PATH [--from SOURCE] [--as NAME]
 ```
 
 `tests/contract.rs` reads this block beside the contract's own and holds the parser
@@ -221,6 +223,48 @@ same reason.
 
 No public library item is added: `publish::run` was already branch-keyed, and both
 verbs are private modules behind it. What the CLI gains is the verb and two options.
+
+## Two more the contract does not name: reading, and ref plumbing
+
+The same gap one step earlier. Every operation is supposed to go through `onevcs`
+rather than through raw `git` and `gh`, and two questions had no verb at all — so an
+agent that needed either answered it outside this boundary, which is the thing the
+boundary exists to prevent.
+
+- **Nothing answered "what became of this work".** `recoverable` answers what is
+  *unpublished*. Nothing answered what was *proposed*, whether it *landed*, or how
+  its checks went, so a dispatched worker ran `gh pr list` and a planner ran
+  `gh pr checks` and `gh run view --log-failed`. Worse, the missing landed/unlanded
+  answer produced a wrong conclusion: a change that had already squash-merged to
+  `main` was reported as unpublished, because the only evidence consulted was the
+  absence of an open pull request. `recoverable` was not blind to it — `vcs::collect`
+  reads run clones and excludes a branch whose content the base already carries —
+  but the *exclusion reason* was legible nowhere, so landed, still-held-by-a-live-
+  session, and genuinely-preserved all read as silence.
+- **Nothing made preserved work reachable.** Getting a branch out of a run clone and
+  into a checkout a new run could clone took `git fetch <src> <branch>:<branch>`, and
+  giving preserved work a name a fresh pin could safely take took
+  `git branch preserved/<name> <branch>`. Both are ref plumbing over an identity's
+  own checkouts, which belongs to the tool that owns the identity.
+
+Neither verb adds a public library item: both are private modules, and what the CLI
+gains is the two verbs and their options. Both names are **fixed** — a later node
+wraps them in `just` recipes by name and gates on every subcommand this repository's
+prose names existing in the pinned CLI's `--help`, so a rename breaks that node by
+construction.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| `status REF` | one operand, four spellings, read in the documented order | A change request's URL, a session token, a branch name, and a commit are four names for one piece of work, and which one somebody has depends on where they are standing. Four options would make a caller say which they hold; one operand does not. First match wins, so a session token is a session token even where a branch of that name exists, and ambiguity is *within* a spelling — one branch name in two identities — which is refused naming every candidate. |
+| the sections | identity, session, branch, publication, checks, gate, next | What an agent had to reach outside for, in one place. `next` is the surface the branch-keyed refusals already are: a report that diagnoses without naming the command that advances the work leaves an agent to invent one. |
+| `landed` | read off the base's content, never off ancestry or off the host | Publication squashes, so a branch that landed is an ancestor of nothing afterwards. It is the same question `vcs::collect` excludes a branch on, which is what keeps the report and `recoverable` from disagreeing about one branch. |
+| the host section | degrades, never fails | `status` reaches the host for what a change request is doing now, and everything else it reports is answerable offline. A command that failed because a network call did would leave an operator with none of the answer. |
+| `--json` | the same object, on stdout | The scope note `recoverable` carries does not apply: `status` is asked about one piece of work by name, so there is no unstated scope for a reader to mistake. |
+| `import BRANCH --repo PATH` | the operands `recover` already takes | It is addressed at one branch of one identity, so it is reached the same way the two branch-keyed verbs are. Where it looks with no `--from` is `branch::locate` — the same search those verbs use, run clones included. |
+| `--from SOURCE` | a repository path, or a remote ref | The two places a branch that is not already reachable can be. Decided by what the value *is* — a directory is a repository, anything else is a remote of the destination — rather than by trying each until one works, because a fetch that fell through to the wrong one would import somebody else's commit under this name. |
+| `--as NAME` | an alternate local name | The `preserved/<name>` move, which exists because a session's branch pin is refused unless the base carries what the name means: work whose name is spent needs a second name before anything can take the first. |
+| ref writes only | no checkout, no working tree | It fetches into a scratch ref, judges there, and points the destination's ref at it. A name the destination has checked out is refused rather than written: moving that ref leaves git holding a tree that describes a commit the branch no longer names. |
+| the non-fast-forward refusal | names the commits that would be lost | A branch in a registered checkout is the durable record of whatever wrote it, and this verb is reached by somebody who wants a *second* copy reachable. `--as` is the way through, and it is only the right way through once an operator can see what the name they asked for already holds. |
 
 ## One public item the contract does not name, and why it is not an inference
 
@@ -305,7 +349,18 @@ question was:
    amendment naming the verb, its two options, and `recover`'s `--title`; until
    then the surface is held to *this* record, which is what keeps the parser and
    a written-down surface reconciled rather than the verb being undocumented.
-9. **`onevcs` stamps none of the envelope's reserved label keys.** It stamps
+9. **A change request's URL is resolvable only through the event stream.** The URL
+   is the host's name for a change, and nothing on the branch carries it — this
+   crate reads a `<prefix>Change-Url:` trailer that something else may have written
+   and writes none of its own. So `onevcs status URL` finds the work by the
+   `change-opened` event the publication recorded, which means a change request
+   opened by anything but this host's `onevcs` cannot be looked up by URL here.
+   Closing it means either a `RemoteHost` method that reads a change request by its
+   id — a required method every implementor would have to write — or a trailer this
+   crate writes on the branch it publishes, which changes the bytes of every
+   publication commit. Both are contract amendments rather than decisions to take
+   in passing.
+10. **`onevcs` stamps none of the envelope's reserved label keys.** It stamps
    `session` and `identity`, which are free-form extras, so a filter naming
    `run_id`, `node`, `step`, `member`, or `persona` admits nothing this crate
    produces — correctly, by the grammar's own rule, and the same answer a consumer

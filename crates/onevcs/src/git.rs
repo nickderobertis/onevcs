@@ -1190,6 +1190,57 @@ pub fn copy_branch(source: &Path, destination: &Path, branch: &str) -> Result<bo
     Ok(output.ok())
 }
 
+/// Fetch one branch from a repository path or a configured remote into a ref of
+/// this repository's own, replacing whatever that ref held.
+///
+/// The one call `onevcs import` makes against the source, and it writes a ref and
+/// nothing else: no index is read, no working tree is touched, and the ref it
+/// lands on is the caller's scratch rather than a branch. What the source is
+/// spelled as — a path or a remote name — is git's own question, so both go
+/// through one invocation rather than two that could come to fetch differently.
+pub fn fetch_into_ref(cwd: &Path, source: &str, branch: &str, into: &str) -> Result<bool> {
+    let source = git_location(source);
+    let output = run(
+        &[
+            "fetch",
+            source.as_ref(),
+            &format!("+refs/heads/{branch}:{into}"),
+        ],
+        Some(cwd),
+    )?;
+    Ok(output.ok())
+}
+
+/// Point a ref at a commit, writing the ref and nothing else.
+pub fn update_ref(cwd: &Path, reference: &str, commit: &str) -> Result<()> {
+    checked(&["update-ref", reference, commit], Some(cwd)).map(|_| ())
+}
+
+/// Remove a ref, whatever it held.
+///
+/// Best-effort by design: its one caller is clearing the scratch ref it fetched
+/// into, and a scratch ref left behind is untidy rather than wrong — refusing over
+/// it would turn a completed import into a failure.
+pub fn delete_ref(cwd: &Path, reference: &str) {
+    let _ = run(&["update-ref", "-d", reference], Some(cwd));
+}
+
+/// Whether a remote of this name is one the repository has configured.
+pub fn remotes(cwd: &Path) -> Vec<String> {
+    run(&["remote"], Some(cwd))
+        .ok()
+        .filter(Output::ok)
+        .map(|out| {
+            out.stdout
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Adopt a branch from another local repository, overwriting the local ref.
 pub fn import_branch(cwd: &Path, source: &Path, branch: &str) -> Result<bool> {
     let source = git_path(source).to_string_lossy();
