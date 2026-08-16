@@ -2,15 +2,15 @@ Mutation: the occupancy question is asked about a run root nobody is in.
 Red: a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index 322ecf5..cbea92c 100644
+index 58cf575..abeb438 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
-@@ -741,7 +741,7 @@ fn resumable(
-     };
-     // Free right now, asked the way `adopt` asks it a moment later: a session
-     // somebody is working in is not one to take a worktree out from under.
+@@ -755,7 +755,7 @@ fn resumable(
+     // `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing`,
+     // which holds the run root's lock itself, and says there why a lease no command
+     // outlives leaves nothing else to hold it with.
 -    Ok(lock::try_shared(&candidate.lease())?.map(|lease| (candidate, lease)))
 +    Ok(lock::try_shared("run:nobody-is-in-here")?.map(|lease| (candidate, lease)))
+     // llmlint: ignore-end[changed_behavior_has_e2e]
  }
  
- /// Take up a session that already exists, as the request that pinned its branch.
