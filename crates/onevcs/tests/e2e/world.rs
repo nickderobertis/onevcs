@@ -150,27 +150,41 @@ impl World {
     /// journey waiting on this would otherwise wait out its bound and report the
     /// wait instead of the reason.
     pub fn queued_tickets(&self) -> usize {
-        std::fs::read_dir(self.home().join("locks"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("queue-"))
-            .map(|entry| {
-                let path = entry.path();
-                let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("the queue state at {} is readable: {e}", path.display())
-                });
-                let state: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
-                    panic!("the queue state at {} is JSON: {e}", path.display())
-                });
-                state["tickets"]
-                    .as_array()
-                    .unwrap_or_else(|| {
-                        panic!("the queue state at {} lists its tickets", path.display())
-                    })
-                    .len()
-            })
-            .sum()
+        let directory = self.home().join("locks");
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            // Nothing has taken a lock yet, which is nought tickets. Every other
+            // failure is loud, here and below: answering nought for a directory
+            // nobody could read would leave a journey waiting on this to wait out
+            // its bound and then report the wait instead of the reason.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
+            Err(e) => panic!(
+                "the lock directory {} is readable: {e}",
+                directory.display()
+            ),
+        };
+        let mut tickets = 0;
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("every entry of {} is readable: {e}", directory.display())
+            });
+            if !entry.file_name().to_string_lossy().starts_with("queue-") {
+                continue;
+            }
+            let path = entry.path();
+            let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("the queue state at {} is readable: {e}", path.display())
+            });
+            let state: serde_json::Value = serde_json::from_str(&raw)
+                .unwrap_or_else(|e| panic!("the queue state at {} is JSON: {e}", path.display()));
+            tickets += state["tickets"]
+                .as_array()
+                .unwrap_or_else(|| {
+                    panic!("the queue state at {} lists its tickets", path.display())
+                })
+                .len();
+        }
+        tickets
     }
 
     /// Wait for a condition a concurrent journey has to reach, or fail saying so.
