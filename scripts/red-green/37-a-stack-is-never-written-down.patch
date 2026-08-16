@@ -1,0 +1,21 @@
+Mutation: the tip a session was cut from is never written down, so no session records a stack.
+Red: a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 84d1dfe..5e1800d 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -578,12 +578,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
+         base.to_string()
+     };
+     git::worktree_add(&clone, &worktree, &branch, &start)?;
+-    // The stack, written down while it can still be: a session cut from a branch
+-    // that is not the identity's root is stacked on it, and the commit it was cut at
+-    // is the boundary between that branch's commits and this session's own.
+-    let stack_tip = root
+-        .filter(|root| *root != *base)
+-        .and_then(|_| git::tip(&clone, &start));
++    let stack_tip = None;
+ 
+     let record = Record {
+         version: RECORD_VERSION,
