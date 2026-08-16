@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 42. Tests observed red and then green: 67.
+Patches: 44. Tests observed red and then green: 69.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -241,6 +241,7 @@ a root that already carries the change below a stack is merged into like anythin
 - RED `a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root` — Unexpected failure.
 - RED `a_hosted_stack_the_root_independently_matches_is_answered_the_same_way` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("<time>"), "stream": String("<token>"), "seq": Number(5), "source": 
 - RED `a_publish_branch_replay_conflict_names_its_own_command` — Unexpected return code, failed var == 3
+- RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — Unexpected failure.
 
 ### `34-a-stack-inferred-from-content`
 
@@ -299,4 +300,16 @@ a rename is compared under the name git reports it as, and not under the one it 
 a recorded diagnostic keeps the values only this run would spell.
 
 - RED `a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently` — every value only this run would spell is a placeholder, and what it said is not:
+
+### `44-a-moved-base-is-not-re-judged`
+
+a base that moved after the gate is neither re-synced nor re-judged.
+
+- RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — assertion `left == right` failed: the gate judged the base it landed on, not only the base it started from
+
+### `45-an-unreadable-listing-is-read-as-carried`
+
+a listing that did not arrive whole is answered as content the base carries.
+
+- RED `an_unreadable_listing_and_a_root_that_moved_on_leaves_the_stack_where_it_is` — Unexpected failure.
 
