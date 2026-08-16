@@ -1358,181 +1358,65 @@ fn a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body
         .contains("feature/otherhost"));
 }
 
-/// The stacked branch of `lifecycle.rs`, handed back to the checkout the way a
-/// finished session leaves it — which is the state both branch-keyed verbs take.
-fn a_stacked_branch_in_the_checkout(fixture: &Fixture, branch: &str) -> String {
-    let (token, worktree) = crate::lifecycle::stacked_on_a_squash_merged_parent(fixture, branch);
-    fixture.world.commit_file(
-        &worktree,
-        "engine.txt",
-        "the engine\nand its governor\nand a filter\n",
-        "feat: filter what the engine relays",
-    );
-    fixture
-        .world
-        .onevcs()
-        .args(["session", "close", &token])
-        .assert()
-        .success();
-    token
-}
-
-#[test]
-fn a_stack_parent_the_base_already_carries_is_replayed_by_the_verb_that_publishes_it() {
-    // The same trap the session verb meets, met by the verb its refusals hand over
-    // to: a branch reached by name carries the change below it commit for commit,
-    // and the base carries that change squashed. One path syncs for all three verbs,
-    // so what `publish` replays `publish-branch` replays.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
-    a_stacked_branch_in_the_checkout(&fixture, "feature/named-filter");
-
-    fixture
-        .world
-        .onevcs()
-        .args([
-            "publish-branch",
-            "feature/named-filter",
-            "--repo",
-            &fixture.checkout.to_string_lossy(),
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("merged at"));
-
-    let subjects = fixture.origin_log();
-    assert_eq!(subjects[0], "feat: filter what the engine relays");
-    assert_eq!(
-        subjects.len(),
-        3,
-        "the change below landed once, not again under this one: {subjects:?}"
-    );
-}
-
-#[test]
-fn a_replay_conflict_in_a_named_branchs_own_work_names_the_replay_that_resolves_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
-    a_stacked_branch_in_the_checkout(&fixture, "feature/named-clash");
-    // The branch's own work also changed a file the base has since changed, which
-    // correcting the ancestry cannot resolve. Deterministic, like every conflict
-    // this verb meets — so the refusal names the replay that reduces it to an
-    // ordinary one, rather than the merge that produced the trap.
-    fixture.world.git(
-        &fixture.checkout,
-        &["checkout", "-q", "feature/named-clash"],
-    );
-    fixture.world.commit_file(
-        &fixture.checkout,
-        "shared.txt",
-        "from the branch\n",
-        "feat: change the shared file",
-    );
-    fixture
-        .world
-        .git(&fixture.checkout, &["checkout", "-q", "main"]);
-    let other = fixture.world.clone_of(&fixture.origin, "advancing");
-    fixture.world.commit_file(
-        &other,
-        "shared.txt",
-        "from the base\n",
-        "feat: change it differently",
-    );
-    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
-
-    let assert = fixture
-        .world
-        .onevcs()
-        .args([
-            "publish-branch",
-            "feature/named-clash",
-            "--repo",
-            &fixture.checkout.to_string_lossy(),
-        ])
-        .assert()
-        .code(3)
-        .stderr(predicate::str::contains(
-            "already carries what \"feature/named-clash\" was stacked on",
-        ))
-        .stderr(predicate::str::contains("re-running will conflict again"))
-        .stderr(predicate::str::contains(format!(
-            "land it with `onevcs publish-branch feature/named-clash --repo {}`",
-            fixture.checkout.display()
-        )));
-
-    // The replay it hands over is run as printed, and the verb beside it lands the
-    // work afterwards: a refusal on this path is worth only what its exit is.
-    let refusal = stderr_of(&assert);
-    let replay = refusal
-        .split('`')
-        .find(|span| span.starts_with("git rebase --onto "))
-        .unwrap_or_else(|| panic!("the refusal names no replay:\n{refusal}"))
-        .to_owned();
-    let land = printed_command(&refusal);
-    fixture
-        .world
-        .onevcs()
-        .args(["sync"])
-        .current_dir(&fixture.checkout)
-        .assert()
-        .success();
-    fixture.world.git(
-        &fixture.checkout,
-        &["checkout", "-q", "feature/named-clash"],
-    );
-    let argv: Vec<&str> = replay.split_whitespace().skip(1).collect();
-    assert!(
-        !fixture
-            .world
-            .git_raw(&fixture.checkout, &argv)
-            .status
-            .success(),
-        "the replay is the conflict itself"
-    );
-    std::fs::write(fixture.checkout.join("shared.txt"), "resolved by hand\n")
-        .expect("the resolution");
-    fixture.world.git(&fixture.checkout, &["add", "-A"]);
-    fixture.world.git(
-        &fixture.checkout,
-        &["-c", "core.editor=true", "rebase", "--continue"],
-    );
-    fixture
-        .world
-        .git(&fixture.checkout, &["checkout", "-q", "main"]);
-
-    fixture
-        .world
-        .shell(&land)
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("merged at"));
-    assert_eq!(
-        fixture.origin_log()[0],
-        "feat: filter what the engine relays"
-    );
-}
-
-/// The same stacked branch, left interrupted — which is the state `recover` takes.
+/// A preserved branch that records the change below it, and that change squash-merged.
+///
+/// The branch-keyed verbs read the stack out of the `Change-Base:` trailer a
+/// preserved commit carries, which is a *branch* — so the tip it names has to be one
+/// this repository still has. That is `recover`'s subject by construction: the
+/// trailer lives on an incomplete-step marker, and a branch carrying one of those
+/// unattested is refused by `publish-branch` as interrupted work.
 fn a_stacked_incomplete_branch_in_the_checkout(fixture: &Fixture, branch: &str) {
-    let (token, worktree) = crate::lifecycle::stacked_on_a_squash_merged_parent(fixture, branch);
-    fixture.world.commit_file(
-        &worktree,
+    let world = &fixture.world;
+    let checkout = &fixture.checkout;
+    let prefix = documented_default_prefix();
+    world.git(checkout, &["checkout", "-q", "-b", "feature/engine"]);
+    world.commit_file(
+        checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.commit_file(
+        checkout,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(checkout, &["push", "-q", "origin", "feature/engine"]);
+
+    world.git(checkout, &["checkout", "-q", "-b", branch]);
+    world.commit_file(
+        checkout,
         "engine.txt",
         "the engine\nand its governor\nand a filter\n",
         "feat: filter what the engine relays",
     );
-    std::fs::write(worktree.join("half.txt"), "half\n").expect("uncommitted work");
-    // Adoption is what writes the incomplete-step marker `recover` exists for.
-    for verb in ["adopt", "close"] {
-        fixture
-            .world
-            .onevcs()
-            .args(["session", verb, &token])
-            .assert()
-            .success();
-    }
+    world.git(
+        checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on {branch}\n\n{}\n{} feature/engine",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    // The publication checkout is never worked in, so it goes back to its base.
+    world.git(checkout, &["checkout", "-q", "main"]);
+
+    // The change below lands the way a review host lands one: squashed.
+    let below = world.clone_of(&fixture.origin, "below");
+    world.git(&below, &["merge", "--squash", "origin/feature/engine"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.git(&below, &["push", "-q", "origin", "main"]);
 }
 
 #[test]
-fn a_recovery_whose_stack_parent_already_landed_is_replayed_onto_the_base() {
+fn a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-filter");
 
@@ -1556,12 +1440,21 @@ fn a_recovery_whose_stack_parent_already_landed_is_replayed_onto_the_base() {
         3,
         "the change below landed once, not again under this one: {subjects:?}"
     );
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.origin, &["show", "main:engine.txt"]),
+        "the engine\nand its governor\nand a filter",
+        "and the base carries the branch's own work on top of it"
+    );
 }
 
 #[test]
 fn a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-clash");
+    // The root moves again over a file this branch's own work also changed, which
+    // correcting the ancestry cannot resolve.
     fixture.world.git(
         &fixture.checkout,
         &["checkout", "-q", "feature/recovered-clash"],
@@ -1570,7 +1463,7 @@ fn a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay() {
         &fixture.checkout,
         "shared.txt",
         "from the branch\n",
-        "feat: change the shared file",
+        "feat: share something too",
     );
     fixture
         .world

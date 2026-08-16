@@ -74,20 +74,27 @@ refusal that only diagnoses leaves an agent to invent a way forward, and what it
 invents is `git push` plus `gh pr create` — the thing this crate exists to make
 unnecessary.
 
-**Syncing a branch has two shapes, and content decides which** (`publish::reconcile`,
-used by all three verbs). Ordinarily the base is merged into the branch. But a branch
-cut from the tip of the change below it — a stack — carries that change's every commit
-while the base, once it squash-merged, carries one commit with the same content and
-none of the same names; merging the two replays the whole parent against its own
-squashed equivalent and conflicts in every file both touched, again on every bounded
-retry. So when the base already carries everything the branch had before its own work,
-only that own work is replayed onto the base. The boundary is read off the branch —
-the newest commit on its own first-parent line whose whole content since the fork the
-base already carries — rather than out of a record, because no record survives all of
-the session that cut the branch, the checkout that kept it, and the clone publishing
-it; a session record names the base it was opened with and nothing about a stack a
-consumer built on top. Nothing here is a new event kind, deliberately: the contract
-fixes that list, and a successful sync has always been silent whichever shape it took.
+**Syncing a branch has two shapes, and the record decides which** (`publish::reconcile`,
+used by all three verbs). Ordinarily the base is merged into the branch. A branch cut
+from the change below it — a stack — carries that change's every commit while the base,
+once it squash-merged, carries one commit with the same content and none of the same
+names; merging the two replays the change below against its own squashed equivalent and
+conflicts in every file both touched, again on every bounded retry. So a stacked branch
+whose change below has landed replays only its own commits onto the root base instead,
+and retargets there, because the branch it was opened against is gone.
+
+**What makes a publication stacked is its own record, never its content.** A branch that
+carries the change below it commit for commit is indistinguishable from one that wrote
+those commits itself — the base can hold the same content under a name of its own for
+either — so inferring it would replay branches nobody stacked. `session open --base` on
+something other than the identity's root records `stack_tip`: the commit that branch was
+at when this one was cut from it. Absent, which is every ordinary session, and none of
+the replay is reachable. A *name* cannot stand in for the tip: `git::fetch` prunes, the
+branch below is deleted when its own change merges, and nothing then resolves it — which
+is why the branch-keyed verbs, whose stack is the `Change-Base:` trailer's branch name,
+can replay only while some ref still names it and otherwise sync exactly as they always
+did. Nothing here is a new event kind, deliberately: the contract fixes that list, and a
+successful sync has always been silent whichever shape it took.
 
 ## Tests are journeys, and there are no unit tests
 

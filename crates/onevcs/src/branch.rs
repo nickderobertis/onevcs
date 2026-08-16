@@ -108,6 +108,17 @@ pub struct Landing {
     // it be passed where a branch is expected. `vcs::base_ref` answers a `String` for
     // the same reason at every other caller.
     pub compared_change_base: String,
+    /// The recorded stack tip this branch's own commits are replayed from, when the
+    /// change below it has already landed on the root base.
+    pub stack_replay: Option<String>,
+}
+
+/// The tip a repository still has for a branch a preserved commit recorded.
+///
+/// The remote's copy first and the local branch second, which is the order every
+/// other comparison here resolves a base in.
+fn stack_tip(repo: &Path, base: &str) -> Option<String> {
+    git::tip(repo, &format!("origin/{base}")).or_else(|| git::tip(repo, base))
 }
 
 /// Locate a branch and cut the clone and worktree a publication of it needs.
@@ -173,9 +184,8 @@ pub fn prepare(
     let compared = crate::vcs::base_ref(&clone, &base);
     // A recorded base is read back out of a commit the repository carries, so it is
     // input to be checked rather than a name this process already decided.
-    let change_base = match provenance::recorded_change_base(&clone, &compared, branch, &trailers)?
-    {
-        Some(recorded) => Ref::try_from(recorded).map_err(|reason| Error::Invalid {
+    let recorded = match provenance::recorded_change_base(&clone, &compared, branch, &trailers)? {
+        Some(recorded) => Some(Ref::try_from(recorded).map_err(|reason| Error::Invalid {
             reason: format!(
                 "branch {branch:?} records the base it was stacked on as {reason}: the {} trailer \
                  on its preserved commit is not a branch, so nothing here can tell which base it \
@@ -185,8 +195,31 @@ pub fn prepare(
                 source.display(),
                 verb.command(branch, repo),
             ),
-        })?,
-        None => base.clone(),
+        })?),
+        None => None,
+    };
+    // A branch whose recorded stack has landed belongs on the root base, and carries
+    // the change below it as commits the root has only as one squashed equivalent. So
+    // the target moves to the root here, before anything is compared against it, and
+    // the tip it was stacked at is what its own commits are replayed from.
+    //
+    // The tip comes from whatever ref still names the recorded base. A branch deleted
+    // when its own change merged has none — every fetch here prunes — and the stack
+    // then stands as recorded, which is this verb exactly as it was.
+    let (change_base, stack_replay) = match recorded {
+        Some(recorded) if recorded != base => {
+            match stack_tip(&clone, &recorded).map(|tip| publish::Stack {
+                tip,
+                root: base.clone(),
+            }) {
+                Some(stack) if publish::landed_stack(&clone, branch, &stack)? => {
+                    (base.clone(), Some(stack.tip))
+                }
+                _ => (recorded, None),
+            }
+        }
+        Some(recorded) => (recorded, None),
+        None => (base.clone(), None),
     };
     let compared_change_base = crate::vcs::base_ref(&clone, &change_base);
 
@@ -206,6 +239,7 @@ pub fn prepare(
         base,
         change_base,
         compared_change_base,
+        stack_replay,
     })
 }
 
@@ -294,10 +328,8 @@ impl Landing {
 
     /// Bring the branch level with the change base before anything is verified.
     ///
-    /// Which of [`publish::reconcile`]'s two shapes that takes — the base merged in,
-    /// or the branch's own commits replayed onto a base that already carries what it
-    /// was stacked on — is decided there, so this verb and `publish` cannot come to
-    /// sync a branch differently.
+    /// Through [`publish::reconcile`], so this verb and `publish` cannot come to sync
+    /// a branch differently.
     ///
     /// A conflict here is deterministic — the same two trees conflict on every
     /// re-run — and it is also what a branch whose recorded change base is missing or
@@ -307,10 +339,10 @@ impl Landing {
     /// `git` and `gh`.
     pub fn sync_change_base(&self, stream: &mut Stream) -> Result<()> {
         let reconciled = publish::reconcile(
-            &self.clone,
             &self.worktree,
             &self.compared_change_base,
             &self.branch,
+            self.stack_replay.as_deref(),
         )?;
         let publish::Reconciled::Conflicted(attempted) = reconciled else {
             return Ok(());
@@ -379,6 +411,9 @@ impl Landing {
             branch: self.branch.clone(),
             base: self.base.clone(),
             change_base: self.change_base.clone(),
+            // Resolved above and acted on already: the branch is on the root base by
+            // the time this publishes, so there is no stack left to ask about.
+            stack: None,
             run_root: self.run_root.clone(),
             title,
             trailers: Vec::new(),

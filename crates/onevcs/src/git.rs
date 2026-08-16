@@ -730,26 +730,6 @@ pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String
     }
 }
 
-/// The commits `branch` has and `base` does not, newest first, along the branch's
-/// own first-parent line.
-///
-/// First-parent, because the question every caller asks is where the branch's own
-/// history begins: a base merged into it earlier brings that base's commits along
-/// a second parent, and walking into them would answer about somebody else's work.
-// llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] git's own printed
-// SHAs, spelled and trusted the way `merge_base` above says.
-pub fn commits_since(cwd: &Path, base: &str, branch: &str) -> Result<Vec<String>> {
-    let output = checked(
-        &["rev-list", "--first-parent", &format!("{base}..{branch}")],
-        Some(cwd),
-    )?;
-    Ok(output
-        .stdout
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect())
-}
-
 /// How many files git says two commits differ in.
 ///
 /// `--shortstat` is a count and a summary, in ASCII whatever a repository names its

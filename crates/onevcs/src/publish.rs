@@ -271,6 +271,7 @@ pub fn run_for_session(
         vcs::preserve_into(&record, &mut stream, Provenance::Complete)?;
     }
     let change_base = preserved_change_base(&record.base, record.change_base.as_ref());
+    let stack = recorded_stack(&record, &resolution.publication);
     let context = Context {
         resolution,
         policy: resolved.policy.clone(),
@@ -280,6 +281,7 @@ pub fn run_for_session(
         branch: record.branch.clone(),
         base: record.base.clone(),
         change_base,
+        stack,
         run_root: record.run_root.clone(),
         title: request.title.clone(),
         trailers: Vec::new(),
@@ -336,6 +338,8 @@ pub struct Context<'a> {
     /// What the change is published onto, which for a stacked change is the branch
     /// below it rather than the root.
     pub change_base: Ref,
+    /// The stack this change sits on, when its own record names one.
+    pub stack: Option<Stack>,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
     /// An explicit title, which replaces the synthesized subject. Checked where it
@@ -353,9 +357,91 @@ pub struct Context<'a> {
     pub hosting: &'a dyn Hosting,
 }
 
+/// The stack a change sits on, as the record that opened it wrote it down.
+///
+/// Recorded, never inferred: a branch that carries the change below it commit for
+/// commit is indistinguishable from a branch that wrote those commits itself — the
+/// base can hold the same content under a name of its own for either — and the two
+/// want opposite things from a sync. So the only thing that makes a publication
+/// stacked here is its own record saying so, and a publication with no such record
+/// cannot reach any of the behaviour below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stack {
+    /// The commit the branch below this change was at when this one was cut from it.
+    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+    pub tip: String,
+    /// The identity's root base, which is what this change lands on once the branch
+    /// below it has landed.
+    pub root: Ref,
+}
+
+/// The stack a session's record wrote down, or `None` for the branch every ordinary
+/// session cuts.
+///
+/// Two things have to be there: the tip the session was cut at, which `session open`
+/// records only for a base that is not the identity's root, and a root to land on
+/// once the change below has landed. Either missing is no stack at all.
+fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stack> {
+    let tip = record.stack_tip.clone()?;
+    let root = Ref::from_git(git::default_branch(publication, "origin").ok()?);
+    (root != record.base).then_some(Stack { tip, root })
+}
+
+/// Whether the root base has already landed the change below this one, and this
+/// change's own commits are therefore all that belongs on it.
+///
+/// Three things past the record: the branch was cut from that tip, the root does not
+/// hold the tip's commits under their own names, and the root does hold what they
+/// changed. Which together are a squash-merge of the change below and are nothing
+/// else — a change still open has not reached the root at all, and one merged as its
+/// own commits is already an ancestor there.
+pub(crate) fn landed_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
+    let root = vcs::base_ref(repo, &stack.root);
+    if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
+        return Ok(false);
+    }
+    if !git::is_ancestor(repo, &stack.tip, branch)? {
+        return Ok(false);
+    }
+    // Still in the root as the commits it was written as: merging the root brings
+    // them in the way it always has, and there is nothing to replay past.
+    if git::is_ancestor(repo, &stack.tip, &root)? {
+        return Ok(false);
+    }
+    let Some(fork) = git::merge_base(repo, &root, &stack.tip)? else {
+        return Ok(false);
+    };
+    git::carries_changes(repo, &root, &fork, &stack.tip)
+}
+
+impl<'a> Context<'a> {
+    /// The same publication, landing on `root` instead of the stack below it.
+    ///
+    /// Both names move together: what a change is compared against and what it is
+    /// opened against are the same branch, and a stack whose floor has landed has
+    /// neither of them left to point at.
+    fn onto(&self, root: Ref) -> Context<'a> {
+        Context {
+            resolution: self.resolution.clone(),
+            policy: self.policy.clone(),
+            effective: self.effective,
+            repo: self.repo.clone(),
+            worktree: self.worktree.clone(),
+            branch: self.branch.clone(),
+            base: root.clone(),
+            change_base: root,
+            stack: None,
+            run_root: self.run_root.clone(),
+            title: self.title.clone(),
+            trailers: self.trailers.clone(),
+            provenance: self.provenance.clone(),
+            hosting: self.hosting,
+        }
+    }
+}
+
 /// Verify and publish a branch.
 pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome> {
-    let remote_base = format!("origin/{}", context.change_base);
     if git::has_remote(&context.repo, "origin") {
         // Outside every exclusive section, deliberately.
         git::fetch(&context.repo, "origin")?;
@@ -364,13 +450,28 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
             object(json!({"remote": "origin", "checkout": context.repo.display().to_string()})),
         );
     }
+    // Asked after the fetch and before anything else: a change whose stack has landed
+    // is a change onto the root base, and everything below — what it is compared
+    // against, what its gate judges, what its change request targets — follows from
+    // that rather than from the branch it was opened against.
+    let mut replay = None;
+    let landed;
+    let mut context = context;
+    if let Some(stack) = &context.stack {
+        if landed_stack(&context.repo, &context.branch, stack)? {
+            replay = Some(stack.tip.clone());
+            landed = context.onto(stack.root.clone());
+            context = &landed;
+        }
+    }
+    let remote_base = format!("origin/{}", context.change_base);
     let compared = if git::ref_exists(&context.repo, &format!("refs/remotes/{remote_base}")) {
         remote_base.clone()
     } else {
         context.change_base.to_string()
     };
 
-    sync(context, stream, &compared)?;
+    sync(context, stream, &compared, replay.as_deref())?;
 
     if nothing_to_publish(context, &compared)? {
         return Ok(PublishOutcome::NothingToPublish);
@@ -511,38 +612,34 @@ pub(crate) enum Reconciliation {
     /// already carries its history up to this commit.
     Replay {
         /// The commit where the branch's own work begins, as `git` spelled it.
-        // llmlint: ignore[invalid_states_unrepresentable] `git::commits_since` answered it.
+        // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
         from: String,
     },
 }
 
 /// Bring a branch level with the base it is published onto, once.
 ///
-/// Two shapes, and which one is needed is a question about what the base already
-/// carries rather than a preference. Ordinarily the base is merged into the branch.
-/// But a branch cut from a stack parent whose own change request then squash-merged
-/// carries that parent's every commit while the base carries one commit with the
-/// same content and none of the same names — and merging the two replays the whole
-/// parent against its own squashed equivalent, which conflicts in every file both
-/// touched and conflicts again on every retry. So when the base already carries
-/// everything the branch had before its own work, only that own work is replayed
-/// onto the base: `git rebase --onto <base> <parent tip> <branch>`, which is what
-/// an operator ends up running by hand.
+/// Two shapes, and the record decides which rather than this: ordinarily the base is
+/// merged into the branch, and a branch whose recorded stack has landed replays only
+/// its own commits onto the base instead — `git rebase --onto <base> <stack tip>
+/// <branch>`, which is what an operator ends up running by hand. Merging there would
+/// replay the change below against its own squashed equivalent, which conflicts in
+/// every file both touched and conflicts again on every bounded retry.
 ///
 /// Shared by `publish` and by the branch-keyed verbs, so the two cannot come to
-/// disagree about which shape a branch needs.
+/// disagree about what a sync does.
 pub(crate) fn reconcile(
-    repo: &Path,
     worktree: &Path,
     compared: &str,
     branch: &str,
+    replay_from: Option<&str>,
 ) -> Result<Reconciled> {
-    let (shape, integrated) = match landed_history_boundary(repo, compared, branch)? {
-        Some(parent) => (
+    let (shape, integrated) = match replay_from {
+        Some(tip) => (
             Reconciliation::Replay {
-                from: parent.clone(),
+                from: tip.to_owned(),
             },
-            git::rebase_onto(worktree, compared, &parent, branch)?,
+            git::rebase_onto(worktree, compared, tip, branch)?,
         ),
         None => (
             Reconciliation::Merge,
@@ -559,43 +656,17 @@ pub(crate) fn reconcile(
     })
 }
 
-/// The newest commit on the branch's own line whose history the base already
-/// carries — everything up to which adds nothing to publish.
-///
-/// That is what a stack parent's tip becomes once the change below it
-/// squash-merged, and it is the answer this asks for rather than a remembered one:
-/// no record survives all of the session that cut the branch, the checkout that
-/// kept it, and the clone publishing it, while what the branch carries now stays
-/// true through every one of them — the same reason provenance is read off the
-/// branch everywhere else here.
-///
-/// Content decides, over the paths each candidate touched, so a base that has
-/// advanced beside the change below does not change the answer. `None` — no such
-/// commit — is every ordinary branch, and it keeps the merge.
-fn landed_history_boundary(repo: &Path, compared: &str, branch: &str) -> Result<Option<String>> {
-    // A base already in the branch has nothing to replay onto it, and a base that
-    // carries the branch's whole content has nothing left to land at all: both are
-    // the merge's own no-op, and asking anything further about them would rewrite a
-    // branch to answer a question nobody asked.
-    if git::is_ancestor(repo, compared, branch)? || !git::trees_differ(repo, compared, branch)? {
-        return Ok(None);
-    }
-    let Some(fork) = git::merge_base(repo, compared, branch)? else {
-        return Ok(None);
-    };
-    let own = git::commits_since(repo, compared, branch)?;
-    // Newest first, and never the branch's own tip: replaying from there would drop
-    // the whole branch rather than the part of it the base already has.
-    for candidate in own.iter().skip(1) {
-        if git::carries_changes(repo, compared, &fork, candidate)? {
-            return Ok(Some(candidate.clone()));
-        }
-    }
-    Ok(None)
-}
-
 /// Sync the branch with the current base, bounded, before anything is published.
-fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()> {
+///
+/// `replay_from` is the recorded stack tip when the change below this one has
+/// landed, and `None` — every publication that is not a stacked one — is the merge
+/// this has always been.
+fn sync(
+    context: &Context<'_>,
+    stream: &mut Stream,
+    compared: &str,
+    replay_from: Option<&str>,
+) -> Result<()> {
     if !git::ref_exists(&context.repo, &format!("refs/remotes/{compared}"))
         && !git::branch_exists(&context.repo, compared)
     {
@@ -603,7 +674,7 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
     }
     let mut attempted = Reconciliation::Merge;
     for attempt in 1..=SYNC_ATTEMPTS {
-        match reconcile(&context.repo, &context.worktree, compared, &context.branch)? {
+        match reconcile(&context.worktree, compared, &context.branch, replay_from)? {
             Reconciled::Settled => return Ok(()),
             Reconciled::Conflicted(shape) => attempted = shape,
         }
@@ -693,7 +764,7 @@ fn publish_locally(
             git::fetch(&context.repo, "origin")?;
         }
         if git::tip(&context.repo, compared) != judged {
-            sync(context, stream, compared)?;
+            sync(context, stream, compared, None)?;
             verify(context, stream, environment)?;
         }
         let (subject, trailers) = describe(context, compared)?;
