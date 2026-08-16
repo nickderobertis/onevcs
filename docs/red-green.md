@@ -527,7 +527,7 @@ status stops reading a landing off the base's content, which is the answer a squ
 
 ### `78-a-host-that-could-not-be-asked-is-read-as-one-with-nothing-to-say`
 
-status reports a host it could not reach as a host that answered, so a gap in the report reads as an answer.
+status reports a host it could not reach as a host that answered there is nothing, so a gap in the report reads as an answer.
 
 - RED `a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_rest` — assertion `left == right` failed
 
