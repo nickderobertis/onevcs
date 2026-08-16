@@ -585,6 +585,10 @@ fn failed(error: &Error) -> PublishOutcome {
 /// Both verbs take the branch by name and the repository by path, the way the real
 /// implementation reports them: the provenance decides which one, and neither
 /// depends on the directory a reader happens to be standing in.
+// llmlint: ignore[names_match_behavior] named for the public
+// `Recoverable::recover_command` field it fills, which `onevcs` publishes and this
+// crate must answer identically; a provider whose helper were named otherwise would
+// read as filling something else.
 fn recover_command(branch: &str, checkout: &Path, provenance: Provenance) -> Vec<String> {
     let verb = match provenance {
         Provenance::IncompleteStep => "recover",

@@ -340,6 +340,11 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 } else {
                     "publish-branch"
                 };
+                // llmlint: ignore[names_match_behavior] the name is the public
+                // `Recoverable::recover_command` field this fills, which the recorded
+                // surface in docs/inferred-surface.md fixes; renaming that field is a
+                // break of the published surface, and a local that disagreed with it
+                // would be the drift. Which verb the argv holds is the two lines above.
                 let recover_command = vec![
                     "onevcs".to_owned(),
                     verb.to_owned(),
