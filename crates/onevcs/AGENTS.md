@@ -86,12 +86,12 @@ stack inferred from content rewrites branches nobody stacked. Recorded stack sta
 cannot be read is refused, naming what restores it: publishing around it would answer
 "no stack" from a value nothing could read, which is the merge all of this avoids.
 
-`recoverable` is the report those two verbs are reached from, so the command it
-prints per row is one of them, by path (`--repo`) rather than by cwd. The train is
-deliberately not what it names, even for finished work: `integrate` reads its
-candidates out of the publication checkout alone and refuses a team or remote
-identity outright, so it lands none of the branches this report is most often read
-about — the ones a run left in its own clone.
+`recoverable` is the report `recover` and `publish-branch` are reached from, so
+the command it prints per row is one of them, by path (`--repo`) rather than by
+cwd. The train is deliberately not what it names, even for finished work:
+`integrate` reads its candidates out of the publication checkout alone and
+refuses a team or remote identity outright, so it lands none of the branches this
+report is most often read about — the ones a run left in its own clone.
 
 ## What a report answers about, and what a name already means
 
