@@ -504,7 +504,7 @@ a host that would not say where the branch is is read as one that has no such br
 status resolves a change request's URL as no reference at all, which is the state before this branch: the URL is the host's name for the work and nothing here reads it.
 
 - RED `every_spelling_of_one_piece_of_work_resolves_to_the_same_report` — Unexpected failure.
-- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(which is not a branch name git would accept)
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(is a name git would not accept)
 - RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected failure.
 
 ### `75-an-ambiguous-reference-answers-with-the-first-candidate`
@@ -573,7 +573,7 @@ status stops reading what a gate-verdict event actually said, so a refusal and a
 
 status hands a stream's recorded branch to git without asking whether it is a branch name at all.
 
-- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(which is not a branch name git would accept)
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(is a name git would not accept)
 
 ### `86-the-report-does-not-say-which-shape-it-is`
 
