@@ -680,12 +680,15 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
     std::fs::write(
         &stream,
         format!(
-            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n",
+            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n{}\n",
             // An envelope of a shape this build does not read, and one stamped in a
             // form nothing can order against the rest: both are gaps in what this
             // could read, and neither is a value to act on.
             envelope(2, "2099-01-01T00:00:00.000Z"),
             envelope(1, "yesterday"),
+            // Shaped like a stamp and naming no moment, which orders against the
+            // real ones as arbitrarily as prose does.
+            envelope(1, "9999-99-99T99:99:99.999Z"),
         ),
     )
     .expect("a stream a writer left half a line of, and two a later build wrote");
@@ -705,6 +708,7 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         "is not an event envelope",
         "declares envelope version 2",
         "is stamped \"yesterday\"",
+        "is stamped \"9999-99-99T99:99:99.999Z\"",
         "could not be read",
     ] {
         assert!(notes.contains(said), "{said} is not in the notes:\n{notes}");

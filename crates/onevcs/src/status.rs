@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::{Date, Month, Time};
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
@@ -887,20 +888,45 @@ struct Stamp(String);
 
 impl Stamp {
     /// The stamp a value spells, if it spells one at all.
+    ///
+    /// Two questions, and both have to hold. It has to be a moment — parsed against
+    /// the calendar the envelope names, so `9999-99-99T99:99:99.999Z` is refused
+    /// rather than accepted for looking like one. And it has to be *this* spelling
+    /// of that moment, which is the fixed width that makes ordering these a string
+    /// comparison: a shorter year or a dropped millisecond would parse and then sort
+    /// against the rest wrongly.
     fn parse(value: &str) -> Option<Self> {
-        // `2026-08-07T12:34:56.789Z`, which is what `ids::timestamp` writes and what
-        // the shared envelope declares. Held to the shape rather than to a calendar:
-        // what ordering needs is that the fields are where they are.
+        // `2026-08-07T12:34:56.789Z`, which is what `ids::timestamp` writes: the
+        // separators where they are, and every other position a digit.
         const SHAPE: &str = "0000-00-00T00:00:00.000Z";
-        let matches = value.len() == SHAPE.len()
-            && value
-                .chars()
-                .zip(SHAPE.chars())
-                .all(|(had, want)| match want {
-                    '0' => had.is_ascii_digit(),
-                    other => had == other,
-                });
-        matches.then(|| Stamp(value.to_owned()))
+        if value.len() != SHAPE.len()
+            || !value.chars().zip(SHAPE.chars()).all(|(had, want)| {
+                if want == '0' {
+                    had.is_ascii_digit()
+                } else {
+                    had == want
+                }
+            })
+        {
+            return None;
+        }
+        let field = |from: usize, to: usize| value[from..to].parse::<u32>().ok();
+        // The calendar itself, through the constructors that are it: a month, a day
+        // that month has, and a time of day. `time` decides those, not this.
+        Date::from_calendar_date(
+            i32::try_from(field(0, 4)?).ok()?,
+            Month::try_from(u8::try_from(field(5, 7)?).ok()?).ok()?,
+            u8::try_from(field(8, 10)?).ok()?,
+        )
+        .ok()?;
+        Time::from_hms_milli(
+            u8::try_from(field(11, 13)?).ok()?,
+            u8::try_from(field(14, 16)?).ok()?,
+            u8::try_from(field(17, 19)?).ok()?,
+            u16::try_from(field(20, 23)?).ok()?,
+        )
+        .ok()?;
+        Some(Stamp(value.to_owned()))
     }
 }
 
