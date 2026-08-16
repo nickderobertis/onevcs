@@ -313,6 +313,14 @@ fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refus
     };
     // Somebody is working in there. Resuming is an optimisation, and an optimisation
     // that cannot be taken must never be a session that will not open.
+    //
+    // llmlint: ignore[tests_mirror_real_usage] the state under test is the run
+    // root's occupancy lease answering "taken", and an exclusive holder of that lock
+    // is the only thing that produces it — no verb holds a lease across time, since
+    // every one of them takes it, works, and releases it before the process that
+    // opened the session exits. So it is held here, on the lock file the run root
+    // itself named, and everything the journey then asserts about is the real CLI
+    // meeting a run root somebody is inside. `edges.rs` holds occupancy the same way.
     let occupant = World::occupy(lease);
 
     let (second, cut) = fixture.open(&["--branch", "feature/busy"]);
@@ -1665,23 +1673,36 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
     let world = &fixture.world;
 
     // The work a stopped run left in its clone, which is where a pin most often
-    // points: an operator has just been told the branch is theirs to finish. A
-    // session this host could take up is taken up rather than refused, so the state
-    // the refusal is about is the one where it cannot be — here, somebody else is
-    // already inside that run root.
-    let before = world.locks();
-    let (_token, worktree) = fixture.open(&["--branch", "feature/fifteen-commits"]);
+    // points: an operator has just been told the branch is theirs to finish. It was
+    // cut in the identity's *worker* checkout, which is how a run that is not the
+    // publication is executed — so the request below, which names no checkout, is not
+    // a request that session answers, and the pin is one nothing here can take up.
+    let worker = world.clone_of(&fixture.origin, "worker");
+    world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/fifteen-commits",
+        ])
+        .assert()
+        .success();
+    let worktree = worktree_of(&assert.get_output().stdout.clone());
     world.commit_file(
         &worktree,
         "kept.txt",
         "the work\n",
         "feat: the work that must not go missing",
     );
-    let opened: Vec<_> = world.locks().difference(&before).cloned().collect();
-    let [lease] = opened.as_slice() else {
-        panic!("opening one session takes exactly one new lease, not {opened:?}");
-    };
-    let occupant = World::occupy(lease);
     world
         .onevcs()
         .args([
@@ -1811,7 +1832,6 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
             branch
         );
     }
-    drop(occupant);
 }
 
 #[test]
