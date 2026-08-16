@@ -727,7 +727,12 @@ fn resumable(
             // different thing from a run that stopped in the middle of one.
             && record.state == Lifecycle::Open
             && record.execution_checkout == execution
-            && request.base.as_deref().is_none_or(|base| *record.base == *base)
+            && match request.base.as_deref() {
+                Some(base) => *record.base == *base,
+                // Naming no base is asking for the identity's root, and a session
+                // that had to record a stack tip is one cut from something else.
+                None => record.stack_tip.is_none(),
+            }
             // The run root a record names outlives neither reclamation nor an
             // operator with a broom, and what is being reused is the directory
             // rather than the record of it.

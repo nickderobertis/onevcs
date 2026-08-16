@@ -391,6 +391,15 @@ fn a_pin_resumes_only_the_session_it_asked_for() {
     let (again, _tree) = fixture.open(&["--branch", "feature/other-base", "--base", "sibling"]);
     assert_eq!(again, from_sibling, "the same request is the same session");
 
+    // Naming no base at all is asking for the identity's root, which a session that
+    // recorded a stack of its own was not cut from — so it is not answered with one.
+    let (stacked, _tree) = fixture.open(&["--branch", "feature/rooted", "--base", "sibling"]);
+    let (rooted, _tree) = fixture.open(&["--branch", "feature/rooted"]);
+    assert_ne!(
+        rooted, stacked,
+        "an unnamed base is the root, not whichever base was last used"
+    );
+
     // A record outlives the directory it names: a run root holding no unpublished
     // work is reaped by the next session opened, and what is taken up is the
     // directory rather than the record of it.
