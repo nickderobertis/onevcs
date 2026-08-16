@@ -892,13 +892,14 @@ fn a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is() {
     );
 }
 
-#[test]
-fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
-    // A branch-keyed verb replays before it publishes, so its branch reaches the host
-    // rewritten just as a session's does — and the host already has this one, pushed
-    // when the review was opened against the change below. It replaces exactly the
-    // commit found there, and the review moves to the root.
-    let hosted = Hosted::new(REVIEWED);
+/// Preserved work on a branch stacked on `feature/engine`, left in the checkout.
+///
+/// The change below is on the host; the branch's own work and its preserve marker
+/// are committed and nothing else. What it deliberately does *not* do is push the
+/// branch or land the change below: how the branch reached the host — from this
+/// checkout, or from somewhere this checkout has never fetched — is exactly the
+/// difference the branch-keyed replay journeys below are about.
+fn preserved_stack(hosted: &Hosted, branch: &str) {
     let world = &hosted.world;
     let prefix = documented_default_prefix();
     world.git(
@@ -922,10 +923,7 @@ fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
         &["push", "-q", "origin", "feature/engine"],
     );
 
-    world.git(
-        &hosted.checkout,
-        &["checkout", "-q", "-b", "feature/recovered"],
-    );
+    world.git(&hosted.checkout, &["checkout", "-q", "-b", branch]);
     world.commit_file(
         &hosted.checkout,
         "filter.txt",
@@ -940,24 +938,32 @@ fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
             "--allow-empty",
             "-m",
             &format!(
-                "chore: preserve work on feature/recovered\n\n{}\n{} feature/engine",
+                "chore: preserve work on {branch}\n\n{}\n{} feature/engine",
                 documented_trailer("Status", &prefix),
                 documented_trailer("Change-Base", &prefix),
             ),
         ],
     );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
+    // A branch-keyed verb replays before it publishes, so its branch reaches the host
+    // rewritten just as a session's does — and the host already has this one, pushed
+    // when the review was opened against the change below. It replaces exactly the
+    // commit found there, and the review moves to the root.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    preserved_stack(&hosted, "feature/recovered");
     // The host has the branch, as the review that was opened against the change below
-    // left it.
+    // left it — pushed from this very checkout, which is what makes it a copy this
+    // run has seen.
     world.git(
         &hosted.checkout,
         &["push", "-q", "origin", "feature/recovered"],
     );
-    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
-
-    let below = world.clone_of(&hosted.origin, "below");
-    world.git(&below, &["merge", "--squash", "origin/feature/engine"]);
-    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
-    world.git(&below, &["push", "-q", "origin", "main"]);
+    squash_the_change_below(&hosted, false);
 
     world
         .onevcs()
@@ -985,6 +991,156 @@ fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
         ],
         "the host's copy is the replayed branch: its own work, attested, over the root"
     );
+}
+
+#[test]
+fn a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it() {
+    // The move a branch-keyed verb never witnesses: nobody was running when the other
+    // commit landed, so the only observation of the host's copy this run has is the
+    // one the checkout was left holding. The verb's own fetch then sees the moved
+    // branch — and a lease taken from *that* would name their commit and authorize
+    // replacing it. What the push may replace is what this run had seen, so git turns
+    // it down, their commit stands, and the work is retained where it was found.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    preserved_stack(&hosted, "feature/recovered");
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/recovered"],
+    );
+    squash_the_change_below(&hosted, false);
+
+    // Somebody else pushes to the branch, with nothing of this run's running.
+    let elsewhere = world.clone_of(&hosted.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &[
+            "checkout",
+            "-q",
+            "-B",
+            "feature/recovered",
+            "origin/feature/recovered",
+        ],
+    );
+    world.commit_file(
+        &elsewhere,
+        "review.txt",
+        "a fix asked for in review\n",
+        "fix: take the review's advice",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "feature/recovered"]);
+    let theirs = world.git(&hosted.origin, &["rev-parse", "feature/recovered"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains(
+            "\"feature/recovered\" moved on the host since this run last had it at",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was overwritten and the branch is retained.",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains(&theirs),
+        "the commit the lease names is the one this run saw, never the one it found:\n{refusal}"
+    );
+
+    // Nothing on the host moved: their commit is still the branch, tip and content.
+    assert_eq!(
+        world.git(&hosted.origin, &["rev-parse", "feature/recovered"]),
+        theirs,
+        "the host's copy of the branch is exactly what they pushed"
+    );
+    assert_eq!(
+        world.git(
+            &hosted.origin,
+            &["log", "-1", "--format=%s", "feature/recovered"]
+        ),
+        "fix: take the review's advice"
+    );
+    // …and the work this run replayed is retained where it was found.
+    assert!(world
+        .git(&hosted.checkout, &["branch", "--list", "feature/recovered"])
+        .contains("feature/recovered"));
+}
+
+#[test]
+fn a_replay_of_a_branch_this_run_has_never_seen_on_the_host_is_refused_before_it_pushes() {
+    // The same danger with no lease to take at all: the host has a branch of this
+    // name, pushed from somewhere this checkout has never fetched, so nothing here
+    // has ever observed it. A replay pushed without a lease would replace whatever
+    // is there, and a lease taken from this run's own fetch would name their commit
+    // and authorize exactly that. So it is refused before the gate runs, naming the
+    // fetch that would give this run something to lease on.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    preserved_stack(&hosted, "feature/recovered");
+    squash_the_change_below(&hosted, false);
+
+    let elsewhere = world.clone_of(&hosted.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &["checkout", "-q", "-b", "feature/recovered", "origin/main"],
+    );
+    world.commit_file(
+        &elsewhere,
+        "review.txt",
+        "a fix asked for in review\n",
+        "fix: take the review's advice",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "feature/recovered"]);
+    let theirs = world.git(&hosted.origin, &["rev-parse", "feature/recovered"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains("and nothing in "))
+        .stderr(predicate::str::contains(
+            "has ever seen it there — so this run has no commit it can safely replace",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was pushed and the branch is retained.",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        refusal.contains(&format!(
+            "`git -C {} fetch origin feature/recovered`",
+            hosted.checkout.display()
+        )),
+        "the refusal names the fetch that supplies the observation:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("onevcs recover feature/recovered --repo"),
+        "…and the verb that lands it once it has one:\n{refusal}"
+    );
+
+    // Their branch is untouched, and no review was opened over it.
+    assert_eq!(
+        world.git(&hosted.origin, &["rev-parse", "feature/recovered"]),
+        theirs,
+        "the host's copy of the branch is exactly what they pushed"
+    );
+    assert!(!world.path("gh-state/pr-1.env").exists());
+    assert!(world
+        .git(&hosted.checkout, &["branch", "--list", "feature/recovered"])
+        .contains("feature/recovered"));
 }
 
 #[test]

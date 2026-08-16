@@ -107,10 +107,16 @@ pub struct Landing {
     // it be passed where a branch is expected. `vcs::base_ref` answers a `String` for
     // the same reason at every other caller.
     pub compared_change_base: String,
-    /// What the host had for this branch when it was located, which is the commit a
-    /// replay's push may replace and nothing else.
+    /// What this run has seen the host's copy of this branch at, which is the commit
+    /// a replay's push may replace and nothing else.
+    ///
+    /// Read out of the checkout the branch was found in and before this run fetched
+    /// anything: a value taken after the fetch would be wherever the host is *now*,
+    /// including a move this run never saw, and leasing on that authorizes replacing
+    /// it. `None` is a host copy this run cannot vouch for, which is refused rather
+    /// than pushed over.
     // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
-    pub published: Option<String>,
+    pub observed: Option<String>,
     /// The recorded stack tip this branch's own commits are replayed from, when the
     /// change below it has already landed on the root base.
     // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it, and this
@@ -178,6 +184,14 @@ pub fn prepare(
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
 
+    // Where this run has actually *seen* the host's copy of the branch: the
+    // remote-tracking ref in the checkout the branch was found in, read before
+    // anything here fetches. The clone's own copy of that ref is no answer — the
+    // fetch below sets it to whatever the host has now, so a lease taken from it
+    // would name a commit nobody here observed and authorize replacing it. That is
+    // the whole of what a lease is for.
+    let observed = git::tip(&source, &format!("origin/{branch}"));
+
     let origin = git::remote_url(&source, "origin")
         .unwrap_or_else(|_| source.to_string_lossy().into_owned());
     git::retain_objects_for_borrowers(&source)?;
@@ -187,7 +201,7 @@ pub fn prepare(
     }
     git::worktree_add_existing(&clone, &worktree, branch)?;
     git::fetch(&clone, "origin")?;
-    let published = git::tip(&clone, &format!("origin/{branch}"));
+    let hosted = git::tip(&clone, &format!("origin/{branch}"));
 
     let compared = crate::vcs::base_ref(&clone, &base);
     // A recorded base is read back out of a commit the repository carries, so it is
@@ -243,6 +257,37 @@ pub fn prepare(
         None => (base.clone(), None),
     };
     let compared_change_base = crate::vcs::base_ref(&clone, &change_base);
+    // A replay rewrites the branch, so what it pushes is no descendant of the host's
+    // copy and the push may only go through against a commit this run saw there.
+    // With a copy on the host and no such observation — the branch reached the host
+    // from somewhere this checkout has never fetched — there is nothing to lease on,
+    // and an unleased push of a rewritten branch is exactly the overwrite all of
+    // this exists to prevent. Refuse here, before the gate, and name the fetch that
+    // supplies the observation.
+    if stack_replay.is_some() && observed.is_none() {
+        if let Some(hosted) = &hosted {
+            return Err(Error::SyncConflict {
+                reason: format!(
+                    "{branch:?} is on the host at {hosted}, and nothing in {source} has ever seen \
+                     it there — so this run has no commit it can safely replace. This publication \
+                     replays the branch onto {change_base:?}, and pushing it without knowing what \
+                     it replaces could overwrite work nobody here has seen. Nothing was pushed \
+                     and the branch is retained. Fetch the host's copy with `{fetch}`, reconcile \
+                     it with the branch, and then land it with `{command}`",
+                    source = source.display(),
+                    fetch = guidance::command([
+                        "git",
+                        "-C",
+                        &source.to_string_lossy(),
+                        "fetch",
+                        "origin",
+                        branch
+                    ]),
+                    command = verb.command(branch, repo),
+                ),
+            });
+        }
+    }
 
     Ok(Landing {
         verb,
@@ -259,7 +304,7 @@ pub fn prepare(
         branch: Ref::from_git(branch),
         change_base,
         compared_change_base,
-        published,
+        observed,
         stack_replay,
     })
 }
@@ -436,7 +481,7 @@ impl Landing {
             // replay rewrote a branch the host already has, a push that replaces
             // exactly the commit this run found there.
             target: publish::Target::Base(self.change_base.clone()),
-            push: match (&self.stack_replay, &self.published) {
+            push: match (&self.stack_replay, &self.observed) {
                 (Some(_), Some(replaced)) => publish::Push::Replacing {
                     replaced: replaced.clone(),
                 },
