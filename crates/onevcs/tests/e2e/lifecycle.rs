@@ -13,6 +13,8 @@
 // publication is a real `git push`, and when that program merges a change it does so
 // with real git against the same bare origin. An assertion here that a change reached
 // its base is therefore an assertion about git.
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use predicates::prelude::*;
@@ -2168,6 +2170,58 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
     assert_eq!(
         fixture.origin_log()[0],
         "feat: filter what the engine relays"
+    );
+}
+
+#[test]
+fn a_stack_parent_whose_path_this_process_cannot_read_is_replayed_by_content_alone() {
+    // git prints a repository's own path bytes and this process reads them as UTF-8,
+    // so a path that is not arrives as no name at all — and a sync that scoped its
+    // question by names would then have to answer it from a list nobody could read.
+    // It asks the same question without them instead, which is why this publishes.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    let below = world.clone_of(&fixture.origin, "below");
+    world.git(&below, &["checkout", "-q", "-b", "feature/engine"]);
+    let unreadable = OsString::from_vec(b"engine\xff.txt".to_vec());
+    std::fs::write(below.join(&unreadable), "the engine\n").expect("a file git will take");
+    world.git(&below, &["add", "-A"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.commit_file(
+        &below,
+        "notes.txt",
+        "how it runs\n",
+        "docs: describe the engine",
+    );
+    world.git(&below, &["push", "-q", "origin", "feature/engine"]);
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/unreadable-stack"]);
+    world.git(&worktree, &["fetch", "-q", "origin", "feature/engine"]);
+    world.git(&worktree, &["reset", "--hard", "FETCH_HEAD"]);
+    world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    world.git(&below, &["checkout", "-q", "main"]);
+    world.git(&below, &["merge", "--squash", "feature/engine"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.git(&below, &["push", "-q", "origin", "main"]);
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let subjects = fixture.origin_log();
+    assert_eq!(subjects[0], "feat: filter what the engine relays");
+    assert_eq!(
+        subjects.len(),
+        3,
+        "the change below landed once, not again under this one: {subjects:?}"
     );
 }
 
