@@ -927,12 +927,15 @@ fn publish_as_change(
     )?;
     record_push(context, stream, &pushed)?;
     if let Err(output) = pushed {
-        // Which refusal this is depends on what was being asked. A leased push that
-        // git declined is somebody else's commit on this branch, and the work here is
-        // a replay that would have written over it — so the refusal says that, rather
-        // than reporting a gate nothing ran, and names what lands it once the two
-        // histories are one again.
-        let Some(replaced) = replacing else {
+        // Which refusal this is depends on what git declined. A lease it turned down
+        // it names — "stale info" is the phrase, and it means somebody else's commit
+        // is on this branch while the work here is a replay that would have written
+        // over it. Every other rejection of the same push is what it has always been:
+        // a credential, a hook, or the host's own policy, and reading one of those as
+        // a branch that moved would send an operator to reconcile histories that
+        // never diverged.
+        let declined_the_lease = replacing.is_some() && output.contains("stale info");
+        let Some(replaced) = replacing.filter(|_| declined_the_lease) else {
             return Err(Error::GateFailed {
                 reason: format!(
                     "the publishing push of {:?} was rejected by the merge path: {}",

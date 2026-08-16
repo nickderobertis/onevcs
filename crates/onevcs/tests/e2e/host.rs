@@ -848,6 +848,50 @@ fn a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it() {
 }
 
 #[test]
+fn a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is() {
+    // The same leased push, declined for a reason that has nothing to do with the
+    // lease: the merge path's own hook turned it down. Nothing moved on the host, so
+    // the refusal is the push rejection it has always been — reading it as a branch
+    // somebody else moved would send an operator to reconcile two histories that
+    // never diverged.
+    let hosted = Hosted::new(REVIEWED);
+    let refuse_when = hosted.world.path("the-hook-refuses");
+    hosted.world.install_pre_push(
+        &hosted.checkout,
+        &format!(
+            "if [ -e {refuse} ]; then echo 'the merge path says no' >&2; exit 1; fi\nexit 0",
+            refuse = refuse_when.display()
+        ),
+    );
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    squash_the_change_below(&hosted, true);
+    std::fs::write(&refuse_when, "now\n").expect("the hook's answer");
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 1 is the contract's code for a verification the merge path refused.
+        .code(1)
+        .stderr(predicate::str::contains(
+            "the publishing push of \"feature/filter\" was rejected by the merge path",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host"),
+        "a hook is not a branch somebody moved:\n{refusal}"
+    );
+}
+
+#[test]
 fn a_hosted_stack_the_root_independently_matches_is_answered_the_same_way() {
     // The ambiguity content equality cannot resolve, and the reason the answer is
     // safe either way: the branch below is still open, but the root already holds
