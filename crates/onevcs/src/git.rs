@@ -1148,15 +1148,26 @@ pub fn remote_tip(
         env,
     )?;
     Ok(match listing.status {
-        0 => listing
-            .stdout
-            .split_whitespace()
-            .next()
-            .and_then(ObjectId::parse)
-            .map_or(RemoteTip::Unknown, RemoteTip::At),
+        0 => advertised(&listing.stdout, &reference).map_or(RemoteTip::Unknown, RemoteTip::At),
         2 => RemoteTip::Absent,
         _ => RemoteTip::Unknown,
     })
+}
+
+/// The one object id a listing advertises for one ref, if that is what it is.
+///
+/// `ls-remote` answers `<id>\t<ref>` and, for a fully spelled ref, one line of it.
+/// The whole response has to be that: a second line, a missing field, a ref other
+/// than the one asked for, or an id that is not one leaves this with nothing it
+/// understands — and half of an answer is not a fact to decide a lease on.
+fn advertised(listing: &str, reference: &str) -> Option<ObjectId> {
+    let mut lines = listing.lines().filter(|line| !line.trim().is_empty());
+    let advertised = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let (id, named) = advertised.split_once('\t')?;
+    (named == reference).then(|| ObjectId::parse(id)).flatten()
 }
 
 /// Copy one local branch into another local repository, objects included.
