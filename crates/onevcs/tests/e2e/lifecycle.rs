@@ -2173,13 +2173,12 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
     );
 }
 
-#[test]
-fn a_stack_parent_whose_path_this_process_cannot_read_is_replayed_by_content_alone() {
-    // git prints a repository's own path bytes and this process reads them as UTF-8,
-    // so a path that is not arrives as no name at all — and a sync that scoped its
-    // question by names would then have to answer it from a list nobody could read.
-    // It asks the same question without them instead, which is why this publishes.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+/// A stacked session over a change below whose paths this process cannot read.
+///
+/// git prints a repository's own path bytes and this process reads them as UTF-8, so
+/// a path that is not arrives as no name at all — and a sync that scoped its question
+/// by names would then be answering it from a list nobody could read.
+fn an_unreadable_stack(fixture: &Fixture, branch: &str) -> (String, PathBuf) {
     let world = &fixture.world;
     let below = world.clone_of(&fixture.origin, "below");
     world.git(&below, &["checkout", "-q", "-b", "feature/engine"]);
@@ -2195,22 +2194,34 @@ fn a_stack_parent_whose_path_this_process_cannot_read_is_replayed_by_content_alo
     );
     world.git(&below, &["push", "-q", "origin", "feature/engine"]);
 
-    let (token, worktree) = fixture.open(&["--branch", "feature/unreadable-stack"]);
+    let (token, worktree) = fixture.open(&["--branch", branch]);
     world.git(&worktree, &["fetch", "-q", "origin", "feature/engine"]);
     world.git(&worktree, &["reset", "--hard", "FETCH_HEAD"]);
-    world.commit_file(
+    // The branch's own work is on the file nobody here can name, so a merge of the
+    // base has both sides writing it and conflicts — which is the trap, and what the
+    // replay has to avoid without ever reading the name.
+    std::fs::write(worktree.join(&unreadable), "the engine\nand a filter\n")
+        .expect("the branch's own work");
+    world.git(&worktree, &["add", "-A"]);
+    world.git(
         &worktree,
-        "filter.txt",
-        "what it relays\n",
-        "feat: filter what the engine relays",
+        &["commit", "-q", "-m", "feat: filter what the engine relays"],
     );
 
     world.git(&below, &["checkout", "-q", "main"]);
     world.git(&below, &["merge", "--squash", "feature/engine"]);
     world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
     world.git(&below, &["push", "-q", "origin", "main"]);
+    (token, worktree)
+}
 
-    world
+#[test]
+fn a_stack_parent_whose_path_this_process_cannot_read_is_replayed_by_content_alone() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, _worktree) = an_unreadable_stack(&fixture, "feature/unreadable-stack");
+
+    fixture
+        .world
         .onevcs()
         .args(["publish", &token])
         .assert()
@@ -2223,6 +2234,36 @@ fn a_stack_parent_whose_path_this_process_cannot_read_is_replayed_by_content_alo
         3,
         "the change below landed once, not again under this one: {subjects:?}"
     );
+}
+
+#[test]
+fn an_unreadable_path_and_a_base_that_moved_on_is_refused_rather_than_replayed_on_a_guess() {
+    // The other half of the same boundary, and the conservative half: with the paths
+    // unreadable the question can only be asked of whole trees, and a base that has
+    // advanced beside the change below no longer answers it. Nothing is replayed on
+    // a guess — the branch takes the merge it would have taken before any of this,
+    // and the refusal that names how to resolve it.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    let (token, _worktree) = an_unreadable_stack(&fixture, "feature/unreadable-moved-on");
+    let other = world.clone_of(&fixture.origin, "advancing");
+    world.commit_file(
+        &other,
+        "elsewhere.txt",
+        "somebody else's work\n",
+        "feat: land something else",
+    );
+    world.git(&other, &["push", "-q", "origin", "main"]);
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "merge origin/main into feature/unreadable-moved-on",
+        ))
+        .stderr(predicate::str::contains("the branch is retained"));
 }
 
 #[test]

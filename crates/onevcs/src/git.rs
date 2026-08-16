@@ -704,16 +704,22 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 }
 
 /// The commit two refs last had in common, or `None` when they share no history.
-// llmlint: ignore[invalid_states_unrepresentable] a commit SHA is what git printed, and
-// this module has answered every one of them as a `String` since `tip`, `head_sha`, and
-// `CommitMessage`. The crate's `Sha` is the *contract's* spelling of one at the public
-// surface and is an unvalidated `pub struct Sha(pub String)`, so spelling it here would
-// make no state unrepresentable — it would only give one module two vocabularies for one
-// answer, which is the drift every other function here avoids.
+///
+/// A SHA is spelled the way `tip`, `head_sha`, and `CommitMessage` have always spelled
+/// one here: the crate's `Sha` is the *contract's* wrapper at the public surface and
+/// wraps an unvalidated `String`, so it would make no state here unrepresentable and
+/// would give one module two vocabularies for one answer. Git's own answer to a command
+/// this module just ran is likewise not a trust boundary — the input this crate checks
+/// is what a caller supplied — and a check no journey could reach is a path this crate
+/// deletes rather than adds.
+// llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] see above.
 pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String>> {
     let output = run(&["merge-base", first, second], Some(cwd))?;
     match output.status {
-        0 => Ok(Some(output.trimmed())),
+        // Nothing but a SHA is printed on success, so an empty answer is one that did
+        // not survive being read — and "they share no history" is the safe reading of
+        // it: it is what stops a replay rather than what starts one.
+        0 => Ok(Some(output.trimmed()).filter(|sha| !sha.is_empty())),
         1 => Ok(None),
         _ => Err(Error::Invalid {
             reason: format!(
@@ -730,8 +736,8 @@ pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String
 /// First-parent, because the question every caller asks is where the branch's own
 /// history begins: a base merged into it earlier brings that base's commits along
 /// a second parent, and walking into them would answer about somebody else's work.
-// llmlint: ignore[invalid_states_unrepresentable] these are git's own printed SHAs, spelled
-// the way `merge_base` above spells one and for the same reason.
+// llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] git's own printed
+// SHAs, spelled and trusted the way `merge_base` above says.
 pub fn commits_since(cwd: &Path, base: &str, branch: &str) -> Result<Vec<String>> {
     let output = checked(
         &["rev-list", "--first-parent", &format!("{base}..{branch}")],
@@ -753,6 +759,8 @@ pub fn commits_since(cwd: &Path, base: &str, branch: &str) -> Result<Vec<String>
 /// on the commit — which is the question asked here, and asked over the paths that
 /// commit actually touched so that unrelated work landing on the base beside it
 /// does not change the answer.
+// llmlint: ignore[boundary_inputs_validated] the decoding this rests on is checked rather
+// than assumed: an unreadable listing is told from an empty one below, and answered.
 pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
     let listed = checked(&["diff", "--name-only", "-z", fork, commit], Some(cwd))?;
     // Pathspecs, not names: a path is a repository's own content and one beginning

@@ -510,11 +510,8 @@ pub(crate) enum Reconciliation {
     /// Only the branch's own commits are replayed onto the base, because the base
     /// already carries its history up to this commit.
     Replay {
-        /// The commit where the branch's own work begins.
-        // llmlint: ignore[invalid_states_unrepresentable] this is the SHA `git::merge_base`
-        // and `git::commits_since` answered with, carried to the refusal that prints it and
-        // to the replay that uses it; re-spelling it here would give the one answer two
-        // types between the module that produced it and the message that quotes it.
+        /// The commit where the branch's own work begins, as `git` spelled it.
+        // llmlint: ignore[invalid_states_unrepresentable] `git::commits_since` answered it.
         from: String,
     },
 }
