@@ -2175,6 +2175,15 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
 fn an_unstacked_branch_takes_a_base_that_advanced_as_the_merge_it_always_was() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/plain"]);
+    // Several commits, deliberately: the answer for a branch of one is the same
+    // whatever a sync looks for, and what has to hold is that a branch of many
+    // whose history the base carries none of is left exactly as it was.
+    fixture.world.commit_file(
+        &worktree,
+        "first.txt",
+        "the first half\n",
+        "feat: do the first half",
+    );
     fixture.world.commit_file(
         &worktree,
         "own.txt",
@@ -2182,6 +2191,7 @@ fn an_unstacked_branch_takes_a_base_that_advanced_as_the_merge_it_always_was() {
         "feat: do the work",
     );
     let own = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    let first = fixture.world.git(&worktree, &["rev-parse", "HEAD~1"]);
 
     // The base advances compatibly under it, which is the ordinary case and the one
     // nothing about a stack may change.
@@ -2213,7 +2223,19 @@ fn an_unstacked_branch_takes_a_base_that_advanced_as_the_merge_it_always_was() {
         own,
         "the session's own commit was not rewritten"
     );
-    assert_eq!(fixture.origin_log()[0], "feat: do the work");
+    assert_eq!(
+        fixture.world.git(&worktree, &["rev-parse", "HEAD^1~1"]),
+        first,
+        "and neither was the one below it"
+    );
+    assert_eq!(fixture.origin_log()[0], "feat: do the first half");
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.origin, &["show", "main:first.txt"]),
+        "the first half",
+        "every commit's content landed, which is what nothing being dropped means"
+    );
 }
 
 #[test]

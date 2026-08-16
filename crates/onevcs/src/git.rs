@@ -704,6 +704,12 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 }
 
 /// The commit two refs last had in common, or `None` when they share no history.
+// llmlint: ignore[invalid_states_unrepresentable] a commit SHA is what git printed, and
+// this module has answered every one of them as a `String` since `tip`, `head_sha`, and
+// `CommitMessage`. The crate's `Sha` is the *contract's* spelling of one at the public
+// surface and is an unvalidated `pub struct Sha(pub String)`, so spelling it here would
+// make no state unrepresentable — it would only give one module two vocabularies for one
+// answer, which is the drift every other function here avoids.
 pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String>> {
     let output = run(&["merge-base", first, second], Some(cwd))?;
     match output.status {
@@ -724,6 +730,8 @@ pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String
 /// First-parent, because the question every caller asks is where the branch's own
 /// history begins: a base merged into it earlier brings that base's commits along
 /// a second parent, and walking into them would answer about somebody else's work.
+// llmlint: ignore[invalid_states_unrepresentable] these are git's own printed SHAs, spelled
+// the way `merge_base` above spells one and for the same reason.
 pub fn commits_since(cwd: &Path, base: &str, branch: &str) -> Result<Vec<String>> {
     let output = checked(
         &["rev-list", "--first-parent", &format!("{base}..{branch}")],

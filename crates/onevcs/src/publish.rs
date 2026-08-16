@@ -510,7 +510,11 @@ pub(crate) enum Reconciliation {
     /// Only the branch's own commits are replayed onto the base, because the base
     /// already carries its history up to this commit.
     Replay {
-        /// The stack parent's tip, which is where the branch's own work begins.
+        /// The commit where the branch's own work begins.
+        // llmlint: ignore[invalid_states_unrepresentable] this is the SHA `git::merge_base`
+        // and `git::commits_since` answered with, carried to the refusal that prints it and
+        // to the replay that uses it; re-spelling it here would give the one answer two
+        // types between the module that produced it and the message that quotes it.
         from: String,
     },
 }
@@ -536,7 +540,7 @@ pub(crate) fn reconcile(
     compared: &str,
     branch: &str,
 ) -> Result<Reconciled> {
-    let (shape, integrated) = match landed_stack_base(repo, compared, branch)? {
+    let (shape, integrated) = match landed_history_boundary(repo, compared, branch)? {
         Some(parent) => (
             Reconciliation::Replay {
                 from: parent.clone(),
@@ -558,19 +562,20 @@ pub(crate) fn reconcile(
     })
 }
 
-/// The stack parent's tip on this branch, when the base has already landed it.
+/// The newest commit on the branch's own line whose history the base already
+/// carries — everything up to which adds nothing to publish.
 ///
-/// The recorded stack base is read off the branch's own history rather than
-/// remembered, for the reason every other provenance question here is: what the
-/// branch carries now is the only answer that stays true across the session that
-/// cut it, the checkout that kept it, and the clone publishing it. The tip it was
-/// cut from is the newest commit on the branch's own line whose whole content the
-/// base already carries — which is exactly what a squash-merge of the change below
-/// it leaves behind, and which nothing else on a branch with work still to land
-/// can be.
+/// That is what a stack parent's tip becomes once the change below it
+/// squash-merged, and it is the answer this asks for rather than a remembered one:
+/// no record survives all of the session that cut the branch, the checkout that
+/// kept it, and the clone publishing it, while what the branch carries now stays
+/// true through every one of them — the same reason provenance is read off the
+/// branch everywhere else here.
 ///
-/// `None` — no such commit — is every ordinary branch, and it keeps the merge.
-fn landed_stack_base(repo: &Path, compared: &str, branch: &str) -> Result<Option<String>> {
+/// Content decides, over the paths each candidate touched, so a base that has
+/// advanced beside the change below does not change the answer. `None` — no such
+/// commit — is every ordinary branch, and it keeps the merge.
+fn landed_history_boundary(repo: &Path, compared: &str, branch: &str) -> Result<Option<String>> {
     // A base already in the branch has nothing to replay onto it, and a base that
     // carries the branch's whole content has nothing left to land at all: both are
     // the merge's own no-op, and asking anything further about them would rewrite a
