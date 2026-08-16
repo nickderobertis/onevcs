@@ -705,7 +705,7 @@ fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it
     // that has to move — onto the root, with only this branch's own commits — and it
     // opens the review there rather than against a branch the host no longer has.
     let hosted = Hosted::new(REVIEWED);
-    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    let (token, worktree) = hosted_stack(&hosted, "feature/filter");
 
     hosted
         .world
@@ -717,6 +717,14 @@ fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it
     assert_eq!(opened_against(&hosted, &token), "feature/engine");
 
     squash_the_change_below(&hosted, true);
+    // …and the session works on, so what it replays is ahead of what it published:
+    // the commit its push may replace is the one the host has, not the one it holds.
+    hosted.world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays, revised\n",
+        "fix: relay a little less",
+    );
 
     hosted
         .world
@@ -741,10 +749,12 @@ fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it
             .lines()
             .collect::<Vec<_>>(),
         vec![
+            "fix: relay a little less",
             "feat: filter what the engine relays",
             "feat: write the engine",
             "chore: seed the repository",
-        ]
+        ],
+        "its own work, all of it, over the root the change below landed on"
     );
 }
 

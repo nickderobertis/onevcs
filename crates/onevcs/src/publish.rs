@@ -358,10 +358,10 @@ pub enum Push {
     /// branch's own commits onto the root and what it pushes is therefore no
     /// descendant of what the host has.
     Replacing {
-        /// What the branch was before the replay rewrote it — the commit this run is
-        /// replacing, and the only thing it may. Read before the sync rather than
-        /// after: a host that moved *since* is the thing the lease exists to catch,
-        /// and a lease taken from a later fetch would name that move and allow it.
+        /// The commit this repository last saw the host's copy of the branch at,
+        /// which is the only one this may replace. Read before the fetch rather than
+        /// after: a host that moved *since* is the thing this exists to catch, and a
+        /// value taken from a later fetch would name that move and allow it.
         // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
         replaced: String,
     },
@@ -524,6 +524,11 @@ impl<'a> Context<'a> {
 
 /// Verify and publish a branch.
 pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome> {
+    // Where this repository last saw the host's copy of the branch, read before the
+    // fetch that is about to update it: a publication that replays its own commits
+    // pushes over that copy, and what it may replace is what it had already seen —
+    // never whatever arrived in between, which is the thing worth refusing over.
+    let last_seen = git::tip(&context.repo, &format!("origin/{}", context.branch));
     if git::has_remote(&context.repo, "origin") {
         // Outside every exclusive section, deliberately.
         git::fetch(&context.repo, "origin")?;
@@ -536,9 +541,6 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     // already carries is a change onto the root base, and everything below — what it is compared
     // against, what its gate judges, what its change request targets — follows from
     // that rather than from the branch it was opened against.
-    // What the host was last known to have for this branch, taken before anything
-    // rewrites it locally.
-    let published = git::tip(&context.repo, &context.branch);
     let mut replay = None;
     let landed;
     let mut context = context;
@@ -562,7 +564,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         return Ok(PublishOutcome::NothingToPublish);
     }
 
-    let push = match (&replay, &published) {
+    let push = match (&replay, &last_seen) {
         (Some(_), Some(replaced)) => Push::Replacing {
             replaced: replaced.clone(),
         },
@@ -912,15 +914,9 @@ fn publish_as_change(
     // for it — the change below's commits are gone from it — so the push replaces one
     // commit and no other, and git refuses it if the host is anywhere else. Every
     // other publication pushes as it always has: forward or not at all.
-    // …and only where there is something to replace: a host that has never had this
-    // branch is an ordinary first push, and a lease naming a commit it does not have
-    // would be refused for the wrong reason entirely.
-    let known = format!("refs/remotes/origin/{}", context.branch);
     let replacing = match &push {
-        Push::Replacing { replaced } if git::ref_exists(&context.repo, &known) => {
-            Some(replaced.as_str())
-        }
-        _ => None,
+        Push::Replacing { replaced } => Some(replaced.as_str()),
+        Push::Forward => None,
     };
     let pushed = git::push_replacing(
         &context.worktree,
