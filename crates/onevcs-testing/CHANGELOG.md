@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.2.0...onevcs-testing-v0.2.1) - 2026-08-16
+
+### Added
+
+- *(publish)* replay a stacked branch, and lease the push it rewrote ([#43](https://github.com/nickderobertis/onevcs/pull/43))
+
 ## [0.2.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.12...onevcs-testing-v0.2.0) - 2026-08-16
 
 ### Added
