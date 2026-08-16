@@ -3,20 +3,20 @@ Red: a_spent_name_does_not_block_an_import_under_another
 Red: a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree
 
 diff --git a/crates/onevcs/src/import.rs b/crates/onevcs/src/import.rs
-index 41cf681..bca3c4e 100644
+index 06503c5..d36c07a 100644
 --- a/crates/onevcs/src/import.rs
 +++ b/crates/onevcs/src/import.rs
-@@ -116,12 +116,8 @@ pub fn run(
-             ),
-         });
-     }
+@@ -139,12 +139,8 @@ pub fn run(
+              checkout it is in"
+         ),
+     })?;
 -    let name = match under {
 -        Some(under) => Ref::try_from(under.to_owned()).map_err(|reason| Error::Invalid {
 -            reason: format!("--as {reason}: it is not a valid branch name"),
 -        })?,
--        None => Ref::from_git(branch),
+-        None => asked.clone(),
 -    };
-+    let name = Ref::from_git(branch);
++    let name = asked.clone();
 +    let _ = under;
      // Refused before anything is fetched: the whole promise of this verb is that no
      // working tree moves, and pointing a checked-out branch somewhere else leaves
