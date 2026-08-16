@@ -688,8 +688,8 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
     git::retain_objects_for_borrowers(execution)
 }
 
-/// The session a pinned branch is already held by, when exactly one is and it is
-/// free to be taken up.
+/// The session a pinned branch is already held by, when exactly one is and nothing
+/// holds its run root against being taken up.
 ///
 /// A retry of the same node arrives as the same pin, and cutting it a second run
 /// root leaves the first one behind holding the same branch at an older tip: a clone
@@ -707,7 +707,7 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
 /// What comes back is the session *and its lease*, held from here until the
 /// adoption has taken its own: a shared lease is compatible with the one [`adopt`]
 /// takes, so holding it costs nothing and closes the window in which the run root
-/// could be reclaimed or occupied between being found free and being taken up.
+/// could be reclaimed between being asked about and being taken up.
 fn resumable(
     resolution: &Resolution,
     request: &SessionRequest,
@@ -746,8 +746,11 @@ fn resumable(
     let (Some(candidate), None) = (held.next(), held.next()) else {
         return Ok(None);
     };
-    // Free right now, asked the way `adopt` asks it a moment later: a session
-    // somebody is working in is not one to take a worktree out from under.
+    // The same question `adopt` asks a moment later, and it has the same answer: an
+    // exclusive holder — a reclamation probing this run root, or anything else that
+    // has taken it against the world — is what it answers `None` for. Shared holders
+    // are compatible with each other by design, because several commands legitimately
+    // work in one run root at once.
     // llmlint: ignore-block[changed_behavior_has_e2e] the journey is
     // `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing`,
     // which holds the run root's lock itself, and says there why a lease no command

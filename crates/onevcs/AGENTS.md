@@ -118,7 +118,7 @@ could not reach it, so two things are stated rather than left to be inferred.
   at an older tip. So `workspace::open` re-attaches through `workspace::adopt` when
   exactly one open session of the identity holds that name, on the same base — an
   unnamed one being the identity's root as it stands now — and the same execution
-  checkout, with its run root there and its lease free, and says
+  checkout, with its run root there and nobody holding it against them, and says
   `"reused": true`. Closed is not one of them: closing hands the branch back and
   means finished. Every other case falls through to the ordinary cut rather than
   being refused, so reuse decides only whether a second run root is cut; the rule
