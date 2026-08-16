@@ -95,7 +95,11 @@ that widening needs, and each is the smallest thing that could answer the questi
 it exists for. The declarations themselves live in `docs/contract.md` and are held
 to the code by `the_amendment_declares_the_types_the_widened_seam_gained` in
 `tests/contract.rs`; the column below records only *why* each shape was chosen,
-which is what this file is for.
+which is what this file is for. The one row that names a field list a consumer
+reads before it builds anything — `PublishRequest` — is reconciled with the type
+itself by `the_inferred_surface_row_lists_the_fields_publish_request_actually_has`
+beside it, so the rationale cannot come to describe options the request does not
+take.
 
 <!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the table below is a
 reviewer's record of which lines are approved and which are an inference, not a second

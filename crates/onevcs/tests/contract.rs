@@ -1037,6 +1037,48 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
 }
 
 #[test]
+fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
+    // That row is a rationale — why each field is the shape it is — but it names the
+    // fields to do it, and a name is the thing that goes stale. The document says the
+    // suite reconciles it; this is where, for the one row a consumer reads before
+    // building a request. Every other row's shape is held by
+    // `the_amendment_declares_the_types_the_widened_seam_gained` above.
+    let row = repo_file("docs/inferred-surface.md")
+        .lines()
+        .find(|line| line.starts_with("| `PublishRequest` |"))
+        .expect("the record has a row for PublishRequest")
+        .to_owned();
+    let listed: BTreeSet<String> = row
+        .split('|')
+        .nth(2)
+        .expect("the row's inferred-shape column")
+        .split(',')
+        .map(|span| span.trim().trim_matches('`').to_owned())
+        .filter(|span| !span.is_empty())
+        .collect();
+
+    // The fields the type has, taken off the type: a request with every one of them
+    // set writes every one of them, because each is skipped only when it is absent.
+    let request = PublishRequest {
+        policy: Some(MergePolicy::ChangeOpen),
+        title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
+        body: Some("Why the seam is where it is.".to_owned()),
+    };
+    let serialized = serde_json::to_value(&request).expect("a request serializes");
+    let fields: BTreeSet<String> = serialized
+        .as_object()
+        .expect("a request is an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        listed, fields,
+        "docs/inferred-surface.md and PublishRequest disagree about which options a \
+         publication takes"
+    );
+}
+
+#[test]
 fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_not() {
     // The approved usage block is committed verbatim and spells `publish` with two
     // options, so an option added since is written down in an amendment or nowhere.
