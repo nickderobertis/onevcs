@@ -139,6 +139,69 @@ impl World {
             .collect()
     }
 
+    /// How many tickets the merge queue of any identity is holding right now.
+    ///
+    /// The queue's own state file, which is where a waiter's ticket appears the
+    /// moment it starts waiting — before it is at the head, and therefore before it
+    /// has emitted anything. A journey about contention has to be able to see that
+    /// the contention happened rather than infer it from how long something took.
+    /// A queue that has not been taken yet has no file, which is nought tickets;
+    /// one that is there and unreadable is a finding rather than nought, since a
+    /// journey waiting on this would otherwise wait out its bound and report the
+    /// wait instead of the reason.
+    pub fn queued_tickets(&self) -> usize {
+        let directory = self.home().join("locks");
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            // Nothing has taken a lock yet, which is nought tickets. Every other
+            // failure is loud, here and below: answering nought for a directory
+            // nobody could read would leave a journey waiting on this to wait out
+            // its bound and then report the wait instead of the reason.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
+            Err(e) => panic!(
+                "the lock directory {} is readable: {e}",
+                directory.display()
+            ),
+        };
+        let mut tickets = 0;
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("every entry of {} is readable: {e}", directory.display())
+            });
+            if !entry.file_name().to_string_lossy().starts_with("queue-") {
+                continue;
+            }
+            let path = entry.path();
+            let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("the queue state at {} is readable: {e}", path.display())
+            });
+            let state: serde_json::Value = serde_json::from_str(&raw)
+                .unwrap_or_else(|e| panic!("the queue state at {} is JSON: {e}", path.display()));
+            tickets += state["tickets"]
+                .as_array()
+                .unwrap_or_else(|| {
+                    panic!("the queue state at {} lists its tickets", path.display())
+                })
+                .len();
+        }
+        tickets
+    }
+
+    /// Wait for a condition a concurrent journey has to reach, or fail saying so.
+    ///
+    /// Bounded and loud: a journey that waits forever reports nothing, and one that
+    /// sleeps a fixed time and hopes is the flake this exists to replace.
+    pub fn until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out after 60s waiting until {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Hold one of this world's advisory locks exclusively, exactly as a second
     /// `onevcs` working inside that run root does. Released when the file is dropped.
     pub fn occupy(lock: &Path) -> std::fs::File {
@@ -356,6 +419,26 @@ impl World {
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
         std::fs::write(self.path("gh-state/no-escape-flag"), "")
             .expect("a host that has not heard of the flag");
+    }
+
+    /// The body one change request was opened with, as the host was given it.
+    ///
+    /// Read off the host's own state rather than off what a journey passed in, so
+    /// what is asserted is what `gh pr create` was actually told. The program
+    /// records it with a newline of `printf`'s own, which is taken back off here —
+    /// one, exactly, so a body that ends in a blank line still reads as one.
+    pub fn change_request_body(&self, number: usize) -> String {
+        let path = self.path(format!("gh-state/pr-{number}.body"));
+        let recorded = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "the host records the body of every change request it opens; {} is unreadable: \
+                 {error}",
+                path.display()
+            )
+        });
+        recorded
+            .strip_suffix('\n')
+            .map_or(recorded.clone(), str::to_owned)
     }
 
     /// Every call the substituted host has been asked to make, in order.

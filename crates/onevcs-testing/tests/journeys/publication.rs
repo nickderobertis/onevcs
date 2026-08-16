@@ -236,7 +236,7 @@ fn a_publication_of_a_session_this_provider_never_opened_is_refused() {
 }
 
 #[test]
-fn a_requested_title_is_the_one_the_host_is_given() {
+fn a_requested_title_and_body_are_the_ones_the_host_is_given() {
     let _home = Home::new();
     let vcs = MemoryVcs::seeded(one_repository());
     let host = MemoryHost::new();
@@ -245,19 +245,35 @@ fn a_requested_title_is_the_one_the_host_is_given() {
     // A title cannot reach a provider unless it could be a subject — the check is in
     // the conversion that builds one — so what is left to assert here is that the
     // one that was asked for is the one the host was given, trimmed as it was built.
+    // The body has no such conversion, being prose, so what is asserted of it is the
+    // whole of its rule: verbatim, whatever a caller drafted.
+    let drafted = "## Why\n\nBecause the reviewer has to read something.\n";
     vcs.publish(
         &session.token,
         &PublishRequest {
             policy: None,
             title: Some(subject("  feat: the requested title  ")),
+            body: Some(drafted.to_owned()),
         },
         &host,
     )
     .expect("the publication runs");
+    let opened = host.state().changes[0].id.clone();
     assert_eq!(host.state().changes.len(), 1);
-    assert_eq!(
-        host.state().titles[&host.state().changes[0].id],
-        "feat: the requested title"
+    assert_eq!(host.state().titles[&opened], "feat: the requested title");
+    assert_eq!(host.state().bodies[&opened], drafted);
+
+    // …and a publication nobody gave a body composes none, exactly as the real one
+    // does: the entry is absent rather than empty, so a journey can tell the two
+    // apart.
+    let second = open(&vcs, "feature/bodiless");
+    vcs.publish(&second.token, &PublishRequest::default(), &host)
+        .expect("the publication runs");
+    let bodiless = host.state().changes[1].id.clone();
+    assert!(
+        !host.state().bodies.contains_key(&bodiless),
+        "a change request opened with no body records none: {:?}",
+        host.state().bodies
     );
 }
 

@@ -1,0 +1,20 @@
+Mutation: the composed scaffold comes back for a publication that was given no body.
+Red: a_publication_given_no_body_opens_a_change_request_with_no_body_at_all
+Red: a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all
+Red: a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_require
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index bfac5d1..b577df9 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -677,7 +677,9 @@ fn publish_as_change(
+             // Exactly what the caller passed, or nothing. The caller is the layer
+             // that knows what the change is for; this one only knows the branch,
+             // and everything it could say from that the title already says.
+-            body: context.body.clone(),
++            body: Some(context.body.clone().unwrap_or_else(|| format!(
++                "## What\n\n{subject}\n\n## Why\n\nPublished by onevcs.\n"
++            ))),
+         })?,
+     };
+     stream.emit(

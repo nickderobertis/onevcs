@@ -1,0 +1,15 @@
+Mutation: a document read at an older version is not carried forward, so the next write declares a version it is not.
+Red: a_document_at_the_previous_version_is_read_and_written_back_at_this_one
+
+diff --git a/crates/onevcs-testing/src/store.rs b/crates/onevcs-testing/src/store.rs
+index 6967919..a49e67f 100644
+--- a/crates/onevcs-testing/src/store.rs
++++ b/crates/onevcs-testing/src/store.rs
+@@ -207,7 +207,6 @@ impl<S: Serialize + DeserializeOwned + Checked> Store<S> for FileStore<S> {
+         // the shape this build writes, so the next write of a document that arrived
+         // at an older version declares the version it now holds rather than the one
+         // it was seeded at.
+-        state.carry_forward();
+         Ok(state)
+     }
+ }

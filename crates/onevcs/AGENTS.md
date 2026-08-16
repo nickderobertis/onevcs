@@ -86,6 +86,34 @@ stack inferred from content rewrites branches nobody stacked. Recorded stack sta
 cannot be read is refused, naming what restores it: publishing around it would answer
 "no stack" from a value nothing could read, which is the merge all of this avoids.
 
+`recoverable` is the report those two verbs are reached from, so the command it
+prints per row is one of them, by path (`--repo`) rather than by cwd. The train is
+deliberately not what it names, even for finished work: `integrate` reads its
+candidates out of the publication checkout alone and refuses a team or remote
+identity outright, so it lands none of the branches this report is most often read
+about — the ones a run left in its own clone.
+
+## What a report answers about, and what a name already means
+
+Preserved work goes missing through silence rather than through a search that
+could not reach it, so two things are stated rather than left to be inferred.
+
+- **A scoped answer names its scope.** `recoverable` answers for one identity when
+  it is run inside a registered checkout and for every identity when it is not, and
+  nobody types which — the directory decides. An answer that does not say so reads
+  as the whole host's, and another identity's preserved work then reads as work
+  nobody has. Every rendering names the scope, `--json` included (on stderr, where
+  a parser does not meet it).
+- **A branch pin is honoured or refused, never quietly cut fresh.** A session's
+  branch is cut from the base with `worktree add -b`, so a pin naming a branch that
+  already carries work produces a second, empty branch of that name: the session
+  reports the pinned name, carries none of the commits, and cannot hand the name
+  back either, since a branch is only ever copied out fast-forward. `workspace::open`
+  asks every repository the identity keeps branches in — the run clones included —
+  and origin's own copy, and refuses unless the base already carries what the name
+  means. The bar is not that the name is unused; it is that the session carries
+  whatever the name refers to.
+
 ## Tests are journeys, and there are no unit tests
 
 This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the

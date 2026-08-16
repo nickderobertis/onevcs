@@ -168,8 +168,8 @@ fn preserving_the_same_branch_twice_reports_it_once() {
     assert_eq!(rows.len(), 1, "a branch preserved twice is one branch");
     assert_eq!(rows[0].branch.base, "release");
     assert_eq!(
-        rows[0].recover_command,
-        vec!["onevcs", "integrate", "feature/twice"],
+        rows[0].recover_command[..3],
+        ["onevcs", "publish-branch", "feature/twice"],
         "complete work names the verb that lands it"
     );
 }

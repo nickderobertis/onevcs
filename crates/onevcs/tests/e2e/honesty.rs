@@ -311,6 +311,15 @@ fn session_events_match_across_backends() {
         .expect("the registered identity");
     let real_token = session_journey(&Git, &identity.origin);
     let real_events = real.events(&real_token);
+    // A second branch, preserved as finished work: the verb a row is offered under
+    // is decided by provenance, and a mapping only one backend is held to is one
+    // that drifts.
+    preserved_journey(
+        &Git,
+        &identity.origin,
+        "feature/finished",
+        Provenance::Complete,
+    );
     // Asked before this process is pointed at the other world: the real backend
     // answers out of the state root it was working in.
     let real_rows = Git.recoverable(Scope::All).expect("the real answer");
@@ -324,6 +333,12 @@ fn session_events_match_across_backends() {
     });
     let provided_token = session_journey(&vcs, &identity.origin);
     let provided_events = provided.events(&provided_token);
+    preserved_journey(
+        &vcs,
+        &identity.origin,
+        "feature/finished",
+        Provenance::Complete,
+    );
 
     assert_eq!(
         normalize(&real_events, real.path("").as_path(), &real_token),
@@ -352,26 +367,63 @@ fn session_events_match_across_backends() {
             vcs.recoverable(Scope::All).expect("the answer"),
         ),
     ] {
+        let mut rows = rows;
+        // By name, because the report's own order is by when each branch was last
+        // committed to and the two backends are not asked to agree about a clock.
+        rows.sort_by(|a, b| a.branch.branch.cmp(&b.branch.branch));
         let branches: Vec<&str> = rows.iter().map(|row| row.branch.branch.as_str()).collect();
         assert_eq!(
             branches,
-            vec!["feature/preserved"],
-            "{backend} must report the preserved branch"
+            vec!["feature/finished", "feature/preserved"],
+            "{backend} must report both preserved branches"
         );
-        assert_eq!(rows[0].branch.provenance, Provenance::IncompleteStep);
+        assert_eq!(rows[0].branch.provenance, Provenance::Complete);
+        assert_eq!(rows[1].branch.provenance, Provenance::IncompleteStep);
+        // The mapping itself, held across the two implementations of it: the
+        // provenance decides the verb, and both spellings name the repository by
+        // path so the command runs wherever the row is read.
         assert_eq!(
             rows[0].recover_command[..3],
-            ["onevcs", "recover", "feature/preserved"]
+            ["onevcs", "publish-branch", "feature/finished"],
+            "{backend} offers finished work the verb that lands one branch"
         );
+        assert_eq!(
+            rows[1].recover_command[..3],
+            ["onevcs", "recover", "feature/preserved"],
+            "{backend} offers interrupted work the verb that attests it"
+        );
+        for row in &rows {
+            assert_eq!(row.recover_command[3], "--repo", "{backend}: {row:?}");
+            assert!(
+                std::path::Path::new(&row.recover_command[4]).is_absolute(),
+                "{backend} names the repository by a path that does not depend on a \
+                 working directory: {row:?}"
+            );
+        }
     }
 }
 
-/// Open a session over `identity`, leave work in it, and preserve that work.
+/// The journey the two event streams are compared over.
 fn session_journey(vcs: &dyn Vcs, identity: &str) -> String {
+    preserved_journey(
+        vcs,
+        identity,
+        "feature/preserved",
+        Provenance::IncompleteStep,
+    )
+}
+
+/// Open a session over `identity`, leave work in it, and preserve that work.
+fn preserved_journey(
+    vcs: &dyn Vcs,
+    identity: &str,
+    branch: &str,
+    provenance: Provenance,
+) -> String {
     let session = vcs
         .open_session(SessionRequest {
             repo: identity.to_owned(),
-            branch: Some("feature/preserved".to_owned()),
+            branch: Some(branch.to_owned()),
             // Named, because a repository with no origin has no default branch to
             // ask for — which is the same answer both backends give.
             base: Some("main".to_owned()),
@@ -383,7 +435,7 @@ fn session_journey(vcs: &dyn Vcs, identity: &str) -> String {
     if session.worktree.is_dir() {
         std::fs::write(session.worktree.join("work.txt"), "work\n").expect("work in the tree");
     }
-    vcs.preserve(&session, Provenance::IncompleteStep)
+    vcs.preserve(&session, provenance)
         .expect("the work is preserved");
     session.token.0
 }

@@ -489,6 +489,31 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
         .collect())
 }
 
+/// Every repository one identity's branches can be read out of, in search order:
+/// the publication checkout, then every other registered checkout, then the clone
+/// of every session this host has opened for it.
+///
+/// The run clones are on that list because a branch reaches nothing else until a
+/// session hands it back: work a run stopped in the middle of exists *only* there,
+/// and a search that ended at the registered checkouts would answer that nobody
+/// has it. One list, so the verbs that look for a branch by name and the ones that
+/// refuse to reuse a name cannot come to disagree about where this identity keeps
+/// its work.
+pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<PathBuf>> {
+    let mut searched: Vec<PathBuf> = vec![resolution.publication.clone()];
+    for checkout in registry.checkouts.values() {
+        if checkout.identity == resolution.key && !searched.contains(&checkout.path) {
+            searched.push(checkout.path.clone());
+        }
+    }
+    for record in all()? {
+        if record.identity == resolution.key && !searched.contains(&record.clone) {
+            searched.push(record.clone.clone());
+        }
+    }
+    Ok(searched)
+}
+
 /// The directory one identity's run roots live under.
 fn identity_dir(identity: &str) -> Result<PathBuf> {
     let flattened: String = identity
@@ -551,6 +576,12 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         Some(branch) => branch.to_owned(),
         None => format!("onevcs/{token}"),
     })?;
+    // Only for a pin: a generated name is this token's own and can collide with
+    // nothing, and asking the question anyway would put a search of every checkout
+    // and run clone of the identity in front of every session anybody opens.
+    if request.branch.is_some() {
+        honour_or_refuse(registry, &resolution, &execution, &branch, &base)?;
+    }
 
     let identity_root = identity_dir(&resolution.key)?;
     let runs = identity_root.join("runs");
@@ -620,6 +651,65 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     );
     drop(lease);
     Ok((record, stream))
+}
+
+/// Refuse a pinned branch name whose work this session could not carry.
+///
+/// The bar is not that the name is free: this session's branch is cut from the
+/// base, so a pin is honourable exactly when the base already carries what the
+/// name means — the same judgement `onevcs recoverable` reports a branch under,
+/// asked of every repository the identity keeps branches in and of origin's copy.
+fn honour_or_refuse(
+    registry: &Registry,
+    resolution: &Resolution,
+    execution: &Path,
+    branch: &Ref,
+    base: &Ref,
+) -> Result<()> {
+    // The base as it stands now, so a run clone's frozen view of it cannot make work
+    // that landed long ago look like work a pin would lose.
+    let current = crate::vcs::base_commit(&resolution.publication, base);
+    for repo in checkouts_of(registry, resolution)? {
+        if !git::is_repo(&repo) || !git::branch_exists(&repo, branch) {
+            continue;
+        }
+        let compared = crate::vcs::judged_against(&repo, base, current.as_ref());
+        if !git::trees_differ(&repo, &compared, branch)? {
+            continue;
+        }
+        let ahead = git::log_messages(&repo, &compared, branch)?.len();
+        return Err(Error::Invalid {
+            reason: format!(
+                "branch {branch:?} already carries {ahead} commit(s) that {base} does not, in \
+                 {held}. A session cuts its branch fresh from {base}, so this one would \
+                 report {branch:?} and carry none of them, and it could not hand the name back \
+                 either. `onevcs recoverable` lists that branch with the command that lands it: \
+                 land it first, or open this session under a name nothing carries",
+                held = repo.display(),
+            ),
+        });
+    }
+    // Origin's copy is the other place the name can already mean something, and it
+    // is the one no checkout of this identity has to have seen: the branch is read
+    // from the execution checkout's remote-tracking refs, which the fetch above has
+    // just brought up to date.
+    let remote = format!("origin/{branch}");
+    if git::ref_exists(execution, &format!("refs/remotes/{remote}")) {
+        let compared = crate::vcs::base_ref(execution, base);
+        if git::trees_differ(execution, &compared, &remote)? {
+            let ahead = git::log_messages(execution, &compared, &remote)?.len();
+            return Err(Error::Invalid {
+                reason: format!(
+                    "origin already carries branch {branch:?}, with {ahead} commit(s) that \
+                     {base} does not. A session cuts its branch fresh from {base}, so this \
+                     one would report {branch:?}, carry none of them, and have its publishing \
+                     push rejected as a non-fast-forward. Open this session under a name nothing \
+                     carries: a branch only origin has is not one a session adopts"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn execution_checkout(

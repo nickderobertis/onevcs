@@ -1984,7 +1984,7 @@ fn a_repository_with_no_remote_still_opens_and_closes_a_session() {
 }
 
 #[test]
-fn a_recovered_change_request_carries_its_attestation_in_the_body_it_opens_with() {
+fn a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all() {
     let world = World::new();
     let origin = world.bare_origin("attested");
     let checkout = world.clone_of(&origin, "attested");
@@ -2044,13 +2044,23 @@ fn a_recovered_change_request_carries_its_attestation_in_the_body_it_opens_with(
         .success()
         .stdout(predicate::str::contains("change request open at"));
 
-    // Publication squashes, so the body is where the fact that a step was left
-    // incomplete and a green gate cleared it reaches a reviewer.
-    let body = std::fs::read_to_string(world.path("gh-state/pr-1.body"))
-        .expect("the change request was opened with a body");
+    // The attestation is a commit on the branch, and the branch is what was pushed:
+    // every provenance trailer this crate writes is on the commit side, so the fact
+    // that a step was left incomplete and a green gate cleared it travels with the
+    // commits the change request is made of.
+    let pushed = world.git(&origin, &["log", "--format=%B", "feature/interrupted"]);
     assert!(
-        body.contains("Onevcs-Recovered-Incomplete:"),
-        "the body must carry the recovery forward:\n{body}"
+        pushed.contains("Onevcs-Recovered-Incomplete:"),
+        "the pushed branch must carry the recovery forward:\n{pushed}"
+    );
+    // And the change request opens with no body, because nobody gave it one. It used
+    // to open with the trailers under an `## Additional info` heading, which is a
+    // second record of the commits' own — and it stood between a reviewer and the
+    // body the caller actually wanted there.
+    assert_eq!(
+        world.change_request_body(1),
+        "",
+        "a recovery composes no body either"
     );
 }
 

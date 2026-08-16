@@ -1,0 +1,16 @@
+Mutation: the testing host stops telling an empty body from an absent one, and records neither.
+Red: a_change_request_records_the_body_it_was_opened_with_and_none_when_it_had_none
+
+diff --git a/crates/onevcs-testing/src/remote.rs b/crates/onevcs-testing/src/remote.rs
+index d260ce3..0dafcb7 100644
+--- a/crates/onevcs-testing/src/remote.rs
++++ b/crates/onevcs-testing/src/remote.rs
+@@ -155,7 +155,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
+             // Only when there is one: a change request opened with no body records
+             // none, so a journey can tell "nobody drafted one" from "the body is
+             // empty" — which is the distinction the real host draws too.
+-            if let Some(body) = req.body.clone() {
++            if let Some(body) = req.body.clone().filter(|body| !body.is_empty()) {
+                 state.bodies.insert(id, body);
+             }
+             state.changes.push(change.clone());

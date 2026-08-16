@@ -1,0 +1,19 @@
+Mutation: the search for an identity stops at its registered checkouts.
+Red: work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 1b43364..6849127 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -488,11 +488,6 @@ pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<
+             searched.push(checkout.path.clone());
+         }
+     }
+-    for record in all()? {
+-        if record.identity == resolution.key && !searched.contains(&record.clone) {
+-            searched.push(record.clone.clone());
+-        }
+-    }
+     Ok(searched)
+ }
+ 

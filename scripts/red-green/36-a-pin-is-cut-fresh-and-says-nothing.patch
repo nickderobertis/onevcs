@@ -1,0 +1,16 @@
+Mutation: a pinned branch name is taken on trust.
+Red: a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 1b43364..781ec91 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -555,7 +555,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
+     // Only for a pin: a generated name is this token's own and can collide with
+     // nothing, and asking the question anyway would put a search of every checkout
+     // and run clone of the identity in front of every session anybody opens.
+-    if request.branch.is_some() {
++    if request.branch.is_none() {
+         honour_or_refuse(registry, &resolution, &execution, &branch, &base)?;
+     }
+ 
