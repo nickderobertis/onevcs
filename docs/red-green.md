@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 44. Tests observed red and then green: 69.
+Patches: 46. Tests observed red and then green: 71.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -312,4 +312,16 @@ a base that moved after the gate is neither re-synced nor re-judged.
 a listing that did not arrive whole is answered as content the base carries.
 
 - RED `an_unreadable_listing_and_a_root_that_moved_on_leaves_the_stack_where_it_is` — Unexpected failure.
+
+### `46-a-root-nobody-can-name-refuses-the-session`
+
+a session naming its own base is refused when nothing can name the identity's root.
+
+- RED `a_session_whose_root_nobody_can_name_records_no_stack_and_publishes_as_one` — Unexpected failure.
+
+### `47-a-replayed-branch-is-pushed-as-a-fast-forward`
+
+a branch whose history a replay rewrote is pushed as though it had not been.
+
+- RED `a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it_lands` — Unexpected failure.
 
