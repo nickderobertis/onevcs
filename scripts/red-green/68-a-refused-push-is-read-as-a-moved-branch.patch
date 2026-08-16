@@ -15,7 +15,7 @@ index b7193f8..1e9bb1f 100644
 -    }
 -    Ok(
 -        match git::remote_tip(&context.worktree, "origin", &context.branch, environment)? {
--            git::RemoteTip::At(tip) => tip != replaced,
+-            git::RemoteTip::At(tip) => tip.as_str() != replaced,
 -            // The host no longer has the branch at all, which is not where this run
 -            // last saw it either — the lease named a commit, and git declines it
 -            // against a ref that is gone just as it does against one that moved.

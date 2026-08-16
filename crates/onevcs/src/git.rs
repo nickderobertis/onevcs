@@ -1060,6 +1060,32 @@ fn refused_refs(porcelain: &str) -> Vec<String> {
         .collect()
 }
 
+/// A commit id, checked where it arrives from outside this process.
+///
+/// The only way to make one is [`ObjectId::parse`], so a value of this type is a
+/// hexadecimal object id and nothing else: what a remote advertises is external
+/// input, and a line of it that is not an id must not go on to be compared against
+/// a lease as though it were one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectId(String);
+
+impl ObjectId {
+    /// The id, if this is one at all.
+    ///
+    /// Any hexadecimal length git might advertise — it names objects in SHA-1 today
+    /// and SHA-256 where a repository is built that way — but nothing shorter than
+    /// an abbreviation could be, and nothing carrying a character an id cannot.
+    pub fn parse(value: &str) -> Option<Self> {
+        (value.len() >= 40 && value.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| ObjectId(value.to_owned()))
+    }
+
+    /// The id as git spells it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What a remote has for one branch, as it answers now.
 ///
 /// Three answers rather than two: a remote that has no such branch and a remote
@@ -1068,7 +1094,7 @@ fn refused_refs(porcelain: &str) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteTip {
     /// The remote answered, and the branch is at this commit.
-    At(String),
+    At(ObjectId),
     /// The remote answered, and has no branch of that name.
     Absent,
     /// The remote could not be asked, so nothing about it is known here.
@@ -1079,7 +1105,10 @@ pub enum RemoteTip {
 ///
 /// `ls-remote --exit-code` separates the three answers by exit status rather than
 /// by output: `0` is a branch it has, `2` is a remote that answered and has none,
-/// and anything else is a remote that could not be reached or would not say.
+/// and anything else is a remote that could not be reached or would not say. What
+/// arrives on a `0` is still checked before it counts as a commit — a remote is
+/// outside this process, and an answer that is not an object id is one nothing here
+/// knows anything from.
 pub fn remote_tip(
     cwd: &Path,
     remote: &str,
@@ -1097,7 +1126,8 @@ pub fn remote_tip(
             .stdout
             .split_whitespace()
             .next()
-            .map_or(RemoteTip::Unknown, |sha| RemoteTip::At(sha.to_owned())),
+            .and_then(ObjectId::parse)
+            .map_or(RemoteTip::Unknown, RemoteTip::At),
         2 => RemoteTip::Absent,
         _ => RemoteTip::Unknown,
     })
