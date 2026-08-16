@@ -154,7 +154,9 @@ fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_ow
         "landed\n",
         "feat: land somebody else's change",
     );
-    fixture.world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
 
     let stale = fixture.world.git(&fixture.checkout, &["rev-parse", "main"]);
     let tip = fixture.world.git(&fixture.origin, &["rev-parse", "main"]);
@@ -208,7 +210,10 @@ fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_ow
 
     // And the lender is left as it was, beyond the fetch opening a session already
     // performed: other sessions read this checkout while this one runs.
-    assert_eq!(fixture.world.git(&fixture.checkout, &["rev-parse", "main"]), stale);
+    assert_eq!(
+        fixture.world.git(&fixture.checkout, &["rev-parse", "main"]),
+        stale
+    );
     assert_eq!(
         fixture
             .world
@@ -243,7 +248,9 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
         .and_then(std::path::Path::parent)
         .expect("the identity's run roots");
     assert_eq!(
-        std::fs::read_dir(runs).expect("the run roots are readable").count(),
+        std::fs::read_dir(runs)
+            .expect("the run roots are readable")
+            .count(),
         1,
         "one run root, rather than one per attempt"
     );
@@ -290,7 +297,9 @@ fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refus
     assert_ne!(second, first, "a session nobody could take up is cut fresh");
     assert_ne!(cut, worktree);
     assert_eq!(
-        fixture.world.git(&cut, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        fixture
+            .world
+            .git(&cut, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "feature/busy"
     );
     let opened = fixture.world.events_of(&second, "session-opened");
@@ -317,9 +326,14 @@ fn a_session_that_pins_no_branch_is_cut_fresh_every_time() {
 
     let (second, cut) = fixture.open(&[]);
     assert_ne!(second, first);
-    assert_ne!(cut, worktree, "an unpinned request is nobody else's session");
     assert_ne!(
-        fixture.world.git(&cut, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        cut, worktree,
+        "an unpinned request is nobody else's session"
+    );
+    assert_ne!(
+        fixture
+            .world
+            .git(&cut, &["rev-parse", "--abbrev-ref", "HEAD"]),
         generated,
         "a generated branch name is the token's own"
     );
@@ -328,7 +342,9 @@ fn a_session_that_pins_no_branch_is_cut_fresh_every_time() {
         .and_then(std::path::Path::parent)
         .expect("the identity's run roots");
     assert_eq!(
-        std::fs::read_dir(runs).expect("the run roots are readable").count(),
+        std::fs::read_dir(runs)
+            .expect("the run roots are readable")
+            .count(),
         2,
         "two sessions, two run roots"
     );
