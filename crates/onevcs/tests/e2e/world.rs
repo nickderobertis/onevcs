@@ -139,6 +139,39 @@ impl World {
             .collect()
     }
 
+    /// How many tickets the merge queue of any identity is holding right now.
+    ///
+    /// The queue's own state file, which is where a waiter's ticket appears the
+    /// moment it starts waiting — before it is at the head, and therefore before it
+    /// has emitted anything. A journey about contention has to be able to see that
+    /// the contention happened rather than infer it from how long something took.
+    pub fn queued_tickets(&self) -> usize {
+        std::fs::read_dir(self.home().join("locks"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("queue-"))
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .filter_map(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .filter_map(|state| state["tickets"].as_array().map(Vec::len))
+            .sum()
+    }
+
+    /// Wait for a condition a concurrent journey has to reach, or fail saying so.
+    ///
+    /// Bounded and loud: a journey that waits forever reports nothing, and one that
+    /// sleeps a fixed time and hopes is the flake this exists to replace.
+    pub fn until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out after 60s waiting until {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Hold one of this world's advisory locks exclusively, exactly as a second
     /// `onevcs` working inside that run root does. Released when the file is dropped.
     pub fn occupy(lock: &Path) -> std::fs::File {

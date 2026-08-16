@@ -1828,6 +1828,26 @@ fn an_unusable_lock_bound_stops_the_command_by_name() {
 #[test]
 fn two_publications_of_one_identity_queue_rather_than_race() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // The contention is *made* to happen rather than hoped for. A publication takes
+    // its merge turn and then pushes inside it, and the publishing push runs the
+    // checkout's `pre-push` hook — so a hook that does not return until it is let go
+    // holds the first turn open for as long as this journey needs. Left to timing,
+    // two publications this small run one after the other, each report queue
+    // position 1, and the assertion below is about a queue nothing ever contended.
+    let release = fixture.world.path("release");
+    fixture.world.install_pre_push(
+        &fixture.checkout,
+        &format!(
+            "release={release}\n\
+             for _ in $(seq 1 3000); do\n\
+             \x20 if [ -e \"$release\" ]; then exit 0; fi\n\
+             \x20 sleep 0.02\n\
+             done\n\
+             echo 'the second publication never joined the merge queue' >&2\n\
+             exit 1\n",
+            release = release.display()
+        ),
+    );
     let mut sessions = Vec::new();
     for index in 0..2 {
         let (token, worktree) = fixture.open(&["--branch", &format!("feature/queued-{index}")]);
@@ -1851,6 +1871,15 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
             std::thread::spawn(move || command.output().expect("publish runs"))
         })
         .collect();
+
+    // Whichever reached the push first is held there, so the queue is read rather
+    // than timed: two live tickets is the second publication waiting behind the
+    // first, and only then is the first let go.
+    World::until("the merge queue holds both publications", || {
+        fixture.world.queued_tickets() == 2
+    });
+    std::fs::write(&release, "go\n").expect("the held publication is released");
+
     for handle in handles {
         let output = handle.join().expect("the publication thread");
         assert!(
@@ -1876,15 +1905,17 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
     );
 
     // One of the two waited behind the other, which the queue reports rather than
-    // leaving to be inferred from a wall clock.
-    let positions: Vec<u64> = sessions
+    // leaving to be inferred from a wall clock: one turn each, taken in order.
+    let mut positions: Vec<u64> = sessions
         .iter()
         .flat_map(|token| fixture.world.events_of(token, "lock-wait"))
         .filter_map(|event| event["payload"]["queue_position"].as_u64())
         .collect();
-    assert!(
-        positions.iter().any(|position| *position >= 2),
-        "one publication must have queued: {positions:?}"
+    positions.sort_unstable();
+    assert_eq!(
+        positions,
+        vec![1, 2],
+        "the two publications took the one identity's queue one after the other"
     );
 }
 
