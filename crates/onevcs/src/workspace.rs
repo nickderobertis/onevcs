@@ -47,8 +47,6 @@ pub const RETAINED_DEAD_RUNS: usize = 3;
 /// migration and deliberately so: a record names a clone, a worktree, and a lease
 /// that belong to a live process, and a build that guessed at one it does not
 /// understand would act on somebody else's tree.
-///
-/// `3` added `stack_tip`, which is what makes a session a stacked one.
 pub const RECORD_VERSION: u32 = 3;
 
 /// One OS process instance's creation identity.

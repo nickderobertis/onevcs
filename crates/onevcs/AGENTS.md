@@ -74,31 +74,17 @@ refusal that only diagnoses leaves an agent to invent a way forward, and what it
 invents is `git push` plus `gh pr create` — the thing this crate exists to make
 unnecessary.
 
-**Syncing a branch has two shapes, and the record decides which** (`publish::reconcile`,
-used by all three verbs). Ordinarily the base is merged into the branch. A branch cut
-from the change below it — a stack — carries that change's every commit while the base,
-once it squash-merged, carries one commit with the same content and none of the same
-names; merging the two replays the change below against its own squashed equivalent and
-conflicts in every file both touched, again on every bounded retry. So a stacked branch
-whose change below has landed replays only its own commits onto the root base instead,
-and retargets there, because the branch it was opened against is gone.
+**Syncing a branch has two shapes, and its record decides which** (`publish::reconcile`,
+used by all three verbs). Ordinarily the base is merged into the branch. A branch stacked
+on the change below it belongs on the root once that change lands, so it replays only its
+own commits there and retargets — merging instead would replay the change below against
+whatever the base holds of it.
 
-**What makes a publication stacked is its own record, never its content.** A branch that
-carries the change below it commit for commit is indistinguishable from one that wrote
-those commits itself — the base can hold the same content under a name of its own for
-either — so inferring it would replay branches nobody stacked. `session open --base` on
-something other than the identity's root records `stack_tip`: the commit that branch was
-at when this one was cut from it. Absent, which is every ordinary session, and none of
-the replay is reachable. A *name* cannot stand in for the tip: `git::fetch` prunes, the
-branch below is deleted when its own change merges, and nothing then resolves it. The
-branch-keyed verbs record a stack as exactly that name — the `Change-Base:` trailer's —
-so they replay while some ref still resolves it and **refuse by name when none does**,
-saying which branch to restore or push, which trailer to correct otherwise, and which
-verb lands the branch afterwards. Publishing around it would answer "no stack" from a
-value nothing could read, which is the merge all of this exists to avoid; a session's
-recorded tip is refused the same way when its own clone does not have that commit.
-Nothing here is a new event kind, deliberately: the contract fixes that list, and a
-successful sync has always been silent whichever shape it took.
+**What makes a publication stacked is its record, never its content.** A branch carrying
+the change below it reads exactly like a branch that wrote those commits itself, so a
+stack inferred from content rewrites branches nobody stacked. Recorded stack state that
+cannot be read is refused, naming what restores it: publishing around it would answer
+"no stack" from a value nothing could read, which is the merge all of this avoids.
 
 ## Tests are journeys, and there are no unit tests
 
