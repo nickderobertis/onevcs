@@ -211,7 +211,13 @@ failure_line() {
   if [ -z "$line" ]; then
     line="the run named no assertion — see $log"
   fi
-  sed 's/^ *//; s/[│├└─]//g; s/^ *//' <<<"$line" | cut -c1-140
+  # A scratch directory is named differently on every run, so a transcript carrying
+  # one could never be re-made byte for byte — and an artifact nobody can re-make is
+  # the thing this whole harness exists to replace. Only the scratch root is
+  # replaced: what the refusal named under it is what makes the line evidence.
+  sed 's/^ *//; s/[│├└─]//g; s/^ *//' <<<"$line" \
+    | sed -E 's#[/A-Za-z0-9._-]*/\.tmp[A-Za-z0-9]+#<tmp>#g' \
+    | cut -c1-140
 }
 
 # Exactly the files the patches touch, read off the patches themselves: a blanket

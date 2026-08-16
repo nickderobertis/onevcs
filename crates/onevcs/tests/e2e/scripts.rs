@@ -1220,6 +1220,34 @@ fn a_round_is_recorded_and_the_tree_is_left_as_it_was_found() {
 }
 
 #[test]
+fn a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently() {
+    // The transcript is a committed artifact and `just red-green` re-makes it, so a
+    // run that recorded where it happened to run would dirty the tree every time —
+    // an artifact that cannot be re-made byte for byte proves nothing about the run
+    // before it. The scratch root is recorded as a placeholder and what the failure
+    // named under it is kept, because that is the half that is evidence.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_whose_failure_names_where_it_ran"]),
+    );
+
+    harness
+        .run(&["--base", "HEAD", "--record", "evidence.md"])
+        .succeeded();
+
+    let recorded = harness.read("evidence.md");
+    assert!(
+        recorded.contains("the repository at <tmp> says mutated"),
+        "the run's own directory is a placeholder, and what it said is not:\n{recorded}"
+    );
+    assert!(
+        !recorded.contains(&harness.root().display().to_string()),
+        "no path this run alone would spell survives into the artifact:\n{recorded}"
+    );
+}
+
+#[test]
 fn a_runner_that_paints_its_summary_is_still_read_as_a_verdict() {
     // A test runner decides for itself whether to colour its output, and something
     // above it can decide for it — a task runner exporting a force-colour variable

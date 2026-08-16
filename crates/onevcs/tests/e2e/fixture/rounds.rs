@@ -46,3 +46,18 @@ fn a_test_that_always_fails() {
         "Unexpected failure: this one is red either way"
     );
 }
+
+/// Fails naming the directory it ran in, which is a scratch path spelled differently
+/// on every run — what a transcript may not carry if it is to be re-made byte for
+/// byte.
+#[test]
+fn the_test_whose_failure_names_where_it_ran() {
+    let subject = std::fs::read_to_string("subject.txt").expect("the subject is there");
+    let here = std::env::current_dir().expect("a working directory");
+    assert!(
+        subject.contains("intact"),
+        "Unexpected failure: the repository at {} says {}",
+        here.display(),
+        subject.trim()
+    );
+}
