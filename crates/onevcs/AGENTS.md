@@ -113,22 +113,15 @@ could not reach it, so two things are stated rather than left to be inferred.
   and origin's own copy, and refuses unless the base already carries what the name
   means. The bar is not that the name is unused; it is that the session carries
   whatever the name refers to.
-- **…and a pin an open session already holds is that session, resumed.** A retry of
-  the same node arrives as the same pin, and cutting it a second run root leaves the
-  first one behind holding the same branch at an older tip — two directories that
-  both answer to the branch somebody is watching, and a clone per attempt. So
-  `workspace::open` asks first whether exactly one *open* session of this identity
-  holds that branch, cut from the same base in the same execution checkout, with its
-  run root intact and its lease free; if one does, it re-attaches through
-  `workspace::adopt` rather than cutting, and says `"reused": true` in the
-  `session-opened` payload. Anything else — occupied, reclaimed, ambiguous, closed,
-  or cut from another base or checkout — is not refused but *falls through to the
-  ordinary cut*, and the rule above then answers for it as it always did: a session
-  nobody could take up whose branch carries work is still refused by name, because
-  cutting that name fresh is still the loss it always was. Reuse decides nothing
-  except whether a second run root is cut. A closed session is deliberately outside
-  it: closing hands the branch back and is the statement that the session is
-  finished, so a name taken again after one is a new session under a spent name.
+- **…and a pin an *open* session already holds is that session, resumed.** Cutting a
+  retry its own run root leaves two directories answering to one branch, one of them
+  at an older tip. So `workspace::open` re-attaches through `workspace::adopt` when
+  exactly one open session of the identity holds that name, on the same base and
+  execution checkout, with its run root there and its lease free — and says
+  `"reused": true`. Closed is not one of them: closing hands the branch back and
+  means finished. Every other case falls through to the ordinary cut rather than
+  being refused, so reuse decides only whether a second run root is cut; the rule
+  above still refuses the pins it always refused.
 
 ## Tests are journeys, and there are no unit tests
 

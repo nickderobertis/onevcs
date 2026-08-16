@@ -391,6 +391,23 @@ fn a_pin_resumes_only_the_session_it_asked_for() {
     let (again, _tree) = fixture.open(&["--branch", "feature/other-base", "--base", "sibling"]);
     assert_eq!(again, from_sibling, "the same request is the same session");
 
+    // A record outlives the directory it names: a run root holding no unpublished
+    // work is reaped by the next session opened, and what is taken up is the
+    // directory rather than the record of it.
+    let (reaped, gone) = fixture.open(&["--branch", "feature/reaped"]);
+    let (_unrelated, _tree) = fixture.open(&[]);
+    assert!(
+        !gone.exists(),
+        "the premise: {} was reclaimed",
+        gone.display()
+    );
+    let (after_reaping, cut) = fixture.open(&["--branch", "feature/reaped"]);
+    assert_ne!(
+        after_reaping, reaped,
+        "a session whose run root is gone is cut again rather than re-attached to"
+    );
+    assert!(cut.join("README.md").is_file(), "and it has a worktree");
+
     // The same for the checkout the clone is cut from: two of them are two lenders,
     // and a session borrowing from one is not a session borrowing from the other.
     let (from_publication, _tree) = fixture.open(&["--branch", "feature/other-checkout"]);

@@ -15,11 +15,9 @@
 //! object a borrower needs.
 //!
 //! What it borrows is objects and not *refs*: cloning from a local path maps the
-//! lender's local branches into the clone's `refs/remotes/origin/*` and consults the
-//! lender's own remote-tracking refs nowhere. Those are copied over separately
-//! ([`git::carry_remote_refs`]), because they are what a session is cut at and every
-//! diff of it afterwards is addressed from — a clone that took the lender's stale
-//! `main` for origin's would start every session at a commit origin left long ago.
+//! lender's local branches into the clone's `refs/remotes/origin/*`, so origin's own
+//! refs — which are what a session is cut at, and what every diff of it afterwards is
+//! addressed from — are copied over separately, by [`git::carry_remote_refs`].
 //!
 //! A clone is disposable, so anything that must outlive it — a preserved branch, a
 //! pushed branch, a recovery attestation — is copied back into the execution
@@ -746,10 +744,9 @@ fn resumable(
 
 /// Take up a session that already exists, as the request that pinned its branch.
 ///
-/// The re-attachment itself is [`adopt`], so a resumed session claims its lease and
-/// commits whatever its worktree was left holding behind an incomplete-step marker
-/// by the one path that writes that commit — a second one here would be a second
-/// shape of marker for a recovery to read.
+/// The re-attachment is [`adopt`] and deliberately nothing beside it: a second path
+/// that preserved an interrupted worktree would be a second shape of marker for a
+/// recovery to read.
 fn resume(held: &Record, lease: lock::Guard, execution: &Path) -> Result<(Record, Stream)> {
     let (record, mut stream, _preserved) = adopt(&held.token)?;
     // Held until the adoption has taken a lease of its own, and no longer.
