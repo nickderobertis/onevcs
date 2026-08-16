@@ -9,32 +9,41 @@ Red: a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root
 Red: a_hosted_stack_the_root_independently_matches_is_answered_the_same_way
 Red: a_publish_branch_replay_conflict_names_its_own_command
 
+Red: a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 7782dcb..f4348d1 100644
+index 23865c3..e3b6954 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -406,23 +406,8 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
- /// work is what is left either way. A change still open whose content has *not*
+@@ -461,27 +461,12 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
  /// reached the root fails the last test, and one merged as its own commits fails the
  /// second.
--pub(crate) fn root_carries_the_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
--    let root = vcs::base_ref(repo, &stack.root);
+ pub(crate) fn root_is_known_to_carry_the_stack(
+-    repo: &Path,
+-    branch: &str,
+-    root: &Ref,
+-    tip: &str,
++    _repo: &Path,
++    _branch: &str,
++    _root: &Ref,
++    _tip: &str,
+ ) -> Result<bool> {
+-    let root = vcs::base_ref(repo, root);
 -    if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
 -        return Ok(false);
 -    }
--    if !git::is_ancestor(repo, &stack.tip, branch)? {
+-    if !git::is_ancestor(repo, tip, branch)? {
 -        return Ok(false);
 -    }
 -    // Still in the root as the commits it was written as: merging the root brings
 -    // them in the way it always has, and there is nothing to replay past.
--    if git::is_ancestor(repo, &stack.tip, &root)? {
+-    if git::is_ancestor(repo, tip, &root)? {
 -        return Ok(false);
 -    }
--    let Some(fork) = git::merge_base(repo, &root, &stack.tip)? else {
+-    let Some(fork) = git::merge_base(repo, &root, tip)? else {
 -        return Ok(false);
 -    };
--    git::carries_changes(repo, &root, &fork, &stack.tip)
-+pub(crate) fn root_carries_the_stack(_repo: &Path, _branch: &str, _stack: &Stack) -> Result<bool> {
+-    git::known_to_carry_changes(repo, &root, &fork, tip)
 +    Ok(false)
  }
  

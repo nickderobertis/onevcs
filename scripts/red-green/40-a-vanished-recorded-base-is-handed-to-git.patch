@@ -3,11 +3,12 @@ Red: a_recorded_base_no_ref_resolves_names_what_would_restore_it
 Red: a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command
 
 
+
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index ad1763e..bd44269 100644
+index c697342..f972e47 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -213,30 +213,14 @@ pub fn prepare(
+@@ -212,26 +212,13 @@ pub fn prepare(
      // nothing can then tell which of this branch's commits are the change below's.
      let (change_base, stack_replay) = match recorded {
          Some(recorded) if recorded != base => {
@@ -27,18 +28,15 @@ index ad1763e..bd44269 100644
 -                    command = verb.command(branch, repo),
 -                ),
 -            })?;
--            let stack = publish::Stack {
-+            match stack_tip(&clone, &recorded).map(|tip| publish::Stack {
-                 tip,
-                 root: base.clone(),
--            };
--            if publish::root_carries_the_stack(&clone, branch, &stack)? {
--                (base.clone(), Some(stack.tip))
+-            if publish::root_is_known_to_carry_the_stack(&clone, branch, &base, &tip)? {
+-                (base.clone(), Some(tip))
 -            } else {
 -                (recorded, None)
-+            }) {
-+                Some(stack) if publish::root_carries_the_stack(&clone, branch, &stack)? => {
-+                    (base.clone(), Some(stack.tip))
++            match stack_tip(&clone, &recorded) {
++                Some(tip)
++                    if publish::root_is_known_to_carry_the_stack(&clone, branch, &base, &tip)? =>
++                {
++                    (base.clone(), Some(tip))
 +                }
 +                _ => (recorded, None),
              }

@@ -1,12 +1,13 @@
 Mutation: a publication stops running the gate the policy names.
 Red: a_gate_that_rejects_a_branch_keeps_it_where_it_was_found
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index d1a5be7..86d3228 100644
+index 23865c3..4ff5acb 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -451,7 +451,12 @@ fn verify(
-             "comparison_base": context.change_base,
+@@ -638,7 +638,12 @@ fn verify(
+             "comparison_base": context.target.base(),
          })),
      );
 -    let verdict = gate::run(&context.worktree, command, environment);

@@ -4,32 +4,36 @@ Red: a_branch_that_left_its_recorded_stack_behind_is_merged_rather_than_replayed
 Red: a_stack_merged_with_its_own_commits_keeps_targeting_the_stack
 Red: a_stack_that_shares_no_history_with_the_root_keeps_targeting_the_stack
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 8bcb33b..dc7bd5e 100644
+index 23865c3..3b9b5a9 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -439,22 +439,9 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Opti
- /// work is what is left either way. A change still open whose content has *not*
- /// reached the root fails the last test, and one merged as its own commits fails the
+@@ -462,25 +462,12 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
  /// second.
--pub(crate) fn root_carries_the_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
-+pub(crate) fn root_carries_the_stack(repo: &Path, _branch: &str, stack: &Stack) -> Result<bool> {
-     let root = vcs::base_ref(repo, &stack.root);
+ pub(crate) fn root_is_known_to_carry_the_stack(
+     repo: &Path,
+-    branch: &str,
++    _branch: &str,
+     root: &Ref,
+     tip: &str,
+ ) -> Result<bool> {
+     let root = vcs::base_ref(repo, root);
 -    if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
 -        return Ok(false);
 -    }
--    if !git::is_ancestor(repo, &stack.tip, branch)? {
+-    if !git::is_ancestor(repo, tip, branch)? {
 -        return Ok(false);
 -    }
 -    // Still in the root as the commits it was written as: merging the root brings
 -    // them in the way it always has, and there is nothing to replay past.
--    if git::is_ancestor(repo, &stack.tip, &root)? {
+-    if git::is_ancestor(repo, tip, &root)? {
 -        return Ok(false);
 -    }
--    let Some(fork) = git::merge_base(repo, &root, &stack.tip)? else {
+-    let Some(fork) = git::merge_base(repo, &root, tip)? else {
 -        return Ok(false);
 -    };
-+    let fork = git::merge_base(repo, &root, &stack.tip)?.unwrap_or_else(|| stack.tip.clone());
-     git::carries_changes(repo, &root, &fork, &stack.tip)
++    let fork = git::merge_base(repo, &root, tip)?.unwrap_or_else(|| tip.to_owned());
+     git::known_to_carry_changes(repo, &root, &fork, tip)
  }
  

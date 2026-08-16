@@ -1,21 +1,22 @@
 Mutation: a root the publication checkout cannot name is guessed at instead.
 Red: a_root_the_publication_checkout_cannot_name_leaves_the_stack_where_it_is
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 8bcb33b..52c31e8 100644
+index 23865c3..54fd9c8 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -419,10 +419,9 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Opti
+@@ -433,10 +433,9 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
              ),
          });
      };
 -    let Some(root) = git::default_branch(publication, "origin").ok() else {
--        return Ok(None);
+-        return Ok(Target::Root(base));
 -    };
 -    let root = Ref::from_git(root);
 +    let root = Ref::from_git(
 +        git::default_branch(publication, "origin").unwrap_or_else(|_| "main".to_owned()),
 +    );
-     Ok((root != record.base).then_some(Stack { tip, root }))
- }
- 
+     if root == base {
+         return Ok(Target::Root(base));
+     }

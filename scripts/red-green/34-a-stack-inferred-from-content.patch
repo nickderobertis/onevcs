@@ -2,16 +2,17 @@ Mutation: a branch is stacked whenever its content looks stacked, rather than wh
 Red: a_branch_the_base_independently_matches_is_still_merged_because_no_record_stacks_it
 
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 8bcb33b..59f2910 100644
+index 23865c3..1a95cd8 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -426,6 +426,31 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Opti
-     Ok((root != record.base).then_some(Stack { tip, root }))
+@@ -447,6 +447,32 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
+     })
  }
  
 +/// The stack a branch's own content looks like it has.
-+fn inferred_stack(repo: &Path, branch: &str, root: &Ref) -> Result<Option<Stack>> {
++fn inferred_stack(repo: &Path, branch: &str, root: &Ref) -> Result<Option<Target>> {
 +    let compared = vcs::base_ref(repo, root);
 +    let Some(fork) = git::merge_base(repo, &compared, branch)? else {
 +        return Ok(None);
@@ -25,10 +26,11 @@ index 8bcb33b..59f2910 100644
 +        Some(repo),
 +    )?;
 +    for candidate in listed.stdout.split_whitespace().skip(1) {
-+        if git::carries_changes(repo, &compared, &fork, candidate)? {
-+            return Ok(Some(Stack {
-+                tip: candidate.to_owned(),
++        if git::known_to_carry_changes(repo, &compared, &fork, candidate)? {
++            return Ok(Some(Target::Stacked {
++                below: root.clone(),
 +                root: root.clone(),
++                tip: candidate.to_owned(),
 +            }));
 +        }
 +    }
@@ -38,16 +40,17 @@ index 8bcb33b..59f2910 100644
  /// Whether the root base already carries everything the change below this one
  /// contributed, while carrying none of the commits that contributed it.
  ///
-@@ -501,7 +526,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
+@@ -521,7 +547,12 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
      let mut replay = None;
      let landed;
      let mut context = context;
--    if let Some(stack) = &context.stack {
-+    let stack = match &context.stack {
-+        Some(stack) => Some(stack.clone()),
-+        None => inferred_stack(&context.repo, &context.branch, &context.base)?,
+-    if let Target::Stacked { root, tip, .. } = &context.target {
++    let inferred = match &context.target {
++        Target::Root(base) => inferred_stack(&context.repo, &context.branch, base)?,
++        Target::Stacked { .. } => None,
 +    };
-+    if let Some(stack) = &stack {
-         if root_carries_the_stack(&context.repo, &context.branch, stack)? {
-             replay = Some(stack.tip.clone());
-             landed = context.onto(stack.root.clone());
++    let target = inferred.as_ref().unwrap_or(&context.target);
++    if let Target::Stacked { root, tip, .. } = target {
+         if root_is_known_to_carry_the_stack(&context.repo, &context.branch, root, tip)? {
+             replay = Some(tip.clone());
+             landed = context.onto(Target::Root(root.clone()));
