@@ -2,12 +2,12 @@ Mutation: import stops refusing a non-fast-forward, so a name a checkout holds w
 Red: an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose
 
 diff --git a/crates/onevcs/src/import.rs b/crates/onevcs/src/import.rs
-index 41cf681..a34dba6 100644
+index 06503c5..badbcb9 100644
 --- a/crates/onevcs/src/import.rs
 +++ b/crates/onevcs/src/import.rs
-@@ -205,7 +205,7 @@ fn refuse_a_rewrite(
+@@ -233,7 +233,7 @@ fn refuse_a_rewrite(
      repo: &Path,
-     branch: &str,
+     branch: &Ref,
  ) -> Result<()> {
 -    if git::is_ancestor(destination, name, scratch)? {
 +    if git::is_ancestor(destination, name, scratch)? || true {
