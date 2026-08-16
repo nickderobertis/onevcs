@@ -1,11 +1,11 @@
-Mutation: a pin resumes a session whose closure, base, or checkout says it is not the one asked for.
+Mutation: a pin resumes a record without asking whether it is the session asked for, or still there.
 Red: a_pin_resumes_only_the_session_it_asked_for
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index 322ecf5..8f2c5c2 100644
+index 2de05e1..8117552 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
-@@ -723,13 +723,6 @@ fn resumable(
+@@ -721,18 +721,6 @@ fn resumable(
      let mut held = all()?.into_iter().filter(|record| {
          record.identity == resolution.key
              && *record.branch == *branch
@@ -16,6 +16,11 @@ index 322ecf5..8f2c5c2 100644
 -            && record.state == Lifecycle::Open
 -            && record.execution_checkout == execution
 -            && request.base.as_deref().is_none_or(|base| *record.base == *base)
-             // The run root a record names outlives neither reclamation nor an
-             // operator with a broom, and what is being reused is the directory
-             // rather than the record of it.
+-            // The run root a record names outlives neither reclamation nor an
+-            // operator with a broom, and what is being reused is the directory
+-            // rather than the record of it.
+-            && record.run_root.is_dir()
+-            && record.clone.is_dir()
+     });
+     let (Some(candidate), None) = (held.next(), held.next()) else {
+         return Ok(None);
