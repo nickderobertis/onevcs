@@ -1,0 +1,20 @@
+Mutation: the lease names whatever the host has now, rather than the commit this run replaces.
+Red: a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index 048b326..4c980c6 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -916,10 +916,9 @@ fn publish_as_change(
+     // branch is an ordinary first push, and a lease naming a commit it does not have
+     // would be refused for the wrong reason entirely.
+     let known = format!("refs/remotes/origin/{}", context.branch);
++    let seen = git::tip(&context.repo, &known);
+     let replacing = match &push {
+-        Push::Replacing { replaced } if git::ref_exists(&context.repo, &known) => {
+-            Some(replaced.as_str())
+-        }
++        Push::Replacing { .. } if git::ref_exists(&context.repo, &known) => seen.as_deref(),
+         _ => None,
+     };
+     let pushed = git::push_replacing(
