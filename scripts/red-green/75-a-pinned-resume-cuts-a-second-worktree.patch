@@ -2,15 +2,15 @@ Mutation: a pinned branch a session already holds is not resumed.
 Red: a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index d91e6b6..6d22fa8 100644
+index 322ecf5..6304081 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
-@@ -550,10 +550,6 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
-     // A pin naming a branch a session of this identity already holds is that
-     // session, resumed — before a token is minted, so nothing of a second one is
-     // cut. Never for a generated name: that one is this token's own.
--    if let Some(held) = resumable(&resolution, request, &execution)? {
--        return resume(&held, &execution);
+@@ -552,10 +552,6 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
+     // cut. Never for a generated name: that one is this token's own. Declining only
+     // falls through to the ordinary cut below, which decides for itself whether a
+     // pin whose work it could not carry may be cut at all.
+-    if let Some((held, lease)) = resumable(&resolution, request, &execution)? {
+-        return resume(&held, lease, &execution);
 -    }
 -
      let token = ids::session_token();
