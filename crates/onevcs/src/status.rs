@@ -1028,6 +1028,19 @@ fn change_url(registry: &Registry, url: &str, streams: &[Recorded]) -> Result<Wo
             token = recorded.token,
         ),
     })?;
+    // A stream is a file written by whichever process produced it, so the branch it
+    // names is input: it goes on to be handed to git as a ref, and one git would not
+    // accept is refused here rather than met by whichever command reached it first.
+    if !git::is_valid_branch_name(&branch) {
+        return Err(Error::Invalid {
+            reason: format!(
+                "the event stream for {token:?} records the change request at {url} as carrying \
+                 {branch:?}, which is not a branch name git would accept, so nothing here can look \
+                 for it. `onevcs events {token}` is what that stream holds",
+                token = recorded.token,
+            ),
+        });
+    }
     if let Some(identity) = &recorded.identity {
         if registry.identities.contains_key(identity) {
             return Ok(Work {

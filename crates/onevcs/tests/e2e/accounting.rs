@@ -18,10 +18,13 @@
 // the checkouts and run clones are real, every publication is a real `git push`, and when
 // that program merges a change it does so with real git against the same bare origin. An
 // assertion here that a change landed is therefore an assertion about git.
-// llmlint: ignore-file[tests_mirror_real_usage] two setups here have no user-facing verb:
-// closing a change request without merging it is the host's own action, so a journey that
-// needs one says so through the substituted host, and a branch that diverged in two
-// checkouts is made with real git because no `onevcs` verb writes one.
+// llmlint: ignore-file[tests_mirror_real_usage] three setups here have no user-facing verb.
+// Closing a change request without merging it is the host's own action, so a journey that
+// needs one says so through the substituted host. A branch that diverged in two checkouts
+// is made with real git, because no `onevcs` verb writes one. And a stream carrying an
+// event a *later* build wrote is appended by hand, because this build cannot emit a word
+// it does not know — which is the whole premise of the assertion that it says so rather
+// than reading it as a verdict it does understand.
 
 use std::path::PathBuf;
 
@@ -229,6 +232,41 @@ fn an_ambiguous_reference_is_refused_by_naming_the_candidates() {
         .stderr(predicate::str::contains("ambiguous commit"))
         .stderr(predicate::str::contains("feature/also-shared"));
     world.git(&checkout, &["branch", "-D", "feature/also-shared"]);
+
+    // A stream is a file whichever process produced it wrote, so the branch it
+    // names for a change request is input: one git would not accept is refused
+    // where it is read rather than met by whichever command reached it first.
+    let streams = world.home().join("streams");
+    std::fs::create_dir_all(&streams).expect("a streams directory");
+    std::fs::write(
+        streams.join("s-handwritten.ndjson"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "v": 1,
+                "ts": "2026-01-01T00:00:00.000Z",
+                "stream": "s-handwritten",
+                "seq": 1,
+                "source": "vcs",
+                "kind": "change-opened",
+                "labels": {},
+                "payload": {
+                    "branch": "not a branch..name",
+                    "url": "https://github.com/acme-corp/hosted/pull/7",
+                },
+                "artifacts": [],
+            })
+        ),
+    )
+    .expect("a stream naming a branch git would not accept");
+    world
+        .onevcs()
+        .args(["status", "https://github.com/acme-corp/hosted/pull/7"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "which is not a branch name git would accept",
+        ));
 
     // A reference nothing answers to is refused as one, naming what does answer.
     world
@@ -1083,4 +1121,81 @@ fn an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose() 
             .git(&fixture.checkout, &["rev-parse", "feature/forward"]),
         further
     );
+}
+
+#[test]
+fn the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names() {
+    // The gate's verdict is the evidence a publication rested on, and it outlives
+    // the tree it ran in — so a report about work that did not land has to be able
+    // to say what refused it, and where the log went.
+    let fixture = Fixture::local(&local_direct(
+        "[\"sh\", \"-c\", \"echo the gate refused this; exit 1\"]",
+    ));
+    let (token, worktree) = fixture.open(&["--branch", "feature/refused"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: offer the work");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1);
+
+    let answer = report(&fixture.world, "feature/refused");
+    assert_eq!(answer["gate"]["verdict"], "fail");
+    assert_eq!(answer["gate"]["recorded_by"], token);
+    assert!(answer["gate"]["log"]
+        .as_str()
+        .expect("a rejected publication preserves its gate log")
+        .ends_with(".log"));
+    fixture
+        .world
+        .onevcs()
+        .args(["status", "feature/refused"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("verdict: fail"))
+        .stdout(predicate::str::contains("the gate refused this"));
+
+    // A verdict a later build wrote and this one does not read is said out loud
+    // rather than reported as one of the two words it does know: reading it as a
+    // pass would clear work nothing verified, and as a fail would name a refusal
+    // that never happened.
+    let stream = fixture
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let recorded = std::fs::read_to_string(&stream).expect("the session wrote a stream");
+    std::fs::write(
+        &stream,
+        format!(
+            "{recorded}{}\n",
+            serde_json::json!({
+                "v": 1,
+                "ts": "2099-01-01T00:00:00.000Z",
+                "stream": token,
+                "seq": 9999,
+                "source": "vcs",
+                "kind": "gate-verdict",
+                "labels": {},
+                "payload": {"verdict": "deferred", "command": "a later build's gate"},
+                "artifacts": [],
+            })
+        ),
+    )
+    .expect("a stream a later build appended to");
+    let answer = report(&fixture.world, "feature/refused");
+    assert_eq!(answer["gate"]["verdict"], "unrecorded");
+    assert_eq!(answer["gate"]["command"], "a later build's gate");
+    fixture
+        .world
+        .onevcs()
+        .args(["status", "feature/refused"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "verdict: a verdict this build does not read",
+        ));
 }
