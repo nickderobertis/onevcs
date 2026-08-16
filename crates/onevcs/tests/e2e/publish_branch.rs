@@ -1492,6 +1492,65 @@ fn a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_roo
 }
 
 #[test]
+fn a_recorded_base_no_ref_resolves_names_what_would_restore_it() {
+    // The stack a preserved branch records is a branch *name*, and a name is only as
+    // good as the ref behind it: the change below is deleted when it merges and every
+    // fetch here prunes. Nothing then can tell which of the branch's commits are the
+    // change below's — so this is refused where the record is read, rather than handed
+    // to git as a revision it will report as unknown.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let prefix = documented_default_prefix();
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/orphaned"],
+    );
+    world.commit_file(&fixture.checkout, "one.txt", "one\n", "feat: add the thing");
+    world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/orphaned\n\n{}\n{} feature/gone",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/orphaned",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "records the base it was stacked on as \"feature/gone\"",
+        ))
+        .stderr(predicate::str::contains("Restore or push \"feature/gone\""))
+        .stderr(predicate::str::contains(documented_trailer(
+            "Change-Base",
+            &prefix,
+        )))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs recover feature/orphaned --repo {}`",
+            fixture.checkout.display()
+        )));
+    // Refused before anything was written to it: the branch is where it was left.
+    assert!(world
+        .git(&fixture.checkout, &["branch", "--list", "feature/orphaned"])
+        .contains("feature/orphaned"));
+}
+
+#[test]
 fn a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-filter");

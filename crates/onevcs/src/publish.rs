@@ -271,7 +271,7 @@ pub fn run_for_session(
         vcs::preserve_into(&record, &mut stream, Provenance::Complete)?;
     }
     let change_base = preserved_change_base(&record.base, record.change_base.as_ref());
-    let stack = recorded_stack(&record, &resolution.publication);
+    let stack = recorded_stack(&record, &resolution.publication)?;
     let context = Context {
         resolution,
         policy: resolved.policy.clone(),
@@ -380,17 +380,50 @@ pub struct Stack {
 ///
 /// Two things have to be there: the tip the session was cut at, which `session open`
 /// records only for a base that is not the identity's root, and a root to land on
-/// once the change below has landed. Either missing is no stack at all.
+/// once the change below has landed.
 ///
 /// The recorded tip is resolved through git before it is one, because a record is a
 /// file under the state root and this is the field that goes on to name commits to
-/// it: what comes back is a commit this repository actually has, and anything else —
-/// a value nothing wrote, a clone that no longer carries it — is no stack rather than
-/// a name handed on to git.
-fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stack> {
-    let tip = git::tip(&record.clone, record.stack_tip.as_deref()?)?;
-    let root = Ref::from_git(git::default_branch(publication, "origin").ok()?);
-    (root != record.base).then_some(Stack { tip, root })
+/// git. A record naming a commit this session's own clone does not have is refused
+/// rather than read as an ordinary publication: what the field decides is which of a
+/// branch's commits belong to the change below it, and a publication that answers
+/// "none of them" because the record was unreadable is one that merges the change
+/// below against its own squashed equivalent — the failure this whole path exists to
+/// stop, arrived at through a silence.
+///
+/// A root nobody can name is different and is no stack: nothing here fails, there is
+/// simply nowhere to move the change to, and the publication is the one it always
+/// was.
+fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Option<Stack>> {
+    let Some(recorded) = record.stack_tip.as_deref() else {
+        return Ok(None);
+    };
+    let Some(tip) = git::tip(&record.clone, recorded) else {
+        return Err(Error::Invalid {
+            reason: format!(
+                "the record for session {token} names {recorded:?} as the commit branch {branch:?} \
+                 was cut from, and the clone at {clone} does not have it, so nothing can tell \
+                 which of that branch's commits belong to the change below it. The branch is \
+                 whole — publish it by name with `{command}`, which reads the stack off the \
+                 branch instead",
+                token = record.token,
+                branch = record.branch,
+                clone = record.clone.display(),
+                command = guidance::command([
+                    "onevcs",
+                    "publish-branch",
+                    &record.branch,
+                    "--repo",
+                    &record.publication_checkout.to_string_lossy(),
+                ]),
+            ),
+        });
+    };
+    let Some(root) = git::default_branch(publication, "origin").ok() else {
+        return Ok(None);
+    };
+    let root = Ref::from_git(root);
+    Ok((root != record.base).then_some(Stack { tip, root }))
 }
 
 /// Whether the root base already carries everything the change below this one

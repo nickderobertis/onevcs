@@ -2255,6 +2255,143 @@ fn a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone() {
     );
 }
 
+/// The change below, as a branch of the checkout a session is then cut from.
+fn a_change_below(fixture: &Fixture) {
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(
+        &fixture.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+}
+
+#[test]
+fn a_root_the_publication_checkout_cannot_name_leaves_the_stack_where_it_is() {
+    // A stack is a change below and a root to move onto once that lands, and this
+    // identity has no answer for the second: its origin's own HEAD dangles and the
+    // checkout's cache of it is gone, leaving two branches it could equally be. So
+    // there is nowhere to move the change to, and the publication is the one it has
+    // always been — onto the branch it was opened against, by the merge it has always
+    // used, with nothing replayed on a guess about which branch the root is.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    a_change_below(&fixture);
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let (token, worktree) =
+        fixture.open(&["--branch", "feature/filter", "--base", "feature/engine"]);
+    world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    // The change below lands, squashed: a stack anything could read would move.
+    let below = world.clone_of(&fixture.origin, "below");
+    world.git(&below, &["merge", "--squash", "origin/feature/engine"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.git(&below, &["push", "-q", "origin", "main"]);
+
+    world.git(
+        &fixture.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/renamed-away"],
+    );
+    world.git(
+        &fixture.checkout,
+        &["symbolic-ref", "-d", "refs/remotes/origin/HEAD"],
+    );
+    // The publication checkout is only ever fast-forwarded, and what this lands on is
+    // the base the session named.
+    world.git(&fixture.checkout, &["checkout", "-q", "feature/engine"]);
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    assert_eq!(
+        world.git(
+            &fixture.origin,
+            &["log", "-1", "--format=%s", "feature/engine"]
+        ),
+        "feat: filter what the engine relays",
+        "it landed on the branch it was opened against"
+    );
+    assert_eq!(
+        fixture.origin_log()[0],
+        "feat: write the engine",
+        "and the root is exactly what the change below left there"
+    );
+}
+
+#[test]
+fn a_root_this_clone_no_longer_has_leaves_the_stack_where_it_is() {
+    // The root is nameable and gone: it was deleted on the origin after this session
+    // was cut, so the clone publishing the change pruned it and the checkout that
+    // still names it has not looked since. There is no ref to compare a stack against,
+    // and the publication is the one it has always been.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    a_change_below(&fixture);
+    // Left checked out, so the session's clone has no local `main` of its own either.
+    let (token, worktree) =
+        fixture.open(&["--branch", "feature/filter", "--base", "feature/engine"]);
+    world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    // The root branch is renamed away on the origin, which is the only way an origin
+    // parts with the branch its own HEAD names.
+    let below = world.clone_of(&fixture.origin, "below");
+    world.git(
+        &fixture.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/feature/engine"],
+    );
+    world.git(&below, &["push", "-q", "origin", "--delete", "main"]);
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    assert_eq!(
+        world.git(
+            &fixture.origin,
+            &["log", "-1", "--format=%s", "feature/engine"]
+        ),
+        "feat: filter what the engine relays",
+        "it landed on the branch it was opened against"
+    );
+    assert!(
+        world
+            .git(&fixture.origin, &["branch", "--list", "main"])
+            .is_empty(),
+        "and the root it could not compare against is still gone"
+    );
+}
+
 #[test]
 fn a_branch_the_base_independently_matches_is_still_merged_because_no_record_stacks_it() {
     // The ambiguous case, and the reason the stack is read out of a record rather

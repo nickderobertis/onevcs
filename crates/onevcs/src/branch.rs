@@ -212,14 +212,30 @@ pub fn prepare(
     // then stands as recorded, which is this verb exactly as it was.
     let (change_base, stack_replay) = match recorded {
         Some(recorded) if recorded != base => {
-            match stack_tip(&clone, &recorded).map(|tip| publish::Stack {
+            // A recorded base nothing resolves is refused rather than handed on as a
+            // name: git would meet it as an unknown revision, and the branch would be
+            // reported to an operator as a failed comparison rather than as work
+            // whose stack has to be restored before it can be published.
+            let tip = stack_tip(&clone, &recorded).ok_or_else(|| Error::Invalid {
+                reason: format!(
+                    "branch {branch:?} records the base it was stacked on as {recorded:?}, and \
+                     neither {source} nor its origin has that branch, so nothing can tell which \
+                     of the branch's commits belong to the change below it. Restore or push \
+                     {recorded:?}, or correct the {trailer} trailer on the branch in {source}, \
+                     then land it with `{command}`",
+                    source = source.display(),
+                    trailer = trailers.change_base(),
+                    command = verb.command(branch, repo),
+                ),
+            })?;
+            let stack = publish::Stack {
                 tip,
                 root: base.clone(),
-            }) {
-                Some(stack) if publish::root_carries_the_stack(&clone, branch, &stack)? => {
-                    (base.clone(), Some(stack.tip))
-                }
-                _ => (recorded, None),
+            };
+            if publish::root_carries_the_stack(&clone, branch, &stack)? {
+                (base.clone(), Some(stack.tip))
+            } else {
+                (recorded, None)
             }
         }
         Some(recorded) => (recorded, None),

@@ -2891,6 +2891,65 @@ fn a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_li
 }
 
 #[test]
+fn a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name() {
+    // The field decides which of a branch's commits belong to the change below it, so
+    // a record naming a commit the session's own clone does not have cannot be read as
+    // "no stack": that answer is the merge this whole path exists to avoid, arrived at
+    // through a silence. It is refused, and the refusal names the verb that reads the
+    // stack off the branch instead.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/below"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "below.txt",
+        "below\n",
+        "feat: the change below",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let (token, worktree) = fixture.open(&["--branch", "feature/above", "--base", "feature/below"]);
+    fixture
+        .world
+        .commit_file(&worktree, "above.txt", "above\n", "feat: the change above");
+
+    let path = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+    let mut record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("a session record"))
+            .expect("the record is JSON");
+    let absent = "0".repeat(40);
+    record["stack_tip"] = serde_json::json!(absent);
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&record).expect("a record"),
+    )
+    .expect("a session record");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!(
+            "names {absent:?} as the commit branch \"feature/above\" was cut from"
+        )))
+        .stderr(predicate::str::contains(format!(
+            "publish it by name with `onevcs publish-branch feature/above --repo {}`",
+            fixture.checkout.display()
+        )));
+    // Nothing was published under a stack nobody could read.
+    assert_eq!(fixture.origin_log().len(), 1);
+}
+
+#[test]
 fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
     let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/stateful"]);
