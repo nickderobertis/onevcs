@@ -40,9 +40,26 @@ use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
 use crate::store::{self, Resolution};
 use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace};
 
+/// The version of the object `onevcs status --json` writes.
+///
+/// A report leaves this process and is read by whatever consumes the command, which
+/// makes it a stored contract like the registry document and the rules file — and
+/// like those it *says* which shape it is, rather than leaving a consumer to infer
+/// that from which keys it can find. `1` is the initial version and deliberately not
+/// a migration boundary: nothing in this build reads a report back, so the number is
+/// what a consumer branches on and there is no older shape here to read.
+///
+/// Every change to what the object carries bumps this in the same change that
+/// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
+/// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
+pub const REPORT_VERSION: u32 = 1;
+
 /// Everything `onevcs` knows about one piece of work.
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
+    /// The schema version this object is written at, so a consumer reads a shape it
+    /// was told rather than one it guessed.
+    pub version: u32,
     /// The reference as it was asked for, and how it was read.
     #[serde(rename = "ref")]
     pub reference: Reference,
@@ -411,6 +428,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     });
 
     Ok(Report {
+        version: REPORT_VERSION,
         reference: Reference {
             given: reference.to_owned(),
             kind,

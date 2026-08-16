@@ -108,6 +108,11 @@ report is most often read about — the ones a run left in its own clone.
   the destination's ref. A name the destination has *checked out* is refused rather
   than written, and a non-fast-forward is refused naming the commits that would go,
   because `--as` is the way through and only works once those are visible.
+- **`status --json` is a versioned object whose bytes are checked in.** It declares
+  `version`, an absent field is omitted rather than written as `null`, and the
+  goldens under `tests/golden/status-report-v1*.json` are compared byte for byte
+  against the real CLI. Changing what the object carries means bumping
+  `status::REPORT_VERSION` and re-making both goldens in the same change.
 
 Both find a branch nobody named through `branch::locate`, which is the search the
 two publishing verbs use.

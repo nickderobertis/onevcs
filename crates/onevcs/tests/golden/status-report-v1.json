@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "ref": {
+    "given": "feature/full",
+    "kind": "branch"
+  },
+  "identity": {
+    "key": "github.com/acme-corp/hosted",
+    "publication_checkout": "<root>/hosted",
+    "workflow": "remote",
+    "repo_type": "team",
+    "gate": {
+      "command": [
+        "true"
+      ]
+    },
+    "approvals": "required"
+  },
+  "session": {
+    "token": "<token>",
+    "state": "closed",
+    "liveness": "stale",
+    "base": "feature/below",
+    "clone": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/clone",
+    "worktree": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/worktree"
+  },
+  "branch": {
+    "name": "feature/full",
+    "base": "main",
+    "change_base": "feature/below",
+    "holders": [
+      {
+        "path": "<root>/hosted",
+        "kind": "publication-checkout"
+      },
+      {
+        "path": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/clone",
+        "kind": "run-clone",
+        "session": "<token>"
+      }
+    ],
+    "ahead": 3,
+    "provenance": "incomplete-unattested"
+  },
+  "publication": {
+    "state": "open",
+    "change_url": "https://github.com/acme-corp/hosted/pull/1",
+    "merge_policy": "change-open"
+  },
+  "checks": {
+    "state": "reported",
+    "checks": [
+      {
+        "name": "gate",
+        "status": "completed",
+        "conclusion": "success",
+        "required": true
+      },
+      {
+        "name": "advisory",
+        "status": "in_progress",
+        "required": false
+      }
+    ],
+    "sources": [
+      "status-checks"
+    ]
+  },
+  "gate": {
+    "verdict": "pass",
+    "command": "true",
+    "log": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/gate-logs/feature-full/gate-0001.log",
+    "recorded_by": "<token>"
+  },
+  "next": {
+    "because": "https://github.com/acme-corp/hosted/pull/1 is open on the host and lands when what its policy waits for — review, or the host's required checks — is done"
+  }
+}

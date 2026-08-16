@@ -253,6 +253,33 @@ wraps them in `just` recipes by name and gates on every subcommand this reposito
 prose names existing in the pinned CLI's `--help`, so a rename breaks that node by
 construction.
 
+**`status --json` is a versioned object, and its bytes are checked in.** The report
+leaves the process and is read by whoever consumes the command, which makes it the
+same kind of thing as the registry document and the rules file: it declares its own
+shape rather than leaving a consumer to infer one from which keys it can find.
+
+The report's schema version is `1`, and it is deliberately the *initial* version
+rather than a migration boundary — nothing in this build reads a report back, so the
+number is what a **consumer** branches on and there is no older shape here to read.
+Two rules follow, and they are the ones the goldens exist to enforce:
+
+- **Every change to what the object carries bumps the version**, in the same change
+  that re-makes the goldens. A field added, removed, renamed, or retyped without
+  that is a consumer reading a shape it was told it would not get.
+- **A field that holds nothing is omitted rather than written as `null`.** A
+  consumer that has never heard of a field must not be handed one, and `null` and
+  absent are different answers to "was there a session".
+
+`crates/onevcs/tests/golden/status-report-v1.json` and
+`status-report-v1-minimal.json` are those bytes — a report carrying every optional
+field it can carry at once, and one carrying none of them — compared byte for byte
+against the real CLI's own output by
+`the_status_report_is_the_versioned_object_its_goldens_record` in
+`tests/e2e/accounting.rs`. Two fields cannot share a golden with the rest and are
+covered by name elsewhere: `next.command`, which no report carrying an open change
+request has (there is nothing to advance), and `notes`, which reports a gap in what
+could be *read* rather than anything about the work.
+
 | Item | Inferred shape | Why |
 | --- | --- | --- |
 | `status REF` | one operand, four spellings, read in the documented order | A change request's URL, a session token, a branch name, and a commit are four names for one piece of work, and which one somebody has depends on where they are standing. Four options would make a caller say which they hold; one operand does not. First match wins, so a session token is a session token even where a branch of that name exists, and ambiguity is *within* a spelling — one branch name in two identities — which is refused naming every candidate. |

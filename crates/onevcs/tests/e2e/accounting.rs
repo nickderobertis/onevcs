@@ -34,7 +34,30 @@ use serde_json::Value;
 use crate::host::{Hosted, AUTOMATED, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::registry::configure_rules;
+use crate::support::{documented_default_prefix, documented_report_version, documented_trailer};
 use crate::world::{Check, World};
+
+/// What the CLI writes for a report carrying every optional field it can carry at
+/// once, and for one carrying none of them.
+const FULL: &str = include_str!("../golden/status-report-v1.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v1-minimal.json");
+
+/// Every key the report leaves out when it holds nothing, as a path into the object.
+///
+/// Paths rather than substrings, because two of these share a name with something
+/// that is *not* optional — `identity.gate` is written whatever the rules resolve to
+/// — and a golden that merely mentioned the word would answer the wrong question.
+///
+/// `next.command` and `notes` are deliberately not here: no report carrying an open
+/// change request has a command to advance it, and `notes` reports a gap in what
+/// could be *read* rather than anything about the work. Both are asserted by name
+/// below, and covered by the journeys above.
+const OPTIONAL: &[&[&str]] = &[
+    &["session"],
+    &["branch", "change_base"],
+    &["publication", "change_url"],
+    &["gate"],
+];
 
 /// A change-auto identity whose gate is a command, so a publication reaches the
 /// host's merge without waiting on the host's own checks.
@@ -1198,4 +1221,218 @@ fn the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names() {
         .stdout(predicate::str::contains(
             "verdict: a verdict this build does not read",
         ));
+}
+
+/// What one golden names at a path, `null` included — which is the value an omitted
+/// field must never be confused with.
+fn named(golden: &str, path: &[&str]) -> Option<Value> {
+    let mut value: Value = serde_json::from_str(golden).expect("a golden is JSON");
+    for key in path {
+        value = value.get(key)?.clone();
+    }
+    Some(value)
+}
+
+/// One report with everything a run cannot repeat replaced by what it is.
+///
+/// A scratch root and a session token differ on every machine and in every run;
+/// everything else in these bytes — the identity key, the workspace directory that
+/// is a digest of it, the change request's number, the commit counts — is the same
+/// wherever this runs, and is what the golden is for.
+fn readable(report: &Value, world: &World, token: Option<&str>) -> String {
+    let root = world.path("x");
+    let root = root
+        .parent()
+        .expect("the scratch root")
+        .to_string_lossy()
+        .into_owned();
+    let rendered = serde_json::to_string_pretty(report).expect("a report");
+    let rendered = rendered.replace(&root, "<root>");
+    let rendered = match token {
+        Some(token) => rendered.replace(token, "<token>"),
+        None => rendered,
+    };
+    format!("{rendered}\n")
+}
+
+#[test]
+fn the_status_report_is_the_versioned_object_its_goldens_record() {
+    // `status --json` is read by whatever consumes this command, so it is a stored
+    // contract: it says which shape it is, its bytes are checked in, and a field it
+    // does not hold is left out rather than written as null.
+    let version = documented_report_version();
+    let prefix = documented_default_prefix();
+
+    // A report carrying every optional field at once: a session, a recorded change
+    // base, a change request the host still holds open, checks with and without a
+    // conclusion, and the gate verdict that cleared the publication.
+    let hosted =
+        Hosted::new("{publication: change-open, approvals: required, gate: {command: [\"true\"]}}");
+    hosted.world.host_checks(&[
+        GREEN,
+        Check {
+            name: "advisory",
+            status: "in_progress",
+            conclusion: None,
+            required: false,
+        },
+    ]);
+    // The change below this one, which is what the branch's recorded change base
+    // names and what its change request targets.
+    hosted
+        .world
+        .git(&hosted.checkout, &["checkout", "-qb", "feature/below"]);
+    hosted.world.commit_file(
+        &hosted.checkout,
+        "below.txt",
+        "below\n",
+        "feat: the change below",
+    );
+    hosted
+        .world
+        .git(&hosted.checkout, &["push", "-q", "origin", "feature/below"]);
+    hosted
+        .world
+        .git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/full",
+            "--base",
+            "feature/below",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let token = crate::world::token_of(&stdout);
+    let worktree = crate::world::worktree_of(&stdout);
+    hosted
+        .world
+        .commit_file(&worktree, "full.txt", "full\n", "feat: add the whole thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    // Reachable from the checkout as well as the run clone, which is what makes the
+    // holder list say more than one thing.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "import",
+            "feature/full",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+    // The `Change-Base:` trailer is a consumer's record of a stack — nothing this
+    // crate exposes writes one — so it arrives the way this repository's other stack
+    // journeys build it.
+    hosted
+        .world
+        .git(&hosted.checkout, &["checkout", "-q", "feature/full"]);
+    hosted.world.git(
+        &hosted.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/full\n\n{}\n{} feature/below",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    hosted
+        .world
+        .git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let full = report(&hosted.world, "feature/full");
+    assert_eq!(
+        full["version"], version,
+        "the report declares the version the surface record documents"
+    );
+    assert_eq!(
+        readable(&full, &hosted.world, Some(&token)),
+        FULL,
+        "the object `onevcs status --json` writes is its checked-in golden; re-make \
+         crates/onevcs/tests/golden/status-report-v1.json from the run above, and bump \
+         the version in docs/inferred-surface.md and src/status.rs if the shape moved"
+    );
+    for path in OPTIONAL {
+        let held = named(FULL, path)
+            .unwrap_or_else(|| panic!("{path:?} is held, so the report writes it"));
+        assert!(
+            !held.is_null(),
+            "{path:?} is held, so it is written as a value"
+        );
+    }
+    // The same rule one level down, inside the golden itself: the check that has
+    // concluded names its conclusion and the one still running does not.
+    let rows =
+        serde_json::from_str::<Value>(FULL).expect("a golden is JSON")["checks"]["checks"].clone();
+    assert_eq!(rows[0]["conclusion"], "success");
+    assert!(
+        rows[1].get("conclusion").is_none(),
+        "a check that has not concluded names no conclusion: {rows}"
+    );
+
+    // …and one carrying none of them: a branch nothing has published, held by the
+    // checkout alone, with no session, no change request, and no gate behind it.
+    let plain = Hosted::new(REVIEWED);
+    plain
+        .world
+        .git(&plain.checkout, &["checkout", "-qb", "feature/plain"]);
+    plain.world.commit_file(
+        &plain.checkout,
+        "plain.txt",
+        "plain\n",
+        "feat: add the plain thing",
+    );
+    plain
+        .world
+        .git(&plain.checkout, &["checkout", "-q", "main"]);
+
+    let minimal = report(&plain.world, "feature/plain");
+    assert_eq!(minimal["version"], version);
+    assert_eq!(
+        readable(&minimal, &plain.world, None),
+        MINIMAL,
+        "the object a report with nothing optional in it writes is its checked-in \
+         golden; re-make crates/onevcs/tests/golden/status-report-v1-minimal.json"
+    );
+    // Omitted rather than null: a consumer that has never heard of a field is not
+    // handed one, and "no session" and "a session that is null" are different
+    // answers to act on.
+    for path in OPTIONAL {
+        assert!(
+            named(MINIMAL, path).is_none(),
+            "{path:?} holds nothing, so the report must not name it — not even as null"
+        );
+    }
+    // The one field only a report with nothing open carries, and the one neither
+    // golden does: a golden records a report about state this build could read.
+    assert!(named(MINIMAL, &["next", "command"]).is_some());
+    assert!(named(FULL, &["next", "command"]).is_none());
+    for golden in [FULL, MINIMAL] {
+        assert!(named(golden, &["notes"]).is_none());
+        assert_eq!(
+            named(golden, &["version"]),
+            Some(serde_json::json!(version)),
+            "each golden declares the documented version"
+        );
+    }
 }

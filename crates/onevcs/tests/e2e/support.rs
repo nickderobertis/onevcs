@@ -108,6 +108,28 @@ pub fn documented_trailer(name: &str, prefix: &str) -> String {
     found[0].replace("<prefix>", prefix)
 }
 
+/// The schema version `onevcs status --json` is documented to write.
+///
+/// Read out of the record rather than repeated here, for the reason
+/// [`documented_default_prefix`] is: the version is a promise to whoever consumes
+/// that object, and a suite that took it from the code under test would agree with
+/// it however wrong both were.
+#[cfg(unix)]
+pub fn documented_report_version() -> u32 {
+    const OPENS: &str = "The report's schema version is ";
+    let record = inferred_surface();
+    let line = record
+        .lines()
+        .find(|line| line.starts_with(OPENS))
+        .expect("the record documents the report's schema version");
+    line[OPENS.len()..]
+        .split('`')
+        .nth(1)
+        .expect("the version is written in backticks")
+        .parse()
+        .expect("the documented version is a number")
+}
+
 /// Every command a user is promised, read out of `docs/contract.md`'s usage block.
 ///
 /// Deliberately not read from the parser: these journeys assert what the *user*
