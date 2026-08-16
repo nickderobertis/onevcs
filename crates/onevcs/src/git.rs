@@ -1072,11 +1072,13 @@ pub struct ObjectId(String);
 impl ObjectId {
     /// The id, if this is one at all.
     ///
-    /// Any hexadecimal length git might advertise — it names objects in SHA-1 today
-    /// and SHA-256 where a repository is built that way — but nothing shorter than
-    /// an abbreviation could be, and nothing carrying a character an id cannot.
+    /// A remote advertises complete ids and never abbreviations, so the two lengths
+    /// git has object formats for are the two accepted: 40 hexadecimal characters
+    /// for SHA-1 and 64 for SHA-256. Any other length is output this does not
+    /// understand, whatever it is made of.
     pub fn parse(value: &str) -> Option<Self> {
-        (value.len() >= 40 && value.chars().all(|c| c.is_ascii_hexdigit()))
+        let complete = matches!(value.len(), 40 | 64);
+        (complete && value.chars().all(|c| c.is_ascii_hexdigit()))
             .then(|| ObjectId(value.to_owned()))
     }
 
