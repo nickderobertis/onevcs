@@ -176,6 +176,14 @@ fn a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_requi
         .events_of("publish-branch-feature-reviewed", "change-opened");
     assert_eq!(opened.len(), 1, "one change request was opened");
     assert_eq!(opened[0]["payload"]["base"], "main");
+    // …and with no body: this verb is reached by an operator naming a branch, not by
+    // a caller that drafted one, so there is nothing to open it with and nothing is
+    // composed to stand in.
+    assert_eq!(
+        hosted.world.change_request_body(1),
+        "",
+        "a branch-keyed publication composes no body"
+    );
 }
 
 #[test]

@@ -77,26 +77,23 @@ names only what it means and a document from a build that knew fewer fields stil
 reads.
 
 **Every change to the document is versioned, an added optional field included.**
-That is the 2 → 3 bump, made for `HostState::bodies`: serde would have read a
-version 2 document either way, so the bump buys nothing at the parser and
-everything at the boundary it is actually for — the version is how a consumer's
+Serde would read the older document either way, so the bump buys nothing at the
+parser and everything at the boundary it is for: the version is how a consumer's
 checked-in scenario says which shape it was written against, and a document that
-grew a field without saying so leaves nothing able to tell "this build wrote no
-body" from "this document predates bodies".
+grew a field without saying so leaves nothing able to tell "this build wrote
+nothing there" from "this document predates the field".
 
 Compatible and unremarkable are not the same thing, so the *range* is what carries
-compatibility, and `Checked::carry_forward` is where an older document becomes this
-one — on read, so nothing past that boundary asks which version it arrived as and
-the next write declares the version it now is. What makes a version readable rather
-than refused is whether every field it holds still means here what it meant there:
-2 → 3 added a field and changed none, so a version 2 document reads as change
-requests opened with no body, which is what they were. Version 1 is refused for the
-opposite reason — it would read back as a run whose sessions were all still open,
-which is a wrong answer where a journey asserting on a session it had closed needs
-a refusal. `check_sources` is an `Option` for a related reason: unset and explicitly
-empty are two different scenarios (a credential nobody narrowed, and one that can
-read no source at all and must refuse), and a set whose emptiness meant "not stated"
-could not express the second.
+compatibility. A version is readable rather than refused when every field it holds
+still means here what it meant there — an added field keeps that true, a changed
+meaning does not, which is why version 1 is refused: its sessions would every one
+read back as open, a wrong answer where a journey asserting on a session it had
+closed needs a refusal. `Checked::carry_forward` is the other half, on read, so
+nothing past that boundary asks which version a document arrived as and the next
+write declares the version it now is. `check_sources` is an `Option` for a related
+reason: unset and explicitly empty are two different scenarios (a credential nobody
+narrowed, and one that can read no source at all and must refuse), and a set whose
+emptiness meant "not stated" could not express the second.
 
 Changing the document therefore means, in the same change: bump `STATE_VERSION`,
 regenerate both goldens under their new version's names, **freeze the previous
