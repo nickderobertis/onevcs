@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 46. Tests observed red and then green: 71.
+Patches: 47. Tests observed red and then green: 72.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -324,4 +324,11 @@ a session naming its own base is refused when nothing can name the identity's ro
 a branch whose history a replay rewrote is pushed as though it had not been.
 
 - RED `a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it_lands` — Unexpected failure.
+- RED `a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
+
+### `48-a-lease-names-the-hosts-own-commit`
+
+the lease names whatever the host has now, rather than the commit this run replaces.
+
+- RED `a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
 
