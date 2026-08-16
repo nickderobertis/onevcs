@@ -899,6 +899,84 @@ fn a_stack_that_shares_no_history_with_the_root_keeps_targeting_the_stack() {
 }
 
 #[test]
+fn a_stack_that_renamed_a_file_the_root_still_has_keeps_targeting_the_stack() {
+    // Half of a rename is a deletion, and it is the half that says the change below
+    // has not landed: the root here has the destination — somebody wrote the same
+    // content under the new name — and still has the source the change below removed.
+    // Comparing only what a rename is reported under would call that landed and
+    // replay the branch onto a root that never took the deletion.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.git(&hosted.checkout, &["push", "-q", "origin", "main"]);
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.git(&hosted.checkout, &["mv", "engine.txt", "motor.txt"]);
+    world.git(
+        &hosted.checkout,
+        &["commit", "-q", "-m", "refactor: rename the engine"],
+    );
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/renaming",
+            "--base",
+            "feature/engine",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let token = token_of(&stdout);
+    world.commit_file(
+        &worktree_of(&stdout),
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    // The root gains the destination on its own, and keeps the source.
+    let elsewhere = world.clone_of(&hosted.origin, "elsewhere");
+    world.commit_file(
+        &elsewhere,
+        "motor.txt",
+        "the engine\n",
+        "feat: write the motor somewhere else",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    assert_eq!(opened_against(&hosted, &token), "feature/engine");
+    let published = world.git(&hosted.origin, &["log", "--format=%s", "feature/renaming"]);
+    assert!(
+        published.contains("refactor: rename the engine"),
+        "the branch kept the change below it, deletion and all: {published}"
+    );
+}
+
+#[test]
 fn an_automated_change_merges_once_every_required_check_is_green() {
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[

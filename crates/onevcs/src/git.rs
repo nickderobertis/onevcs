@@ -734,9 +734,14 @@ pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String
 ///
 /// `--shortstat` is a count and a summary, in ASCII whatever a repository names its
 /// files, which is what makes it the check on a listing of those names rather than a
-/// second copy of it.
+/// second copy of it. It counts what the listing lists, so it declines rename
+/// detection for the same reason the listing does.
 fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
-    let summary = checked(&["diff", "--shortstat", from, to], Some(cwd))?.trimmed();
+    let summary = checked(
+        &["diff", "--shortstat", "--no-renames", from, to],
+        Some(cwd),
+    )?
+    .trimmed();
     // Nothing at all is what git prints when no file changed, and it is the only
     // summary that means zero: anything else this cannot read a count out of is an
     // answer to refuse rather than to round down, since rounding it down would say
@@ -760,12 +765,19 @@ fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
 /// Content rather than ancestry, for the reason [`trees_differ`] gives: a branch
 /// that reached the base as one squashed commit is an ancestor of nothing, and its
 /// individual commits are not in the base by any name it kept. What is true of it
-/// afterwards is that every path it touched reads on the base exactly as it reads
-/// on the commit — which is the question asked here, and asked over the paths that
+/// afterwards is that every path it touched — both ends of a rename included — reads
+/// on the base exactly as it reads on the commit — which is the question asked here, and asked over the paths that
 /// commit actually touched so that unrelated work landing on the base beside it
 /// does not change the answer.
 pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
-    let listed = checked(&["diff", "--name-only", "-z", fork, commit], Some(cwd))?;
+    // Renames are deliberately not detected: git reports one under its destination
+    // alone, and a comparison scoped by that would never ask whether the source is
+    // still on the base — which is the half of a rename that says the change below has
+    // *not* landed. Without detection both paths are listed and both are compared.
+    let listed = checked(
+        &["diff", "--name-only", "--no-renames", "-z", fork, commit],
+        Some(cwd),
+    )?;
     // Pathspecs, not names: a path is a repository's own content and one beginning
     // with `:` would otherwise be read as pathspec magic rather than as the file it
     // names.
