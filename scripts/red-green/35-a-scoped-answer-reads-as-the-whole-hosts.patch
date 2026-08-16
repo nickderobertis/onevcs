@@ -1,0 +1,22 @@
+Mutation: the report does not say which identity it answered for.
+Red: a_scoped_recoverable_answer_names_the_identity_it_covers
+
+diff --git a/crates/onevcs/src/app.rs b/crates/onevcs/src/app.rs
+index 1aa2a5f..0345dcb 100644
+--- a/crates/onevcs/src/app.rs
++++ b/crates/onevcs/src/app.rs
+@@ -347,13 +347,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8>
+     // hypothetical: it is how a branch holding a day of finished work was declared
+     // missing while the checkout it was asked from happily reported sixty of
+     // somebody else's.
+-    let scoped = here.as_ref().map(|resolution| {
+-        format!(
+-            "{} — the identity of {}, the registered checkout this was run in",
+-            resolution.key,
+-            resolution.publication.display()
+-        )
+-    });
++    let scoped: Option<String> = None;
+     let widen = "Only that identity is covered: run `onevcs recoverable` from a directory \
+                  outside every registered checkout to see them all.";
+     if args.json {

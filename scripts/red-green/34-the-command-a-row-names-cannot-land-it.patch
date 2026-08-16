@@ -1,0 +1,21 @@
+Mutation: finished work is offered to the local train instead of the verb that lands one branch.
+Red: recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns
+Red: work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named
+
+diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
+index df91221..7812bf2 100644
+--- a/crates/onevcs/src/vcs.rs
++++ b/crates/onevcs/src/vcs.rs
+@@ -301,11 +301,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
+                 // publication checkout alone, and it refuses a team or remote
+                 // identity outright, so it lands none of the branches this report is
+                 // most often read about: the ones a stopped run left in its clone.
+-                let verb = if incomplete {
+-                    "recover"
+-                } else {
+-                    "publish-branch"
+-                };
++                let verb = if incomplete { "recover" } else { "integrate" };
+                 let recover_command = vec![
+                     "onevcs".to_owned(),
+                     verb.to_owned(),
