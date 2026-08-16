@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.12...onevcs-testing-v0.2.0) - 2026-08-16
+
+### Added
+
+- open a change request with the caller's own body ([#40](https://github.com/nickderobertis/onevcs/pull/40))
+
 ## [0.1.12](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.11...onevcs-testing-v0.1.12) - 2026-08-16
 
 ### Fixed
