@@ -471,7 +471,7 @@ every push a leased publication has refused is read as a branch somebody moved.
 whether the lease was declined, and what the host has instead, is read out of git's diagnostic prose.
 
 - RED `a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording` — Unexpected return code, failed var == 1
-- RED `a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it` — Unexpected stderr, failed var.contains("feature/recovered" moved on the host since this run last had it at b5518d1d8d0f7facb6d0bdad96a7ee7ea
+- RED `a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it` — the lease named the commit this run saw, and the refusal says where the host is now:
 - RED `a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone` — Unexpected stderr, failed var.contains("feature/filter" is gone from the host, which this run last had at)
 
 ### `70-a-lease-taken-from-what-the-fetch-found`
