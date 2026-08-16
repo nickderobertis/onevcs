@@ -24,6 +24,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
+use crate::host::Sha;
 
 /// Bound, in seconds, on a command that runs no repository hook.
 pub const TIMEOUT_ENV: &str = "ONEVCS_GIT_TIMEOUT";
@@ -282,10 +283,13 @@ pub fn check_bounds() -> Result<()> {
 /// Which is what lets a run clone be asked about a base no ref of its own names:
 /// its remote-tracking refs are frozen at the moment it was cut, but its lender
 /// keeps fetching, and the objects come with the alternates.
-pub fn has_commit(cwd: &Path, sha: &str) -> bool {
-    run(&["cat-file", "-e", &format!("{sha}^{{commit}}")], Some(cwd))
-        .map(|out| out.ok())
-        .unwrap_or(false)
+pub fn has_commit(cwd: &Path, sha: &Sha) -> bool {
+    run(
+        &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)],
+        Some(cwd),
+    )
+    .map(|out| out.ok())
+    .unwrap_or(false)
 }
 
 /// A ref's commit SHA, or `None` when the repository does not have it.

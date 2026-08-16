@@ -387,7 +387,7 @@ fn locate(
         if !git::is_repo(candidate) || !git::branch_exists(candidate, branch) {
             continue;
         }
-        let compared = crate::vcs::judged_against(candidate, base, current.as_deref());
+        let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
         if git::trees_differ(candidate, &compared, branch)? {
             return Ok(candidate.clone());
         }

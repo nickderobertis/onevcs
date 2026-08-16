@@ -1193,6 +1193,69 @@ fn a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_i
 }
 
 #[test]
+fn a_run_clone_that_cannot_reach_the_base_is_judged_against_the_one_it_can() {
+    // The identity has two checkouts: the one publication fast-forwards, and a
+    // worker the run is cut from. A clone reads history out of its lender, so a
+    // base commit the lender never fetched is one the clone cannot see at all.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let worker = fixture.world.clone_of(&fixture.origin, "worker");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/in-flight",
+        ])
+        .assert()
+        .success();
+    let worktree = worktree_of(&assert.get_output().stdout.clone());
+    fixture
+        .world
+        .commit_file(&worktree, "a.txt", "a\n", "feat: work in flight");
+
+    // The base then moves, and only the publication checkout follows it.
+    let advancing = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &advancing,
+        "moved.txt",
+        "moved\n",
+        "feat: the base moves on without them",
+    );
+    fixture
+        .world
+        .git(&advancing, &["push", "-q", "origin", "main"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+
+    // A base the clone cannot reach is not a reason to judge nothing: the work is
+    // still reported, against the base that clone does have.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature/in-flight"));
+}
+
+#[test]
 fn a_scoped_recoverable_answer_names_the_identity_it_covers() {
     // Two identities on one host, and preserved work under only one of them. Run
     // from inside a checkout, this report answers for that checkout's identity
@@ -1414,14 +1477,27 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
         "feat: the work that must not go missing"
     );
 
-    // A name nothing carries still opens, and so does one whose branch the base
-    // already has: the bar is that the session carries whatever the name means,
-    // not that the name has never been used.
+    // A name nothing carries still opens, and so do the ones whose branch the base
+    // already has — in a checkout or on origin: the bar is that the session carries
+    // whatever the name means, not that the name has never been used.
     world.git(
         &fixture.checkout,
         &["branch", "-q", "feature/already-on-the-base", "main"],
     );
-    for branch in ["feature/nothing-carries-it", "feature/already-on-the-base"] {
+    world.git(
+        &elsewhere,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "main:refs/heads/feature/landed-already",
+        ],
+    );
+    for branch in [
+        "feature/nothing-carries-it",
+        "feature/already-on-the-base",
+        "feature/landed-already",
+    ] {
         let (_token, opened) = fixture.open(&["--branch", branch]);
         assert_eq!(
             world.git(&opened, &["rev-parse", "--abbrev-ref", "HEAD"]),

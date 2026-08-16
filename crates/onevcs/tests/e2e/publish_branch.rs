@@ -1034,6 +1034,21 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
             "`onevcs publish-branch feature/spacey {quoted}`"
         )));
     let routed = printed_command(&stderr_of(&assert));
+
+    // The report an operator reaches for prints the same argv, and prints it the
+    // same way: its line is pasted exactly as a refusal's is, and unquoted it would
+    // name a repository that is not there.
+    let listed = world.onevcs().args(["recoverable"]).assert().success();
+    let listed = String::from_utf8_lossy(&listed.get_output().stdout).into_owned();
+    let resume = listed
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Resume: "))
+        .expect("the row names the command that lands it");
+    assert_eq!(
+        resume, routed,
+        "the report and the refusal name one command, quoted alike: {listed}"
+    );
+
     world
         .onevcs()
         .args([

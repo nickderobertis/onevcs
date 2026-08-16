@@ -639,7 +639,7 @@ fn honour_or_refuse(
         if !git::is_repo(&repo) || !git::branch_exists(&repo, branch) {
             continue;
         }
-        let compared = crate::vcs::judged_against(&repo, base, current.as_deref());
+        let compared = crate::vcs::judged_against(&repo, base, current.as_ref());
         if !git::trees_differ(&repo, &compared, branch)? {
             continue;
         }

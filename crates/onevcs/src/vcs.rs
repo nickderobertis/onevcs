@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
-use crate::host::Hosting;
+use crate::host::{Hosting, Sha};
 use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
@@ -212,18 +212,27 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
 /// work landed weeks ago still looks like work nobody published — and a name whose
 /// meaning is spent still looks like a name that means something. The lender keeps
 /// fetching and the clone borrows its objects, so the current base is usually a
-/// commit the clone has even though no ref of its own names it.
-pub fn judged_against(repo: &Path, base: &str, current: Option<&str>) -> String {
+/// commit the clone has even though no ref of its own names it; one that cannot
+/// reach it — a clone whose lender has itself fallen behind — is judged against its
+/// own view, which is the best answer available there.
+// llmlint: ignore[invalid_states_unrepresentable] the two states this answers with
+// are deliberately one type, as `base_ref` beside it and `Landing::compared_change_base`
+// already are: what comes back is a *comparison target*, and git resolves a ref name
+// and a commit id identically at every call that takes one. Distinguishing them in the
+// type would only oblige each of those call sites to collapse the distinction again,
+// and the thing that must not be confused with either — a branch name this crate
+// writes — is `Ref`, which neither of these is.
+pub fn judged_against(repo: &Path, base: &str, current: Option<&Sha>) -> String {
     match current {
-        Some(sha) if git::has_commit(repo, sha) => sha.to_owned(),
+        Some(sha) if git::has_commit(repo, sha) => sha.0.clone(),
         _ => base_ref(repo, base),
     }
 }
 
 /// The commit an identity's base stands at, read from the checkout publication
 /// fast-forwards — the one place it is kept current.
-pub fn base_now(publication: &Path, base: &str) -> Option<String> {
-    git::tip(publication, &base_ref(publication, base))
+pub fn base_now(publication: &Path, base: &str) -> Option<Sha> {
+    git::tip(publication, &base_ref(publication, base)).map(Sha)
 }
 
 /// Every preserved, unpublished branch in scope, newest first.
@@ -271,7 +280,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 Ok(base) => base,
                 Err(_) => continue,
             };
-            let compared = judged_against(&repo, &base, current.as_deref());
+            let compared = judged_against(&repo, &base, current.as_ref());
             for branch in git::unpublished_branches(&repo)? {
                 let key = (identity.to_owned(), branch.clone());
                 if seen.contains(&key) {
