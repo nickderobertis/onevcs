@@ -1,0 +1,19 @@
+Mutation: a session naming its own base is refused when nothing can name the identity's root.
+Red: a_session_whose_root_nobody_can_name_records_no_stack_and_publishes_as_one
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index bc2baf1..969c6e0 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -539,10 +539,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
+     };
+     // Asked once, and leniently when the session named its own base: a root nobody
+     // can name is a session with no stack recorded rather than a session refused.
+-    let root = match request.base.as_deref() {
+-        Some(_) => git::default_branch(&execution, "origin").ok(),
+-        None => Some(git::default_branch(&execution, "origin")?),
+-    };
++    let root = Some(git::default_branch(&execution, "origin")?);
+     let base = named(match request.base.as_deref() {
+         Some(base) => base.to_owned(),
+         None => root.clone().unwrap_or_default(),

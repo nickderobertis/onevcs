@@ -1,0 +1,19 @@
+Mutation: a branch whose history a replay rewrote is pushed as though it had not been.
+Red: a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it_lands
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index 47c954d..009048d 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -892,9 +892,8 @@ fn publish_as_change(
+     // for it — the change below's commits are gone from it — so the push replaces
+     // what this repository last saw there, and git refuses it if the host is anywhere
+     // else. Every other publication pushes as it always has: forward or not at all.
+-    let replacing = replayed
+-        .then(|| git::tip(&context.repo, &format!("origin/{}", context.branch)))
+-        .flatten();
++    let replacing: Option<String> = None;
++    let _ = replayed;
+     let pushed = git::push_replacing(
+         &context.worktree,
+         &context.branch,
