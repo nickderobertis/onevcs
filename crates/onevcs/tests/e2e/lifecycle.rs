@@ -277,6 +277,14 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
         "resuming brings the clone's view of origin up to date too"
     );
 
+    // Resuming fetches, because opening a session is what fetching is for: one per
+    // opening, on the one stream.
+    assert_eq!(
+        fixture.world.events_of(&first, "fetch").len(),
+        2,
+        "the resumed opening fetched origin as the first one did"
+    );
+
     // The dirty half is committed behind the incomplete-step marker, by the one path
     // that writes that commit — so a recovery reads the same marker it always does.
     let preserved = fixture.world.events_of(&first, "commit-preserved");
@@ -419,6 +427,17 @@ fn a_pin_resumes_only_the_session_it_asked_for() {
         "a session whose run root is gone is cut again rather than re-attached to"
     );
     assert!(cut.join("README.md").is_file(), "and it has a worktree");
+
+    // …and a run root that outlived its clone is no session either: what would be
+    // resumed is a worktree cut from a repository that is not there.
+    let (hollowed, tree) = fixture.open(&["--branch", "feature/hollowed"]);
+    let clone = tree.parent().expect("a run root").join("clone");
+    std::fs::remove_dir_all(&clone).expect("an operator with a broom takes the clone");
+    let (after_hollowing, _tree) = fixture.open(&["--branch", "feature/hollowed"]);
+    assert_ne!(
+        after_hollowing, hollowed,
+        "a session whose clone is gone is cut again rather than re-attached to"
+    );
 
     // The same for the checkout the clone is cut from: two of them are two lenders,
     // and a session borrowing from one is not a session borrowing from the other.
