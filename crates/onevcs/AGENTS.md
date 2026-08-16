@@ -116,9 +116,9 @@ could not reach it, so two things are stated rather than left to be inferred.
 - **…and a pin an *open* session already holds is that session, resumed.** Cutting a
   retry its own run root leaves two directories answering to one branch, one of them
   at an older tip. So `workspace::open` re-attaches through `workspace::adopt` when
-  exactly one open session of the identity holds that name, on the same base (an
-  unnamed one being the root, which is the session that recorded no stack tip) and
-  the same execution checkout, with its run root there and its lease free — and says
+  exactly one open session of the identity holds that name, on the same base — an
+  unnamed one being the identity's root as it stands now — and the same execution
+  checkout, with its run root there and its lease free, and says
   `"reused": true`. Closed is not one of them: closing hands the branch back and
   means finished. Every other case falls through to the ordinary cut rather than
   being refused, so reuse decides only whether a second run root is cut; the rule

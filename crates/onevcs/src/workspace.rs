@@ -716,21 +716,27 @@ fn resumable(
     let Some(branch) = request.branch.as_deref() else {
         return Ok(None);
     };
+    // The base this request is for, resolved the way the cut below resolves it, so an
+    // unnamed one is the identity's root *now* rather than whatever a record was cut
+    // from when its root may have been another branch. A root nobody can name is a
+    // question this cannot answer, and an unanswered question is a session cut fresh.
+    let wanted = match request.base.as_deref() {
+        Some(base) => base.to_owned(),
+        None => match git::default_branch(execution, "origin") {
+            Ok(root) => root,
+            Err(_) => return Ok(None),
+        },
+    };
     let mut held = all()?.into_iter().filter(|record| {
         record.identity == resolution.key
             && *record.branch == *branch
+            && *record.base == *wanted
             // Closing a session is the statement that it is finished: it hands the
             // branch back to the execution checkout and lets its worktree go. A name
             // taken again after that is a new session under a spent name, which is a
             // different thing from a run that stopped in the middle of one.
             && record.state == Lifecycle::Open
             && record.execution_checkout == execution
-            && match request.base.as_deref() {
-                Some(base) => *record.base == *base,
-                // Naming no base is asking for the identity's root, and a session
-                // that had to record a stack tip is one cut from something else.
-                None => record.stack_tip.is_none(),
-            }
             // The run root a record names outlives neither reclamation nor an
             // operator with a broom, and what is being reused is the directory
             // rather than the record of it.
