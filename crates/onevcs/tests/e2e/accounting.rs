@@ -663,19 +663,53 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         .join("streams")
         .join(format!("{token}.ndjson"));
     let recorded = std::fs::read_to_string(&stream).expect("the session wrote a stream");
-    std::fs::write(&stream, format!("{recorded}{{\"v\": 1, \"kind\":\n"))
-        .expect("a stream a writer left half a line of");
+    let envelope = |version: u32, stamp: &str| {
+        serde_json::json!({
+            "v": version,
+            "ts": stamp,
+            "stream": token,
+            "seq": 9998,
+            "source": "vcs",
+            "kind": "change-opened",
+            "labels": {},
+            "payload": {"url": "https://github.com/acme-corp/hosted/pull/9"},
+            "artifacts": [],
+        })
+        .to_string()
+    };
+    std::fs::write(
+        &stream,
+        format!(
+            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n",
+            // An envelope of a shape this build does not read, and one stamped in a
+            // form nothing can order against the rest: both are gaps in what this
+            // could read, and neither is a value to act on.
+            envelope(2, "2099-01-01T00:00:00.000Z"),
+            envelope(1, "yesterday"),
+        ),
+    )
+    .expect("a stream a writer left half a line of, and two a later build wrote");
     let answer = report(&hosted.world, "feature/unreachable");
-    assert!(
-        answer["notes"]
-            .as_array()
-            .expect("the report says what it could not read")
-            .iter()
-            .any(|note| note
-                .as_str()
-                .is_some_and(|note| note.contains("is not an event envelope"))),
-        "{answer}"
-    );
+    let notes = answer["notes"]
+        .as_array()
+        .expect("the report says what it could not read")
+        .iter()
+        .filter_map(|note| note.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for said in [
+        "is not an event envelope",
+        "declares envelope version 2",
+        "is stamped \"yesterday\"",
+    ] {
+        assert!(notes.contains(said), "{said} is not in the notes:\n{notes}");
+    }
+    // …and none of them became the answer: the change request this report names is
+    // still the one this host actually opened.
+    assert!(answer["publication"]["change_url"]
+        .as_str()
+        .expect("the recorded change request")
+        .ends_with("/pull/1"));
 }
 
 #[test]

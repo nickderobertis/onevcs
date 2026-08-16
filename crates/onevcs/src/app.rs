@@ -471,7 +471,6 @@ fn report_status(args: &StatusArgs, providers: &Providers<'_>) -> Result<u8> {
     Ok(0)
 }
 
-/// Make one branch reachable from an identity's registered checkouts.
 fn import_branch(args: &ImportArgs) -> Result<u8> {
     let registry = store::load()?;
     let imported = import::run(

@@ -1211,7 +1211,6 @@ pub fn fetch_into_ref(cwd: &Path, source: &str, branch: &str, into: &str) -> Res
     Ok(output.ok())
 }
 
-/// Point a ref at a commit, writing the ref and nothing else.
 pub fn update_ref(cwd: &Path, reference: &str, commit: &str) -> Result<()> {
     checked(&["update-ref", reference, commit], Some(cwd)).map(|_| ())
 }

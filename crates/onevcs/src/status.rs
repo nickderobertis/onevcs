@@ -390,7 +390,6 @@ struct Work {
     branch: Ref,
 }
 
-/// Answer for one reference.
 pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
@@ -829,7 +828,6 @@ fn judge_provenance(
     )
 }
 
-/// Every repository of this identity that holds the branch, in search order.
 fn holders_of(registry: &Registry, resolution: &Resolution, branch: &str) -> Result<Vec<Holder>> {
     let sessions = workspace::all()?;
     let mut holders = Vec::new();
@@ -876,18 +874,43 @@ struct Recorded {
     gate: Option<Stamped<GateReport>>,
 }
 
-/// One thing a stream recorded, with the moment it recorded it.
+/// The moment an envelope was stamped, in the one form the shared envelope fixes:
+/// RFC3339 at millisecond precision in UTC.
 ///
-/// The envelope's timestamp is fixed-width UTC, so ordering these is comparing the
-/// strings — which is what lets two streams about one branch be read as one history
-/// rather than as whichever the directory listed last.
+/// The check is in the conversion, because ordering is the *only* thing this crate
+/// does with a timestamp and that form is the whole reason ordering can be a string
+/// comparison: it is fixed width, so every field lines up. A value of another shape
+/// sorts against these arbitrarily, and what it would decide — which of two change
+/// requests a branch has is the newer — would be quietly wrong rather than absent.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Stamp(String);
+
+impl Stamp {
+    /// The stamp a value spells, if it spells one at all.
+    fn parse(value: &str) -> Option<Self> {
+        // `2026-08-07T12:34:56.789Z`, which is what `ids::timestamp` writes and what
+        // the shared envelope declares. Held to the shape rather than to a calendar:
+        // what ordering needs is that the fields are where they are.
+        const SHAPE: &str = "0000-00-00T00:00:00.000Z";
+        let matches = value.len() == SHAPE.len()
+            && value
+                .chars()
+                .zip(SHAPE.chars())
+                .all(|(had, want)| match want {
+                    '0' => had.is_ascii_digit(),
+                    other => had == other,
+                });
+        matches.then(|| Stamp(value.to_owned()))
+    }
+}
+
+/// One thing a stream recorded, with the moment it recorded it.
 #[derive(Debug, Clone)]
 struct Stamped<T> {
-    at: String,
+    at: Stamp,
     value: T,
 }
 
-/// The newest of what several streams recorded.
 fn latest<T>(recorded: impl Iterator<Item = Stamped<T>>) -> Option<T> {
     recorded
         .max_by(|left, right| left.at.cmp(&right.at))
@@ -951,7 +974,33 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                 continue;
             }
         };
-        let at = event.ts.clone();
+        // The envelope is versioned and this report orders by its timestamp, so an
+        // envelope of a shape this build does not read, or one whose stamp cannot be
+        // ordered against the rest, is a gap said out loud rather than a value acted
+        // on. Nothing safety-critical rests on either: whether the work *landed* is
+        // read off the base's content.
+        if event.v != stream::ENVELOPE_VERSION {
+            notes.push(format!(
+                "line {} of the event stream at {} declares envelope version {}, and this build \
+                 reads version {}, so what it recorded is not in this report",
+                index + 1,
+                path.display(),
+                event.v,
+                stream::ENVELOPE_VERSION,
+            ));
+            continue;
+        }
+        let Some(at) = Stamp::parse(&event.ts) else {
+            notes.push(format!(
+                "line {} of the event stream at {} is stamped {:?}, which is not the RFC3339 \
+                 millisecond UTC the envelope declares, so what it recorded cannot be ordered \
+                 against the rest and is not in this report",
+                index + 1,
+                path.display(),
+                event.ts,
+            ));
+            continue;
+        };
         if record.identity.is_none() {
             record.identity = event.labels.extra.get("identity").and_then(text);
         }
