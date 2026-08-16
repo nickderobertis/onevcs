@@ -2,10 +2,10 @@ Mutation: a branch is stacked whenever its content looks stacked, rather than wh
 Red: a_branch_the_base_independently_matches_is_still_merged_because_no_record_stacks_it
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 6b4f694..64b8e84 100644
+index 7782dcb..9c35306 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -387,6 +387,31 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
+@@ -393,6 +393,31 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
      (root != record.base).then_some(Stack { tip, root })
  }
  
@@ -34,10 +34,10 @@ index 6b4f694..64b8e84 100644
 +    Ok(None)
 +}
 +
- /// Whether the root base has already landed the change below this one, and this
- /// change's own commits are therefore all that belongs on it.
+ /// Whether the root base already carries everything the change below this one
+ /// contributed, while carrying none of the commits that contributed it.
  ///
-@@ -457,7 +482,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
+@@ -468,7 +493,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
      let mut replay = None;
      let landed;
      let mut context = context;
@@ -47,6 +47,6 @@ index 6b4f694..64b8e84 100644
 +        None => inferred_stack(&context.repo, &context.branch, &context.base)?,
 +    };
 +    if let Some(stack) = &stack {
-         if landed_stack(&context.repo, &context.branch, stack)? {
+         if root_carries_the_stack(&context.repo, &context.branch, stack)? {
              replay = Some(stack.tip.clone());
              landed = context.onto(stack.root.clone());
