@@ -2,12 +2,13 @@ Mutation: a recorded stack tip this clone does not have is read as no stack at a
 Red: a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name
 
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 23865c3..1e46538 100644
+index 09b7913..1c954c2 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -413,25 +413,7 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
-         return Ok(Target::Root(base));
+@@ -424,25 +424,7 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
+         return Ok(Target::Base(base));
      };
      let Some(tip) = git::tip(&record.clone, recorded) else {
 -        return Err(Error::Invalid {
@@ -29,7 +30,7 @@ index 23865c3..1e46538 100644
 -                ]),
 -            ),
 -        });
-+        return Ok(Target::Root(base));
++        return Ok(Target::Base(base));
      };
      let Some(root) = git::default_branch(publication, "origin").ok() else {
-         return Ok(Target::Root(base));
+         return Ok(Target::Base(base));

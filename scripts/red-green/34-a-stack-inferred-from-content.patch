@@ -3,11 +3,12 @@ Red: a_branch_the_base_independently_matches_is_still_merged_because_no_record_s
 
 
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 23865c3..1a95cd8 100644
+index 09b7913..3456956 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -447,6 +447,32 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
+@@ -458,6 +458,32 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
      })
  }
  
@@ -40,17 +41,17 @@ index 23865c3..1a95cd8 100644
  /// Whether the root base already carries everything the change below this one
  /// contributed, while carrying none of the commits that contributed it.
  ///
-@@ -521,7 +547,12 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
+@@ -532,7 +558,12 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
      let mut replay = None;
      let landed;
      let mut context = context;
 -    if let Target::Stacked { root, tip, .. } = &context.target {
 +    let inferred = match &context.target {
-+        Target::Root(base) => inferred_stack(&context.repo, &context.branch, base)?,
++        Target::Base(base) => inferred_stack(&context.repo, &context.branch, base)?,
 +        Target::Stacked { .. } => None,
 +    };
 +    let target = inferred.as_ref().unwrap_or(&context.target);
 +    if let Target::Stacked { root, tip, .. } = target {
          if root_is_known_to_carry_the_stack(&context.repo, &context.branch, root, tip)? {
              replay = Some(tip.clone());
-             landed = context.onto(Target::Root(root.clone()));
+             landed = context.onto(Target::Base(root.clone()));
