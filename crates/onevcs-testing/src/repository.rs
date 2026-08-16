@@ -578,21 +578,22 @@ fn failed(error: &Error) -> PublishOutcome {
 }
 
 /// The argv that lands a preserved branch, as `recoverable` reports it.
+///
+/// Both verbs take the branch by name and the repository by path, the way the real
+/// implementation reports them: the provenance decides which one, and neither
+/// depends on the directory a reader happens to be standing in.
 fn recover_command(branch: &str, checkout: &Path, provenance: Provenance) -> Vec<String> {
-    match provenance {
-        Provenance::IncompleteStep => vec![
-            "onevcs".to_owned(),
-            "recover".to_owned(),
-            branch.to_owned(),
-            "--repo".to_owned(),
-            checkout.display().to_string(),
-        ],
-        Provenance::Complete => vec![
-            "onevcs".to_owned(),
-            "integrate".to_owned(),
-            branch.to_owned(),
-        ],
-    }
+    let verb = match provenance {
+        Provenance::IncompleteStep => "recover",
+        Provenance::Complete => "publish-branch",
+    };
+    vec![
+        "onevcs".to_owned(),
+        verb.to_owned(),
+        branch.to_owned(),
+        "--repo".to_owned(),
+        checkout.display().to_string(),
+    ]
 }
 
 /// How a provenance kind is spelled in an event payload.

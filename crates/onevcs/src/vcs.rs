@@ -292,17 +292,27 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                          file to {prefix:?} before publishing it"
                     ));
                 }
-                let recover_command = if incomplete {
-                    vec![
-                        "onevcs".to_owned(),
-                        "recover".to_owned(),
-                        branch.clone(),
-                        "--repo".to_owned(),
-                        publication.display().to_string(),
-                    ]
+                // The verb its provenance earns, spelled so that running it as
+                // printed runs it: both take the branch by name and the repository
+                // by path, so neither depends on where the reader is standing or on
+                // which checkout of the identity happens to carry the branch. The
+                // train is deliberately not named here even for finished work — it
+                // is the local-only batch verb, it reads its candidates out of the
+                // publication checkout alone, and it refuses a team or remote
+                // identity outright, so it lands none of the branches this report is
+                // most often read about: the ones a stopped run left in its clone.
+                let verb = if incomplete {
+                    "recover"
                 } else {
-                    vec!["onevcs".to_owned(), "integrate".to_owned(), branch.clone()]
+                    "publish-branch"
                 };
+                let recover_command = vec![
+                    "onevcs".to_owned(),
+                    verb.to_owned(),
+                    branch.clone(),
+                    "--repo".to_owned(),
+                    publication.display().to_string(),
+                ];
                 rows.push((
                     git::committed_at(&repo, &branch),
                     Recoverable {

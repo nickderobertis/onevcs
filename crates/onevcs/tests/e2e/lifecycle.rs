@@ -980,9 +980,15 @@ fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
     let partial_row = row(&rows, "feature/partial");
     assert_eq!(whole["branch"]["provenance"], "complete");
     assert_eq!(partial_row["branch"]["provenance"], "incomplete-step");
-    // The verb is decided by the provenance and never by the branch's name.
-    assert_eq!(whole["recover_command"][1], "integrate");
+    // The verb is decided by the provenance and never by the branch's name, and
+    // both spellings of it name the repository, so the command lands the branch
+    // from wherever it is read.
+    assert_eq!(whole["recover_command"][1], "publish-branch");
     assert_eq!(partial_row["recover_command"][1], "recover");
+    for command in [&whole["recover_command"], &partial_row["recover_command"]] {
+        assert_eq!(command[3], "--repo");
+        assert_eq!(command[4], fixture.checkout.to_string_lossy().into_owned());
+    }
     assert!(whole["stopped_because"]
         .as_str()
         .expect("a reason")
@@ -1031,6 +1037,282 @@ fn a_branch_the_base_already_carries_drops_out_of_the_recoverable_view() {
         .stdout(predicate::str::contains(
             "No preserved unpublished branches",
         ));
+}
+
+#[test]
+fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named() {
+    // The shape of a run that died: a session opened, work committed in its
+    // worktree, and nothing ever closed it — so the branch reached no checkout and
+    // exists in the run clone alone. That is the case this report exists for, and
+    // the one an operator otherwise finishes with raw `git`.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (_token, worktree) = fixture.open(&["--branch", "feature/only-in-the-run-clone"]);
+    fixture.world.commit_file(
+        &worktree,
+        "whole.txt",
+        "the whole change\n",
+        "feat: the work the run stopped after",
+    );
+    assert!(
+        !fixture
+            .world
+            .git(
+                &fixture.checkout,
+                &["branch", "--list", "feature/only-in-the-run-clone"]
+            )
+            .contains("feature/only-in-the-run-clone"),
+        "the journey is about a branch no checkout carries"
+    );
+    let clone = worktree.parent().expect("a run root").join("clone");
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    let reported = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // Where the work is, so it can be reached at all…
+    assert!(
+        reported.contains(&format!("Found in: {}", clone.display())),
+        "the run clone is where the branch is: {reported}"
+    );
+    // …and the command that lands it, taking the repository by path so that it
+    // does not depend on which checkout of the identity holds the branch.
+    let resume = reported
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Resume: "))
+        .expect("every row names the command that lands it")
+        .to_owned();
+    assert_eq!(
+        resume,
+        format!(
+            "onevcs publish-branch feature/only-in-the-run-clone --repo {}",
+            fixture.checkout.display()
+        ),
+        "{reported}"
+    );
+
+    // The claim is that the printed command lands it, so it is run as printed —
+    // from outside every checkout, which is where an operator reading this stands.
+    fixture
+        .world
+        .shell(&resume)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert!(
+        fixture
+            .origin_log()
+            .contains(&"feat: the work the run stopped after".to_owned()),
+        "the work reached the base: {:?}",
+        fixture.origin_log()
+    );
+}
+
+#[test]
+fn a_scoped_recoverable_answer_names_the_identity_it_covers() {
+    // Two identities on one host, and preserved work under only one of them. Run
+    // from inside a checkout, this report answers for that checkout's identity
+    // alone — which nobody typed and nothing but this line says, so an answer of
+    // sixty branches reads as the whole host's and the work under the other
+    // identity reads as work nobody has.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let other_origin = fixture.world.bare_origin("unrelated");
+    let other = fixture.world.clone_of(&other_origin, "unrelated");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &other.to_string_lossy()])
+        .assert()
+        .success();
+
+    let (_token, worktree) = fixture.open(&["--branch", "feature/under-the-other-identity"]);
+    fixture
+        .world
+        .commit_file(&worktree, "a.txt", "a\n", "feat: work nobody published");
+
+    // Asked from the unrelated checkout: nothing to report *there*, said as the
+    // scoped answer it is rather than as a claim about every identity.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .current_dir(&other)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No preserved unpublished branches in",
+        ))
+        .stdout(predicate::str::contains(
+            other.to_string_lossy().into_owned(),
+        ))
+        .stdout(predicate::str::contains(
+            "outside every registered checkout",
+        ))
+        .stdout(predicate::str::contains("feature/under-the-other-identity").not());
+
+    // …and asked from outside every checkout, the work is there to be found.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("across every registered identity"))
+        .stdout(predicate::str::contains("feature/under-the-other-identity"));
+
+    // The same for a consumer parsing the document: the answer stays exactly what
+    // it was, and what it was scoped to is said where no parser meets it.
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .current_dir(&other)
+        .assert()
+        .success();
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
+    assert!(rows.is_empty(), "{rows:?}");
+    let said = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        said.contains(&other.to_string_lossy().into_owned()),
+        "the scope names the checkout it was answered for: {said}"
+    );
+    assert!(said.contains("outside every registered checkout"), "{said}");
+}
+
+#[test]
+fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+
+    // The work a stopped run left in its clone, which is where a pin most often
+    // points: an operator has just been told the branch is theirs to finish.
+    let (_token, worktree) = fixture.open(&["--branch", "feature/fifteen-commits"]);
+    world.commit_file(
+        &worktree,
+        "kept.txt",
+        "the work\n",
+        "feat: the work that must not go missing",
+    );
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/fifteen-commits",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("feature/fifteen-commits"))
+        .stderr(predicate::str::contains("already carries 1 commit(s)"))
+        .stderr(predicate::str::contains("onevcs recoverable"));
+
+    // A branch the checkout itself carries is the same refusal: a session cuts its
+    // branch fresh whatever repository of the identity holds the name.
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/from-a-terminal", "main"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "terminal.txt",
+        "typed\n",
+        "feat: work done in the checkout",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/from-a-terminal",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            fixture.checkout.to_string_lossy().as_ref(),
+        ));
+
+    // …and so is one only origin has, which no checkout here has ever seen: the
+    // session would report the name, carry nothing, and be rejected at the push.
+    let elsewhere = world.clone_of(&fixture.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &["checkout", "-q", "-b", "feature/pushed-elsewhere", "main"],
+    );
+    world.commit_file(
+        &elsewhere,
+        "far.txt",
+        "far\n",
+        "feat: work from another host",
+    );
+    world.git(
+        &elsewhere,
+        &["push", "-q", "origin", "feature/pushed-elsewhere"],
+    );
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/pushed-elsewhere",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("origin already carries"))
+        .stderr(predicate::str::contains("non-fast-forward"));
+
+    // Nothing was opened under any of those names, and every branch still holds
+    // exactly the commits it did: a refusal that left a run root behind, or an
+    // empty branch, would be the same loss more quietly.
+    let holders = world
+        .onevcs()
+        .args(["session", "holders", "project"])
+        .assert()
+        .success();
+    let holders = String::from_utf8_lossy(&holders.get_output().stdout).into_owned();
+    for branch in ["feature/from-a-terminal", "feature/pushed-elsewhere"] {
+        assert!(
+            !holders.contains(branch),
+            "no session may hold {branch}: {holders}"
+        );
+    }
+    assert_eq!(
+        holders
+            .lines()
+            .filter(|line| line.contains("feature/fifteen-commits"))
+            .count(),
+        1,
+        "only the run that made the work holds its branch: {holders}"
+    );
+    assert_eq!(
+        world.git(&worktree, &["log", "--format=%s", "-1"]).as_str(),
+        "feat: the work that must not go missing"
+    );
+
+    // A name nothing carries still opens, and so does one whose branch the base
+    // already has: the bar is that the session carries whatever the name means,
+    // not that the name has never been used.
+    world.git(
+        &fixture.checkout,
+        &["branch", "-q", "feature/already-on-the-base", "main"],
+    );
+    for branch in ["feature/nothing-carries-it", "feature/already-on-the-base"] {
+        let (_token, opened) = fixture.open(&["--branch", branch]);
+        assert_eq!(
+            world.git(&opened, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            branch
+        );
+    }
 }
 
 #[test]

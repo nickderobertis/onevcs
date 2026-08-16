@@ -363,21 +363,13 @@ impl Landing {
 
 /// Find the checkout a branch can be read out of.
 ///
-/// The publication checkout is searched first, because a branch only reaches it
-/// once something has already pushed it — a branch that reaches publication on its
-/// first attempt exists solely in the execution checkout the work was done in.
+/// The order is [`crate::workspace::checkouts_of`]'s, and the publication checkout
+/// is first in it because a branch only reaches that one once something has already
+/// pushed it — a branch that reaches publication on its first attempt exists solely
+/// in the execution checkout the work was done in, or in the run clone of the
+/// session that stopped.
 fn locate(registry: &Registry, resolution: &Resolution, branch: &str) -> Result<PathBuf> {
-    let mut searched: Vec<PathBuf> = vec![resolution.publication.clone()];
-    for checkout in registry.checkouts.values() {
-        if checkout.identity == resolution.key && !searched.contains(&checkout.path) {
-            searched.push(checkout.path.clone());
-        }
-    }
-    for record in crate::workspace::all()? {
-        if record.identity == resolution.key && !searched.contains(&record.clone) {
-            searched.push(record.clone.clone());
-        }
-    }
+    let searched = crate::workspace::checkouts_of(registry, resolution)?;
     for candidate in &searched {
         if git::is_repo(candidate) && git::branch_exists(candidate, branch) {
             return Ok(candidate.clone());
