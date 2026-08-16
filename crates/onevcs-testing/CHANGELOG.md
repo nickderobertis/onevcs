@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.11...onevcs-testing-v0.1.12) - 2026-08-16
+
+### Fixed
+
+- find preserved work and refuse a pin you cannot honour ([#38](https://github.com/nickderobertis/onevcs/pull/38))
+
 ## [0.1.8](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.1.7...onevcs-testing-v0.1.8) - 2026-08-15
 
 ### Fixed
