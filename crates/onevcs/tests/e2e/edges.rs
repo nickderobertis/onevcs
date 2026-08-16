@@ -2950,6 +2950,79 @@ fn a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name() {
 }
 
 #[test]
+fn a_session_whose_root_nobody_can_name_records_no_stack_and_publishes_as_one() {
+    // A stack is the branch below *and* a root to move onto once it lands, so a
+    // session opened where nothing can say which branch the root is has no stack to
+    // record — and is refused nothing for it. What it publishes is what every session
+    // published before any of this: onto the base it was opened against.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.git(
+        &fixture.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+    // Nothing left that names the root: the origin's own HEAD dangles, the checkout's
+    // cache of it is gone, and two branches are equally plausible.
+    world.git(
+        &fixture.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/renamed-away"],
+    );
+    world.git(
+        &fixture.checkout,
+        &["symbolic-ref", "-d", "refs/remotes/origin/HEAD"],
+    );
+
+    let (token, worktree) =
+        fixture.open(&["--branch", "feature/filter", "--base", "feature/engine"]);
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fixture
+                .world
+                .home()
+                .join("sessions")
+                .join(format!("{token}.json")),
+        )
+        .expect("a session record"),
+    )
+    .expect("the record is JSON");
+    assert!(
+        record.get("stack_tip").is_none(),
+        "a session with no root to move onto records no stack: {record}"
+    );
+
+    world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        world.git(
+            &fixture.origin,
+            &["log", "-1", "--format=%s", "feature/engine"]
+        ),
+        "feat: filter what the engine relays",
+        "it landed on the base it was opened against"
+    );
+}
+
+#[test]
 fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
     let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/stateful"]);

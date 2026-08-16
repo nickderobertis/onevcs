@@ -957,7 +957,30 @@ pub fn push(
     remote: &str,
     env: &[(String, String)],
 ) -> Result<std::result::Result<String, String>> {
-    let output = run_with_env(&["push", remote, branch], Some(cwd), env)?;
+    push_replacing(cwd, branch, remote, None, env)
+}
+
+/// Push a branch whose history was rewritten, replacing exactly what was last seen
+/// there.
+///
+/// `replacing` is the commit this repository last saw the remote's copy at, and the
+/// push is refused by git if the remote is anywhere else — somebody pushed to the
+/// branch while this ran, and overwriting that is losing work rather than replacing
+/// a history this run itself replaced. `None` is an ordinary push, which is every
+/// publication that rewrote nothing.
+pub fn push_replacing(
+    cwd: &Path,
+    branch: &str,
+    remote: &str,
+    replacing: Option<&str>,
+    env: &[(String, String)],
+) -> Result<std::result::Result<String, String>> {
+    let lease = replacing.map(|seen| format!("--force-with-lease={branch}:{seen}"));
+    let mut args = vec!["push", remote, branch];
+    if let Some(lease) = lease.as_deref() {
+        args.insert(1, lease);
+    }
+    let output = run_with_env(&args, Some(cwd), env)?;
     Ok(if output.ok() {
         Ok(output.combined())
     } else {

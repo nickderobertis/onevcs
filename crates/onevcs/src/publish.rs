@@ -547,7 +547,14 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
 
     match context.effective {
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
-        _ => publish_as_change(context, stream, &subject, &trailers, &environment),
+        _ => publish_as_change(
+            context,
+            stream,
+            &subject,
+            &trailers,
+            &environment,
+            replay.is_some(),
+        ),
     }
 }
 
@@ -879,8 +886,22 @@ fn publish_as_change(
     subject: &str,
     trailers: &[String],
     environment: &[(String, String)],
+    replayed: bool,
 ) -> Result<PublishOutcome> {
-    let pushed = git::push(&context.worktree, &context.branch, "origin", environment)?;
+    // A branch this publication replayed is not a descendant of the one the host has
+    // for it — the change below's commits are gone from it — so the push replaces
+    // what this repository last saw there, and git refuses it if the host is anywhere
+    // else. Every other publication pushes as it always has: forward or not at all.
+    let replacing = replayed
+        .then(|| git::tip(&context.repo, &format!("origin/{}", context.branch)))
+        .flatten();
+    let pushed = git::push_replacing(
+        &context.worktree,
+        &context.branch,
+        "origin",
+        replacing.as_deref(),
+        environment,
+    )?;
     record_push(context, stream, &pushed)?;
     pushed.map_err(|output| Error::GateFailed {
         reason: format!(

@@ -698,6 +698,57 @@ fn a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root() 
 }
 
 #[test]
+fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it_lands() {
+    // The whole of the trap, as a stacked change actually meets it: the review is
+    // opened against the branch below, that change lands and takes its branch with
+    // it, and the same session is published again. The second publication is the one
+    // that has to move — onto the root, with only this branch's own commits — and it
+    // opens the review there rather than against a branch the host no longer has.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    assert_eq!(opened_against(&hosted, &token), "feature/engine");
+
+    squash_the_change_below(&hosted, true);
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let opened = hosted.world.events_of(&token, "change-opened");
+    assert_eq!(opened.len(), 2, "one review each time: {opened:?}");
+    assert_eq!(
+        opened[1]["payload"]["base"], "main",
+        "the second is against the root the change moved onto: {opened:?}"
+    );
+    // …and it is this branch's own work over the root, with the change below on the
+    // origin once, as the commit that squashed it.
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/filter"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "feat: filter what the engine relays",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ]
+    );
+}
+
+#[test]
 fn a_hosted_stack_the_root_independently_matches_is_answered_the_same_way() {
     // The ambiguity content equality cannot resolve, and the reason the answer is
     // safe either way: the branch below is still open, but the root already holds

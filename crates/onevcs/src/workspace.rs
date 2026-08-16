@@ -578,10 +578,13 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     git::worktree_add(&clone, &worktree, &branch, &start)?;
     // The stack, written down while it can still be: a session cut from a branch
     // that is not the identity's root is stacked on it, and the commit it was cut at
-    // is the boundary between that branch's commits and this session's own.
-    let stack_tip = root
-        .filter(|root| *root != *base)
-        .and_then(|_| git::tip(&clone, &start));
+    // is the boundary between that branch's commits and this session's own. Read off
+    // the worktree that was just cut, which is where that commit is by construction —
+    // asking the name it was cut from again could answer something else, or nothing.
+    let stack_tip = match &root {
+        Some(root) if **root != *base => Some(git::head_sha(&worktree)?),
+        _ => None,
+    };
 
     let record = Record {
         version: RECORD_VERSION,
