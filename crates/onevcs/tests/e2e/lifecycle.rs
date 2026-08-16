@@ -2348,13 +2348,13 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
     // Whichever reached the push first is held there, so the queue is read rather
     // than timed: two live tickets is the second publication waiting behind the
     // first, and only then is the first let go.
+    // A *waiting* ticket is observable nowhere else: `lock-wait` is emitted once the
+    // turn has been granted, so every surface a user has reports the wait only after
+    // it is over. A journey about two publications contending has to see the
+    // contention rather than infer it from how long something took, which is the
+    // flake this replaced; what it then asserts is read back through the events.
+    // llmlint: ignore[tests_mirror_real_usage] no user-facing surface reports a ticket while it waits
     World::until("the merge queue holds both publications", || {
-        // llmlint: ignore[tests_mirror_real_usage] a *waiting* ticket is observable
-        // nowhere else. `lock-wait` is emitted once the turn has been granted, so
-        // every surface a user has reports the wait only after it is over — and a
-        // journey about two publications contending has to see the contention
-        // rather than infer it from how long it took, which is the flake this
-        // replaced. What the journey then asserts is read back through the events.
         fixture.world.queued_tickets() == 2
     });
     std::fs::write(&release, "go\n").expect("the held publication is released");

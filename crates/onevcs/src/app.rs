@@ -334,17 +334,17 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // anywhere else, it answers across every registered identity. Both are
     // documented views, and which one somebody wants is answered by where they ask.
     let registry = store::load()?;
+    // The registry document has been validated by the load above, and every alias
+    // this compares against came out of it, so the failure discarded here is the
+    // documented one — this directory is not inside a registered checkout — or an
+    // unreadable current directory, which widens the question rather than narrowing
+    // it and can therefore hide no work.
+    // llmlint: ignore[boundary_inputs_validated] discards only which of two documented answers to give
     let here = resolve_here(&registry).ok();
     let scope = match &here {
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
         None => Scope::All,
     };
-    // llmlint: ignore[boundary_inputs_validated] the only thing discarded here is
-    // *which* of two answers to give. `store::load` above has already validated the
-    // registry document, and every alias `resolve_here` then compares against came
-    // out of it, so what remains is the documented "this directory is not inside a
-    // registered checkout" — and an unreadable current directory, which widens the
-    // question rather than narrowing it and can therefore hide no work.
     let rows = providers.vcs.recoverable(scope)?;
     // Nobody types the scope — the directory decides it — so every rendering names
     // it. Unsaid, a scoped answer reads as the whole host's, and another identity's
