@@ -1,0 +1,16 @@
+Mutation: two sessions holding one name, and whichever is found first is taken.
+Red: a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 58cf575..c7c9e11 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -743,7 +743,7 @@ fn resumable(
+             && record.run_root.is_dir()
+             && record.clone.is_dir()
+     });
+-    let (Some(candidate), None) = (held.next(), held.next()) else {
++    let Some(candidate) = held.next() else {
+         return Ok(None);
+     };
+     // The same question `adopt` asks a moment later, and it has the same answer: an

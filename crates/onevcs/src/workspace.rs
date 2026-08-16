@@ -14,6 +14,11 @@
 //! and unreachable objects pinned — nothing the lender does on its own can drop an
 //! object a borrower needs.
 //!
+//! What it borrows is objects and not *refs*: cloning from a local path maps the
+//! lender's local branches into the clone's `refs/remotes/origin/*`, so origin's own
+//! refs — which are what a session is cut at, and what every diff of it afterwards is
+//! addressed from — are copied over separately, by [`git::carry_remote_refs`].
+//!
 //! A clone is disposable, so anything that must outlive it — a preserved branch, a
 //! pushed branch, a recovery attestation — is copied back into the execution
 //! checkout, which stays the durable record every later session reads.
@@ -540,20 +545,19 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         });
     }
 
+    // A pin naming a branch a session of this identity already holds is that
+    // session, resumed — before a token is minted, so nothing of a second one is
+    // cut. Never for a generated name: that one is this token's own. Declining only
+    // falls through to the ordinary cut below, which decides for itself whether a
+    // pin whose work it could not carry may be cut at all.
+    if let Some((held, lease)) = resumable(&resolution, request, &execution)? {
+        return resume(&held, lease, &execution);
+    }
+
     let token = ids::session_token();
     let mut stream = Stream::open(&token)?;
     stream.label("identity", &resolution.key);
-
-    // Deliberately outside every exclusive section: one slow origin must not hold
-    // another session out of the lock it is waiting for.
-    if git::has_remote(&execution, "origin") {
-        git::fetch(&execution, "origin")?;
-        stream.emit(
-            EventKind::Fetch,
-            object(json!({"remote": "origin", "checkout": execution.display().to_string()})),
-        );
-    }
-    git::retain_objects_for_borrowers(&execution)?;
+    refresh(&execution, &mut stream)?;
 
     // Both names go through the one conversion git's own parser decides, so an
     // unusable one is refused here rather than by whichever git command met it first.
@@ -634,20 +638,145 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         owner_started: process_started(std::process::id()),
     };
     save(&record)?;
-    stream.emit(
-        EventKind::SessionOpened,
-        object(json!({
-            "token": record.token,
-            "identity": record.identity,
-            "branch": record.branch,
-            "base": record.base,
-            "worktree": record.worktree.display().to_string(),
-            "clone": record.clone.display().to_string(),
-            "execution_checkout": record.execution_checkout.display().to_string(),
-            "publication_checkout": record.publication_checkout.display().to_string(),
-        })),
-    );
+    stream.emit(EventKind::SessionOpened, opened(&record, Reuse::Cut));
     drop(lease);
+    Ok((record, stream))
+}
+
+/// Whether a session was cut for this request or was one it resumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reuse {
+    Cut,
+    Resumed,
+}
+
+/// The payload a session's opening event carries.
+///
+/// `reused` is written only when the session was resumed, and deliberately: a fresh
+/// cut is the only thing an implementation of this seam that keeps no run roots can
+/// do, so an event that says nothing there is one such an implementation still
+/// emits unchanged. A reader tells the two apart by the field being there.
+fn opened(record: &Record, reuse: Reuse) -> Map<String, Value> {
+    let mut payload = object(json!({
+        "token": record.token,
+        "identity": record.identity,
+        "branch": record.branch,
+        "base": record.base,
+        "worktree": record.worktree.display().to_string(),
+        "clone": record.clone.display().to_string(),
+        "execution_checkout": record.execution_checkout.display().to_string(),
+        "publication_checkout": record.publication_checkout.display().to_string(),
+    }));
+    if reuse == Reuse::Resumed {
+        payload.insert("reused".to_owned(), Value::Bool(true));
+    }
+    payload
+}
+
+/// Bring the execution checkout up to date, and keep its objects for borrowers.
+///
+/// The fetch is deliberately outside every exclusive section: one slow origin must
+/// not hold another session out of the lock it is waiting for.
+fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
+    if git::has_remote(execution, "origin") {
+        git::fetch(execution, "origin")?;
+        stream.emit(
+            EventKind::Fetch,
+            object(json!({"remote": "origin", "checkout": execution.display().to_string()})),
+        );
+    }
+    git::retain_objects_for_borrowers(execution)
+}
+
+/// The session a pinned branch is already held by, when exactly one is and nothing
+/// holds its run root against being taken up.
+///
+/// A retry of the same node arrives as the same pin, and cutting it a second run
+/// root leaves the first one behind holding the same branch at an older tip: a clone
+/// per attempt, a worktree nobody removes, and two directories that both answer to
+/// the branch somebody is watching. So a pin that names a session this host already
+/// has is that session.
+///
+/// Declining is never a refusal — it is a fall through to cutting a session the
+/// ordinary way, which then answers for itself: a run root that has been reclaimed,
+/// an ambiguity nothing here can resolve, and somebody already inside it all answer
+/// `None`. So does a request that names a different base or a different execution
+/// checkout than the session was cut with, since resuming into one of those would
+/// answer an explicit argument with a session that does not honour it.
+///
+/// What comes back is the session *and its lease*, held from here until the
+/// adoption has taken its own: a shared lease is compatible with the one [`adopt`]
+/// takes, so holding it costs nothing and closes the window in which the run root
+/// could be reclaimed between being asked about and being taken up.
+fn resumable(
+    resolution: &Resolution,
+    request: &SessionRequest,
+    execution: &Path,
+) -> Result<Option<(Record, lock::Guard)>> {
+    let Some(branch) = request.branch.as_deref() else {
+        return Ok(None);
+    };
+    // The base this request is for, resolved the way the cut below resolves it, so an
+    // unnamed one is the identity's root *now* rather than whatever a record was cut
+    // from when its root may have been another branch. A root nobody can name is a
+    // question this cannot answer, and an unanswered question is a session cut fresh.
+    let wanted = match request.base.as_deref() {
+        Some(base) => base.to_owned(),
+        None => match git::default_branch(execution, "origin") {
+            Ok(root) => root,
+            Err(_) => return Ok(None),
+        },
+    };
+    let mut held = all()?.into_iter().filter(|record| {
+        record.identity == resolution.key
+            && *record.branch == *branch
+            && *record.base == *wanted
+            // Closing a session is the statement that it is finished: it hands the
+            // branch back to the execution checkout and lets its worktree go. A name
+            // taken again after that is a new session under a spent name, which is a
+            // different thing from a run that stopped in the middle of one.
+            && record.state == Lifecycle::Open
+            && record.execution_checkout == execution
+            // The run root a record names outlives neither reclamation nor an
+            // operator with a broom, and what is being reused is the directory
+            // rather than the record of it.
+            && record.run_root.is_dir()
+            && record.clone.is_dir()
+    });
+    let (Some(candidate), None) = (held.next(), held.next()) else {
+        return Ok(None);
+    };
+    // The same question `adopt` asks a moment later, and it has the same answer: an
+    // exclusive holder — a reclamation probing this run root, or anything else that
+    // has taken it against the world — is what it answers `None` for. Shared holders
+    // are compatible with each other by design, because several commands legitimately
+    // work in one run root at once.
+    // llmlint: ignore-block[changed_behavior_has_e2e] the journey is
+    // `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing`,
+    // which holds the run root's lock itself, and says there why a lease no command
+    // outlives leaves nothing else to hold it with.
+    Ok(lock::try_shared(&candidate.lease())?.map(|lease| (candidate, lease)))
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+}
+
+/// Take up a session that already exists, as the request that pinned its branch.
+///
+/// The re-attachment is [`adopt`] and deliberately nothing beside it: a second path
+/// that preserved an interrupted worktree would be a second shape of marker for a
+/// recovery to read.
+fn resume(held: &Record, lease: lock::Guard, execution: &Path) -> Result<(Record, Stream)> {
+    let (record, mut stream, _preserved) = adopt(&held.token)?;
+    // Held until the adoption has taken a lease of its own, and no longer.
+    drop(lease);
+    // The same label the session's first opening carried, so a reader filtering one
+    // identity's events does not lose the run it resumed.
+    stream.label("identity", &record.identity);
+    refresh(execution, &mut stream)?;
+    // The clone's view of origin is as old as the session, which for a resumed one
+    // is as old as the work in it. The lender has just been fetched, so this is
+    // where that becomes the session's view too.
+    git::carry_remote_refs(execution, &record.clone, &record.base)?;
+    stream.emit(EventKind::SessionOpened, opened(&record, Reuse::Resumed));
     Ok((record, stream))
 }
 
