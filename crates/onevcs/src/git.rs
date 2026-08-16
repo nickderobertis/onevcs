@@ -737,13 +737,22 @@ pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String
 /// second copy of it.
 fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
     let summary = checked(&["diff", "--shortstat", from, to], Some(cwd))?.trimmed();
-    let Some((count, _)) = summary.split_once(" file") else {
-        // No files changed is the empty summary; git prints nothing at all for it.
+    // Nothing at all is what git prints when no file changed, and it is the only
+    // summary that means zero: anything else this cannot read a count out of is an
+    // answer to refuse rather than to round down, since rounding it down would say
+    // that a listing of some paths is a listing of all of them.
+    if summary.is_empty() {
         return Ok(0);
-    };
-    count.trim().parse().map_err(|_| Error::Invalid {
-        reason: format!("git diff --shortstat {from} {to} did not begin with a count: {summary}"),
-    })
+    }
+    summary
+        .split_once(" file")
+        .map(|(count, _)| count.trim())
+        .and_then(|count| count.parse().ok())
+        .ok_or_else(|| Error::Invalid {
+            reason: format!(
+                "git diff --shortstat {from} {to} did not begin with a count of files: {summary}"
+            ),
+        })
 }
 
 /// Whether `base` already carries everything `commit` changed since `fork`.
