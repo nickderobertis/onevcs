@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 73. Tests observed red and then green: 99.
+Patches: 83. Tests observed red and then green: 108.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -498,4 +498,68 @@ a branch deleted on the host is a rejection nothing classified, rather than the 
 a host that would not say where the branch is is read as one that has no such branch.
 
 - RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
+
+### `74-a-change-request-url-is-not-a-reference`
+
+status resolves a change request's URL as no reference at all, which is the state before this branch: the URL is the host's name for the work and nothing here reads it.
+
+- RED `every_spelling_of_one_piece_of_work_resolves_to_the_same_report` — Unexpected failure.
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(was opened through `onevcs` on this host)
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected failure.
+
+### `75-an-ambiguous-reference-answers-with-the-first-candidate`
+
+status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
+
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected return code, failed var == 2
+
+### `76-a-branch-a-session-still-holds-is-handed-to-the-verb-for-preserved-work`
+
+status stops noticing that an open session holds the branch, so it names the verb that publishes work nobody holds.
+
+- RED `work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it` — assertion `left == right` failed: an open session's branch is published through the session
+
+### `77-a-base-that-carries-the-work-is-read-as-unpublished`
+
+status stops reading a landing off the base's content, which is the answer a squash-merge leaves and the one a planner got wrong.
+
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — assertion `left == right` failed
+
+### `78-a-host-that-could-not-be-asked-is-read-as-one-with-nothing-to-say`
+
+status reports a host it could not reach as a host that answered, so a gap in the report reads as an answer.
+
+- RED `a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_rest` — assertion `left == right` failed
+
+### `79-a-source-nobody-named-is-not-searched-for`
+
+import stops searching everywhere the identity keeps work when nobody passed --from, which is every branch a run left in its own clone.
+
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected failure.
+- RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected failure.
+
+### `80-a-name-the-destination-has-checked-out-is-written-anyway`
+
+import stops refusing the one name a checkout has checked out, so a ref write leaves a working tree describing a commit the branch no longer names.
+
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
+### `81-a-remote-ref-is-not-a-source`
+
+import stops taking a remote ref as a source, leaving a branch only the origin has reachable by no verb.
+
+- RED `a_branch_is_imported_from_another_checkout_and_from_a_remote_ref` — Unexpected failure.
+
+### `82-an-alternate-name-is-dropped`
+
+import writes the branch's own name whatever --as asked for, so work whose name is already spent has nowhere to go.
+
+- RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected stdout, failed var.contains(imported preserved/held)
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
+### `83-a-name-is-overwritten-with-whatever-arrives`
+
+import stops refusing a non-fast-forward, so a name a checkout holds work under is written over by whatever the source has.
+
+- RED `an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose` — Unexpected return code, failed var == 2
 
