@@ -152,6 +152,22 @@ fn every_spelling_of_one_piece_of_work_resolves_to_the_same_report() {
         );
     }
 
+    // The four spellings are read in the documented order, so a session token is a
+    // session token even where a branch of that name exists — which is the one case
+    // where two spellings answer to the same word.
+    hosted
+        .world
+        .git(&hosted.checkout, &["branch", &token, "main"]);
+    let by_name = report(&hosted.world, &token);
+    assert_eq!(by_name["ref"]["kind"], "session-token");
+    assert_eq!(
+        by_name["branch"]["name"], "feature/accounted",
+        "the token names the session's work, not the branch somebody named after it"
+    );
+    hosted
+        .world
+        .git(&hosted.checkout, &["branch", "-D", &token]);
+
     // What the report is for: the identity's resolved policy, where the branch is,
     // what was proposed for it, and what the host says its checks are doing.
     assert_eq!(by_token["identity"]["key"], "github.com/acme-corp/hosted");
@@ -287,9 +303,35 @@ fn an_ambiguous_reference_is_refused_by_naming_the_candidates() {
         .args(["status", "https://github.com/acme-corp/hosted/pull/7"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains(
-            "which is not a branch name git would accept",
-        ));
+        .stderr(predicate::str::contains("is a name git would not accept"));
+
+    // …and one that records the change request and names no branch at all is
+    // refused as the gap it is, rather than answered about work nobody identified.
+    std::fs::write(
+        streams.join("s-nameless.ndjson"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "v": 1,
+                "ts": "2026-01-01T00:00:00.000Z",
+                "stream": "s-nameless",
+                "seq": 1,
+                "source": "vcs",
+                "kind": "change-opened",
+                "labels": {},
+                "payload": {"url": "https://github.com/acme-corp/hosted/pull/8"},
+                "artifacts": [],
+            })
+        ),
+    )
+    .expect("a stream naming no branch");
+    world
+        .onevcs()
+        .args(["status", "https://github.com/acme-corp/hosted/pull/8"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("names no branch"))
+        .stderr(predicate::str::contains("onevcs events s-nameless"));
 
     // A reference nothing answers to is refused as one, naming what does answer.
     world
@@ -734,7 +776,7 @@ fn a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree()
         ),
         (
             vec!["import", "bad~branch", "--repo", &repo],
-            "is not a valid branch name",
+            "is a name git would not accept",
         ),
     ] {
         fixture
@@ -912,9 +954,7 @@ fn a_branch_is_imported_from_another_checkout_and_from_a_remote_ref() {
         ])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains(
-            "which is not a branch name git would accept",
-        ));
+        .stderr(predicate::str::contains("is a name git would not accept"));
 
     // A source that is neither a repository nor a remote is refused naming both,
     // rather than falling through to whichever spelling happened to work.

@@ -44,11 +44,18 @@ pub enum Source {
     Repository(PathBuf),
     /// A remote of the destination checkout, and the branch as it is named there.
     Remote {
-        /// The remote git was asked.
+        /// The remote git was asked, which is one the destination has configured —
+        /// `source_of` takes it off `git remote` rather than off the argument.
+        // llmlint: ignore[invalid_states_unrepresentable] a remote *name* has no type in
+        // this crate and would be the only one: every other place that names one — the
+        // `"origin"` every fetch, push, and `default_branch` call passes — spells it as a
+        // `&str`, so a newtype here would be a shape one construction site upheld and
+        // nothing else did. What decides this value is that it is in `git remote`'s own
+        // listing, which no conversion could check without running git.
         remote: String,
         /// The branch on it, which `--from origin/other` may spell differently
         /// from the name the import writes.
-        branch: String,
+        branch: Ref,
     },
 }
 
@@ -70,7 +77,7 @@ impl Source {
     }
 
     /// The branch as the source names it.
-    fn branch<'a>(&'a self, asked: &'a str) -> &'a str {
+    fn branch<'a>(&'a self, asked: &'a Ref) -> &'a Ref {
         match self {
             Source::Repository(_) => asked,
             Source::Remote { branch, .. } => branch,
@@ -124,19 +131,19 @@ pub fn run(
     // refused where every `--repo` is rather than a second time here.
     let resolution = store::resolve_path(registry, repo)?;
     let destination = resolution.publication.clone();
-    if !git::is_valid_branch_name(branch) {
-        return Err(Error::Invalid {
-            reason: format!(
-                "{branch:?} is not a valid branch name; `onevcs recoverable` lists every \
-                 preserved branch by name and the checkout it is in"
-            ),
-        });
-    }
+    // Both names go through the one conversion git's own parser decides, so an
+    // unusable one is refused here rather than by whichever git command met it first.
+    let asked = Ref::try_from(branch.to_owned()).map_err(|reason| Error::Invalid {
+        reason: format!(
+            "{reason}; `onevcs recoverable` lists every preserved branch by name and the \
+             checkout it is in"
+        ),
+    })?;
     let name = match under {
         Some(under) => Ref::try_from(under.to_owned()).map_err(|reason| Error::Invalid {
             reason: format!("--as {reason}: it is not a valid branch name"),
         })?,
-        None => Ref::from_git(branch),
+        None => asked.clone(),
     };
     // Refused before anything is fetched: the whole promise of this verb is that no
     // working tree moves, and pointing a checked-out branch somewhere else leaves
@@ -162,12 +169,12 @@ pub fn run(
         });
     }
 
-    let source = source_of(registry, &resolution, &destination, branch, from)?;
+    let source = source_of(registry, &resolution, &destination, &asked, from)?;
     let scratch = format!("refs/onevcs/import/{}", ids::unique());
     let fetched = git::fetch_into_ref(
         &destination,
         &source.location(),
-        source.branch(branch),
+        source.branch(&asked),
         &scratch,
     )?;
     let imported = (|| -> Result<Imported> {
@@ -177,7 +184,7 @@ pub fn run(
                     "{source} has no branch {branch:?} to import; `onevcs recoverable` lists every \
                      preserved branch and the checkout it is in",
                     source = source.describe(),
-                    branch = source.branch(branch),
+                    branch = source.branch(&asked),
                 ),
             });
         }
@@ -185,14 +192,14 @@ pub fn run(
             reason: format!(
                 "the fetch of {branch:?} from {} left no commit this build can read",
                 source.describe(),
-                branch = source.branch(branch),
+                branch = source.branch(&asked),
             ),
         })?;
         let held = git::tip(&destination, &format!("refs/heads/{name}"));
         let wrote = match &held {
             Some(held) if *held == tip => Wrote::Unchanged,
             Some(_) => {
-                refuse_a_rewrite(&destination, &name, &scratch, repo, branch)?;
+                refuse_a_rewrite(&destination, &name, &scratch, repo, &asked)?;
                 Wrote::FastForwarded
             }
             None => Wrote::Created,
@@ -224,7 +231,7 @@ fn refuse_a_rewrite(
     name: &Ref,
     scratch: &str,
     repo: &Path,
-    branch: &str,
+    branch: &Ref,
 ) -> Result<()> {
     if git::is_ancestor(destination, name, scratch)? {
         return Ok(());
@@ -272,7 +279,7 @@ fn source_of(
     registry: &Registry,
     resolution: &Resolution,
     destination: &Path,
-    branch: &str,
+    branch: &Ref,
     from: Option<&str>,
 ) -> Result<Source> {
     let Some(from) = from else {
@@ -288,26 +295,24 @@ fn source_of(
     if remotes.iter().any(|remote| remote == from) {
         return Ok(Source::Remote {
             remote: from.to_owned(),
-            branch: branch.to_owned(),
+            branch: branch.clone(),
         });
     }
     if let Some((remote, named)) = from.split_once('/') {
         if remotes.iter().any(|candidate| candidate == remote) {
-            // The half after the remote goes on to spell a refspec, so it is
-            // decided by the parser that decides branch names rather than merely
-            // being non-empty — `origin/` and `origin/..` both name a remote this
+            // The half after the remote goes on to spell a refspec, so it is decided
+            // by the conversion that decides branch names rather than merely being
+            // non-empty — `origin/` and `origin/..` both name a remote this
             // repository has and no branch anything could fetch.
-            if !git::is_valid_branch_name(named) {
-                return Err(Error::Invalid {
-                    reason: format!(
-                        "--from {from:?} names remote {remote:?} and {named:?}, which is not a \
-                         branch name git would accept; spell it `{remote}/<branch>`"
-                    ),
-                });
-            }
+            let named = Ref::try_from(named.to_owned()).map_err(|reason| Error::Invalid {
+                reason: format!(
+                    "--from {from:?} names remote {remote:?} and {reason}; spell it \
+                     `{remote}/<branch>`"
+                ),
+            })?;
             return Ok(Source::Remote {
                 remote: remote.to_owned(),
-                branch: named.to_owned(),
+                branch: named,
             });
         }
     }

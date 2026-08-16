@@ -38,6 +38,7 @@ use crate::registry::{Registry, RepoType, Workflow};
 use crate::rules::{Approvals, Gate, MergePolicy};
 use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
 use crate::store::{self, Resolution};
+use crate::workspace::{Ref, Token};
 use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace};
 
 /// The version of the object `onevcs status --json` writes.
@@ -129,13 +130,13 @@ pub struct IdentityReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionReport {
     /// The token every session-keyed command takes.
-    pub token: String,
+    pub token: Token,
     /// Whether it is open or closed.
     pub state: Lifecycle,
     /// Whether the process that opened it is still there.
     pub liveness: Liveness,
     /// The base the branch was cut from.
-    pub base: String,
+    pub base: Ref,
     /// The per-run clone.
     pub clone: PathBuf,
     /// The worktree the change was made in.
@@ -146,12 +147,12 @@ pub struct SessionReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct BranchReport {
     /// The branch name.
-    pub name: String,
+    pub name: Ref,
     /// The identity's root base, which is what it is compared against.
-    pub base: String,
+    pub base: Ref,
     /// The change base a preserved commit recorded, for a stacked change.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub change_base: Option<String>,
+    pub change_base: Option<Ref>,
     /// Every checkout and per-run clone holding it, in search order.
     pub holders: Vec<Holder>,
     /// How many commits it has that the base does not. Absent where nothing on
@@ -172,7 +173,7 @@ pub struct Holder {
     pub kind: HolderKind,
     /// The session whose run clone this is, when it is one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<String>,
+    pub session: Option<Token>,
 }
 
 /// Which of the three places an identity keeps a branch this holder is.
@@ -275,8 +276,19 @@ pub struct CheckReport {
     /// The check's name.
     pub name: String,
     /// Where it is, in the host's own vocabulary.
+    // llmlint: ignore[invalid_states_unrepresentable] this is `Check::status` passed
+    // through, and the approved contract fixes that field as `String` and enumerates no
+    // value set for it — the vocabulary differs per host, which is the thing this crate
+    // exists to abstract, and it is recorded as open question 1 in
+    // docs/inferred-surface.md for the planner to settle across the three repositories.
+    // An enum here would decide that question locally *and* disagree with the type this
+    // value is copied from.
     pub status: String,
     /// How it ended, once it has.
+    // llmlint: ignore[invalid_states_unrepresentable] the other half of the same open
+    // question, for the same reason: `Check::conclusion` is `Option<String>` because the
+    // contract names the field and fixes no conclusion vocabulary. Absent means the check
+    // has not concluded, which is the one state this report does narrow.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conclusion: Option<String>,
     /// Whether it blocks the merge.
@@ -326,8 +338,15 @@ pub struct NextReport {
 
 /// One piece of work: the identity it belongs to and the branch that carries it.
 struct Work {
+    /// The identity key.
+    // llmlint: ignore[invalid_states_unrepresentable] an identity key is a `String`
+    // everywhere this crate spells one — the registry document's own map key,
+    // `Recoverable::identity`, `SessionRecord::identity` — so a newtype here would
+    // disagree with the types the contract fixes. Every value that reaches this came out
+    // of a registry `store::resolve` accepted, which is where a key is decided.
     identity: String,
-    branch: String,
+    /// The branch that carries it, as git's own parser accepted it.
+    branch: Ref,
 }
 
 /// Answer for one reference.
@@ -341,19 +360,21 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let trailers = provenance::from_rules(&file);
     let normalized = store::normalize(&resolution.identity.origin);
     let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
-    let base = git::default_branch(&resolution.publication, "origin")?;
+    // Named by git itself, off the remote's own advertised head, so it is a branch
+    // name git's parser has already accepted.
+    let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
 
     let holders = holders_of(registry, &resolution, &work.branch)?;
     let sessions = workspace::all()?;
     let session = sessions
         .iter()
-        .filter(|record| record.identity == work.identity && *record.branch == work.branch)
+        .filter(|record| record.identity == work.identity && record.branch == work.branch)
         .max_by_key(|record| record.state == Lifecycle::Open)
         .map(|record| SessionReport {
-            token: record.token.to_string(),
+            token: record.token.clone(),
             state: record.state,
             liveness: SessionHolder::from(record.clone()).liveness,
-            base: record.base.to_string(),
+            base: record.base.clone(),
             clone: record.clone.clone(),
             worktree: record.worktree.clone(),
         });
@@ -387,7 +408,11 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             OnTheBranch::Carried { ahead: counted }
         };
         branch_provenance = Some(judge_provenance(repo, compared, &work.branch, &trailers)?);
-        change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?;
+        // Read back out of a commit the repository carries, so it is input: a value
+        // that is not a branch name is no change base, and the branch-keyed verbs
+        // refuse one by name where they are the ones about to act on it.
+        change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
+            .and_then(|recorded| Ref::try_from(recorded).ok());
     }
 
     // Latest-first by the envelope's own timestamp rather than by the order the
@@ -785,7 +810,7 @@ fn holders_of(registry: &Registry, resolution: &Resolution, branch: &str) -> Res
         let session = sessions
             .iter()
             .find(|record| record.clone == path)
-            .map(|record| record.token.to_string());
+            .map(|record| record.token.clone());
         holders.push(Holder {
             path,
             kind,
@@ -942,7 +967,7 @@ fn relevant_streams<'a>(
 ) -> Vec<&'a Recorded> {
     let slug = policy::branch_slug(&work.branch);
     let named: BTreeSet<String> = [
-        session.map(|session| session.token.clone()),
+        session.map(|session| session.token.to_string()),
         Some(format!("publish-branch-{slug}")),
         Some(format!("recover-{slug}")),
     ]
@@ -953,7 +978,7 @@ fn relevant_streams<'a>(
         .iter()
         .filter(|record| {
             named.contains(&record.token)
-                || (record.branch.as_deref() == Some(work.branch.as_str())
+                || (record.branch.as_deref() == Some(&*work.branch)
                     && record.identity.as_deref() == Some(work.identity.as_str()))
         })
         .collect()
@@ -974,13 +999,15 @@ fn resolve(registry: &Registry, reference: &str, streams: &[Recorded]) -> Result
         return Ok((
             Work {
                 identity: record.identity,
-                branch: record.branch.to_string(),
+                branch: record.branch.clone(),
             },
             RefKind::SessionToken,
         ));
     }
-    if git::is_valid_branch_name(reference) {
-        let found = by_branch(registry, reference)?;
+    // Through the conversion that decides branch names, so what is searched for is a
+    // ref rather than the part of a command line that sat where one would.
+    if let Ok(named) = Ref::try_from(reference.to_owned()) {
+        let found = by_branch(registry, &named)?;
         if !found.is_empty() {
             return one(found, reference, "branch").map(|work| (work, RefKind::Branch));
         }
@@ -1048,17 +1075,16 @@ fn change_url(registry: &Registry, url: &str, streams: &[Recorded]) -> Result<Wo
     })?;
     // A stream is a file written by whichever process produced it, so the branch it
     // names is input: it goes on to be handed to git as a ref, and one git would not
-    // accept is refused here rather than met by whichever command reached it first.
-    if !git::is_valid_branch_name(&branch) {
-        return Err(Error::Invalid {
-            reason: format!(
-                "the event stream for {token:?} records the change request at {url} as carrying \
-                 {branch:?}, which is not a branch name git would accept, so nothing here can look \
-                 for it. `onevcs events {token}` is what that stream holds",
-                token = recorded.token,
-            ),
-        });
-    }
+    // accept is refused by the conversion that decides branch names rather than met by
+    // whichever command reached it first.
+    let branch = Ref::try_from(branch).map_err(|reason| Error::Invalid {
+        reason: format!(
+            "the event stream for {token:?} records the change request at {url} as carrying \
+             {reason}, so nothing here can look for it. `onevcs events {token}` is what that \
+             stream holds",
+            token = recorded.token,
+        ),
+    })?;
     if let Some(identity) = &recorded.identity {
         if registry.identities.contains_key(identity) {
             return Ok(Work {
@@ -1073,7 +1099,7 @@ fn change_url(registry: &Registry, url: &str, streams: &[Recorded]) -> Result<Wo
 }
 
 /// Every identity holding a branch of this name.
-fn by_branch(registry: &Registry, branch: &str) -> Result<Vec<Work>> {
+fn by_branch(registry: &Registry, branch: &Ref) -> Result<Vec<Work>> {
     let mut found = Vec::new();
     for identity in identities(registry) {
         let resolution = store::resolve(registry, &identity)?;
@@ -1081,7 +1107,7 @@ fn by_branch(registry: &Registry, branch: &str) -> Result<Vec<Work>> {
             if git::is_repo(&path) && git::branch_exists(&path, branch) {
                 found.push(Work {
                     identity: identity.clone(),
-                    branch: branch.to_owned(),
+                    branch: branch.clone(),
                 });
                 break;
             }
@@ -1112,6 +1138,9 @@ fn by_commit(registry: &Registry, commit: &str) -> Result<Vec<Work>> {
                 if !git::is_ancestor(&path, commit, &branch)? {
                     continue;
                 }
+                // git's own ref listing, so its parser has already accepted every
+                // name in it.
+                let branch = Ref::from_git(branch);
                 if found
                     .iter()
                     .any(|work| work.identity == identity && work.branch == branch)
