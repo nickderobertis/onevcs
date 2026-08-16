@@ -349,6 +349,17 @@ pub struct Context<'a> {
     pub hosting: &'a dyn Hosting,
 }
 
+/// How a publication's branch reaches the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Push {
+    /// Forward or not at all, which is every publication that rewrote nothing.
+    Forward,
+    /// Replacing exactly what this repository last saw on the host, because this
+    /// publication replayed the branch's own commits onto the root and what it is
+    /// pushing is therefore no descendant of what is there.
+    Replacing,
+}
+
 /// Where a publication lands, and what it is compared against on the way there.
 ///
 /// One or the other and never a mixture: everything that follows from being stacked
@@ -361,10 +372,10 @@ pub struct Context<'a> {
 /// a stack read off content would rewrite branches nobody stacked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// Onto one branch, which is also what the change is compared against. Every
-    /// ordinary publication is this, and so is a stacked one whose change below has
-    /// landed — that is what moving to the root means.
-    Root(Ref),
+    /// Onto one branch, which is also what the change is compared against: the base
+    /// a session was opened with, or the root a stacked change moved onto once the
+    /// change below it landed.
+    Base(Ref),
     /// Onto the change below this one, until the root carries that change.
     Stacked {
         /// The branch below: what this change targets and is compared against.
@@ -382,7 +393,7 @@ impl Target {
     /// The branch this change is compared against and lands on.
     pub fn base(&self) -> &Ref {
         match self {
-            Target::Root(base) => base,
+            Target::Base(base) => base,
             Target::Stacked { below, .. } => below,
         }
     }
@@ -410,7 +421,7 @@ impl Target {
 fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Target> {
     let base = preserved_change_base(&record.base, record.change_base.as_ref());
     let Some(recorded) = record.stack_tip.as_deref() else {
-        return Ok(Target::Root(base));
+        return Ok(Target::Base(base));
     };
     let Some(tip) = git::tip(&record.clone, recorded) else {
         return Err(Error::Invalid {
@@ -434,11 +445,11 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
         });
     };
     let Some(root) = git::default_branch(publication, "origin").ok() else {
-        return Ok(Target::Root(base));
+        return Ok(Target::Base(base));
     };
     let root = Ref::from_git(root);
     if root == base {
-        return Ok(Target::Root(base));
+        return Ok(Target::Base(base));
     }
     Ok(Target::Stacked {
         below: base,
@@ -524,7 +535,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     if let Target::Stacked { root, tip, .. } = &context.target {
         if root_is_known_to_carry_the_stack(&context.repo, &context.branch, root, tip)? {
             replay = Some(tip.clone());
-            landed = context.onto(Target::Root(root.clone()));
+            landed = context.onto(Target::Base(root.clone()));
             context = &landed;
         }
     }
@@ -541,20 +552,17 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         return Ok(PublishOutcome::NothingToPublish);
     }
 
+    let push = match &replay {
+        Some(_) => Push::Replacing,
+        None => Push::Forward,
+    };
     let (subject, trailers) = describe(context, &compared)?;
     let environment = gate::comparison_env("origin", context.target.base());
     verify(context, stream, &environment)?;
 
     match context.effective {
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
-        _ => publish_as_change(
-            context,
-            stream,
-            &subject,
-            &trailers,
-            &environment,
-            replay.is_some(),
-        ),
+        _ => publish_as_change(context, stream, &subject, &trailers, &environment, push),
     }
 }
 
@@ -886,15 +894,16 @@ fn publish_as_change(
     subject: &str,
     trailers: &[String],
     environment: &[(String, String)],
-    replayed: bool,
+    push: Push,
 ) -> Result<PublishOutcome> {
     // A branch this publication replayed is not a descendant of the one the host has
     // for it — the change below's commits are gone from it — so the push replaces
     // what this repository last saw there, and git refuses it if the host is anywhere
     // else. Every other publication pushes as it always has: forward or not at all.
-    let replacing = replayed
-        .then(|| git::tip(&context.repo, &format!("origin/{}", context.branch)))
-        .flatten();
+    let replacing = match push {
+        Push::Replacing => git::tip(&context.repo, &format!("origin/{}", context.branch)),
+        Push::Forward => None,
+    };
     let pushed = git::push_replacing(
         &context.worktree,
         &context.branch,

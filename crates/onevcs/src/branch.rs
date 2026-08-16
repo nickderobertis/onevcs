@@ -427,7 +427,7 @@ impl Landing {
             // Resolved and acted on before this publishes: `prepare` moved a landed
             // stack to the root and `sync_change_base` replayed it, so what is left
             // is one branch this lands on and is compared against.
-            target: publish::Target::Root(self.change_base.clone()),
+            target: publish::Target::Base(self.change_base.clone()),
             run_root: self.run_root.clone(),
             title,
             trailers: Vec::new(),
