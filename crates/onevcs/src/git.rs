@@ -784,7 +784,9 @@ pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Resu
         if trees_differ(cwd, fork, commit)? {
             return Ok(!trees_differ(cwd, base, commit)?);
         }
-        return Ok(false);
+        // Otherwise the commit changed nothing since the fork, and a base built on
+        // that fork carries the nothing it changed.
+        return Ok(true);
     }
     let mut args = vec!["diff", "--quiet", commit, base, "--"];
     args.extend(touched.iter().map(String::as_str));
