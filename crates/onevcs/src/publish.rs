@@ -381,8 +381,14 @@ pub struct Stack {
 /// Two things have to be there: the tip the session was cut at, which `session open`
 /// records only for a base that is not the identity's root, and a root to land on
 /// once the change below has landed. Either missing is no stack at all.
+///
+/// The recorded tip is resolved through git before it is one, because a record is a
+/// file under the state root and this is the field that goes on to name commits to
+/// it: what comes back is a commit this repository actually has, and anything else —
+/// a value nothing wrote, a clone that no longer carries it — is no stack rather than
+/// a name handed on to git.
 fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stack> {
-    let tip = record.stack_tip.clone()?;
+    let tip = git::tip(&record.clone, record.stack_tip.as_deref()?)?;
     let root = Ref::from_git(git::default_branch(publication, "origin").ok()?);
     (root != record.base).then_some(Stack { tip, root })
 }
