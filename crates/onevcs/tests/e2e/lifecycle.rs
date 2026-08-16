@@ -1124,6 +1124,12 @@ fn a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_i
         "a\n",
         "feat: the first use of the name",
     );
+    // Two commits, so what lands is a squash of both rather than either of them:
+    // the checkout's copy is then ahead of the base by commits the base will never
+    // carry, while holding nothing the base does not already have.
+    fixture
+        .world
+        .commit_file(&first_tree, "a.txt", "a\nand more\n", "fix: the rest of it");
     fixture
         .world
         .onevcs()
