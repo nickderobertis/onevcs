@@ -549,9 +549,11 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
 
     // A pin naming a branch a session of this identity already holds is that
     // session, resumed — before a token is minted, so nothing of a second one is
-    // cut. Never for a generated name: that one is this token's own.
-    if let Some(held) = resumable(&resolution, request, &execution)? {
-        return resume(&held, &execution);
+    // cut. Never for a generated name: that one is this token's own. Declining only
+    // falls through to the ordinary cut below, which decides for itself whether a
+    // pin whose work it could not carry may be cut at all.
+    if let Some((held, lease)) = resumable(&resolution, request, &execution)? {
+        return resume(&held, lease, &execution);
     }
 
     let token = ids::session_token();
@@ -699,17 +701,22 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
 /// the branch somebody is watching. So a pin that names a session this host already
 /// has is that session.
 ///
-/// Every reason to decline is a reason to cut fresh rather than to refuse, because
-/// this is an optimisation and a session must open regardless: a run root that has
-/// been reclaimed, an ambiguity nothing here can resolve, and somebody already
-/// inside it all answer `None`. So does a request that names a different base or a
-/// different execution checkout than the session was cut with — resuming into one of
-/// those would answer an explicit argument with a session that does not honour it.
+/// Declining is never a refusal — it is a fall through to cutting a session the
+/// ordinary way, which then answers for itself: a run root that has been reclaimed,
+/// an ambiguity nothing here can resolve, and somebody already inside it all answer
+/// `None`. So does a request that names a different base or a different execution
+/// checkout than the session was cut with, since resuming into one of those would
+/// answer an explicit argument with a session that does not honour it.
+///
+/// What comes back is the session *and its lease*, held from here until the
+/// adoption has taken its own: a shared lease is compatible with the one [`adopt`]
+/// takes, so holding it costs nothing and closes the window in which the run root
+/// could be reclaimed or occupied between being found free and being taken up.
 fn resumable(
     resolution: &Resolution,
     request: &SessionRequest,
     execution: &Path,
-) -> Result<Option<Record>> {
+) -> Result<Option<(Record, lock::Guard)>> {
     let Some(branch) = request.branch.as_deref() else {
         return Ok(None);
     };
@@ -734,10 +741,7 @@ fn resumable(
     };
     // Free right now, asked the way `adopt` asks it a moment later: a session
     // somebody is working in is not one to take a worktree out from under.
-    Ok(lock::try_shared(&candidate.lease())?.map(|lease| {
-        drop(lease);
-        candidate
-    }))
+    Ok(lock::try_shared(&candidate.lease())?.map(|lease| (candidate, lease)))
 }
 
 /// Take up a session that already exists, as the request that pinned its branch.
@@ -746,8 +750,10 @@ fn resumable(
 /// commits whatever its worktree was left holding behind an incomplete-step marker
 /// by the one path that writes that commit — a second one here would be a second
 /// shape of marker for a recovery to read.
-fn resume(held: &Record, execution: &Path) -> Result<(Record, Stream)> {
+fn resume(held: &Record, lease: lock::Guard, execution: &Path) -> Result<(Record, Stream)> {
     let (record, mut stream, _preserved) = adopt(&held.token)?;
+    // Held until the adoption has taken a lease of its own, and no longer.
+    drop(lease);
     // The same label the session's first opening carried, so a reader filtering one
     // identity's events does not lose the run it resumed.
     stream.label("identity", &record.identity);

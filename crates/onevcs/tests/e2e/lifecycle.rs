@@ -231,6 +231,18 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
         .commit_file(&worktree, "one.txt", "one\n", "feat: add the first half");
     // The half the run was interrupted before committing.
     std::fs::write(worktree.join("two.txt"), "two\n").expect("uncommitted work");
+    // …and the base moved on while the run was down, which is the state a retry
+    // arrives in.
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture.world.commit_file(
+        &elsewhere,
+        "landed.txt",
+        "landed\n",
+        "feat: land somebody else's change",
+    );
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
 
     // The retry of a node arrives as the same pin, and it is the same session.
     let (second, resumed) = fixture.open(&["--branch", "feature/resumed"]);
@@ -253,6 +265,16 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
             .count(),
         1,
         "one run root, rather than one per attempt"
+    );
+
+    // A resumed session is a session opened, so its clone's view of origin is the
+    // one this open just fetched: the work it goes on to do is judged against the
+    // base as it stands, not as it stood when the run first started.
+    let clone = worktree.parent().expect("a run root").join("clone");
+    assert_eq!(
+        fixture.world.git(&clone, &["rev-parse", "origin/main"]),
+        fixture.world.git(&fixture.origin, &["rev-parse", "main"]),
+        "resuming brings the clone's view of origin up to date too"
     );
 
     // The dirty half is committed behind the incomplete-step marker, by the one path
@@ -308,7 +330,72 @@ fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refus
         "a fresh cut claims no reuse: {:?}",
         opened[0]["payload"]
     );
+
+    // Two sessions now hold that name, which is an ambiguity nothing here can
+    // resolve: picking one would be picking somebody's worktree by coin toss. Even
+    // once the occupant leaves, the pin is cut fresh rather than resumed.
     drop(occupant);
+    let (third, also_cut) = fixture.open(&["--branch", "feature/busy"]);
+    assert_ne!(third, first, "neither of the two is chosen…");
+    assert_ne!(third, second, "…nor the other");
+    assert_ne!(also_cut, worktree);
+    assert_ne!(also_cut, cut);
+}
+
+#[test]
+fn a_pin_resumes_only_the_session_it_asked_for() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    // A second base at the same commit, and a second checkout of the same identity,
+    // so a request can name one the session it might have resumed was not cut with.
+    world.git(&fixture.checkout, &["branch", "-q", "sibling", "main"]);
+    world.git(&fixture.checkout, &["push", "-q", "origin", "sibling"]);
+    let worker = world.clone_of(&fixture.origin, "worker");
+    world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+
+    // Closing a session is the statement that it is finished: it hands its branch
+    // back and lets its worktree go, so the name taken again is a new session rather
+    // than a re-attachment to a tree that is not there.
+    let (closed, _tree) = fixture.open(&["--branch", "feature/finished"]);
+    world
+        .onevcs()
+        .args(["session", "close", &closed])
+        .assert()
+        .success();
+    let (after_close, _tree) = fixture.open(&["--branch", "feature/finished"]);
+    assert_ne!(after_close, closed, "a closed session is not resumed");
+
+    // A base the session was not cut from is an explicit argument, and answering it
+    // with a session that does not honour it would be the argument ignored.
+    let (from_main, _tree) = fixture.open(&["--branch", "feature/other-base"]);
+    let (from_sibling, _tree) =
+        fixture.open(&["--branch", "feature/other-base", "--base", "sibling"]);
+    assert_ne!(
+        from_sibling, from_main,
+        "a pin cut from another base is another session"
+    );
+    // …and the same request twice over is the same session, which is what makes the
+    // base the thing that decided rather than the pin being unresumable at all.
+    let (again, _tree) = fixture.open(&["--branch", "feature/other-base", "--base", "sibling"]);
+    assert_eq!(again, from_sibling, "the same request is the same session");
+
+    // The same for the checkout the clone is cut from: two of them are two lenders,
+    // and a session borrowing from one is not a session borrowing from the other.
+    let (from_publication, _tree) = fixture.open(&["--branch", "feature/other-checkout"]);
+    let (from_worker, _tree) = fixture.open(&[
+        "--branch",
+        "feature/other-checkout",
+        "--execution-checkout",
+        "worker",
+    ]);
+    assert_ne!(
+        from_worker, from_publication,
+        "a pin cut in another checkout is another session"
+    );
 }
 
 #[test]

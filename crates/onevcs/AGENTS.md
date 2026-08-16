@@ -121,10 +121,14 @@ could not reach it, so two things are stated rather than left to be inferred.
   holds that branch, cut from the same base in the same execution checkout, with its
   run root intact and its lease free; if one does, it re-attaches through
   `workspace::adopt` rather than cutting, and says `"reused": true` in the
-  `session-opened` payload. Anything else — occupied, reclaimed, ambiguous, closed —
-  cuts fresh, because reuse is an optimisation and must never be why a session will
-  not open. A closed session is deliberately not one of them: closing hands the
-  branch back and is the statement that the session is finished.
+  `session-opened` payload. Anything else — occupied, reclaimed, ambiguous, closed,
+  or cut from another base or checkout — is not refused but *falls through to the
+  ordinary cut*, and the rule above then answers for it as it always did: a session
+  nobody could take up whose branch carries work is still refused by name, because
+  cutting that name fresh is still the loss it always was. Reuse decides nothing
+  except whether a second run root is cut. A closed session is deliberately outside
+  it: closing hands the branch back and is the statement that the session is
+  finished, so a name taken again after one is a new session under a spent name.
 
 ## Tests are journeys, and there are no unit tests
 
