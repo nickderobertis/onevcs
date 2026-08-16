@@ -350,14 +350,21 @@ pub struct Context<'a> {
 }
 
 /// How a publication's branch reaches the host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Push {
     /// Forward or not at all, which is every publication that rewrote nothing.
     Forward,
-    /// Replacing exactly what this repository last saw on the host, because this
-    /// publication replayed the branch's own commits onto the root and what it is
-    /// pushing is therefore no descendant of what is there.
-    Replacing,
+    /// Replacing one commit and no other, because this publication replayed the
+    /// branch's own commits onto the root and what it pushes is therefore no
+    /// descendant of what the host has.
+    Replacing {
+        /// What the branch was before the replay rewrote it — the commit this run is
+        /// replacing, and the only thing it may. Read before the sync rather than
+        /// after: a host that moved *since* is the thing the lease exists to catch,
+        /// and a lease taken from a later fetch would name that move and allow it.
+        // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+        replaced: String,
+    },
 }
 
 /// Where a publication lands, and what it is compared against on the way there.
@@ -529,6 +536,9 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     // already carries is a change onto the root base, and everything below — what it is compared
     // against, what its gate judges, what its change request targets — follows from
     // that rather than from the branch it was opened against.
+    // What the host was last known to have for this branch, taken before anything
+    // rewrites it locally.
+    let published = git::tip(&context.repo, &context.branch);
     let mut replay = None;
     let landed;
     let mut context = context;
@@ -552,9 +562,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         return Ok(PublishOutcome::NothingToPublish);
     }
 
-    let push = match &replay {
-        Some(_) => Push::Replacing,
-        None => Push::Forward,
+    let push = match (&replay, &published) {
+        (Some(_), Some(replaced)) => Push::Replacing {
+            replaced: replaced.clone(),
+        },
+        _ => Push::Forward,
     };
     let (subject, trailers) = describe(context, &compared)?;
     let environment = gate::comparison_env("origin", context.target.base());
@@ -897,28 +909,61 @@ fn publish_as_change(
     push: Push,
 ) -> Result<PublishOutcome> {
     // A branch this publication replayed is not a descendant of the one the host has
-    // for it — the change below's commits are gone from it — so the push replaces
-    // what this repository last saw there, and git refuses it if the host is anywhere
-    // else. Every other publication pushes as it always has: forward or not at all.
-    let replacing = match push {
-        Push::Replacing => git::tip(&context.repo, &format!("origin/{}", context.branch)),
-        Push::Forward => None,
+    // for it — the change below's commits are gone from it — so the push replaces one
+    // commit and no other, and git refuses it if the host is anywhere else. Every
+    // other publication pushes as it always has: forward or not at all.
+    // …and only where there is something to replace: a host that has never had this
+    // branch is an ordinary first push, and a lease naming a commit it does not have
+    // would be refused for the wrong reason entirely.
+    let known = format!("refs/remotes/origin/{}", context.branch);
+    let replacing = match &push {
+        Push::Replacing { replaced } if git::ref_exists(&context.repo, &known) => {
+            Some(replaced.as_str())
+        }
+        _ => None,
     };
     let pushed = git::push_replacing(
         &context.worktree,
         &context.branch,
         "origin",
-        replacing.as_deref(),
+        replacing,
         environment,
     )?;
     record_push(context, stream, &pushed)?;
-    pushed.map_err(|output| Error::GateFailed {
-        reason: format!(
-            "the publishing push of {:?} was rejected by the merge path: {}",
-            context.branch,
-            output.lines().next_back().unwrap_or("").trim()
-        ),
-    })?;
+    if let Err(output) = pushed {
+        // Which refusal this is depends on what was being asked. A leased push that
+        // git declined is somebody else's commit on this branch, and the work here is
+        // a replay that would have written over it — so the refusal says that, rather
+        // than reporting a gate nothing ran, and names what lands it once the two
+        // histories are one again.
+        let Some(replaced) = replacing else {
+            return Err(Error::GateFailed {
+                reason: format!(
+                    "the publishing push of {:?} was rejected by the merge path: {}",
+                    context.branch,
+                    output.lines().next_back().unwrap_or("").trim()
+                ),
+            });
+        };
+        return Err(Error::SyncConflict {
+            reason: format!(
+                "{branch:?} moved on the host since this run last had it at {replaced}, and this \
+                 publication replayed it onto {base:?} — pushing would replace whatever was \
+                 pushed there in between. Nothing was overwritten and the branch is retained. \
+                 Reconcile the two — fetch {branch}, and replay or merge what the host has into \
+                 it — and then land it with `{command}`",
+                branch = context.branch,
+                base = context.target.base(),
+                command = guidance::command([
+                    "onevcs",
+                    "publish-branch",
+                    &context.branch,
+                    "--repo",
+                    &context.resolution.publication.to_string_lossy(),
+                ]),
+            ),
+        });
+    }
 
     let slug = change_host(&context.resolution.key)?;
     let host = context.hosting.for_repo(&slug)?;

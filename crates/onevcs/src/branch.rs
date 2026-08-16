@@ -346,12 +346,12 @@ impl Landing {
     /// Through [`publish::reconcile`], so this verb and `publish` cannot come to sync
     /// a branch differently.
     ///
-    /// A conflict here is deterministic — the same two trees conflict on every
-    /// re-run — and it is also what a branch whose recorded change base is missing or
-    /// unreadable produces, because the root base takes its place. So the refusal
-    /// names what would change the answer, where the branch is, and the command that
-    /// lands it afterwards, rather than leaving the work to be salvaged with raw
-    /// `git` and `gh`.
+    /// A conflict here is deterministic — the same two trees conflict on every re-run
+    /// — so the refusal names what would change the answer, where the branch is, and
+    /// the command that lands it afterwards, rather than leaving the work to be
+    /// salvaged with raw `git` and `gh`. A recorded change base that is not a branch,
+    /// or that no ref resolves, never reaches this: `prepare` refuses it there, where
+    /// the record is read, rather than letting the root stand in for it.
     pub fn sync_change_base(&self, stream: &mut Stream) -> Result<()> {
         let reconciled = publish::reconcile(
             &self.worktree,

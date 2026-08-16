@@ -749,6 +749,95 @@ fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it
 }
 
 #[test]
+fn a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it() {
+    // The one thing a replay must never do: a publication that rewrote its branch
+    // pushes over what the host has for it, and somebody pushed to that branch in
+    // between. The push replaces one commit and no other, so git declines it, nothing
+    // on the host is lost, and the refusal says what happened and what lands the work
+    // once the two histories are one again.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    squash_the_change_below(&hosted, true);
+
+    // Somebody else's commit lands on this branch while the change below is merging.
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.git(
+        &elsewhere,
+        &[
+            "checkout",
+            "-q",
+            "-B",
+            "feature/filter",
+            "origin/feature/filter",
+        ],
+    );
+    hosted.world.commit_file(
+        &elsewhere,
+        "review.txt",
+        "a fix asked for in review\n",
+        "fix: take the review's advice",
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "feature/filter"]);
+    let theirs = hosted
+        .world
+        .git(&hosted.origin, &["rev-parse", "feature/filter"]);
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains(
+            "\"feature/filter\" moved on the host since this run last had it at",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was overwritten and the branch is retained.",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/filter --repo {}`",
+            hosted.checkout.display()
+        )));
+    // The refusal names the commit it would have replaced, which is what makes the
+    // lease readable rather than a bare rejection.
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        refusal.contains("fetch feature/filter"),
+        "the refusal says how to reconcile the two:\n{refusal}"
+    );
+
+    // Nothing on the host moved: their commit is still the branch, tip and content.
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["rev-parse", "feature/filter"]),
+        theirs,
+        "the host's copy of the branch is exactly what they pushed"
+    );
+    assert_eq!(
+        hosted.world.git(
+            &hosted.origin,
+            &["log", "-1", "--format=%s", "feature/filter"]
+        ),
+        "fix: take the review's advice"
+    );
+    // …and the work this run replayed is retained where the session left it.
+    assert!(hosted
+        .world
+        .git(&hosted.checkout, &["branch", "--list", "feature/filter"])
+        .contains("feature/filter"));
+}
+
+#[test]
 fn a_hosted_stack_the_root_independently_matches_is_answered_the_same_way() {
     // The ambiguity content equality cannot resolve, and the reason the answer is
     // safe either way: the branch below is still open, but the root already holds
