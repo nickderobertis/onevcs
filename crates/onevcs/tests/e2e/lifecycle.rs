@@ -2082,6 +2082,68 @@ fn a_recorded_stack_that_squash_merged_is_replayed_onto_the_root_rather_than_mer
 }
 
 #[test]
+fn a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning() {
+    // The base can move between the gate and this publication's turn in the queue,
+    // and what lands is then re-synced and re-judged. For a stack that has already
+    // been replayed onto the root, that second sync is an ordinary merge — the tip
+    // its own work began after is on no branch any more, and replaying from it again
+    // would be replaying the root's own history. What has to hold is that the first
+    // replay stands: only this branch's own work reaches the advanced root.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    let (token, _worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/filter");
+
+    // A gate that lands somebody else's work on the root while it runs — once, so
+    // the base this publication judged is not the base it will land on.
+    let other = world.clone_of(&fixture.origin, "advancing");
+    let script = world.path("advance-the-root.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\n\
+             [ -e {marker} ] && exit 0\n\
+             : > {marker}\n\
+             cd {other}\n\
+             git commit -q --allow-empty -m 'feat: land something else while the gate ran'\n\
+             git push -q origin main\n",
+            marker = world.path("the-root-advanced").display(),
+            other = other.display(),
+        ),
+    )
+    .expect("a gate script");
+    configure_rules(
+        world,
+        format!(
+            "version: 1\nrules: []\ndefault: {}\n",
+            local_direct(&format!("[\"bash\", \"{}\"]", script.display()))
+        ),
+    );
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let subjects = fixture.origin_log();
+    assert_eq!(
+        subjects,
+        vec![
+            "feat: filter what the engine relays",
+            "feat: land something else while the gate ran",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ],
+        "the branch's own work landed on the root as it had advanced"
+    );
+    assert!(
+        !subjects.contains(&"feat: govern the engine".to_owned()),
+        "and the change below did not come back with it: {subjects:?}"
+    );
+}
+
+#[test]
 fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/clashing-filter");
@@ -2389,6 +2451,85 @@ fn a_root_this_clone_no_longer_has_leaves_the_stack_where_it_is() {
             .git(&fixture.origin, &["branch", "--list", "main"])
             .is_empty(),
         "and the root it could not compare against is still gone"
+    );
+}
+
+#[test]
+fn an_unreadable_listing_and_a_root_that_moved_on_leaves_the_stack_where_it_is() {
+    // The other side of the same boundary, and the conservative one: with the paths
+    // unreadable the question can only be asked of whole trees, and a root carrying
+    // the change below *and* unrelated work answers it no. Nothing is replayed on
+    // what could not be established — the branch takes the merge it would have taken
+    // before any of this, and lands on the branch it was opened against.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    let unreadable = OsString::from_vec(b"engine\xff.txt".to_vec());
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    std::fs::write(fixture.checkout.join(&unreadable), "the engine\n").expect("a file git takes");
+    world.git(&fixture.checkout, &["add", "-A"]);
+    world.git(
+        &fixture.checkout,
+        &["commit", "-q", "-m", "feat: write the engine"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "notes.txt",
+        "how it runs\n",
+        "docs: describe the engine",
+    );
+    world.git(
+        &fixture.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+
+    let (token, worktree) =
+        fixture.open(&["--branch", "feature/unreadable", "--base", "feature/engine"]);
+    world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    // The root takes the change below, squashed — and unrelated work beside it, so
+    // the whole trees differ however completely it carries the change.
+    let below = world.clone_of(&fixture.origin, "below");
+    world.git(&below, &["merge", "--squash", "origin/feature/engine"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.commit_file(
+        &below,
+        "elsewhere.txt",
+        "somebody else's work\n",
+        "feat: land something else",
+    );
+    world.git(&below, &["push", "-q", "origin", "main"]);
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    assert_eq!(
+        world.git(
+            &fixture.origin,
+            &["log", "-1", "--format=%s", "feature/engine"]
+        ),
+        "feat: filter what the engine relays",
+        "it landed on the branch it was opened against"
+    );
+    assert_eq!(
+        fixture.origin_log(),
+        vec![
+            "feat: land something else",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ],
+        "and the root is exactly what everybody else left there"
     );
 }
 
