@@ -1221,6 +1221,40 @@ fn a_scoped_recoverable_answer_names_the_identity_it_covers() {
         .stdout(predicate::str::contains("across every registered identity"))
         .stdout(predicate::str::contains("feature/under-the-other-identity"));
 
+    // Asked from the checkout that does hold work, the rows arrive under a header
+    // naming what they are the whole of — and the way to ask wider is repeated
+    // after them, where an answer long enough to scroll is read from.
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    let reported = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        reported.starts_with("1 preserved unpublished branch(es) in "),
+        "{reported}"
+    );
+    assert!(
+        reported
+            .lines()
+            .next()
+            .expect("a header")
+            .contains(&fixture.checkout.to_string_lossy().into_owned()),
+        "the header names the checkout the scope came from: {reported}"
+    );
+    assert!(
+        reported.contains("feature/under-the-other-identity"),
+        "{reported}"
+    );
+    assert!(
+        reported
+            .trim_end()
+            .ends_with("outside every registered checkout to see them all."),
+        "{reported}"
+    );
+
     // The same for a consumer parsing the document: the answer stays exactly what
     // it was, and what it was scoped to is said where no parser meets it.
     let assert = fixture
