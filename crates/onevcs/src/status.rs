@@ -360,10 +360,15 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let mut ahead = None;
     let mut branch_provenance = None;
     let mut change_base = None;
-    let mut carried = false;
+    let mut on_the_branch = OnTheBranch::Nowhere;
     if let Some((repo, compared)) = &carrier {
-        ahead = Some(git::log_messages(repo, compared, &work.branch)?.len());
-        carried = !git::trees_differ(repo, compared, &work.branch)?;
+        let counted = git::log_messages(repo, compared, &work.branch)?.len();
+        ahead = Some(counted);
+        on_the_branch = if git::trees_differ(repo, compared, &work.branch)? {
+            OnTheBranch::Ahead
+        } else {
+            OnTheBranch::Carried { ahead: counted }
+        };
         branch_provenance = Some(judge_provenance(repo, compared, &work.branch, &trailers)?);
         change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?;
     }
@@ -383,16 +388,16 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let target = change_base.clone().unwrap_or_else(|| base.clone());
     let host = ask_the_host(&resolution.key, &work.branch, &target, hosting);
     let state = landing(
-        Landed {
-            carried,
-            ahead,
-            open_on_the_host: host.open.is_some(),
-            host_answered: matches!(host.checks, ChecksReport::Reported { .. }),
-            change_recorded: change_url.is_some(),
+        on_the_branch,
+        host.said(),
+        match (change_url.is_some(), asked_the_host_to_land) {
+            (false, _) => Proposed::Never,
+            (true, false) => Proposed::Opened,
+            (true, true) => Proposed::OpenedAndAskedToLand,
         },
-        asked_the_host_to_land,
     );
-    let change_url = host.open.clone().or(change_url);
+    let (open, checks) = host.into_parts();
+    let change_url = open.or(change_url);
 
     let next = next_step(&Advance {
         resolution: &resolution,
@@ -432,20 +437,50 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             change_url,
             merge_policy: resolved.policy.publication,
         },
-        checks: host.checks,
+        checks,
         gate,
         next,
         notes,
     })
 }
 
-/// What the branch and the host together say about where the work has got to.
-struct Landed {
-    carried: bool,
-    ahead: Option<usize>,
-    open_on_the_host: bool,
-    host_answered: bool,
-    change_recorded: bool,
+/// What the branch's own copies say, which is the evidence that stands whatever
+/// the host says and whoever merged it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnTheBranch {
+    /// Nothing this identity keeps work in holds the branch.
+    Nowhere,
+    /// It has commits whose content the base does not carry.
+    Ahead,
+    /// The base already carries everything it changed, over this many commits of
+    /// its own — nought being a branch that is the base.
+    Carried {
+        /// How many commits it has that the base does not have by name.
+        ahead: usize,
+    },
+}
+
+/// What the host said about a change request from this branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnTheHost {
+    /// It could not be asked, so it has said nothing — which is not the same as
+    /// saying there is nothing.
+    Unasked,
+    /// It answered, and holds no open change request from this branch.
+    NothingOpen,
+    /// It answered, and holds one open.
+    Open,
+}
+
+/// What this host recorded about ever proposing the work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Proposed {
+    /// Nothing here opened a change request for it.
+    Never,
+    /// One was opened, and nothing asked the host to land it.
+    Opened,
+    /// One was opened, and the host was asked to land it once its checks pass.
+    OpenedAndAskedToLand,
 }
 
 /// Which of the seven states the work is in.
@@ -454,36 +489,66 @@ struct Landed {
 /// answer that stays true whatever the host says and whoever merged it, and it is
 /// the answer a planner got wrong by consulting the absence of an open change
 /// request instead.
-fn landing(seen: Landed, asked_the_host_to_land: bool) -> Landing {
-    if seen.carried {
-        return match seen.ahead {
-            Some(0) | None => Landing::NothingToPublish,
-            Some(_) => Landing::Landed,
-        };
+fn landing(branch: OnTheBranch, host: OnTheHost, proposed: Proposed) -> Landing {
+    match branch {
+        OnTheBranch::Carried { ahead: 0 } => return Landing::NothingToPublish,
+        OnTheBranch::Carried { .. } => return Landing::Landed,
+        OnTheBranch::Ahead | OnTheBranch::Nowhere => {}
     }
-    if seen.open_on_the_host {
-        return if asked_the_host_to_land {
-            Landing::Queued
-        } else {
-            Landing::Open
-        };
-    }
-    if !seen.change_recorded {
-        return Landing::Unpublished;
-    }
-    // A change request was opened once. Whether it is still open is the host's to
-    // say, and a host that would not say has not said it was closed.
-    if seen.host_answered {
-        Landing::Closed
-    } else {
-        Landing::Published
+    match (host, proposed) {
+        (OnTheHost::Open, Proposed::OpenedAndAskedToLand) => Landing::Queued,
+        (OnTheHost::Open, _) => Landing::Open,
+        (_, Proposed::Never) => Landing::Unpublished,
+        // A change request was opened once. Whether it is still open is the host's
+        // to say, and a host that would not say has not said it was closed.
+        (OnTheHost::NothingOpen, _) => Landing::Closed,
+        (OnTheHost::Unasked, _) => Landing::Published,
     }
 }
 
 /// What the host says, and — where it says nothing — why.
-struct HostAnswer {
-    open: Option<String>,
-    checks: ChecksReport,
+enum HostAnswer {
+    /// No host answers for this identity, or the one that does could not be asked.
+    /// It has therefore said nothing at all — including nothing about there being
+    /// no change request.
+    Unasked {
+        /// What the host, the credential, or `gh` itself said.
+        because: String,
+    },
+    /// It answered, and holds no open change request from this branch.
+    NothingOpen,
+    /// It holds one open, and this is what it says about that change's checks —
+    /// which a credential may be allowed to see less of than the change itself.
+    Open {
+        /// Where a human reads it.
+        url: String,
+        /// Its checks, or why they could not be read.
+        checks: ChecksReport,
+    },
+}
+
+impl HostAnswer {
+    /// What the host said, for the one decision that reads it.
+    fn said(&self) -> OnTheHost {
+        match self {
+            HostAnswer::Unasked { .. } => OnTheHost::Unasked,
+            HostAnswer::NothingOpen => OnTheHost::NothingOpen,
+            HostAnswer::Open { .. } => OnTheHost::Open,
+        }
+    }
+
+    /// The change request it holds open, and the section the report prints.
+    fn into_parts(self) -> (Option<String>, ChecksReport) {
+        let reported = || ChecksReport::Reported {
+            checks: Vec::new(),
+            sources: Vec::new(),
+        };
+        match self {
+            HostAnswer::Unasked { because } => (None, ChecksReport::Unavailable { because }),
+            HostAnswer::NothingOpen => (None, reported()),
+            HostAnswer::Open { url, checks } => (Some(url), checks),
+        }
+    }
 }
 
 /// Ask the host what the change request is doing, never failing over the answer.
@@ -493,59 +558,46 @@ struct HostAnswer {
 /// command that produces nothing. A local identity has no host at all, which is
 /// the same shape of gap and says so in the same place.
 fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting) -> HostAnswer {
-    let unavailable = |open: Option<String>, because: String| HostAnswer {
-        open,
-        checks: ChecksReport::Unavailable { because },
-    };
-    let nothing_to_report = |open: Option<String>| HostAnswer {
-        open,
-        checks: ChecksReport::Reported {
-            checks: Vec::new(),
-            sources: Vec::new(),
-        },
-    };
+    let unasked = |because: String| HostAnswer::Unasked { because };
     let Some(slug) = gh::slug(identity) else {
-        return unavailable(
-            None,
-            format!(
-                "identity {identity:?} is not a {} repository, so no host answers for it",
-                gh::HOST
-            ),
-        );
+        return unasked(format!(
+            "identity {identity:?} is not a {} repository, so no host answers for it",
+            gh::HOST
+        ));
     };
     let host = match hosting.for_repo(&slug) {
         Ok(host) => host,
-        Err(error) => return unavailable(None, error.to_string()),
+        Err(error) => return unasked(error.to_string()),
     };
     let open = match host.find_changes(branch, base) {
         Ok(changes) => changes.into_iter().next(),
-        Err(error) => return unavailable(None, error.to_string()),
+        Err(error) => return unasked(error.to_string()),
     };
     let Some(change) = open else {
-        return nothing_to_report(None);
+        return HostAnswer::NothingOpen;
     };
     let url = change.url.to_string();
-    match host.change_checks(&change) {
-        Ok(answer) => HostAnswer {
-            open: Some(url),
-            checks: ChecksReport::Reported {
-                checks: answer
-                    .checks
-                    .into_iter()
-                    .map(|check| CheckReport {
-                        name: check.name,
-                        status: check.status,
-                        conclusion: check.conclusion,
-                        required: check.required,
-                    })
-                    .collect(),
-                sources: answer.sources.into_iter().collect(),
-            },
+    let checks = match host.change_checks(&change) {
+        Ok(answer) => ChecksReport::Reported {
+            checks: answer
+                .checks
+                .into_iter()
+                .map(|check| CheckReport {
+                    name: check.name,
+                    status: check.status,
+                    conclusion: check.conclusion,
+                    required: check.required,
+                })
+                .collect(),
+            sources: answer.sources.into_iter().collect(),
         },
         // The change request is open — that much the host did say — and only what
         // its checks are doing is missing.
-        Err(error) => unavailable(Some(url), error.to_string()),
-    }
+        Err(error) => ChecksReport::Unavailable {
+            because: error.to_string(),
+        },
+    };
+    HostAnswer::Open { url, checks }
 }
 
 /// Everything the next step is decided from.
