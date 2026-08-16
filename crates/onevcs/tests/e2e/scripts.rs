@@ -1238,8 +1238,9 @@ fn a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently() 
 
     let recorded = harness.read("evidence.md");
     assert!(
-        recorded.contains("the repository at <tmp> says mutated"),
-        "the run's own directory is a placeholder, and what it said is not:\n{recorded}"
+        recorded.contains("the repository at <tmp> minted <token> at <time> and says mutated"),
+        "every value only this run would spell is a placeholder, and what it said is \
+         not:\n{recorded}"
     );
     assert!(
         !recorded.contains(&harness.root().display().to_string()),

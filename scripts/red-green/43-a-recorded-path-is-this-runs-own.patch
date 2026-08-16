@@ -1,14 +1,18 @@
-Mutation: a recorded diagnostic keeps the scratch path the run happened to use.
+Mutation: a recorded diagnostic keeps the values only this run would spell.
 Red: a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index 3238e95..f1eeaf6 100755
+index 3238e95..c33cfee 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -215,9 +215,7 @@ failure_line() {
-   # one could never be re-made byte for byte — and an artifact nobody can re-make is
-   # the thing this whole harness exists to replace. Only the scratch root is
-   # replaced: what the refusal named under it is what makes the line evidence.
+@@ -211,13 +211,7 @@ failure_line() {
+   if [ -z "$line" ]; then
+     line="the run named no assertion — see $log"
+   fi
+-  # A scratch directory is named differently on every run, so a transcript carrying
+-  # one could never be re-made byte for byte — and an artifact nobody can re-make is
+-  # the thing this whole harness exists to replace. Only the scratch root is
+-  # replaced: what the refusal named under it is what makes the line evidence.
 -  sed 's/^ *//; s/[│├└─]//g; s/^ *//' <<<"$line" \
 -    | sed -E 's#[/A-Za-z0-9._-]*/\.tmp[A-Za-z0-9]+#<tmp>#g' \
 -    | cut -c1-140
