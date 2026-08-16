@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 89. Tests observed red and then green: 112.
+Patches: 95. Tests observed red and then green: 117.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -507,6 +507,18 @@ status resolves a change request's URL as no reference at all, which is the stat
 - RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(is a name git would not accept)
 - RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected failure.
 
+### `74-a-session-is-cut-from-a-stale-local-base`
+
+the clone takes the lender's local branches for origin's own refs.
+
+- RED `a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch` — assertion `left == right` failed: the worktree is cut at what origin holds, not at what the lender remembers
+
+### `75-a-pinned-resume-cuts-a-second-worktree`
+
+a pinned branch a session already holds is not resumed.
+
+- RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — Unexpected failure.
+
 ### `75-an-ambiguous-reference-answers-with-the-first-candidate`
 
 status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
@@ -519,17 +531,41 @@ status stops noticing that an open session holds the branch, so it names the ver
 
 - RED `work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it` — assertion `left == right` failed: an open session's branch is published through the session
 
+### `76-an-occupied-session-is-taken-up-anyway`
+
+the occupancy question is asked about a run root nobody is in.
+
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — Unexpected failure.
+
 ### `77-a-base-that-carries-the-work-is-read-as-unpublished`
 
 status stops reading a landing off the base's content, which is the answer a squash-merge leaves and the one a planner got wrong.
 
 - RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — assertion `left == right` failed
 
+### `77-an-unpinned-request-takes-up-somebody-elses-session`
+
+a request that pinned no branch resumes whatever session it finds.
+
+- RED `a_session_that_pins_no_branch_is_cut_fresh_every_time` — assertion `left != right` failed
+
 ### `78-a-host-that-could-not-be-asked-is-read-as-one-with-nothing-to-say`
 
 status reports a host it could not reach as a host that answered there is nothing, so a gap in the report reads as an answer.
 
 - RED `a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_rest` — assertion `left == right` failed
+
+### `78-an-ambiguous-pin-picks-one-by-coin-toss`
+
+two sessions holding one name, and whichever is found first is taken.
+
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+
+### `79-a-pin-resumes-a-session-nobody-asked-for`
+
+a pin resumes a record without asking whether it is the session asked for, or still there.
+
+- RED `a_pin_resumes_only_the_session_it_asked_for` — assertion `left != right` failed: a closed session is not resumed
 
 ### `79-a-source-nobody-named-is-not-searched-for`
 
