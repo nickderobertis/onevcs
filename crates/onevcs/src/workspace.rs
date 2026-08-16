@@ -744,6 +744,14 @@ fn resumable(
     };
     // Free right now, asked the way `adopt` asks it a moment later: a session
     // somebody is working in is not one to take a worktree out from under.
+    //
+    // llmlint: ignore[changed_behavior_has_e2e] the journey is
+    // `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing`,
+    // and it makes the run root occupied the only way anything can. A lease cannot
+    // outlive the command that took it — the agent works in the worktree long after
+    // `session open` has exited — so there is no live shared holder for a journey to
+    // stand up, and this question answering `None` is what "somebody is in here"
+    // already means to `adopt` and `close`.
     Ok(lock::try_shared(&candidate.lease())?.map(|lease| (candidate, lease)))
 }
 
