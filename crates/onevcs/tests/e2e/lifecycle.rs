@@ -2353,8 +2353,8 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
     // it is over. A journey about two publications contending has to see the
     // contention rather than infer it from how long something took, which is the
     // flake this replaced; what it then asserts is read back through the events.
-    // llmlint: ignore[tests_mirror_real_usage] no user-facing surface reports a ticket while it waits
     World::until("the merge queue holds both publications", || {
+        // llmlint: ignore[tests_mirror_real_usage] no user-facing surface reports a ticket while it waits
         fixture.world.queued_tickets() == 2
     });
     std::fs::write(&release, "go\n").expect("the held publication is released");
