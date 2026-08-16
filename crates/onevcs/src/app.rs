@@ -22,7 +22,8 @@ use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken}
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::{
-    git, integrate, lock, policy, provenance, publish, publish_branch, recover, stream, workspace,
+    git, guidance, integrate, lock, policy, provenance, publish, publish_branch, recover, stream,
+    workspace,
 };
 
 /// Run one parsed command, returning its exit code.
@@ -333,23 +334,63 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // anywhere else, it answers across every registered identity. Both are
     // documented views, and which one somebody wants is answered by where they ask.
     let registry = store::load()?;
-    let scope = match resolve_here(&registry) {
-        Ok(resolution) => Scope::Repo(resolution.alias),
-        Err(_) => Scope::All,
+    // The registry document has been validated by the load above, and every alias
+    // this compares against came out of it, so the failure discarded here is the
+    // documented one — this directory is not inside a registered checkout — or an
+    // unreadable current directory, which widens the question rather than narrowing
+    // it and can therefore hide no work.
+    // llmlint: ignore[boundary_inputs_validated] discards only which of two documented answers to give
+    let here = resolve_here(&registry).ok();
+    let scope = match &here {
+        Some(resolution) => Scope::Repo(resolution.alias.clone()),
+        None => Scope::All,
     };
     let rows = providers.vcs.recoverable(scope)?;
+    // Nobody types the scope — the directory decides it — so every rendering names
+    // it. Unsaid, a scoped answer reads as the whole host's, and another identity's
+    // preserved work reads as work nobody has.
+    let scoped = here.as_ref().map(|resolution| {
+        format!(
+            "{} — the identity of {}, the registered checkout this was run in",
+            resolution.key,
+            resolution.publication.display()
+        )
+    });
+    let widen = "Only that identity is covered: run `onevcs recoverable` from a directory \
+                 outside every registered checkout to see them all.";
     if args.json {
+        // The document itself is the answer and stays exactly what a consumer
+        // parses; the scope it was answered under is *about* the answer, so it goes
+        // where a consumer's parser will not meet it.
+        if let Some(scoped) = &scoped {
+            eprintln!("onevcs: this answer covers {scoped}. {widen}");
+        }
         println!("{}", serde_json::to_string(&rows).map_err(serialization)?);
         return Ok(0);
     }
     if rows.is_empty() {
-        println!(
-            "No preserved unpublished branches. Every branch across the registered identities \
-             has reached its base or a remote."
-        );
+        match &scoped {
+            Some(scoped) => println!(
+                "No preserved unpublished branches in {scoped}. Every branch of it has reached \
+                 its base or a remote.\n{widen}"
+            ),
+            None => println!(
+                "No preserved unpublished branches. Every branch across the registered \
+                 identities has reached its base or a remote."
+            ),
+        }
         return Ok(0);
     }
-    println!("{} preserved unpublished branch(es):", rows.len());
+    match &scoped {
+        Some(scoped) => println!(
+            "{} preserved unpublished branch(es) in {scoped}:",
+            rows.len()
+        ),
+        None => println!(
+            "{} preserved unpublished branch(es) across every registered identity:",
+            rows.len()
+        ),
+    }
     for row in rows {
         let kind = match row.branch.provenance {
             Provenance::IncompleteStep => "incomplete step (provenance marker)",
@@ -358,7 +399,18 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         println!("{}  [{}]  {kind}", row.branch.branch, row.identity);
         println!("    Found in: {}", row.checkout.display());
         println!("    Stopped because: {}", row.stopped_because);
-        println!("    Resume: {}", row.recover_command.join(" "));
+        // Quoted, because this line is read to be pasted: the argv is the answer,
+        // and a checkout whose path a shell would split turns it into a command
+        // that names a different repository.
+        println!(
+            "    Resume: {}",
+            guidance::command(row.recover_command.iter().map(String::as_str))
+        );
+    }
+    // After the rows as well as before them: a scoped answer long enough to scroll
+    // is exactly the one whose header has gone by unread.
+    if scoped.is_some() {
+        println!("{widen}");
     }
     Ok(0)
 }

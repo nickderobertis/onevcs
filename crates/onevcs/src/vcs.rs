@@ -1,10 +1,10 @@
 //! The repository side of the seam.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
-use crate::host::Hosting;
+use crate::host::{Hosting, Sha};
 use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
@@ -204,6 +204,40 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
     }
 }
 
+/// What a branch held in `repo` is judged against: the identity's base *now*,
+/// named by a commit `repo` can reach.
+///
+/// A run clone's remote-tracking refs are frozen at the moment it was cut, so its
+/// own `origin/main` can be many merges behind. Judged against that, a branch whose
+/// work landed weeks ago still looks like work nobody published — and a name whose
+/// meaning is spent still looks like a name that means something. The lender keeps
+/// fetching and the clone borrows its objects, so the current base is usually a
+/// commit the clone has even though no ref of its own names it; one that cannot
+/// reach it — a clone whose lender has itself fallen behind — is judged against its
+/// own view, which is the best answer available there.
+// The two states this answers with are deliberately one type, as `base_ref` beside it
+// and `Landing::compared_change_base` already are: what comes back is a *comparison
+// target*, and git resolves a ref name and a commit id identically at every call that
+// takes one. Distinguishing them in the type would only oblige each of those call
+// sites to collapse the distinction again, and the thing that must not be confused
+// with either — a branch name this crate writes — is `Ref`, which neither of these is.
+// llmlint: ignore[invalid_states_unrepresentable] a comparison target git resolves either way
+pub fn judged_against(repo: &Path, base: &str, current: Option<&Sha>) -> String {
+    match current {
+        Some(sha) if git::has_commit(repo, sha) => sha.0.clone(),
+        _ => base_ref(repo, base),
+    }
+}
+
+/// The commit a checkout's base ref stands at.
+///
+/// Asked of the publication checkout, which is the one every publication
+/// fast-forwards and therefore the freshest view of the base this host keeps — not
+/// a guarantee of the newest there is, which only the remote can answer for.
+pub fn base_commit(checkout: &Path, base: &str) -> Option<Sha> {
+    git::tip(checkout, &base_ref(checkout, base)).map(Sha)
+}
+
 /// Every preserved, unpublished branch in scope, newest first.
 ///
 /// Read-only in the strongest sense: it opens repositories to ask questions, writes
@@ -221,24 +255,27 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
 
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
-    for (alias, checkout) in &registry.checkouts {
-        if wanted.as_ref().is_some_and(|key| key != &checkout.identity) {
+    // Once per identity rather than once per checkout of one, because the places a
+    // branch of it can be are a property of the identity — and they are read from
+    // the one list the verbs that go on to *land* a branch read, so this report
+    // cannot come to offer branches nothing can reach, or miss ones something can.
+    let mut identities: Vec<&str> = registry
+        .checkouts
+        .values()
+        .map(|checkout| checkout.identity.as_str())
+        .collect();
+    identities.sort_unstable();
+    identities.dedup();
+    for identity in identities {
+        if wanted.as_ref().is_some_and(|key| key != identity) {
             continue;
         }
-        let publication = registry
-            .checkouts
-            .values()
-            .find(|other| other.identity == checkout.identity)
-            .map(|other| other.path.clone())
-            .unwrap_or_else(|| checkout.path.clone());
-        let mut searched: Vec<PathBuf> = vec![checkout.path.clone()];
-        searched.extend(
-            sessions
-                .iter()
-                .filter(|record| record.identity == checkout.identity)
-                .map(|record| record.clone.clone()),
-        );
-        for repo in searched {
+        let resolution = store::resolve(&registry, identity)?;
+        let publication = resolution.publication.clone();
+        let current = git::default_branch(&publication, "origin")
+            .ok()
+            .and_then(|base| base_commit(&publication, &base));
+        for repo in workspace::checkouts_of(&registry, &resolution)? {
             if !git::is_repo(&repo) {
                 continue;
             }
@@ -246,13 +283,12 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 Ok(base) => base,
                 Err(_) => continue,
             };
-            let compared = base_ref(&repo, &base);
+            let compared = judged_against(&repo, &base, current.as_ref());
             for branch in git::unpublished_branches(&repo)? {
-                let key = (checkout.identity.clone(), branch.clone());
+                let key = (identity.to_owned(), branch.clone());
                 if seen.contains(&key) {
                     continue;
                 }
-                seen.push(key);
                 // Unpublished by ref is not the same as unfinished: publication
                 // squashes, so a branch that landed is never an ancestor of the
                 // base afterwards. What answers the question is whether the base
@@ -260,6 +296,11 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 if !git::trees_differ(&repo, &compared, &branch)? {
                     continue;
                 }
+                // Marked seen only once it is a row, so that one repository's spent
+                // copy of a name cannot answer for another's: a branch published out
+                // of the checkout and re-cut in a later run has both, and the first
+                // has nothing left in it.
+                seen.push(key);
                 // A marker under a prefix this host does not read is still a marker:
                 // reporting the branch as complete is what would let somebody hand
                 // interrupted work to the verb that publishes a finished one.
@@ -292,21 +333,24 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                          file to {prefix:?} before publishing it"
                     ));
                 }
-                let recover_command = if incomplete {
-                    vec![
-                        "onevcs".to_owned(),
-                        "recover".to_owned(),
-                        branch.clone(),
-                        "--repo".to_owned(),
-                        publication.display().to_string(),
-                    ]
+                // The verb its provenance earns, taking the repository by path so
+                // that the command runs wherever the row is read.
+                let verb = if incomplete {
+                    "recover"
                 } else {
-                    vec!["onevcs".to_owned(), "integrate".to_owned(), branch.clone()]
+                    "publish-branch"
                 };
+                let recover_command = vec![
+                    "onevcs".to_owned(),
+                    verb.to_owned(),
+                    branch.clone(),
+                    "--repo".to_owned(),
+                    publication.display().to_string(),
+                ];
                 rows.push((
                     git::committed_at(&repo, &branch),
                     Recoverable {
-                        identity: checkout.identity.clone(),
+                        identity: identity.to_owned(),
                         branch: PreservedBranch {
                             branch: branch.clone(),
                             base: base.clone(),
@@ -321,7 +365,6 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 ));
             }
         }
-        let _ = alias;
     }
     rows.sort_by_key(|(at, row)| {
         (

@@ -146,7 +146,7 @@ fn a_session_opens_preserves_publishes_and_the_change_lands_on_the_real_reposito
     assert_eq!(row.branch.provenance, Provenance::Complete);
     assert_eq!(
         row.recover_command[..3],
-        ["onevcs", "integrate", branch.as_str()]
+        ["onevcs", "publish-branch", branch.as_str()]
     );
 
     let title = format!("feat: land {branch}");

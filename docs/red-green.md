@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 32. Tests observed red and then green: 46.
+Patches: 39. Tests observed red and then green: 53.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -35,16 +35,16 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 integrate's team and remote refusals go back to naming no command.
 
 - RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — the refusal routes claude/one nowhere:
-- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpO2ZN5K/remote-owner`)
+- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpVHrPH6/remote-owner`)
 - RED `every_state_a_branch_can_be_in_has_a_verb_that_takes_it` — the train's refusal names no command: onevcs: invalid input: direct integration is refused for identity "github.com/acme-corp/hosted" (repo_
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpZuDMme/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpJbX4is/a checkout with spaces'`)
 
 ### `03-recovery-hands-every-branch-to-the-train`
 
 recover's handoff names `integrate` whatever the identity is, which is the verb half of them refuse.
 
 - RED `recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publish_it` — the handoff names no command: onevcs: invalid input: branch "feature/handed-over" carries no unattested incomplete provenance: it has commit
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpOTE1yE/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmptNhK38/a checkout with spaces'`)
 
 ### `04-interrupted-work-published-as-finished`
 
@@ -69,13 +69,13 @@ the branch-keyed sync conflict goes back to stating that the two conflict.
 
 the publication path's sync conflict goes back to stating that the branch is retained.
 
-- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpLDInle/project`)
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmpGhEN41/project`)
 
 ### `08-printed-commands-are-not-quoted`
 
 an argument a shell would split is printed as it is.
 
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpKhyoOR/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpL6VYa9/a checkout with spaces'`)
 
 ### `09-a-repository-path-read-lossily`
 
@@ -113,7 +113,7 @@ a publication stops running the gate the policy names.
 
 the refusal that nothing would be attested stops naming the rules entry that answers it.
 
-- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpPkzcWv/.onevcs/rules.yml)
+- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmp6rFYcE/.onevcs/rules.yml)
 
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
@@ -140,7 +140,7 @@ the branch-keyed refusals stop naming the command that lists the branches there 
 
 the train's no-subject skip goes back to reporting the synthesis failure alone.
 
-- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpiOIWxc/project --title <T>`
+- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpowWP7D/project --title <T>`
 
 ### `19-the-verb-is-not-written-down`
 
@@ -227,4 +227,48 @@ the harness goes back to a builtin the shell macOS ships does not have.
 
 - RED `the_harness_still_refuses_where_the_shell_has_no_bash_four_builtins` — stderr does not report "no-such-ref does not name a commit here":
 - RED `no_script_reaches_for_something_the_shell_macos_ships_does_not_have` — macOS ships bash 3.2, where a script that reaches for one of these aborts before the diagnostic it exists to print:
+
+### `33-work-left-in-a-run-clone-is-not-searched-for`
+
+the search for an identity stops at its registered checkouts.
+
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — the run clone is where the branch is: No preserved unpublished branches in /tmp/.tmpynnTdg/project — the identity of /tmp/.tmpynnTdg/proje
+
+### `34-the-command-a-row-names-cannot-land-it`
+
+finished work is offered to the local train instead of the verb that lands one branch.
+
+- RED `recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns` — assertion `left == right` failed
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — assertion `left == right` failed: 1 preserved unpublished branch(es) in /tmp/.tmpdnODhC/project — the identity of /tmp/.tmpdnODhC/project,
+- RED `session_events_match_across_backends` — assertion `left == right` failed: Git offers finished work the verb that lands one branch
+
+### `35-a-scoped-answer-reads-as-the-whole-hosts`
+
+the report does not say which identity it answered for.
+
+- RED `a_scoped_recoverable_answer_names_the_identity_it_covers` — Unexpected stdout, failed var.contains(No preserved unpublished branches in)
+
+### `36-a-pin-is-cut-fresh-and-says-nothing`
+
+a pinned branch name is taken on trust.
+
+- RED `a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh` — Unexpected return code, failed var == 2
+
+### `37-a-spent-name-answers-for-a-live-one`
+
+the first repository to hold a name answers for it, spent or not.
+
+- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
+
+### `38-a-spent-copy-of-a-name-is-published`
+
+a branch is located by name alone, spent copy or not.
+
+- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — Unexpected stdout, failed var.contains(merged at)
+
+### `39-a-base-nobody-can-reach-judges-the-branch`
+
+a base the repository cannot reach is used to judge it anyway.
+
+- RED `a_run_clone_that_cannot_reach_the_base_is_judged_against_the_one_it_can` — Unexpected failure.
 

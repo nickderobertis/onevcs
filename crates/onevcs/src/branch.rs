@@ -148,7 +148,8 @@ pub fn prepare(
     let resolved = policy::resolve(&file, &rules_source, &normalized, &resolution.publication);
     let rules_file = rules_source.file()?;
     let effective = publish::effective_policy(&resolved.policy, requested)?;
-    let source = locate(registry, &resolution, branch)?;
+    let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
+    let source = locate(registry, &resolution, branch, &base)?;
 
     let run_root = home::workspaces_dir()?.join(verb.runs()).join(format!(
         "{}-{}",
@@ -159,7 +160,6 @@ pub fn prepare(
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
 
-    let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
     let origin = git::remote_url(&source, "origin")
         .unwrap_or_else(|_| source.to_string_lossy().into_owned());
     git::retain_objects_for_borrowers(&source)?;
@@ -361,27 +361,40 @@ impl Landing {
     }
 }
 
-/// Find the checkout a branch can be read out of.
+/// Find the checkout a branch can be read out of, and the copy of it that is the
+/// work rather than the name.
 ///
-/// The publication checkout is searched first, because a branch only reaches it
-/// once something has already pushed it — a branch that reaches publication on its
-/// first attempt exists solely in the execution checkout the work was done in.
-fn locate(registry: &Registry, resolution: &Resolution, branch: &str) -> Result<PathBuf> {
-    let mut searched: Vec<PathBuf> = vec![resolution.publication.clone()];
-    for checkout in registry.checkouts.values() {
-        if checkout.identity == resolution.key && !searched.contains(&checkout.path) {
-            searched.push(checkout.path.clone());
-        }
-    }
-    for record in crate::workspace::all()? {
-        if record.identity == resolution.key && !searched.contains(&record.clone) {
-            searched.push(record.clone.clone());
-        }
-    }
+/// The order is [`crate::workspace::checkouts_of`]'s, and the publication checkout
+/// is first in it because a branch only reaches that one once something has already
+/// pushed it — a branch that reaches publication on its first attempt exists solely
+/// in the execution checkout the work was done in, or in the run clone of the
+/// session that stopped. A name can be in several of them at once, though, and a
+/// copy whose content the base already carries is spent: publishing that one would
+/// answer that there is nothing to publish while the work sat under the same name
+/// somewhere else. So the first copy holding work wins, and a spent one is taken
+/// only when every copy is spent — where "nothing to publish" is the true answer,
+/// and a better one than a branch nobody has.
+fn locate(
+    registry: &Registry,
+    resolution: &Resolution,
+    branch: &str,
+    base: &str,
+) -> Result<PathBuf> {
+    let searched = crate::workspace::checkouts_of(registry, resolution)?;
+    let current = crate::vcs::base_commit(&resolution.publication, base);
+    let mut spent: Option<PathBuf> = None;
     for candidate in &searched {
-        if git::is_repo(candidate) && git::branch_exists(candidate, branch) {
+        if !git::is_repo(candidate) || !git::branch_exists(candidate, branch) {
+            continue;
+        }
+        let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
+        if git::trees_differ(candidate, &compared, branch)? {
             return Ok(candidate.clone());
         }
+        spent.get_or_insert_with(|| candidate.clone());
+    }
+    if let Some(candidate) = spent {
+        return Ok(candidate);
     }
     Err(Error::Invalid {
         reason: format!(

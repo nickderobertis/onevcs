@@ -1,0 +1,23 @@
+Mutation: the first repository to hold a name answers for it, spent or not.
+Red: a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it
+
+diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
+index d54609a..3df2e29 100644
+--- a/crates/onevcs/src/vcs.rs
++++ b/crates/onevcs/src/vcs.rs
+@@ -281,14 +281,10 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
+                 // squashes, so a branch that landed is never an ancestor of the
+                 // base afterwards. What answers the question is whether the base
+                 // already carries this branch's content.
++                seen.push(key);
+                 if !git::trees_differ(&repo, &compared, &branch)? {
+                     continue;
+                 }
+-                // Marked seen only once it is a row, so that one repository's spent
+-                // copy of a name cannot answer for another's: a branch published out
+-                // of the checkout and re-cut in a later run has both, and the first
+-                // has nothing left in it.
+-                seen.push(key);
+                 // A marker under a prefix this host does not read is still a marker:
+                 // reporting the branch as complete is what would let somebody hand
+                 // interrupted work to the verb that publishes a finished one.

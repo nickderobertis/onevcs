@@ -1,0 +1,22 @@
+Mutation: finished work is offered to the local train instead of the verb that lands one branch.
+Red: recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns
+Red: work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named
+Red: session_events_match_across_backends
+
+diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
+index d54609a..47276fe 100644
+--- a/crates/onevcs/src/vcs.rs
++++ b/crates/onevcs/src/vcs.rs
+@@ -323,11 +323,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
+                 }
+                 // The verb its provenance earns, taking the repository by path so
+                 // that the command runs wherever the row is read.
+-                let verb = if incomplete {
+-                    "recover"
+-                } else {
+-                    "publish-branch"
+-                };
++                let verb = if incomplete { "recover" } else { "integrate" };
+                 let recover_command = vec![
+                     "onevcs".to_owned(),
+                     verb.to_owned(),
