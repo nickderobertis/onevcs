@@ -2,27 +2,29 @@ Mutation: a path list this process could not take whole is answered as a commit 
 Red: a_stack_parent_whose_path_this_process_cannot_read_is_replayed_by_content_alone
 
 diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
-index 89bbe7e..cef5326 100644
+index 0fd3b20..86e3060 100644
 --- a/crates/onevcs/src/git.rs
 +++ b/crates/onevcs/src/git.rs
-@@ -778,19 +778,8 @@ pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Resu
+@@ -786,22 +786,8 @@ pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Resu
          .filter(|path| !path.is_empty())
          .map(|path| format!(":(literal){path}"))
          .collect();
--    if touched.is_empty() || !whole {
--        // Nothing to scope a diff by, for one of two reasons: the commit changed
--        // nothing since the fork, or its paths did not reach this process whole. The
--        // two are told apart by asking git, and the second is answered by the same
--        // question asked without paths — a base carrying this commit's whole tree
--        // carries its changes too, which is the one answer that cannot be wrong about
--        // a path nobody here could name.
--        if trees_differ(cwd, fork, commit)? {
--            return Ok(!trees_differ(cwd, base, commit)?);
--        }
--        // Otherwise the commit changed nothing since the fork, and a base built on
--        // that fork carries the nothing it changed.
+-    // How many paths there are is asked of git separately, in a report that is ASCII
+-    // whatever the repository names its files, and the two answers have to agree
+-    // before a diff is scoped by the names. Paths are bytes and this process reads
+-    // git's output as text, so how much of a listing survived that is a question to
+-    // settle rather than to assume — a comparison scoped by *some* of the paths a
+-    // commit touched would answer that the base carries it when the base does not.
+-    if touched.len() != counted_files(cwd, fork, commit)? {
+-        // Which leaves the same question asked without paths: a base carrying this
+-        // commit's whole tree carries its changes too, and that is the one answer
+-        // that cannot be wrong about a path nobody here could name.
+-        return Ok(!trees_differ(cwd, base, commit)?);
+-    }
+     if touched.is_empty() {
+-        // The commit changed nothing since the fork, and a base built on that fork
+-        // carries the nothing it changed.
 -        return Ok(true);
-+    if touched.is_empty() {
 +        return Ok(false);
      }
      let mut args = vec!["diff", "--quiet", commit, base, "--"];
