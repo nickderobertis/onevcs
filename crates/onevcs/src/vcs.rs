@@ -1,6 +1,6 @@
 //! The repository side of the seam.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
@@ -221,24 +221,24 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
 
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
-    for (alias, checkout) in &registry.checkouts {
-        if wanted.as_ref().is_some_and(|key| key != &checkout.identity) {
+    // Once per identity rather than once per checkout of one, because the places a
+    // branch of it can be are a property of the identity — and they are read from
+    // the one list the verbs that go on to *land* a branch read, so this report
+    // cannot come to offer branches nothing can reach, or miss ones something can.
+    let mut identities: Vec<&str> = registry
+        .checkouts
+        .values()
+        .map(|checkout| checkout.identity.as_str())
+        .collect();
+    identities.sort_unstable();
+    identities.dedup();
+    for identity in identities {
+        if wanted.as_ref().is_some_and(|key| key != identity) {
             continue;
         }
-        let publication = registry
-            .checkouts
-            .values()
-            .find(|other| other.identity == checkout.identity)
-            .map(|other| other.path.clone())
-            .unwrap_or_else(|| checkout.path.clone());
-        let mut searched: Vec<PathBuf> = vec![checkout.path.clone()];
-        searched.extend(
-            sessions
-                .iter()
-                .filter(|record| record.identity == checkout.identity)
-                .map(|record| record.clone.clone()),
-        );
-        for repo in searched {
+        let resolution = store::resolve(&registry, identity)?;
+        let publication = resolution.publication.clone();
+        for repo in workspace::checkouts_of(&registry, &resolution)? {
             if !git::is_repo(&repo) {
                 continue;
             }
@@ -248,7 +248,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
             };
             let compared = base_ref(&repo, &base);
             for branch in git::unpublished_branches(&repo)? {
-                let key = (checkout.identity.clone(), branch.clone());
+                let key = (identity.to_owned(), branch.clone());
                 if seen.contains(&key) {
                     continue;
                 }
@@ -316,7 +316,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 rows.push((
                     git::committed_at(&repo, &branch),
                     Recoverable {
-                        identity: checkout.identity.clone(),
+                        identity: identity.to_owned(),
                         branch: PreservedBranch {
                             branch: branch.clone(),
                             base: base.clone(),
@@ -331,7 +331,6 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 ));
             }
         }
-        let _ = alias;
     }
     rows.sort_by_key(|(at, row)| {
         (
