@@ -892,6 +892,52 @@ fn a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is() {
     );
 }
 
+#[test]
+fn a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording() {
+    // The refusal that reaches the ref itself: the host declines this push under its
+    // own policy, with the branch exactly where this run last saw it. git reports
+    // that per ref, and the remote's own answer says the lease is current — so it is
+    // the rejection it is. What it must never be decided by is the *wording*: this
+    // host says "stale info" for a reason of its own, and a classification that read
+    // the diagnostic as prose would send an operator to reconcile two histories that
+    // never diverged. The same reading fails the other way round on a git that
+    // speaks any other language.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    squash_the_change_below(&hosted, true);
+    hosted.world.install_pre_receive(
+        &hosted.origin,
+        "echo 'refusing: the changelog carries stale info' >&2\nexit 1",
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 1 is the contract's code for a verification the merge path refused.
+        .code(1)
+        .stderr(predicate::str::contains(
+            "the publishing push of \"feature/filter\" was rejected by the merge path",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host"),
+        "the host's own policy is not a branch somebody moved:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("[remote rejected]"),
+        "the refusal hands over git's own per-ref summary:\n{refusal}"
+    );
+}
+
 /// Preserved work on a branch stacked on `feature/engine`, left in the checkout.
 ///
 /// The change below is on the host; the branch's own work and its preserve marker

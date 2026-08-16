@@ -1,0 +1,24 @@
+Mutation: the lease is taken from what this run's own fetch found on the host.
+Red: a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it
+Red: a_replay_of_a_branch_this_run_has_never_seen_on_the_host_is_refused_before_it_pushes
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index a6ed12a..0cd6a21 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -190,7 +190,6 @@ pub fn prepare(
+     // fetch below sets it to whatever the host has now, so a lease taken from it
+     // would name a commit nobody here observed and authorize replacing it. That is
+     // the whole of what a lease is for.
+-    let observed = git::tip(&source, &format!("origin/{branch}"));
+ 
+     let origin = git::remote_url(&source, "origin")
+         .unwrap_or_else(|_| source.to_string_lossy().into_owned());
+@@ -202,6 +201,7 @@ pub fn prepare(
+     git::worktree_add_existing(&clone, &worktree, branch)?;
+     git::fetch(&clone, "origin")?;
+     let hosted = git::tip(&clone, &format!("origin/{branch}"));
++    let observed = hosted.clone();
+ 
+     let compared = crate::vcs::base_ref(&clone, &base);
+     // A recorded base is read back out of a commit the repository carries, so it is

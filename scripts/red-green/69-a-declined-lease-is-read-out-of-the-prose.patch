@@ -1,9 +1,8 @@
-Mutation: every push a leased publication has refused is read as a branch somebody moved.
-Red: a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is
+Mutation: whether the lease was declined is read out of git's diagnostic prose.
 Red: a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index b7193f8..1e9bb1f 100644
+index b7193f8..810393b 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
 @@ -960,19 +960,8 @@ fn declined_the_lease(
@@ -23,8 +22,8 @@ index b7193f8..1e9bb1f 100644
 -            git::RemoteTip::Unknown => false,
 -        },
 -    )
-+    let _ = (context, pushed, replaced, environment);
-+    Ok(true)
++    let _ = (context, replaced, environment);
++    Ok(pushed.output().contains("stale info"))
  }
  
  /// Push the branch, open or adopt its change request, and ask the host to land it.
