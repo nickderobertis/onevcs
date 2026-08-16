@@ -1112,6 +1112,58 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
 }
 
 #[test]
+fn a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // The name is used once and published, so the base carries what it meant as one
+    // squashed commit — and closing hands the branch itself back to the checkout,
+    // where it stays, ahead of the base by commits nothing will publish again.
+    let (first, first_tree) = fixture.open(&["--branch", "feature/reused"]);
+    fixture.world.commit_file(
+        &first_tree,
+        "a.txt",
+        "a\n",
+        "feat: the first use of the name",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &first])
+        .assert()
+        .success();
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &first])
+        .assert()
+        .success();
+
+    // The name is taken again, which is allowed precisely because the base carries
+    // what it meant — and this run stops before anything hands its branch back.
+    let (_second, second_tree) = fixture.open(&["--branch", "feature/reused"]);
+    fixture.world.commit_file(
+        &second_tree,
+        "b.txt",
+        "b\n",
+        "feat: the work that must still be found",
+    );
+    let clone = second_tree.parent().expect("a run root").join("clone");
+
+    // The checkout's copy of the name is spent, and a spent copy answers for
+    // nobody: the live work is under the same name in the run clone.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature/reused"))
+        .stdout(predicate::str::contains(format!(
+            "Found in: {}",
+            clone.display()
+        )));
+}
+
+#[test]
 fn a_scoped_recoverable_answer_names_the_identity_it_covers() {
     // Two identities on one host, and preserved work under only one of them. Run
     // from inside a checkout, this report answers for that checkout's identity
@@ -2157,6 +2209,12 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
     // Whichever reached the push first is held there, so the queue is read rather
     // than timed: two live tickets is the second publication waiting behind the
     // first, and only then is the first let go.
+    //
+    // llmlint: ignore[tests_mirror_real_usage] a *waiting* ticket is observable
+    // nowhere else. `lock-wait` is emitted once the turn has been granted, so every
+    // surface a user has reports the wait only after it is over — and a journey
+    // about two publications contending has to see the contention rather than infer
+    // it from how long something took, which is the flake this replaced.
     World::until("the merge queue holds both publications", || {
         fixture.world.queued_tickets() == 2
     });

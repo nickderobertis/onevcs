@@ -145,15 +145,31 @@ impl World {
     /// moment it starts waiting — before it is at the head, and therefore before it
     /// has emitted anything. A journey about contention has to be able to see that
     /// the contention happened rather than infer it from how long something took.
+    /// A queue that has not been taken yet has no file, which is nought tickets;
+    /// one that is there and unreadable is a finding rather than nought, since a
+    /// journey waiting on this would otherwise wait out its bound and report the
+    /// wait instead of the reason.
     pub fn queued_tickets(&self) -> usize {
         std::fs::read_dir(self.home().join("locks"))
             .into_iter()
             .flatten()
             .flatten()
             .filter(|entry| entry.file_name().to_string_lossy().starts_with("queue-"))
-            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-            .filter_map(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .filter_map(|state| state["tickets"].as_array().map(Vec::len))
+            .map(|entry| {
+                let path = entry.path();
+                let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("the queue state at {} is readable: {e}", path.display())
+                });
+                let state: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+                    panic!("the queue state at {} is JSON: {e}", path.display())
+                });
+                state["tickets"]
+                    .as_array()
+                    .unwrap_or_else(|| {
+                        panic!("the queue state at {} lists its tickets", path.display())
+                    })
+                    .len()
+            })
             .sum()
     }
 

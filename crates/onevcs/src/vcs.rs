@@ -204,6 +204,28 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
     }
 }
 
+/// What a branch held in `repo` is judged against: the identity's base *now*,
+/// named by a commit `repo` can reach.
+///
+/// A run clone's remote-tracking refs are frozen at the moment it was cut, so its
+/// own `origin/main` can be many merges behind. Judged against that, a branch whose
+/// work landed weeks ago still looks like work nobody published — and a name whose
+/// meaning is spent still looks like a name that means something. The lender keeps
+/// fetching and the clone borrows its objects, so the current base is usually a
+/// commit the clone has even though no ref of its own names it.
+pub fn judged_against(repo: &Path, base: &str, current: Option<&str>) -> String {
+    match current {
+        Some(sha) if git::has_commit(repo, sha) => sha.to_owned(),
+        _ => base_ref(repo, base),
+    }
+}
+
+/// The commit an identity's base stands at, read from the checkout publication
+/// fast-forwards — the one place it is kept current.
+pub fn base_now(publication: &Path, base: &str) -> Option<String> {
+    git::tip(publication, &base_ref(publication, base))
+}
+
 /// Every preserved, unpublished branch in scope, newest first.
 ///
 /// Read-only in the strongest sense: it opens repositories to ask questions, writes
@@ -238,6 +260,9 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
         }
         let resolution = store::resolve(&registry, identity)?;
         let publication = resolution.publication.clone();
+        let current = git::default_branch(&publication, "origin")
+            .ok()
+            .and_then(|base| base_now(&publication, &base));
         for repo in workspace::checkouts_of(&registry, &resolution)? {
             if !git::is_repo(&repo) {
                 continue;
@@ -246,13 +271,12 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 Ok(base) => base,
                 Err(_) => continue,
             };
-            let compared = base_ref(&repo, &base);
+            let compared = judged_against(&repo, &base, current.as_deref());
             for branch in git::unpublished_branches(&repo)? {
                 let key = (identity.to_owned(), branch.clone());
                 if seen.contains(&key) {
                     continue;
                 }
-                seen.push(key);
                 // Unpublished by ref is not the same as unfinished: publication
                 // squashes, so a branch that landed is never an ancestor of the
                 // base afterwards. What answers the question is whether the base
@@ -260,6 +284,11 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 if !git::trees_differ(&repo, &compared, &branch)? {
                     continue;
                 }
+                // Marked seen only once it is a row, so that one repository's spent
+                // copy of a name cannot answer for another's: a branch published out
+                // of the checkout and re-cut in a later run has both, and the first
+                // has nothing left in it.
+                seen.push(key);
                 // A marker under a prefix this host does not read is still a marker:
                 // reporting the branch as complete is what would let somebody hand
                 // interrupted work to the verb that publishes a finished one.
@@ -292,15 +321,8 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                          file to {prefix:?} before publishing it"
                     ));
                 }
-                // The verb its provenance earns, spelled so that running it as
-                // printed runs it: both take the branch by name and the repository
-                // by path, so neither depends on where the reader is standing or on
-                // which checkout of the identity happens to carry the branch. The
-                // train is deliberately not named here even for finished work — it
-                // is the local-only batch verb, it reads its candidates out of the
-                // publication checkout alone, and it refuses a team or remote
-                // identity outright, so it lands none of the branches this report is
-                // most often read about: the ones a stopped run left in its clone.
+                // The verb its provenance earns, taking the repository by path so
+                // that the command runs wherever the row is read.
                 let verb = if incomplete {
                     "recover"
                 } else {

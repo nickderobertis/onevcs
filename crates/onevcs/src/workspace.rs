@@ -621,20 +621,10 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
 
 /// Refuse a pinned branch name whose work this session could not carry.
 ///
-/// A session's branch is cut fresh from the base — `git worktree add -b` — so a
-/// pin naming a branch something already holds produces a *second*, empty branch
-/// of that name in this session's disposable clone. Nothing about the session then
-/// says so: it reports the pinned name, and only counting commits reveals that the
-/// work is still wherever it was. Handing that name back is refused later too,
-/// because a branch is only ever copied out fast-forward, so the session cannot
-/// even end by putting the two together.
-///
-/// What makes a pin honourable is therefore not that the name is free but that the
-/// session would carry whatever it names: a branch whose content the base already
-/// has adds nothing, and is taken over losing nothing. That is the same judgement
-/// `onevcs recoverable` reports a branch under, asked here of every repository the
-/// identity keeps branches in — including the run clones, which is where the work
-/// a stopped session left behind actually lives.
+/// The bar is not that the name is free: this session's branch is cut from the
+/// base, so a pin is honourable exactly when the base already carries what the
+/// name means — the same judgement `onevcs recoverable` reports a branch under,
+/// asked of every repository the identity keeps branches in and of origin's copy.
 fn honour_or_refuse(
     registry: &Registry,
     resolution: &Resolution,
@@ -642,19 +632,22 @@ fn honour_or_refuse(
     branch: &Ref,
     base: &Ref,
 ) -> Result<()> {
+    // The base as it stands now, so a run clone's frozen view of it cannot make work
+    // that landed long ago look like work a pin would lose.
+    let current = crate::vcs::base_now(&resolution.publication, base);
     for repo in checkouts_of(registry, resolution)? {
         if !git::is_repo(&repo) || !git::branch_exists(&repo, branch) {
             continue;
         }
-        let compared = crate::vcs::base_ref(&repo, base);
+        let compared = crate::vcs::judged_against(&repo, base, current.as_deref());
         if !git::trees_differ(&repo, &compared, branch)? {
             continue;
         }
         let ahead = git::log_messages(&repo, &compared, branch)?.len();
         return Err(Error::Invalid {
             reason: format!(
-                "branch {branch:?} already carries {ahead} commit(s) that {compared} does not, \
-                 in {held}. A session cuts its branch fresh from {base}, so this one would \
+                "branch {branch:?} already carries {ahead} commit(s) that {base} does not, in \
+                 {held}. A session cuts its branch fresh from {base}, so this one would \
                  report {branch:?} and carry none of them, and it could not hand the name back \
                  either. `onevcs recoverable` lists that branch with the command that lands it: \
                  land it first, or open this session under a name nothing carries",
@@ -674,7 +667,7 @@ fn honour_or_refuse(
             return Err(Error::Invalid {
                 reason: format!(
                     "origin already carries branch {branch:?}, with {ahead} commit(s) that \
-                     {compared} does not. A session cuts its branch fresh from {base}, so this \
+                     {base} does not. A session cuts its branch fresh from {base}, so this \
                      one would report {branch:?}, carry none of them, and have its publishing \
                      push rejected as a non-fast-forward. Open this session under a name nothing \
                      carries: a branch only origin has is not one a session adopts"

@@ -339,14 +339,16 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
         None => Scope::All,
     };
+    // llmlint: ignore[boundary_inputs_validated] the only thing discarded here is
+    // *which* of two answers to give. `store::load` above has already validated the
+    // registry document, and every alias `resolve_here` then compares against came
+    // out of it, so what remains is the documented "this directory is not inside a
+    // registered checkout" — and an unreadable current directory, which widens the
+    // question rather than narrowing it and can therefore hide no work.
     let rows = providers.vcs.recoverable(scope)?;
-    // Which question was answered, said out loud in every rendering of it. Nobody
-    // types the scope — it is decided by the directory the command was run from —
-    // so an answer that does not name it reads as the whole host's, and preserved
-    // work of another identity then reads as work nobody has. That is not
-    // hypothetical: it is how a branch holding a day of finished work was declared
-    // missing while the checkout it was asked from happily reported sixty of
-    // somebody else's.
+    // Nobody types the scope — the directory decides it — so every rendering names
+    // it. Unsaid, a scoped answer reads as the whole host's, and another identity's
+    // preserved work reads as work nobody has.
     let scoped = here.as_ref().map(|resolution| {
         format!(
             "{} — the identity of {}, the registered checkout this was run in",

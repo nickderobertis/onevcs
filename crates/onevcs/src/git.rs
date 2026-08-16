@@ -276,6 +276,18 @@ pub fn check_bounds() -> Result<()> {
     Ok(())
 }
 
+/// Whether a repository can reach one commit, through its own object store or the
+/// one a `--shared` clone borrows.
+///
+/// Which is what lets a run clone be asked about a base no ref of its own names:
+/// its remote-tracking refs are frozen at the moment it was cut, but its lender
+/// keeps fetching, and the objects come with the alternates.
+pub fn has_commit(cwd: &Path, sha: &str) -> bool {
+    run(&["cat-file", "-e", &format!("{sha}^{{commit}}")], Some(cwd))
+        .map(|out| out.ok())
+        .unwrap_or(false)
+}
+
 /// A ref's commit SHA, or `None` when the repository does not have it.
 pub fn tip(cwd: &Path, reference: &str) -> Option<String> {
     run(
