@@ -1,0 +1,20 @@
+Mutation: a host that would not say where the branch is is read as one that has no such branch.
+Red: a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index bacd204..a1290f6 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -979,11 +979,8 @@ fn declined_the_lease(
+         match git::remote_tip(&context.worktree, "origin", &context.branch, environment)? {
+             git::RemoteTip::At(tip) if tip.as_str() == replaced => None,
+             git::RemoteTip::At(tip) => Some(Declined::Moved(tip)),
+-            // The host no longer has the branch at all, which is not where this run
+-            // last saw it either — the lease named a commit, and git declines it
+-            // against a ref that is gone just as it does against one that moved.
+             git::RemoteTip::Absent => Some(Declined::Gone),
+-            git::RemoteTip::Unknown => None,
++            git::RemoteTip::Unknown => Some(Declined::Gone),
+         },
+     )
+ }
