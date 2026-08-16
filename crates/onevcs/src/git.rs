@@ -765,6 +765,17 @@ pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Resu
         .map(|path| format!(":(literal){path}"))
         .collect();
     if touched.is_empty() {
+        // git named no path, and there are two reasons it would not: the commit
+        // changed nothing since the fork, or its paths did not survive being read —
+        // this process reads git's output as UTF-8, and a repository path that is not
+        // arrives as no name at all rather than as a name to scope a diff by. Which
+        // one it is comes from git rather than from the decoding, and the unreadable
+        // one is answered by the same question asked without paths: a base carrying
+        // this commit's whole tree carries its changes too, and that is the one
+        // answer that cannot be wrong about a path nobody here could name.
+        if trees_differ(cwd, fork, commit)? {
+            return Ok(!trees_differ(cwd, base, commit)?);
+        }
         return Ok(false);
     }
     let mut args = vec!["diff", "--quiet", commit, base, "--"];
