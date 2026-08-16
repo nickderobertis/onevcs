@@ -13,15 +13,29 @@ use serde::Serialize;
 
 use onevcs::{Error, Result};
 
-/// A state that can say whether it is one a provider may act on.
+/// A state that can say whether it is one a provider may act on, and what it
+/// becomes when it arrived at an older version.
 ///
 /// Shape is what serde proves, and shape is not enough for a document that came
 /// off a disk: a session token names a file under the state root and a branch name
 /// goes on to spell a ref, so a seeded state that carries an unusable one is
 /// refused where it is read rather than wherever it first happens to be used.
+///
+/// Both halves belong to the same boundary — the read — which is why they are one
+/// trait. A document is refused or it is the current shape; nothing past here has
+/// to ask which version it came in as.
 pub trait Checked {
     /// Refuse this state, naming what is wrong with it.
     fn check(&self) -> Result<()>;
+
+    /// Carry a document that declared an older readable version forward to the one
+    /// this build writes.
+    ///
+    /// Called on every read, after [`check`](Checked::check) has decided the
+    /// version is one this build reads at all. It has no default: a state type that
+    /// says nothing about what an older document becomes is one whose next field
+    /// addition writes a document declaring a version it is not.
+    fn carry_forward(&mut self);
 }
 
 /// A provider's state, however it is kept.
@@ -180,7 +194,7 @@ impl<S: Serialize + DeserializeOwned + Checked> Store<S> for FileStore<S> {
                 self.path.display()
             ),
         })?;
-        let state: S = serde_json::from_str(&raw).map_err(|e| Error::Invalid {
+        let mut state: S = serde_json::from_str(&raw).map_err(|e| Error::Invalid {
             reason: format!(
                 "the provider state at {} is not the shape this crate writes: {e}",
                 self.path.display()
@@ -189,6 +203,11 @@ impl<S: Serialize + DeserializeOwned + Checked> Store<S> for FileStore<S> {
         state.check().map_err(|e| Error::Invalid {
             reason: format!("the provider state at {}: {e}", self.path.display()),
         })?;
+        // On the way in, not on the way out: everything past this point works with
+        // the shape this build writes, so the next write of a document that arrived
+        // at an older version declares the version it now holds rather than the one
+        // it was seeded at.
+        state.carry_forward();
         Ok(state)
     }
 }

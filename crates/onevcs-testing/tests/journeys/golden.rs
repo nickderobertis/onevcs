@@ -13,17 +13,33 @@
 //!    what a journey seeds by hand, so it must be possible to write down only the
 //!    part of a scenario that matters — and a consumer reading a document written
 //!    by a build that knew fewer fields must still read it.
+//!
+//! Which is why the version has a *range* rather than a value: the goldens are the
+//! current version, and the documents beside them at the previous one are the
+//! consumer's checked-in scenario, read here as that consumer's next run would read
+//! it.
 
-use onevcs_testing::{FileHost, FileVcs, HostState, VcsState, STATE_VERSION};
+use onevcs::{ChangeSpec, Hosting, SessionRequest, Vcs};
+use onevcs_testing::{
+    FileHost, FileVcs, HostState, VcsState, OLDEST_READABLE_VERSION, STATE_VERSION,
+};
 
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v2-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v2-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v3-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v3-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v2.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v2.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v3.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v3.json");
+/// The same two scenarios as a build one version older wrote them.
+///
+/// Frozen rather than generated: these are not goldens — nothing writes them any
+/// more — they are what a consumer already has checked in, and the whole point of
+/// keeping the bytes is that this build reads what that build wrote rather than
+/// what this one would have.
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v2.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v2.json");
 
 /// Every optional key of a repository state, as the document spells it.
 const VCS_OPTIONAL: &[&str] = &[
@@ -128,26 +144,33 @@ fn a_populated_state_is_written_as_its_golden_and_reads_back_unchanged() {
 fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() {
     let home = Home::new();
     let ahead = STATE_VERSION + 1;
+    let behind = OLDEST_READABLE_VERSION - 1;
 
-    for (name, document) in [
-        ("vcs.json", format!("{{\"version\": {ahead}}}\n")),
-        ("host.json", format!("{{\"version\": {ahead}}}\n")),
-    ] {
-        let path = home.path(name);
-        std::fs::write(&path, &document).expect("a written document");
-        let refused = if name.starts_with("vcs") {
-            FileVcs::create(&path).err().map(|e| e.to_string())
-        } else {
-            FileHost::create(&path).err().map(|e| e.to_string())
+    // Both ends of the range, because they are two different things to do about it:
+    // a version ahead of this build is a build to update, and one behind the floor —
+    // version 1 described a provider that could not publish, and every session in it
+    // would read back as open — is a scenario to re-seed. Neither is read.
+    for declared in [ahead, behind] {
+        for name in ["vcs.json", "host.json"] {
+            let path = home.path(name);
+            std::fs::write(&path, format!("{{\"version\": {declared}}}\n"))
+                .expect("a written document");
+            let refused = if name.starts_with("vcs") {
+                FileVcs::create(&path).err().map(|e| e.to_string())
+            } else {
+                FileHost::create(&path).err().map(|e| e.to_string())
+            }
+            .unwrap_or_else(|| {
+                panic!("a document at version {declared} is one nothing here reads")
+            });
+            assert!(
+                refused.contains(&declared.to_string())
+                    && refused.contains(&STATE_VERSION.to_string())
+                    && refused.contains(name),
+                "the refusal names the document, the version it declares, and the one this \
+                 build reads: {refused}"
+            );
         }
-        .unwrap_or_else(|| panic!("a document at version {ahead} is one nothing here reads"));
-        assert!(
-            refused.contains(&ahead.to_string())
-                && refused.contains(&STATE_VERSION.to_string())
-                && refused.contains(name),
-            "the refusal names the document, the version it declares, and the one this \
-             build reads: {refused}"
-        );
     }
 
     // A document that names no version at all is the one this build writes: a
@@ -156,4 +179,81 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
     std::fs::write(&path, "{}\n").expect("a written document");
     let terse = FileVcs::create(&path).expect("a document with no version");
     assert_eq!(terse.state().expect("readable").version, STATE_VERSION);
+}
+
+#[test]
+fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written by the build before this one and
+    // read by this one: the version went up because the document gained a field, and
+    // a bump that refused every scenario already written would make every consumer's
+    // suite the thing that has to change.
+    let home = Home::new();
+    let host_path = home.path("host.json");
+    let vcs_path = home.path("vcs.json");
+    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
+    assert!(
+        HOST_PREVIOUS.contains(r#""version": 2"#) && !HOST_PREVIOUS.contains("bodies"),
+        "the previous document is the one that predates the field, or it proves nothing"
+    );
+
+    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
+
+    // Read as the shape this build writes, with everything it did hold intact and
+    // the field it never held empty — which is the answer, not a gap: those change
+    // requests were opened with no body.
+    let state = host.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert!(
+        state.bodies.is_empty(),
+        "a document that predates bodies holds none: {:?}",
+        state.bodies
+    );
+    assert_eq!(state.authenticated_user, "seeded-user");
+    assert_eq!(state.changes.len(), 1);
+    assert_eq!(
+        state.titles[&state.changes[0].id],
+        "feat: the seeded change"
+    );
+    assert_eq!(state.checks[&state.changes[0].id].len(), 2);
+    let repository = vcs.state().expect("readable");
+    assert_eq!(repository.version, STATE_VERSION);
+    assert_eq!(repository.sessions.len(), 1);
+    assert_eq!(repository.publications.len(), 1);
+
+    // …and the next thing that writes writes this version, with the new field in it:
+    // a document carried forward is carried forward, rather than read one way and
+    // stored as something no build declares.
+    let drafted = "## Why\n\nBecause the reviewer has to read something.\n";
+    let opened = host
+        .for_repo(onevcs_testing::DEFAULT_SLUG)
+        .expect("a host for the repository")
+        .open_change(ChangeSpec {
+            head: "feature/after-the-bump".to_owned(),
+            base: "main".to_owned(),
+            title: "feat: the change opened after the bump".to_owned(),
+            body: Some(drafted.to_owned()),
+        })
+        .expect("the change request opens");
+    vcs.open_session(SessionRequest {
+        repo: "widgets".to_owned(),
+        branch: Some("feature/after-the-bump".to_owned()),
+        base: None,
+        execution_checkout: None,
+    })
+    .expect("a session over the seeded repository");
+
+    for path in [&host_path, &vcs_path] {
+        let written = std::fs::read_to_string(path).expect("a document");
+        assert!(
+            written.contains(&format!(r#""version": {STATE_VERSION}"#)),
+            "a document this build wrote declares the version it wrote: {written}"
+        );
+    }
+    assert_eq!(
+        host.state().expect("readable").bodies[&opened.id],
+        drafted,
+        "the field the bump was made for is written to the carried-forward document"
+    );
 }

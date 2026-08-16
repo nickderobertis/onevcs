@@ -16,23 +16,44 @@ use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
 use crate::events;
 use crate::store::Checked;
 
-/// The version of the state document this build writes and reads.
+/// The version of the state document this build writes.
 ///
 /// A file-backed state outlives the process that wrote it and is read by the next
 /// one, which makes it a stored contract like `onevcs`'s own registry document —
-/// and like that document, a version this build does not read is refused by name
-/// rather than guessed at. `2` is the shape the goldens in `tests/golden/` hold,
-/// and those goldens are compared byte for byte, so a field that changes shape
-/// cannot reach a consumer without the diff saying so.
+/// and like that document, the version a document declares decides what is done
+/// with it rather than being guessed at. `3` is the shape the goldens in
+/// `tests/golden/` hold, and those goldens are compared byte for byte, so a change
+/// to the document cannot reach a consumer without the diff saying so.
 ///
-/// `2` is what both sides learned when publishing and closing a session came
+/// `2` was what both sides learned when publishing and closing a session came
 /// through the interface: [`VcsState::policy`], [`VcsState::closed_sessions`],
-/// [`VcsState::publications`], and [`HostState::titles`]. A document at version `1`
-/// is refused by name rather than read: it describes a provider that could not
-/// publish, and every
-/// session in it would read back as open — which for a journey asserting on a
-/// session it had closed is a wrong answer rather than a missing one.
-pub const STATE_VERSION: u32 = 2;
+/// [`VcsState::publications`], and [`HostState::titles`]. `3` is
+/// [`HostState::bodies`], the body a change request was opened with.
+///
+/// **Every change to the document is versioned, an added field included.** A field
+/// that only ever appears when it holds something is *compatible* — that is what
+/// [`OLDEST_READABLE_VERSION`] is for — but compatible is not the same as
+/// unremarkable: the version is how a consumer's checked-in scenario says which
+/// shape it was written against, and a document that gained a field without saying
+/// so leaves nothing able to tell "this build wrote no body" from "this document
+/// predates bodies". The two answers differ for exactly the journey this crate
+/// exists to support.
+pub const STATE_VERSION: u32 = 3;
+
+/// The oldest document version this build reads.
+///
+/// Every version from here to [`STATE_VERSION`] is read and carried forward on the
+/// way in, which is how `onevcs`'s own registry document treats its older
+/// versions: what separates a readable older version from a refused one is whether
+/// its every field still means here what it meant there. `2` to `3` added a field
+/// and changed none, so a version 2 document reads as one whose change requests
+/// were opened with no body — which is what they were.
+///
+/// `1` is refused rather than read for the opposite reason: it describes a provider
+/// that could not publish, and every session in it would read back as open — a
+/// wrong answer where a journey asserting on a session it had closed needs a
+/// refusal.
+pub const OLDEST_READABLE_VERSION: u32 = 2;
 
 /// Everything the repository side of a run knows about itself.
 ///
@@ -409,6 +430,12 @@ impl Checked for VcsState {
         }
         Ok(())
     }
+
+    /// Nothing but the version: every field version 2 could hold means here what it
+    /// meant there, and the repository side gained none in version 3.
+    fn carry_forward(&mut self) {
+        self.version = STATE_VERSION;
+    }
 }
 
 /// Refuse a record kept about a change request this state does not hold.
@@ -520,19 +547,29 @@ impl Checked for HostState {
         }
         Ok(())
     }
+
+    /// A version 2 document held no bodies, and reads as what it was: change
+    /// requests opened with none. There is nothing to fill in — an absent entry is
+    /// already that answer — so this is the version and nothing else.
+    fn carry_forward(&mut self) {
+        self.version = STATE_VERSION;
+    }
 }
 
 /// Refuse a document written at a version this build does not read.
 ///
 /// Named rather than guessed at: a state whose shape is a later build's reads one
 /// way here and another way where that version is understood, and for a seeded
-/// scenario those two readings are two different tests.
+/// scenario those two readings are two different tests. The refusal names the
+/// range as well as the version, because "too old" and "too new" are two different
+/// things to do about it — one is a document to re-seed, the other a build to
+/// update.
 fn readable_version(declared: u32) -> Result<()> {
-    if declared != STATE_VERSION {
+    if !(OLDEST_READABLE_VERSION..=STATE_VERSION).contains(&declared) {
         return Err(Error::Invalid {
             reason: format!(
-                "the document declares version {declared}; this build reads version \
-                 {STATE_VERSION}"
+                "the document declares version {declared}; this build reads versions \
+                 {OLDEST_READABLE_VERSION} to {STATE_VERSION}"
             ),
         });
     }
