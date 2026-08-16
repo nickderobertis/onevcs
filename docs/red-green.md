@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 77. Tests observed red and then green: 103.
+Patches: 79. Tests observed red and then green: 104.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -513,7 +513,7 @@ a pinned branch a session already holds is not resumed.
 
 ### `76-an-occupied-session-is-taken-up-anyway`
 
-a session somebody is already inside is resumed into anyway.
+the occupancy question is asked about a run root nobody is in.
 
 - RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — Unexpected failure.
 
@@ -522,4 +522,16 @@ a session somebody is already inside is resumed into anyway.
 a request that pinned no branch resumes whatever session it finds.
 
 - RED `a_session_that_pins_no_branch_is_cut_fresh_every_time` — assertion `left != right` failed
+
+### `78-an-ambiguous-pin-picks-one-by-coin-toss`
+
+two sessions holding one name, and whichever is found first is taken.
+
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+
+### `79-a-pin-resumes-a-session-nobody-asked-for`
+
+a pin resumes a session whose closure, base, or checkout says it is not the one asked for.
+
+- RED `a_pin_resumes_only_the_session_it_asked_for` — assertion `left != right` failed: a closed session is not resumed
 
