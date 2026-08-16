@@ -689,6 +689,10 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         ),
     )
     .expect("a stream a writer left half a line of, and two a later build wrote");
+    // …and something under the state root that is named like a stream and is not one,
+    // which is a gap rather than a session that recorded nothing.
+    std::fs::create_dir(hosted.world.home().join("streams/s-not-a-file.ndjson"))
+        .expect("something else wrote into the state root");
     let answer = report(&hosted.world, "feature/unreachable");
     let notes = answer["notes"]
         .as_array()
@@ -701,6 +705,7 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         "is not an event envelope",
         "declares envelope version 2",
         "is stamped \"yesterday\"",
+        "could not be read",
     ] {
         assert!(notes.contains(said), "{said} is not in the notes:\n{notes}");
     }

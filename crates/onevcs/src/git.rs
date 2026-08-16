@@ -1224,20 +1224,19 @@ pub fn delete_ref(cwd: &Path, reference: &str) {
     let _ = run(&["update-ref", "-d", reference], Some(cwd));
 }
 
-/// Whether a remote of this name is one the repository has configured.
-pub fn remotes(cwd: &Path) -> Vec<String> {
-    run(&["remote"], Some(cwd))
-        .ok()
-        .filter(Output::ok)
-        .map(|out| {
-            out.stdout
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
+/// Every remote the repository has configured.
+///
+/// A failure is a failure rather than an empty list: its one caller decides from
+/// this whether `--from` names a remote, and a repository git could not be asked
+/// about would otherwise be reported as one with no remotes at all.
+pub fn remotes(cwd: &Path) -> Result<Vec<String>> {
+    Ok(checked(&["remote"], Some(cwd))?
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Adopt a branch from another local repository, overwriting the local ref.

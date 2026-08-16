@@ -291,7 +291,7 @@ fn source_of(
     if git::is_repo(Path::new(from)) {
         return Ok(Source::Repository(PathBuf::from(from)));
     }
-    let remotes = git::remotes(destination);
+    let remotes = git::remotes(destination)?;
     if remotes.iter().any(|remote| remote == from) {
         return Ok(Source::Remote {
             remote: from.to_owned(),

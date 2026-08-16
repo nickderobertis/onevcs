@@ -918,21 +918,48 @@ fn latest<T>(recorded: impl Iterator<Item = Stamped<T>>) -> Option<T> {
 }
 
 /// Every stream this host has, read for what it says about the work it recorded.
+///
+/// A directory nothing has written a stream into is nought streams; every other way
+/// the listing can go wrong is a *gap*, and it says so. The two must not look alike:
+/// what a stream decides here is which change request a branch has and what its gate
+/// said, and reporting "could not look" as "there is none" is how a report about half
+/// the record reads as a report about all of it.
 fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>> {
     let directory = home::streams_dir()?;
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return Ok(Vec::new());
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(failure) => {
+            notes.push(format!(
+                "the event streams at {} could not be listed ({failure}), so nothing any session \
+                 recorded is in this report",
+                directory.display()
+            ));
+            return Ok(Vec::new());
+        }
     };
-    let mut tokens: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .strip_suffix(".ndjson")
-                .map(str::to_owned)
-        })
-        .collect();
+    let mut tokens: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(failure) => {
+                notes.push(format!(
+                    "an entry of the event streams at {} could not be read ({failure}), so \
+                     whatever session it belongs to is not in this report",
+                    directory.display()
+                ));
+                continue;
+            }
+        };
+        if let Some(token) = entry
+            .file_name()
+            .to_string_lossy()
+            .strip_suffix(".ndjson")
+            .map(str::to_owned)
+        {
+            tokens.push(token);
+        }
+    }
     tokens.sort();
     Ok(tokens
         .into_iter()
@@ -960,8 +987,17 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         gate: None,
     };
     let path = directory.join(format!("{token}.ndjson"));
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return record;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        // Listed and then unreadable: a gap, not a session that recorded nothing.
+        Err(failure) => {
+            notes.push(format!(
+                "the event stream at {} could not be read ({failure}), so what it recorded is not \
+                 in this report",
+                path.display()
+            ));
+            return record;
+        }
     };
     for (index, line) in raw.lines().enumerate() {
         let event = match stream::attributed(line, token, index + 1) {
