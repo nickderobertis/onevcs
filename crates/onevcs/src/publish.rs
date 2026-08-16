@@ -942,6 +942,18 @@ fn rejected(context: &Context<'_>, pushed: &git::Pushed) -> Error {
     }
 }
 
+/// Why git turned a leased push down, when the lease is what it turned down.
+///
+/// The two are told apart because the operator's next move differs: one branch has
+/// somebody else's work on it to reconcile with, and the other has nothing on the
+/// host at all.
+enum Declined {
+    /// The branch is on the host at a commit this run never saw.
+    Moved(git::ObjectId),
+    /// The host has no branch of that name any more.
+    Gone,
+}
+
 /// Whether git turned this push down *because the lease was stale*, decided from
 /// what git and the remote report and never from the prose beside it.
 ///
@@ -951,26 +963,27 @@ fn rejected(context: &Context<'_>, pushed: &git::Pushed) -> Error {
 /// the lease has to be genuinely stale: `--force-with-lease=<branch>:<seen>` is
 /// declined exactly when the remote's value for the branch is not `<seen>`, so the
 /// remote's own answer to "where is this branch" settles whether that is what
-/// happened. A remote that will not say leaves the rejection unclassified, which is
-/// reported as itself — assuming a stale lease from an answer nobody gave is the
-/// same mistake as reading it out of a message a locale could translate.
+/// happened. A remote that will not say answers `None`, leaving the rejection
+/// unclassified — assuming a stale lease from an answer nobody gave is the same
+/// mistake as reading it out of a message a locale could translate.
 fn declined_the_lease(
     context: &Context<'_>,
     pushed: &git::Pushed,
     replaced: &str,
     environment: &[(String, String)],
-) -> Result<bool> {
+) -> Result<Option<Declined>> {
     if !pushed.refused_branch(&context.branch) {
-        return Ok(false);
+        return Ok(None);
     }
     Ok(
         match git::remote_tip(&context.worktree, "origin", &context.branch, environment)? {
-            git::RemoteTip::At(tip) => tip.as_str() != replaced,
+            git::RemoteTip::At(tip) if tip.as_str() == replaced => None,
+            git::RemoteTip::At(tip) => Some(Declined::Moved(tip)),
             // The host no longer has the branch at all, which is not where this run
             // last saw it either — the lease named a commit, and git declines it
             // against a ref that is gone just as it does against one that moved.
-            git::RemoteTip::Absent => true,
-            git::RemoteTip::Unknown => false,
+            git::RemoteTip::Absent => Some(Declined::Gone),
+            git::RemoteTip::Unknown => None,
         },
     )
 }
@@ -1010,28 +1023,42 @@ fn publish_as_change(
         // send an operator to reconcile histories that never diverged.
         let declined = match replacing {
             Some(replaced) => declined_the_lease(context, &pushed, replaced, environment)?,
-            None => false,
+            None => None,
         };
-        let Some(replaced) = replacing.filter(|_| declined) else {
+        let (Some(replaced), Some(declined)) = (replacing, declined) else {
             return Err(rejected(context, &pushed));
         };
+        let branch = &context.branch;
+        let base = context.target.base();
+        let command = guidance::command([
+            "onevcs",
+            "publish-branch",
+            branch,
+            "--repo",
+            &context.resolution.publication.to_string_lossy(),
+        ]);
         return Err(Error::SyncConflict {
-            reason: format!(
-                "{branch:?} moved on the host since this run last had it at {replaced}, and this \
-                 publication replayed it onto {base:?} — pushing would replace whatever was \
-                 pushed there in between. Nothing was overwritten and the branch is retained. \
-                 Reconcile the two — fetch {branch}, and replay or merge what the host has into \
-                 it — and then land it with `{command}`",
-                branch = context.branch,
-                base = context.target.base(),
-                command = guidance::command([
-                    "onevcs",
-                    "publish-branch",
-                    &context.branch,
-                    "--repo",
-                    &context.resolution.publication.to_string_lossy(),
-                ]),
-            ),
+            // What the host has instead is what the operator has to do something
+            // about, so the refusal says which of the two it is rather than one
+            // sentence that is only true of the commoner one.
+            reason: match declined {
+                Declined::Moved(tip) => format!(
+                    "{branch:?} moved on the host since this run last had it at {replaced} — it \
+                     is at {tip} now — and this publication replayed it onto {base:?}, so pushing \
+                     would replace whatever was pushed there in between. Nothing was overwritten \
+                     and the branch is retained. Reconcile the two — fetch {branch}, and replay \
+                     or merge what the host has into it — and then land it with `{command}`",
+                    tip = tip.as_str(),
+                ),
+                Declined::Gone => format!(
+                    "{branch:?} is gone from the host, which this run last had at {replaced}, and \
+                     this publication replayed it onto {base:?} — so the push would put a branch \
+                     back that somebody deleted, out of a history nobody there has seen. Nothing \
+                     was pushed and the branch is retained. Fetch {branch} so this run sees the \
+                     host as it stands — every fetch here prunes — and then land it with \
+                     `{command}`"
+                ),
+            },
         });
     }
 

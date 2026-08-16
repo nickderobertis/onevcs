@@ -849,6 +849,110 @@ fn a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it() {
 }
 
 #[test]
+fn a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone() {
+    // The other way a lease goes stale, and it is not a branch that moved: somebody
+    // deleted this one on the host while the change below was merging. git declines
+    // the leased push just the same — the commit it was allowed to replace is not
+    // there — and telling an operator to reconcile with what the host has would send
+    // them to reconcile with nothing.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    squash_the_change_below(&hosted, true);
+
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.git(
+        &elsewhere,
+        &["push", "-q", "origin", "--delete", "feature/filter"],
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains(
+            "\"feature/filter\" is gone from the host, which this run last had at",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was pushed and the branch is retained.",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host"),
+        "a branch nobody has is not one somebody moved:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("Fetch feature/filter"),
+        "the refusal says how to see the host as it stands:\n{refusal}"
+    );
+
+    // The deletion stands: nothing put the branch back.
+    assert!(hosted
+        .world
+        .git_raw(&hosted.origin, &["rev-parse", "--verify", "feature/filter"])
+        .status
+        .code()
+        .is_some_and(|code| code != 0));
+    assert!(hosted
+        .world
+        .git(&hosted.checkout, &["branch", "--list", "feature/filter"])
+        .contains("feature/filter"));
+}
+
+#[test]
+fn a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is() {
+    // The answer nobody gave. git declines the ref itself — so this looks exactly
+    // like a lease going stale — and then the host is not there to say where the
+    // branch is, which is the one question that tells the two apart. Nothing may be
+    // concluded from silence: the refusal is the rejection it is, and an operator is
+    // not sent to reconcile histories that, for all this run knows, never diverged.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    squash_the_change_below(&hosted, true);
+
+    // The host rejects the push at the ref and is gone by the time it is asked
+    // anything else — a server withdrawn mid-operation, which is what leaves this
+    // run with a rejection and no way to classify it.
+    hosted.world.install_pre_receive(
+        &hosted.origin,
+        &format!(
+            "echo 'the host says no' >&2\nmv {origin} {origin}.withdrawn\nexit 1",
+            origin = hosted.origin.display()
+        ),
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 1 is the contract's code for a verification the merge path refused.
+        .code(1)
+        .stderr(predicate::str::contains(
+            "the publishing push of \"feature/filter\" was rejected by the merge path",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host") && !refusal.contains("is gone from the host"),
+        "a host that answered nothing said nothing about the branch:\n{refusal}"
+    );
+}
+
+#[test]
 fn a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is() {
     // The same leased push, declined for a reason that has nothing to do with the
     // lease: the merge path's own hook turned it down. Nothing moved on the host, so
@@ -1076,6 +1180,9 @@ fn a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_over
     );
     world.git(&elsewhere, &["push", "-q", "origin", "feature/recovered"]);
     let theirs = world.git(&hosted.origin, &["rev-parse", "feature/recovered"]);
+    // What this checkout was left holding, which is the only observation of the
+    // host's copy this run has.
+    let seen = world.git(&hosted.checkout, &["rev-parse", "origin/feature/recovered"]);
 
     let assert = world
         .onevcs()
@@ -1088,16 +1195,17 @@ fn a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_over
         .assert()
         // 3 is the contract's code for what the publication could not reconcile.
         .code(3)
-        .stderr(predicate::str::contains(
-            "\"feature/recovered\" moved on the host since this run last had it at",
-        ))
+        .stderr(predicate::str::contains(format!(
+            "\"feature/recovered\" moved on the host since this run last had it at {seen} — it is \
+             at {theirs} now"
+        )))
         .stderr(predicate::str::contains(
             "Nothing was overwritten and the branch is retained.",
         ));
     let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
-    assert!(
-        !refusal.contains(&theirs),
-        "the commit the lease names is the one this run saw, never the one it found:\n{refusal}"
+    assert_ne!(
+        seen, theirs,
+        "the commit the lease named is the one this run saw, never the one it found:\n{refusal}"
     );
 
     // Nothing on the host moved: their commit is still the branch, tip and content.
