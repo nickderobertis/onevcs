@@ -56,6 +56,6 @@ pub fn run(
         });
     }
 
-    landing.merge_change_base(stream)?;
+    landing.sync_change_base(stream)?;
     landing.publish(title, hosting, stream)
 }

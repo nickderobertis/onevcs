@@ -43,8 +43,11 @@ pub const RETAINED_DEAD_RUNS: usize = 3;
 ///
 /// A record outlives the command that wrote it and is read by the next one, so it
 /// is a stored contract like the registry document — and like that document, an
-/// unreadable version is refused by name rather than guessed at.
-pub const RECORD_VERSION: u32 = 2;
+/// unreadable version is refused by name rather than guessed at. There is no
+/// migration and deliberately so: a record names a clone, a worktree, and a lease
+/// that belong to a live process, and a build that guessed at one it does not
+/// understand would act on somebody else's tree.
+pub const RECORD_VERSION: u32 = 3;
 
 /// One OS process instance's creation identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +173,21 @@ pub struct Record {
     /// The change-request base, which for a stacked change is the branch below it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_base: Option<Ref>,
+    /// The commit `base` was at when this session's branch was cut from it, recorded
+    /// only when that base is not the identity's root — which is what makes the
+    /// session a stacked one.
+    ///
+    /// A name cannot stand in for it. The branch below a stack is deleted when its
+    /// own change merges, every fetch here prunes, and the tip is then unresolvable
+    /// from anything but this: a publication that has to know which of its commits
+    /// belong to the change below has to have written that down when it still could.
+    /// Absent — every session cut from the root, which is every ordinary one — and no
+    /// publication of it can be a stacked publication.
+    // llmlint: ignore[invalid_states_unrepresentable] git's own printed SHA, spelled the
+    // way `git::tip` answers one; the crate's `Sha` wraps an unvalidated `String` at the
+    // public surface and would make no state here unrepresentable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_tip: Option<String>,
     /// The worktree the change is made in.
     pub worktree: PathBuf,
     /// The per-session clone the worktree was cut from.
@@ -544,9 +562,15 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
             reason: format!("{reason}: it is not a valid branch name"),
         })
     };
+    // Asked once, and leniently when the session named its own base: a root nobody
+    // can name is a session with no stack recorded rather than a session refused.
+    let root = match request.base.as_deref() {
+        Some(_) => git::default_branch(&execution, "origin").ok(),
+        None => Some(git::default_branch(&execution, "origin")?),
+    };
     let base = named(match request.base.as_deref() {
         Some(base) => base.to_owned(),
-        None => git::default_branch(&execution, "origin")?,
+        None => root.clone().unwrap_or_default(),
     })?;
     let branch = named(match request.branch.as_deref() {
         Some(branch) => branch.to_owned(),
@@ -583,6 +607,13 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         base.to_string()
     };
     git::worktree_add(&clone, &worktree, &branch, &start)?;
+    // Read off the worktree that was just cut, which is where the commit it was cut at
+    // is by construction — asking the name it was cut from again could answer
+    // something else, or nothing.
+    let stack_tip = match &root {
+        Some(root) if **root != *base => Some(git::head_sha(&worktree)?),
+        _ => None,
+    };
 
     let record = Record {
         version: RECORD_VERSION,
@@ -592,6 +623,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         branch,
         base,
         change_base: None,
+        stack_tip,
         worktree,
         clone,
         run_root,
@@ -853,6 +885,7 @@ mod process_tests {
             branch: Ref::from_git("main"),
             base: Ref::from_git("main"),
             change_base: None,
+            stack_tip: None,
             worktree: PathBuf::from("worktree"),
             clone: PathBuf::from("clone"),
             run_root: PathBuf::from("run"),

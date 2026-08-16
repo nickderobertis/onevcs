@@ -1,0 +1,17 @@
+{
+  "version": 3,
+  "token": "<token>",
+  "identity": "<identity>",
+  "alias": "project",
+  "branch": "feature/above",
+  "base": "feature/below",
+  "stack_tip": "<sha>",
+  "worktree": "<path>",
+  "clone": "<path>",
+  "run_root": "<path>",
+  "execution_checkout": "<path>",
+  "publication_checkout": "<path>",
+  "state": "open",
+  "owner_pid": 0,
+  "owner_started": 0
+}

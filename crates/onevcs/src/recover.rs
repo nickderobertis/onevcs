@@ -54,7 +54,7 @@ pub fn run(
 
     // The attestation is written before the publication, so a rejected push leaves
     // a branch whose marker is cleared by a verdict that was actually reached.
-    landing.merge_change_base(stream)?;
+    landing.sync_change_base(stream)?;
     let attested = provenance::attest(
         &landing.worktree,
         &landing.compared_change_base,

@@ -310,6 +310,21 @@ impl World {
         hook
     }
 
+    /// Install an executable `pre-receive` hook on a bare origin, running `body`.
+    ///
+    /// The remote's own refusal, which is a different thing from a `pre-push` one:
+    /// this one is reached only after git has negotiated the ref, so git reports it
+    /// per ref — as the host's policy, a protected branch, or a server-side check
+    /// would be reported.
+    pub fn install_pre_receive(&self, origin: &Path, body: &str) {
+        let hook = origin.join("hooks/pre-receive");
+        std::fs::create_dir_all(origin.join("hooks")).expect("a hooks directory");
+        write_script(
+            &hook,
+            &format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
+        );
+    }
+
     /// Install the program that answers as `gh` for one origin.
     pub fn install_fake_host(&self, origin: &Path) {
         let bin = self.path("bin");

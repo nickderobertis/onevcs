@@ -1,0 +1,19 @@
+Mutation: a branch deleted on the host is a rejection nothing classified, rather than the lease it declined.
+Red: a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index bacd204..c581964 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -979,10 +979,7 @@ fn declined_the_lease(
+         match git::remote_tip(&context.worktree, "origin", &context.branch, environment)? {
+             git::RemoteTip::At(tip) if tip.as_str() == replaced => None,
+             git::RemoteTip::At(tip) => Some(Declined::Moved(tip)),
+-            // The host no longer has the branch at all, which is not where this run
+-            // last saw it either — the lease named a commit, and git declines it
+-            // against a ref that is gone just as it does against one that moved.
+-            git::RemoteTip::Absent => Some(Declined::Gone),
++            git::RemoteTip::Absent => None,
+             git::RemoteTip::Unknown => None,
+         },
+     )

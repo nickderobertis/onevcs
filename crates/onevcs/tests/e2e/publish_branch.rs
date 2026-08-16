@@ -1380,3 +1380,395 @@ fn a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body
         .git(&checkout, &["branch", "--list", "feature/otherhost"])
         .contains("feature/otherhost"));
 }
+
+/// A preserved branch that records the change below it, and that change squash-merged.
+///
+/// The marker is written here with `git` rather than driven out of a session, and has
+/// to be: the `Change-Base:` trailer is a *consumer's* record of a stack — nothing
+/// this crate exposes writes one, since a session records its stack on itself — so a
+/// branch carrying one can only arrive the way this repository's other stack journeys
+/// build it. Everything past it is the compiled binary doing what an operator asks.
+///
+/// The branch-keyed verbs read the stack out of the `Change-Base:` trailer a
+/// preserved commit carries, which is a *branch* — so the tip it names has to be one
+/// this repository still has. That is `recover`'s subject by construction: the
+/// trailer lives on an incomplete-step marker, and a branch carrying one of those
+/// unattested is refused by `publish-branch` as interrupted work.
+fn a_stacked_incomplete_branch_in_the_checkout(fixture: &Fixture, branch: &str) {
+    let world = &fixture.world;
+    let checkout = &fixture.checkout;
+    let prefix = documented_default_prefix();
+    world.git(checkout, &["checkout", "-q", "-b", "feature/engine"]);
+    world.commit_file(
+        checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.commit_file(
+        checkout,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(checkout, &["push", "-q", "origin", "feature/engine"]);
+
+    world.git(checkout, &["checkout", "-q", "-b", branch]);
+    world.commit_file(
+        checkout,
+        "engine.txt",
+        "the engine\nand its governor\nand a filter\n",
+        "feat: filter what the engine relays",
+    );
+    world.git(
+        checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on {branch}\n\n{}\n{} feature/engine",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    // The publication checkout is never worked in, so it goes back to its base.
+    world.git(checkout, &["checkout", "-q", "main"]);
+
+    // The change below lands the way a review host lands one: squashed.
+    let below = world.clone_of(&fixture.origin, "below");
+    world.git(&below, &["merge", "--squash", "origin/feature/engine"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.git(&below, &["push", "-q", "origin", "main"]);
+}
+
+/// Attest the branch's incomplete marker the way a recovery does.
+///
+/// What separates the two branch-keyed verbs is provenance and nothing else, so a
+/// branch `publish-branch` will take is one whose marker something already attested.
+fn attest_the_marker(fixture: &Fixture, branch: &str) {
+    let world = &fixture.world;
+    world.git(&fixture.checkout, &["checkout", "-q", branch]);
+    let marker = world.git(&fixture.checkout, &["rev-parse", "HEAD"]);
+    world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: attest the preserved step\n\n{} {marker}",
+                documented_trailer("Recovered-Incomplete", &documented_default_prefix()),
+            ),
+        ],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
+    // The other branch-keyed verb reaches the same reconciliation, and reaches it on
+    // work that is already complete: a recovery attested this branch's marker and its
+    // publication did not land, so `publish-branch` is what takes it from here — with
+    // the stack the marker recorded still on it.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/attested-filter");
+    attest_the_marker(&fixture, "feature/attested-filter");
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/attested-filter",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let subjects = fixture.origin_log();
+    assert_eq!(subjects[0], "feat: filter what the engine relays");
+    assert_eq!(
+        subjects.len(),
+        3,
+        "the change below landed once, not again under this one: {subjects:?}"
+    );
+    // A replay rewrites the commits it moves, so an attestation that names its marker
+    // by SHA stops naming it and the publication carries no recovery trailer. Pinned
+    // rather than assumed: it is why `recover` attests *after* the sync, and it is
+    // what an operator gets when the two happen the other way round.
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        !landed.contains(&documented_trailer(
+            "Recovered-Incomplete",
+            &documented_default_prefix()
+        )),
+        "the attestation named the marker by a SHA the replay rewrote: {landed}"
+    );
+}
+
+#[test]
+fn a_recorded_base_no_ref_resolves_names_what_would_restore_it() {
+    // The stack a preserved branch records is a branch *name*, and a name is only as
+    // good as the ref behind it: the change below is deleted when it merges and every
+    // fetch here prunes. Nothing then can tell which of the branch's commits are the
+    // change below's — so this is refused where the record is read, rather than handed
+    // to git as a revision it will report as unknown.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let prefix = documented_default_prefix();
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/orphaned"],
+    );
+    world.commit_file(&fixture.checkout, "one.txt", "one\n", "feat: add the thing");
+    world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/orphaned\n\n{}\n{} feature/gone",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/orphaned",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "records the base it was stacked on as \"feature/gone\"",
+        ))
+        .stderr(predicate::str::contains("Restore or push \"feature/gone\""))
+        .stderr(predicate::str::contains(documented_trailer(
+            "Change-Base",
+            &prefix,
+        )))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs recover feature/orphaned --repo {}`",
+            fixture.checkout.display()
+        )));
+    // Refused before anything was written to it: the branch is where it was left.
+    assert!(world
+        .git(&fixture.checkout, &["branch", "--list", "feature/orphaned"])
+        .contains("feature/orphaned"));
+}
+
+#[test]
+fn a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command() {
+    // The same refusal the other verb meets, on work that is already complete: what
+    // separates the two here is only the command an operator is sent back with, and a
+    // refusal that named the wrong one would send them to the verb that rejects this
+    // branch.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let prefix = documented_default_prefix();
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/orphaned-complete"],
+    );
+    world.commit_file(&fixture.checkout, "one.txt", "one\n", "feat: add the thing");
+    world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/orphaned-complete\n\n{}\n{} feature/gone",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    attest_the_marker(&fixture, "feature/orphaned-complete");
+
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/orphaned-complete",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "records the base it was stacked on as \"feature/gone\"",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/orphaned-complete --repo {}`",
+            fixture.checkout.display()
+        )));
+}
+
+#[test]
+fn a_publish_branch_replay_conflict_names_its_own_command() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/attested-clash");
+    attest_the_marker(&fixture, "feature/attested-clash");
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/attested-clash"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "shared.txt",
+        "from the branch\n",
+        "feat: share something too",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: change it differently",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/attested-clash",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "already carries what \"feature/attested-clash\" was stacked on",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/attested-clash --repo {}`",
+            fixture.checkout.display()
+        )));
+    let refusal = stderr_of(&assert);
+    assert!(
+        refusal.contains("git rebase --onto origin/main "),
+        "the refusal names the replay that resolves it:\n{refusal}"
+    );
+}
+
+#[test]
+fn a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-filter");
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered-filter",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let subjects = fixture.origin_log();
+    assert_eq!(subjects[0], "feat: filter what the engine relays");
+    assert_eq!(
+        subjects.len(),
+        3,
+        "the change below landed once, not again under this one: {subjects:?}"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.origin, &["show", "main:engine.txt"]),
+        "the engine\nand its governor\nand a filter",
+        "and the base carries the branch's own work on top of it"
+    );
+}
+
+#[test]
+fn a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-clash");
+    // The root moves again over a file this branch's own work also changed, which
+    // correcting the ancestry cannot resolve.
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/recovered-clash"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "shared.txt",
+        "from the branch\n",
+        "feat: share something too",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: change it differently",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    // Interrupted work meets the same reconciliation, so it meets the same refusal —
+    // named for its own verb, which is the only thing that separates the two.
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered-clash",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "already carries what \"feature/recovered-clash\" was stacked on",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs recover feature/recovered-clash --repo {}`",
+            fixture.checkout.display()
+        )));
+    let refusal = stderr_of(&assert);
+    assert!(
+        refusal.contains("git rebase --onto origin/main "),
+        "the refusal names the replay that resolves it:\n{refusal}"
+    );
+    // The branch is where it was read out of: a recovery that did not land is not
+    // also the thing that lost the work.
+    assert!(fixture
+        .world
+        .git(
+            &fixture.checkout,
+            &["branch", "--list", "feature/recovered-clash"]
+        )
+        .contains("feature/recovered-clash"));
+}

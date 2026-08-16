@@ -1,0 +1,34 @@
+Mutation: whether the lease was declined, and what the host has instead, is read out of git's diagnostic prose.
+Red: a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording
+Red: a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it
+Red: a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index bacd204..7945a65 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -972,20 +972,10 @@ fn declined_the_lease(
+     replaced: &str,
+     environment: &[(String, String)],
+ ) -> Result<Option<Declined>> {
+-    if !pushed.refused_branch(&context.branch) {
+-        return Ok(None);
+-    }
+-    Ok(
+-        match git::remote_tip(&context.worktree, "origin", &context.branch, environment)? {
+-            git::RemoteTip::At(tip) if tip.as_str() == replaced => None,
+-            git::RemoteTip::At(tip) => Some(Declined::Moved(tip)),
+-            // The host no longer has the branch at all, which is not where this run
+-            // last saw it either — the lease named a commit, and git declines it
+-            // against a ref that is gone just as it does against one that moved.
+-            git::RemoteTip::Absent => Some(Declined::Gone),
+-            git::RemoteTip::Unknown => None,
+-        },
+-    )
++    let _ = (context, replaced, environment);
++    Ok(pushed.output().contains("stale info").then(|| {
++        Declined::Moved(git::ObjectId::parse(&"0".repeat(40)).expect("an object id"))
++    }))
+ }
+ 
+ /// Push the branch, open or adopt its change request, and ask the host to land it.

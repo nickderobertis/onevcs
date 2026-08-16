@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 52. Tests observed red and then green: 66.
+Patches: 73. Tests observed red and then green: 99.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -35,16 +35,16 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 integrate's team and remote refusals go back to naming no command.
 
 - RED `the_train_refuses_an_identity_whose_changes_are_reviewed` — the refusal routes claude/one nowhere:
-- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo /tmp/.tmpqcfhYt/remote-owner`)
+- RED `a_train_refuses_a_single_owner_identity_that_publishes_through_its_host` — Unexpected stderr, failed var.contains(`onevcs publish-branch claude/one --repo <tmp>/remote-owner`)
 - RED `every_state_a_branch_can_be_in_has_a_verb_that_takes_it` — the train's refusal names no command: onevcs: invalid input: direct integration is refused for identity "github.com/acme-corp/hosted" (repo_
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmp3HxzCl/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '<tmp>/a checkout with spaces'`)
 
 ### `03-recovery-hands-every-branch-to-the-train`
 
 recover's handoff names `integrate` whatever the identity is, which is the verb half of them refuse.
 
 - RED `recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publish_it` — the handoff names no command: onevcs: invalid input: branch "feature/handed-over" carries no unattested incomplete provenance: it has commit
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpPvPIoz/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '<tmp>/a checkout with spaces'`)
 
 ### `04-interrupted-work-published-as-finished`
 
@@ -69,13 +69,13 @@ the branch-keyed sync conflict goes back to stating that the two conflict.
 
 the publication path's sync conflict goes back to stating that the branch is retained.
 
-- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo /tmp/.tmplh9nFU/project`)
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo <tmp>/project`)
 
 ### `08-printed-commands-are-not-quoted`
 
 an argument a shell would split is printed as it is.
 
-- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '/tmp/.tmpWLNXd8/a checkout with spaces'`)
+- RED `a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs` — Unexpected stderr, failed var.contains(`onevcs publish-branch feature/spacey --repo '<tmp>/a checkout with spaces'`)
 
 ### `09-a-repository-path-read-lossily`
 
@@ -113,7 +113,7 @@ a publication stops running the gate the policy names.
 
 the refusal that nothing would be attested stops naming the rules entry that answers it.
 
-- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(/tmp/.tmpJrsttq/.onevcs/rules.yml)
+- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(<tmp>/.onevcs/rules.yml)
 
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
@@ -140,7 +140,7 @@ the branch-keyed refusals stop naming the command that lists the branches there 
 
 the train's no-subject skip goes back to reporting the synthesis failure alone.
 
-- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo /tmp/.tmpWDv0U0/project --title <T>`
+- RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo <tmp>/project --title <T>`)
 
 ### `19-the-verb-is-not-written-down`
 
@@ -232,14 +232,14 @@ the harness goes back to a builtin the shell macOS ships does not have.
 
 the search for an identity stops at its registered checkouts.
 
-- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — the run clone is where the branch is: No preserved unpublished branches in /tmp/.tmpJPFIDk/project — the identity of /tmp/.tmpJPFIDk/proje
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — the run clone is where the branch is: No preserved unpublished branches in <tmp>/project — the identity of <tmp>/project, the registered c
 
 ### `34-the-command-a-row-names-cannot-land-it`
 
 finished work is offered to the local train instead of the verb that lands one branch.
 
 - RED `recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns` — assertion `left == right` failed
-- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — assertion `left == right` failed: 1 preserved unpublished branch(es) in /tmp/.tmpD7vZu8/project — the identity of /tmp/.tmpD7vZu8/project,
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — assertion `left == right` failed: 1 preserved unpublished branch(es) in <tmp>/project — the identity of <tmp>/project, the registered chec
 - RED `session_events_match_across_backends` — assertion `left == right` failed: Git offers finished work the verb that lands one branch
 
 ### `35-a-scoped-answer-reads-as-the-whole-hosts`
@@ -315,7 +315,7 @@ recovery stops writing the attestation commit that carries the cleared marker fo
 
 the readable range narrows back to one version, so a scenario written by the build before this one is refused.
 
-- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at /tmp/.tmprnbHiR/host.json: invalid input: the document declares version
+- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 2; this b
 
 ### `47-a-carried-forward-document-keeps-the-version-it-arrived-at`
 
@@ -345,11 +345,157 @@ the testing host stops telling an empty body from an absent one, and records nei
 
 a seeded body about a change request nobody opened stops being refused.
 
-- RED `a_seeded_document_holding_a_session_nothing_could_act_on_is_refused` — a record about a change nobody opened: Host { store: FileStore { path: "/tmp/.tmpPUBrL7/host.json", marker: PhantomData<onevcs_testing::stat
+- RED `a_seeded_document_holding_a_session_nothing_could_act_on_is_refused` — a record about a change nobody opened: Host { store: FileStore { path: "<tmp>/host.json", marker: PhantomData<onevcs_testing::state::HostSta
 
 ### `52-the-record-names-an-option-publish-does-not-take`
 
 the inferred-surface record's field list stops matching the request a publication takes.
 
 - RED `the_inferred_surface_row_lists_the_fields_publish_request_actually_has` — assertion `left == right` failed: docs/inferred-surface.md and PublishRequest disagree about which options a publication takes
+
+### `53-a-landed-stack-parent-is-merged-again`
+
+a root that already carries the change below a stack is merged into like anything else.
+
+- RED `a_recorded_stack_that_squash_merged_is_replayed_onto_the_root_rather_than_merged` — Unexpected failure.
+- RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected return code, failed var == 3
+- RED `a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone` — Unexpected failure.
+- RED `a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root` — Unexpected failure.
+- RED `a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay` — Unexpected return code, failed var == 3
+- RED `a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_root` — Unexpected failure.
+- RED `a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root` — Unexpected failure.
+- RED `a_hosted_stack_the_root_independently_matches_is_answered_the_same_way` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("<time>"), "stream": String("<token>"), "seq": Number(5), "source": 
+- RED `a_publish_branch_replay_conflict_names_its_own_command` — Unexpected return code, failed var == 3
+- RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — Unexpected failure.
+
+### `54-a-stack-inferred-from-content`
+
+a branch is stacked whenever its content looks stacked, rather than when its record says so.
+
+- RED `a_branch_the_base_independently_matches_is_still_merged_because_no_record_stacks_it` — assertion `left == right` failed: the base arrived as the merge it always arrives as
+
+### `55-an-unreadable-path-list-is-read-as-no-change`
+
+a path list this process could not take whole is answered as a commit that changed nothing.
+
+- RED `a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone` — Unexpected failure.
+
+### `56-a-stack-is-never-written-down`
+
+the tip a session was cut from is never written down, so no session records a stack.
+
+- RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"<token>","identity":"<tmp>/project","alias":"project","branch":"feature/above","base
+
+### `57-a-recorded-stack-is-taken-on-trust`
+
+every check on a recorded stack past the record itself is dropped.
+
+- RED `a_root_this_clone_no_longer_has_leaves_the_stack_where_it_is` — Unexpected failure.
+- RED `a_branch_that_left_its_recorded_stack_behind_is_merged_rather_than_replayed` — assertion `left == right` failed
+- RED `a_stack_merged_with_its_own_commits_keeps_targeting_the_stack` — assertion `left == right` failed
+- RED `a_stack_that_shares_no_history_with_the_root_keeps_targeting_the_stack` — assertion `left == right` failed
+
+### `58-a-root-nobody-can-name-is-guessed`
+
+a root the publication checkout cannot name is guessed at instead.
+
+- RED `a_root_the_publication_checkout_cannot_name_leaves_the_stack_where_it_is` — Unexpected failure.
+
+### `59-a-vanished-recorded-base-is-handed-to-git`
+
+a recorded base nothing resolves is handed to git as a revision instead of refused.
+
+- RED `a_recorded_base_no_ref_resolves_names_what_would_restore_it` — Unexpected stderr, failed var.contains(records the base it was stacked on as "feature/gone")
+- RED `a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command` — Unexpected stderr, failed var.contains(records the base it was stacked on as "feature/gone")
+
+### `60-an-unreadable-stack-tip-is-read-as-no-stack`
+
+a recorded stack tip this clone does not have is read as no stack at all.
+
+- RED `a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name` — Unexpected stderr, failed var.contains(names "0000000000000000000000000000000000000000" as the commit branch "feature/above" was cut from)
+
+### `61-a-renames-source-is-never-compared`
+
+a rename is compared under the name git reports it as, and not under the one it left.
+
+- RED `a_stack_that_renamed_a_file_the_root_still_has_keeps_targeting_the_stack` — assertion `left == right` failed
+
+### `62-a-recorded-path-is-this-runs-own`
+
+a recorded diagnostic keeps the values only this run would spell.
+
+- RED `a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently` — every value only this run would spell is a placeholder, and what it said is not:
+
+### `63-a-moved-base-is-not-re-judged`
+
+a base that moved after the gate is neither re-synced nor re-judged.
+
+- RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — assertion `left == right` failed: the gate judged the base it landed on, not only the base it started from
+
+### `64-an-unreadable-listing-is-read-as-carried`
+
+a listing that did not arrive whole is answered as content the base carries.
+
+- RED `an_unreadable_listing_and_a_root_that_moved_on_leaves_the_stack_where_it_is` — Unexpected failure.
+
+### `65-a-root-nobody-can-name-refuses-the-session`
+
+a session naming its own base is refused when nothing can name the identity's root.
+
+- RED `a_session_whose_root_nobody_can_name_records_no_stack_and_publishes_as_one` — Unexpected failure.
+
+### `66-a-replayed-branch-is-pushed-as-a-fast-forward`
+
+a branch whose history a replay rewrote is pushed as though it had not been.
+
+- RED `a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it_lands` — Unexpected failure.
+- RED `a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
+- RED `a_recovery_that_replays_a_branch_the_host_has_replaces_it_there` — Unexpected failure.
+
+### `67-a-lease-names-the-hosts-own-commit`
+
+the lease names whatever the host has now, rather than the commit this run replaces.
+
+- RED `a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
+
+### `68-a-refused-push-is-read-as-a-moved-branch`
+
+every push a leased publication has refused is read as a branch somebody moved.
+
+- RED `a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
+- RED `a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording` — Unexpected return code, failed var == 1
+- RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
+
+### `69-a-declined-lease-is-read-out-of-the-prose`
+
+whether the lease was declined, and what the host has instead, is read out of git's diagnostic prose.
+
+- RED `a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording` — Unexpected return code, failed var == 1
+- RED `a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it` — the lease named the commit this run saw, and the refusal says where the host is now:
+- RED `a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone` — Unexpected stderr, failed var.contains("feature/filter" is gone from the host, which this run last had at)
+
+### `70-a-lease-taken-from-what-the-fetch-found`
+
+the lease is taken from what this run's own fetch found on the host.
+
+- RED `a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
+- RED `a_replay_of_a_branch_this_run_has_never_seen_on_the_host_is_refused_before_it_pushes` — Unexpected return code, failed var == 3
+
+### `71-a-host-copy-this-run-never-saw-is-pushed-over`
+
+a host copy this run has never seen is pushed over rather than refused.
+
+- RED `a_replay_of_a_branch_this_run_has_never_seen_on_the_host_is_refused_before_it_pushes` — Unexpected return code, failed var == 3
+
+### `72-a-branch-gone-from-the-host-declined-nothing`
+
+a branch deleted on the host is a rejection nothing classified, rather than the lease it declined.
+
+- RED `a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone` — Unexpected return code, failed var == 3
+
+### `73-a-host-that-would-not-say-is-read-as-one-with-no-branch`
+
+a host that would not say where the branch is is read as one that has no such branch.
+
+- RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
 

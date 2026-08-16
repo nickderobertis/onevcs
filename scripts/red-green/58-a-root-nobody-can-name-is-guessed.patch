@@ -1,0 +1,23 @@
+Mutation: a root the publication checkout cannot name is guessed at instead.
+Red: a_root_the_publication_checkout_cannot_name_leaves_the_stack_where_it_is
+
+
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index 09b7913..a5020e4 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -444,10 +444,9 @@ fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Tar
+             ),
+         });
+     };
+-    let Some(root) = git::default_branch(publication, "origin").ok() else {
+-        return Ok(Target::Base(base));
+-    };
+-    let root = Ref::from_git(root);
++    let root = Ref::from_git(
++        git::default_branch(publication, "origin").unwrap_or_else(|_| "main".to_owned()),
++    );
+     if root == base {
+         return Ok(Target::Base(base));
+     }

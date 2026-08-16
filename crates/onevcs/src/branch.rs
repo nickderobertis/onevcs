@@ -95,10 +95,9 @@ pub struct Landing {
     pub run_root: PathBuf,
     /// The branch itself.
     pub branch: Ref,
-    /// The identity's root base.
-    pub base: Ref,
-    /// What the branch is published onto, which for a stacked branch is the branch
-    /// below it rather than the root.
+    /// What the branch is published onto and compared against: the branch below it
+    /// while its stack stands, and the identity's root once that stack has landed —
+    /// which is what `prepare` settled before this existed.
     pub change_base: Ref,
     /// The change base as it is actually compared: origin's copy where there is one.
     // llmlint: ignore[invalid_states_unrepresentable] deliberately not a `Ref`, which
@@ -108,6 +107,31 @@ pub struct Landing {
     // it be passed where a branch is expected. `vcs::base_ref` answers a `String` for
     // the same reason at every other caller.
     pub compared_change_base: String,
+    /// What this run has seen the host's copy of this branch at, which is the commit
+    /// a replay's push may replace and nothing else.
+    ///
+    /// Read out of the checkout the branch was found in and before this run fetched
+    /// anything: a value taken after the fetch would be wherever the host is *now*,
+    /// including a move this run never saw, and leasing on that authorizes replacing
+    /// it. `None` is a host copy this run cannot vouch for, which is refused rather
+    /// than pushed over.
+    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+    pub observed: Option<String>,
+    /// The recorded stack tip this branch's own commits are replayed from, when the
+    /// change below it has already landed on the root base.
+    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it, and this
+    // module carries it to `publish::reconcile` unchanged; the crate's `Sha` wraps an
+    // unvalidated `String` at the public surface and would make no state here
+    // unrepresentable.
+    pub stack_replay: Option<String>,
+}
+
+/// The tip a repository still has for a branch a preserved commit recorded.
+///
+/// The remote's copy first and the local branch second, which is the order every
+/// other comparison here resolves a base in.
+fn stack_tip(repo: &Path, base: &str) -> Option<String> {
+    git::tip(repo, &format!("origin/{base}")).or_else(|| git::tip(repo, base))
 }
 
 /// Locate a branch and cut the clone and worktree a publication of it needs.
@@ -160,6 +184,14 @@ pub fn prepare(
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
 
+    // Where this run has actually *seen* the host's copy of the branch: the
+    // remote-tracking ref in the checkout the branch was found in, read before
+    // anything here fetches. The clone's own copy of that ref is no answer — the
+    // fetch below sets it to whatever the host has now, so a lease taken from it
+    // would name a commit nobody here observed and authorize replacing it. That is
+    // the whole of what a lease is for.
+    let observed = git::tip(&source, &format!("origin/{branch}"));
+
     let origin = git::remote_url(&source, "origin")
         .unwrap_or_else(|_| source.to_string_lossy().into_owned());
     git::retain_objects_for_borrowers(&source)?;
@@ -169,13 +201,13 @@ pub fn prepare(
     }
     git::worktree_add_existing(&clone, &worktree, branch)?;
     git::fetch(&clone, "origin")?;
+    let hosted = git::tip(&clone, &format!("origin/{branch}"));
 
     let compared = crate::vcs::base_ref(&clone, &base);
     // A recorded base is read back out of a commit the repository carries, so it is
     // input to be checked rather than a name this process already decided.
-    let change_base = match provenance::recorded_change_base(&clone, &compared, branch, &trailers)?
-    {
-        Some(recorded) => Ref::try_from(recorded).map_err(|reason| Error::Invalid {
+    let recorded = match provenance::recorded_change_base(&clone, &compared, branch, &trailers)? {
+        Some(recorded) => Some(Ref::try_from(recorded).map_err(|reason| Error::Invalid {
             reason: format!(
                 "branch {branch:?} records the base it was stacked on as {reason}: the {} trailer \
                  on its preserved commit is not a branch, so nothing here can tell which base it \
@@ -185,10 +217,77 @@ pub fn prepare(
                 source.display(),
                 verb.command(branch, repo),
             ),
-        })?,
-        None => base.clone(),
+        })?),
+        None => None,
+    };
+    // A branch whose recorded stack has landed belongs on the root base, and carries
+    // the change below it as commits the root has only as one squashed equivalent. So
+    // the target moves to the root here, before anything is compared against it, and
+    // the tip it was stacked at is what its own commits are replayed from.
+    //
+    // The tip comes from whatever ref still names the recorded base, and a recorded
+    // base no ref resolves is refused below rather than published around: a branch
+    // deleted when its own change merged leaves none — every fetch here prunes — and
+    // nothing can then tell which of this branch's commits are the change below's.
+    let (change_base, stack_replay) = match recorded {
+        Some(recorded) if recorded != base => {
+            // A recorded base nothing resolves is refused rather than handed on as a
+            // name: git would meet it as an unknown revision, and the branch would be
+            // reported to an operator as a failed comparison rather than as work
+            // whose stack has to be restored before it can be published.
+            let tip = stack_tip(&clone, &recorded).ok_or_else(|| Error::Invalid {
+                reason: format!(
+                    "branch {branch:?} records the base it was stacked on as {recorded:?}, and \
+                     neither {source} nor its origin has that branch, so nothing can tell which \
+                     of the branch's commits belong to the change below it. Restore or push \
+                     {recorded:?}, or correct the {trailer} trailer on the branch in {source}, \
+                     then land it with `{command}`",
+                    source = source.display(),
+                    trailer = trailers.change_base(),
+                    command = verb.command(branch, repo),
+                ),
+            })?;
+            if publish::root_is_known_to_carry_the_stack(&clone, branch, &base, &tip)? {
+                (base.clone(), Some(tip))
+            } else {
+                (recorded, None)
+            }
+        }
+        Some(recorded) => (recorded, None),
+        None => (base.clone(), None),
     };
     let compared_change_base = crate::vcs::base_ref(&clone, &change_base);
+    // A replay rewrites the branch, so what it pushes is no descendant of the host's
+    // copy and the push may only go through against a commit this run saw there.
+    // With a copy on the host and no such observation — the branch reached the host
+    // from somewhere this checkout has never fetched — there is nothing to lease on,
+    // and an unleased push of a rewritten branch is exactly the overwrite all of
+    // this exists to prevent. Refuse here, before the gate, and name the fetch that
+    // supplies the observation.
+    if stack_replay.is_some() && observed.is_none() {
+        if let Some(hosted) = &hosted {
+            return Err(Error::SyncConflict {
+                reason: format!(
+                    "{branch:?} is on the host at {hosted}, and nothing in {source} has ever seen \
+                     it there — so this run has no commit it can safely replace. This publication \
+                     replays the branch onto {change_base:?}, and pushing it without knowing what \
+                     it replaces could overwrite work nobody here has seen. Nothing was pushed \
+                     and the branch is retained. Fetch the host's copy with `{fetch}`, reconcile \
+                     it with the branch, and then land it with `{command}`",
+                    source = source.display(),
+                    fetch = guidance::command([
+                        "git",
+                        "-C",
+                        &source.to_string_lossy(),
+                        "fetch",
+                        "origin",
+                        branch
+                    ]),
+                    command = verb.command(branch, repo),
+                ),
+            });
+        }
+    }
 
     Ok(Landing {
         verb,
@@ -203,9 +302,10 @@ pub fn prepare(
         worktree,
         run_root,
         branch: Ref::from_git(branch),
-        base,
         change_base,
         compared_change_base,
+        observed,
+        stack_replay,
     })
 }
 
@@ -292,39 +392,69 @@ impl Landing {
         .map(|_| ())
     }
 
-    /// Merge the change base into the branch before anything is verified.
+    /// Bring the branch level with the change base before anything is verified.
     ///
-    /// A conflict here is deterministic — the same two trees conflict on every
-    /// re-run — and it is what a branch whose recorded change base is missing or
-    /// unreadable produces, because the root base is then merged in its place. So
-    /// the refusal names what would change the answer, where the branch is, and the
-    /// command that lands it afterwards, rather than leaving the work to be
-    /// salvaged with raw `git` and `gh`.
-    pub fn merge_change_base(&self, stream: &mut Stream) -> Result<()> {
-        let merged = git::merge_into_branch(
+    /// Through [`publish::reconcile`], so this verb and `publish` cannot come to sync
+    /// a branch differently.
+    ///
+    /// A conflict here is deterministic — the same two trees conflict on every re-run
+    /// — so the refusal names what would change the answer, where the branch is, and
+    /// the command that lands it afterwards, rather than leaving the work to be
+    /// salvaged with raw `git` and `gh`. A recorded change base that is not a branch,
+    /// or that no ref resolves, never reaches this: `prepare` refuses it there, where
+    /// the record is read, rather than letting the root stand in for it.
+    pub fn sync_change_base(&self, stream: &mut Stream) -> Result<()> {
+        let reconciled = publish::reconcile(
             &self.worktree,
             &self.compared_change_base,
-            &format!("Merge {} into {}", self.compared_change_base, self.branch),
+            &self.branch,
+            self.stack_replay.as_deref(),
         )?;
-        if merged {
+        let publish::Reconciled::Conflicted(attempted) = reconciled else {
             return Ok(());
-        }
+        };
         stream.emit(
             EventKind::SyncConflict,
             object(json!({"branch": self.branch, "base": self.change_base})),
         );
+        // Which resolution the refusal names follows what was attempted, for the
+        // reason the refusal exists at all: a branch whose stack parent has already
+        // landed is one that merging the base conflicts with by construction, so
+        // sending an operator to merge it is sending them to reproduce this.
         Err(Error::SyncConflict {
-            reason: format!(
-                "{compared} conflicts with {branch:?}, and re-running will conflict again: this \
-                 verb merges {compared} into the branch and nothing about either has changed. \
-                 The branch is retained in {source} — resolve the conflict on it there, by \
-                 merging {compared} into it and committing the resolution, and then land it with \
-                 `{command}`, which is what publishes it",
-                compared = self.compared_change_base,
-                branch = self.branch,
-                source = self.source.display(),
-                command = self.command(),
-            ),
+            reason: match attempted {
+                publish::Reconciliation::Replay { from } => format!(
+                    "{compared} conflicts with {branch:?}, and re-running will conflict again: \
+                     {compared} already carries what {branch:?} was stacked on, so this verb \
+                     replays only its own commits onto {compared} and nothing about either has \
+                     changed. The branch is retained in {source} — resolve the conflict on it \
+                     there, by replaying it with `{replay}` and committing the resolution, and \
+                     then land it with `{command}`, which is what publishes it",
+                    compared = self.compared_change_base,
+                    branch = self.branch,
+                    source = self.source.display(),
+                    replay = guidance::command([
+                        "git",
+                        "rebase",
+                        "--onto",
+                        &self.compared_change_base,
+                        &from,
+                        &self.branch,
+                    ]),
+                    command = self.command(),
+                ),
+                publish::Reconciliation::Merge => format!(
+                    "{compared} conflicts with {branch:?}, and re-running will conflict again: \
+                     this verb merges {compared} into the branch and nothing about either has \
+                     changed. The branch is retained in {source} — resolve the conflict on it \
+                     there, by merging {compared} into it and committing the resolution, and then \
+                     land it with `{command}`, which is what publishes it",
+                    compared = self.compared_change_base,
+                    branch = self.branch,
+                    source = self.source.display(),
+                    command = self.command(),
+                ),
+            },
         })
     }
 
@@ -345,8 +475,18 @@ impl Landing {
             repo: self.clone.clone(),
             worktree: self.worktree.clone(),
             branch: self.branch.clone(),
-            base: self.base.clone(),
-            change_base: self.change_base.clone(),
+            // Resolved and acted on before this publishes: `prepare` moved a landed
+            // stack to the root and `sync_change_base` replayed it, so what is left
+            // is one branch this lands on and is compared against — and, where that
+            // replay rewrote a branch the host already has, a push that replaces
+            // exactly the commit this run found there.
+            target: publish::Target::Base(self.change_base.clone()),
+            push: match (&self.stack_replay, &self.observed) {
+                (Some(_), Some(replaced)) => publish::Push::Replacing {
+                    replaced: replaced.clone(),
+                },
+                _ => publish::Push::Forward,
+            },
             run_root: self.run_root.clone(),
             title,
             // Neither branch-keyed verb takes a body: they are reached by an

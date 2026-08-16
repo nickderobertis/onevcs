@@ -719,6 +719,165 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     }
 }
 
+/// The commit two refs last had in common, or `None` when they share no history.
+///
+/// A plain `String`, as every other SHA this module reads is: the crate's `Sha` is the
+/// contract's wrapper for its public surface and validates nothing, and git's answer to
+/// a command this module just ran is not a caller's input.
+// llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] see above.
+pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String>> {
+    let output = run(&["merge-base", first, second], Some(cwd))?;
+    match output.status {
+        // Nothing but a SHA is printed on success, so an empty answer is one that did
+        // not survive being read — and "they share no history" is the safe reading of
+        // it: it is what stops a replay rather than what starts one.
+        0 => Ok(Some(output.trimmed()).filter(|sha| !sha.is_empty())),
+        1 => Ok(None),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "git merge-base {first} {second} failed: {}",
+                output.diagnostic()
+            ),
+        }),
+    }
+}
+
+/// How many files git says two commits differ in.
+///
+/// `--shortstat` is a count and a summary, in ASCII whatever a repository names its
+/// files, which is what makes it the check on a listing of those names rather than a
+/// second copy of it. It counts what the listing lists, so it declines rename
+/// detection for the same reason the listing does.
+fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
+    let summary = checked(
+        &["diff", "--shortstat", "--no-renames", from, to],
+        Some(cwd),
+    )?
+    .trimmed();
+    // Nothing at all is what git prints when no file changed, and it is the only
+    // summary that means zero: anything else this cannot read a count out of is an
+    // answer to refuse rather than to round down, since rounding it down would say
+    // that a listing of some paths is a listing of all of them.
+    if summary.is_empty() {
+        return Ok(0);
+    }
+    summary
+        .split_once(" file")
+        .map(|(count, _)| count.trim())
+        .and_then(|count| count.parse().ok())
+        .ok_or_else(|| Error::Invalid {
+            reason: format!(
+                "git diff --shortstat {from} {to} did not begin with a count of files: {summary}"
+            ),
+        })
+}
+
+/// Whether `base` is *known* to carry everything `commit` changed since `fork`.
+///
+/// One-sided deliberately: `true` is established, and `false` is either established
+/// or the answer to a question this could not put to git — a listing that did not
+/// arrive whole leaves only the whole trees to compare, and a base carrying those
+/// changes beside unrelated ones then answers `false`. Every caller acts on `true`
+/// by rewriting history, so uncertainty belongs on the side that leaves a branch
+/// alone.
+///
+/// Content rather than ancestry, for the reason [`trees_differ`] gives: a branch
+/// that reached the base as one squashed commit is an ancestor of nothing, and its
+/// individual commits are not in the base by any name it kept. What is true of it
+/// afterwards is that every path it touched — both ends of a rename included — reads
+/// on the base exactly as it reads on the commit — which is the question asked here, and asked over the paths that
+/// commit actually touched so that unrelated work landing on the base beside it
+/// does not change the answer.
+pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
+    // Renames are deliberately not detected: git reports one under its destination
+    // alone, and a comparison scoped by that would never ask whether the source is
+    // still on the base — which is the half of a rename that says the change below has
+    // *not* landed. Without detection both paths are listed and both are compared.
+    let listed = checked(
+        &["diff", "--name-only", "--no-renames", "-z", fork, commit],
+        Some(cwd),
+    )?;
+    // Pathspecs, not names: a path is a repository's own content and one beginning
+    // with `:` would otherwise be read as pathspec magic rather than as the file it
+    // names.
+    let touched: Vec<String> = listed
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| format!(":(literal){path}"))
+        .collect();
+    // How many paths there are is asked of git separately, in a report that is ASCII
+    // whatever the repository names its files, and the two answers have to agree
+    // before a diff is scoped by the names. Paths are bytes and this process reads
+    // git's output as text, so how much of a listing survived that is a question to
+    // settle rather than to assume — a comparison scoped by *some* of the paths a
+    // commit touched would answer that the base carries it when the base does not.
+    if touched.len() != counted_files(cwd, fork, commit)? {
+        // Which leaves the same question asked without paths: a base carrying this
+        // commit's whole tree carries its changes too, and that is the one answer
+        // that cannot be wrong about a path nobody here could name.
+        return Ok(!trees_differ(cwd, base, commit)?);
+    }
+    if touched.is_empty() {
+        // The commit changed nothing since the fork, and a base built on that fork
+        // carries the nothing it changed.
+        return Ok(true);
+    }
+    let mut args = vec!["diff", "--quiet", commit, base, "--"];
+    args.extend(touched.iter().map(String::as_str));
+    let output = run(&args, Some(cwd))?;
+    match output.status {
+        0 => Ok(true),
+        1 => Ok(false),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "git diff {commit} {base} over {} paths failed: {}",
+                touched.len(),
+                output.diagnostic()
+            ),
+        }),
+    }
+}
+
+/// What one attempt to bring a ref into a branch did.
+///
+/// Named rather than a `bool`, because "it conflicted" is a domain answer every
+/// caller acts on — it decides a refusal, a skipped candidate, another bounded
+/// attempt — and the one thing a caller must never read it as is a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Integrated {
+    /// The branch carries it now.
+    Settled,
+    /// It conflicted, and the branch is as it was found.
+    Conflicted,
+}
+
+/// Replay `branch`'s commits after `upstream` onto `onto`, keeping nothing else.
+///
+/// Answers [`Integrated::Conflicted`] only when the replay conflicted, and leaves
+/// the branch as it was in that case; every other git failure stays an error, so a
+/// caller does not mistake an invalid ref for a conflict it can report.
+pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Result<Integrated> {
+    let replayed = run(&["rebase", "--onto", onto, upstream, branch], Some(cwd))?;
+    if replayed.ok() {
+        return Ok(Integrated::Settled);
+    }
+    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
+    let conflicted = unmerged.ok() && !unmerged.trimmed().is_empty();
+    // Whatever stopped it, the tree is left as it was found: a replay that halted
+    // mid-way is a repository nothing else in this crate knows how to read.
+    run(&["rebase", "--abort"], Some(cwd))?;
+    if conflicted {
+        return Ok(Integrated::Conflicted);
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "git rebase --onto {onto} {upstream} {branch} failed: {}",
+            replayed.diagnostic()
+        ),
+    })
+}
+
 /// When a ref's commit was made, as whole seconds since the epoch.
 pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
     run(&["log", "-1", "--format=%ct", reference], Some(cwd))
@@ -763,12 +922,13 @@ pub fn worktree_prune(cwd: &Path) -> Result<()> {
 /// Merge a ref into the checked-out branch, reporting a conflict rather than
 /// raising one.
 ///
-/// Returns `false` only when the merge conflicted; every other git failure stays
-/// an error, so a caller does not mistake an invalid ref for a sync conflict.
-pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<bool> {
+/// Answers [`Integrated::Conflicted`] only when the merge conflicted; every other
+/// git failure stays an error, so a caller does not mistake an invalid ref for a
+/// sync conflict.
+pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<Integrated> {
     let merged = run(&["merge", "--no-edit", "-m", message, reference], Some(cwd))?;
     if merged.ok() {
-        return Ok(true);
+        return Ok(Integrated::Settled);
     }
     let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
     if !unmerged.ok() || unmerged.trimmed().is_empty() {
@@ -777,7 +937,7 @@ pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<b
         });
     }
     run(&["merge", "--abort"], Some(cwd))?;
-    Ok(false)
+    Ok(Integrated::Conflicted)
 }
 
 /// Squash-merge a ref and commit it, or report that it added no content.
@@ -798,23 +958,216 @@ pub fn merge_ff_only(cwd: &Path, reference: &str) -> Result<()> {
     checked(&["merge", "--ff-only", reference], Some(cwd)).map(|_| ())
 }
 
-/// Push a branch, returning everything the push wrote.
+/// What a push did, in the form git reports rather than in the prose beside it.
 ///
-/// That text is the merge path's own verification evidence: a repository whose
-/// `pre-push` hook runs its complete gate reports that run here, and callers
-/// preserve it whether the push passed or was rejected.
-pub fn push(
+/// One case or the other, so a push cannot be both accepted and carrying refs git
+/// turned down. Either way it keeps `output`: everything the push wrote, whole,
+/// because a `pre-push` hook runs the repository's complete gate and reports that
+/// run here — it is the merge path's only verification evidence, and callers
+/// preserve it whether the push passed or was rejected. A refusal keeps the refs
+/// besides, read out of `--porcelain`'s one line per ref —
+/// `<flag>\t<from>:<to>\t<summary>`, where `!` is the flag for a ref git declined.
+/// That flag and that ref name are git's machine-readable answer: no locale renames
+/// them and no hook's message can produce them, so a decision about *why* a push
+/// failed is made from them and never from the sentence a human would read.
+#[derive(Debug, Clone)]
+pub enum Pushed {
+    /// git took every ref it was given.
+    Accepted {
+        /// Everything the push wrote.
+        output: String,
+    },
+    /// git did not.
+    Refused {
+        /// Everything the push wrote.
+        output: String,
+        /// The remote refs it declined to update — none at all where it failed
+        /// before any ref was negotiated, which a credential or an unreachable
+        /// remote does.
+        refs: Vec<String>,
+    },
+}
+
+impl Pushed {
+    /// Whether git accepted the push whole.
+    pub fn accepted(&self) -> bool {
+        matches!(self, Pushed::Accepted { .. })
+    }
+
+    /// Everything the push wrote, porcelain and diagnostics together.
+    pub fn output(&self) -> &str {
+        match self {
+            Pushed::Accepted { output } | Pushed::Refused { output, .. } => output,
+        }
+    }
+
+    /// Whether git declined to update one particular remote branch.
+    ///
+    /// The ref is spelled as git spells it in the porcelain line — fully, as
+    /// `refs/heads/<branch>` — so a caller asks about the branch it pushed rather
+    /// than about a substring that could match another.
+    pub fn refused_branch(&self, branch: &str) -> bool {
+        let reference = format!("refs/heads/{branch}");
+        match self {
+            Pushed::Accepted { .. } => false,
+            Pushed::Refused { refs, .. } => refs.contains(&reference),
+        }
+    }
+
+    /// Why the push was refused, as git's own per-ref summary, for a human to read.
+    ///
+    /// The summary is *reported*, never classified on: `--porcelain` puts the ref
+    /// status on stdout and git's usual `! [rejected] …` line then never reaches
+    /// stderr, so without this a rejection would read only as "failed to push some
+    /// refs".
+    pub fn refusal(&self) -> Option<&str> {
+        let Pushed::Refused { output, .. } = self else {
+            return None;
+        };
+        output
+            .lines()
+            .find(|line| line.starts_with("!\t"))
+            .and_then(|line| line.split('\t').nth(2))
+    }
+}
+
+/// Push a branch, returning everything the push wrote.
+pub fn push(cwd: &Path, branch: &str, remote: &str, env: &[(String, String)]) -> Result<Pushed> {
+    push_replacing(cwd, branch, remote, None, env)
+}
+
+/// Push a branch whose history was rewritten, replacing exactly what was last seen
+/// there.
+///
+/// `replacing` is the commit this repository last saw the remote's copy at, and the
+/// push is refused by git if the remote is anywhere else — somebody pushed to the
+/// branch while this ran, and overwriting that is losing work rather than replacing
+/// a history this run itself replaced. `None` is an ordinary push, which is every
+/// publication that rewrote nothing.
+pub fn push_replacing(
     cwd: &Path,
     branch: &str,
     remote: &str,
+    replacing: Option<&str>,
     env: &[(String, String)],
-) -> Result<std::result::Result<String, String>> {
-    let output = run_with_env(&["push", remote, branch], Some(cwd), env)?;
+) -> Result<Pushed> {
+    let lease = replacing.map(|seen| format!("--force-with-lease={branch}:{seen}"));
+    let mut args = vec!["push", "--porcelain", remote, branch];
+    if let Some(lease) = lease.as_deref() {
+        args.insert(1, lease);
+    }
+    let output = run_with_env(&args, Some(cwd), env)?;
     Ok(if output.ok() {
-        Ok(output.combined())
+        Pushed::Accepted {
+            output: output.combined(),
+        }
     } else {
-        Err(output.combined())
+        Pushed::Refused {
+            refs: refused_refs(&output.stdout),
+            output: output.combined(),
+        }
     })
+}
+
+/// The remote refs a `--porcelain` push reported it declined to update.
+fn refused_refs(porcelain: &str) -> Vec<String> {
+    porcelain
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            // A ref name cannot contain a colon, so the first one separates the two
+            // halves of `<from>:<to>` and the remote's is what follows it.
+            (fields.next()? == "!")
+                .then(|| fields.next()?.split_once(':').map(|(_, to)| to.to_owned()))
+                .flatten()
+        })
+        .collect()
+}
+
+/// A commit id, checked where it arrives from outside this process.
+///
+/// The only way to make one is [`ObjectId::parse`], so a value of this type is a
+/// hexadecimal object id and nothing else: what a remote advertises is external
+/// input, and a line of it that is not an id must not go on to be compared against
+/// a lease as though it were one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectId(String);
+
+impl ObjectId {
+    /// The id, if this is one at all.
+    ///
+    /// A remote advertises complete ids and never abbreviations, so the two lengths
+    /// git has object formats for are the two accepted: 40 hexadecimal characters
+    /// for SHA-1 and 64 for SHA-256. Any other length is output this does not
+    /// understand, whatever it is made of.
+    pub fn parse(value: &str) -> Option<Self> {
+        let complete = matches!(value.len(), 40 | 64);
+        (complete && value.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| ObjectId(value.to_owned()))
+    }
+
+    /// The id as git spells it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What a remote has for one branch, as it answers now.
+///
+/// Three answers rather than two: a remote that has no such branch and a remote
+/// that could not be asked at all are different facts, and collapsing them is how a
+/// caller comes to decide something from an answer nobody gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteTip {
+    /// The remote answered, and the branch is at this commit.
+    At(ObjectId),
+    /// The remote answered, and has no branch of that name.
+    Absent,
+    /// The remote could not be asked, so nothing about it is known here.
+    Unknown,
+}
+
+/// Ask the remote itself where a branch is, in its machine-readable form.
+///
+/// `ls-remote --exit-code` separates the three answers by exit status rather than
+/// by output: `0` is a branch it has, `2` is a remote that answered and has none,
+/// and anything else is a remote that could not be reached or would not say. What
+/// arrives on a `0` is still checked before it counts as a commit — a remote is
+/// outside this process, and an answer that is not an object id is one nothing here
+/// knows anything from.
+pub fn remote_tip(
+    cwd: &Path,
+    remote: &str,
+    branch: &str,
+    env: &[(String, String)],
+) -> Result<RemoteTip> {
+    let reference = format!("refs/heads/{branch}");
+    let listing = run_with_env(
+        &["ls-remote", "--exit-code", remote, &reference],
+        Some(cwd),
+        env,
+    )?;
+    Ok(match listing.status {
+        0 => advertised(&listing.stdout, &reference).map_or(RemoteTip::Unknown, RemoteTip::At),
+        2 => RemoteTip::Absent,
+        _ => RemoteTip::Unknown,
+    })
+}
+
+/// The one object id a listing advertises for one ref, if that is what it is.
+///
+/// `ls-remote` answers `<id>\t<ref>` and, for a fully spelled ref, one line of it.
+/// The whole response has to be that: a second line, a missing field, a ref other
+/// than the one asked for, or an id that is not one leaves this with nothing it
+/// understands — and half of an answer is not a fact to decide a lease on.
+fn advertised(listing: &str, reference: &str) -> Option<ObjectId> {
+    let mut lines = listing.lines().filter(|line| !line.trim().is_empty());
+    let advertised = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let (id, named) = advertised.split_once('\t')?;
+    (named == reference).then(|| ObjectId::parse(id)).flatten()
 }
 
 /// Copy one local branch into another local repository, objects included.

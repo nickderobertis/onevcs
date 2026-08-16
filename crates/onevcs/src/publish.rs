@@ -280,7 +280,7 @@ pub fn run_for_session(
     if git::is_dirty(&record.worktree)? {
         vcs::preserve_into(&record, &mut stream, Provenance::Complete)?;
     }
-    let change_base = preserved_change_base(&record.base, record.change_base.as_ref());
+    let target = recorded_target(&record, &resolution.publication)?;
     let context = Context {
         resolution,
         policy: resolved.policy.clone(),
@@ -288,8 +288,9 @@ pub fn run_for_session(
         repo: record.clone.clone(),
         worktree: record.worktree.clone(),
         branch: record.branch.clone(),
-        base: record.base.clone(),
-        change_base,
+        target,
+        // Nothing has rewritten this branch yet; a replay below decides otherwise.
+        push: Push::Forward,
         run_root: record.run_root.clone(),
         title: request.title.clone(),
         body: request.body.clone(),
@@ -342,11 +343,12 @@ pub struct Context<'a> {
     pub worktree: PathBuf,
     /// The branch carrying the change.
     pub branch: Ref,
-    /// The root base.
-    pub base: Ref,
-    /// What the change is published onto, which for a stacked change is the branch
-    /// below it rather than the root.
-    pub change_base: Ref,
+    /// Where this publication lands, and what it is compared against on the way.
+    pub target: Target,
+    /// How its branch reaches the host, for a caller that rewrote the branch before
+    /// handing it here. A publication that replays during its own run decides this
+    /// for itself.
+    pub push: Push,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
     /// An explicit title, which replaces the synthesized subject. Checked where it
@@ -367,9 +369,184 @@ pub struct Context<'a> {
     pub hosting: &'a dyn Hosting,
 }
 
+/// How a publication's branch reaches the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Push {
+    /// Forward or not at all, which is every publication that rewrote nothing.
+    Forward,
+    /// Replacing one commit and no other, because this publication replayed the
+    /// branch's own commits onto the root and what it pushes is therefore no
+    /// descendant of what the host has.
+    Replacing {
+        /// The commit this repository last saw the host's copy of the branch at,
+        /// which is the only one this may replace. Read before the fetch rather than
+        /// after: a host that moved *since* is the thing this exists to catch, and a
+        /// value taken from a later fetch would name that move and allow it.
+        // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+        replaced: String,
+    },
+}
+
+/// Where a publication lands, and what it is compared against on the way there.
+///
+/// One or the other and never a mixture: everything that follows from being stacked
+/// — what the branch is compared against, what its change request targets, where it
+/// lands, and which commit its own work begins after — comes from this one value, so
+/// a publication cannot hold a stack and a root that disagree about any of it.
+///
+/// Stacked is *recorded*, never inferred: a branch that carries the change below it
+/// commit for commit reads exactly like a branch that wrote those commits itself, so
+/// a stack read off content would rewrite branches nobody stacked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// Onto one branch, which is also what the change is compared against: the base
+    /// a session was opened with, or the root a stacked change moved onto once the
+    /// change below it landed.
+    Base(Ref),
+    /// Onto the change below this one, until the root carries that change.
+    Stacked {
+        /// The branch below: what this change targets and is compared against.
+        below: Ref,
+        /// The identity's root base, which this moves onto once the root carries
+        /// the change below.
+        root: Ref,
+        /// The commit the branch was cut from, after which its own work begins.
+        // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+        tip: String,
+    },
+}
+
+impl Target {
+    /// The branch this change is compared against and lands on.
+    pub fn base(&self) -> &Ref {
+        match self {
+            Target::Base(base) => base,
+            Target::Stacked { below, .. } => below,
+        }
+    }
+}
+
+/// The stack a session's record wrote down, or `None` for the branch every ordinary
+/// session cuts.
+///
+/// Two things have to be there: the tip the session was cut at, which `session open`
+/// records only for a base that is not the identity's root, and a root to land on
+/// once the change below has landed.
+///
+/// The recorded tip is resolved through git before it is trusted — a record is a file
+/// under the state root — and one this session's clone does not have is refused rather
+/// than read as no stack: answering "no stack" from a value nothing could read is the
+/// merge this whole path exists to stop.
+///
+/// A root nobody can name is different and is no stack: nothing here fails, there is
+/// simply nowhere to move the change to, and the publication is the one it always
+/// was.
+fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Target> {
+    let base = preserved_change_base(&record.base, record.change_base.as_ref());
+    let Some(recorded) = record.stack_tip.as_deref() else {
+        return Ok(Target::Base(base));
+    };
+    let Some(tip) = git::tip(&record.clone, recorded) else {
+        return Err(Error::Invalid {
+            reason: format!(
+                "the record for session {token} names {recorded:?} as the commit branch {branch:?} \
+                 was cut from, and the clone at {clone} does not have it, so nothing can tell \
+                 which of that branch's commits belong to the change below it. The branch is \
+                 whole — publish it by name with `{command}`, which reads the stack off the \
+                 branch instead",
+                token = record.token,
+                branch = record.branch,
+                clone = record.clone.display(),
+                command = guidance::command([
+                    "onevcs",
+                    "publish-branch",
+                    &record.branch,
+                    "--repo",
+                    &record.publication_checkout.to_string_lossy(),
+                ]),
+            ),
+        });
+    };
+    let Some(root) = git::default_branch(publication, "origin").ok() else {
+        return Ok(Target::Base(base));
+    };
+    let root = Ref::from_git(root);
+    if root == base {
+        return Ok(Target::Base(base));
+    }
+    Ok(Target::Stacked {
+        below: base,
+        root,
+        tip,
+    })
+}
+
+/// Whether the root base already carries everything the change below this one
+/// contributed, while carrying none of the commits that contributed it.
+///
+/// Three things past the record: the branch was cut from that tip, the root does not
+/// hold the tip's commits under their own names, and the root does hold what they
+/// changed. What that establishes is exactly its name and no more — it is what a
+/// squash-merge of the change below leaves, and a root that came by the same content
+/// some other way is indistinguishable from one here, because content equality is all
+/// git can be asked. Both are answered the same way deliberately: the commits a
+/// replay drops are commits whose content the root already has, so the branch's own
+/// work is what is left either way. A change still open whose content has *not*
+/// reached the root fails the last test, and one merged as its own commits fails the
+/// second.
+pub(crate) fn root_is_known_to_carry_the_stack(
+    repo: &Path,
+    branch: &str,
+    root: &Ref,
+    tip: &str,
+) -> Result<bool> {
+    let root = vcs::base_ref(repo, root);
+    if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
+        return Ok(false);
+    }
+    if !git::is_ancestor(repo, tip, branch)? {
+        return Ok(false);
+    }
+    // Still in the root as the commits it was written as: merging the root brings
+    // them in the way it always has, and there is nothing to replay past.
+    if git::is_ancestor(repo, tip, &root)? {
+        return Ok(false);
+    }
+    let Some(fork) = git::merge_base(repo, &root, tip)? else {
+        return Ok(false);
+    };
+    git::known_to_carry_changes(repo, &root, &fork, tip)
+}
+
+impl<'a> Context<'a> {
+    /// The same publication, landing where `target` says instead.
+    fn onto(&self, target: Target) -> Context<'a> {
+        Context {
+            resolution: self.resolution.clone(),
+            policy: self.policy.clone(),
+            effective: self.effective,
+            repo: self.repo.clone(),
+            worktree: self.worktree.clone(),
+            branch: self.branch.clone(),
+            target,
+            push: self.push.clone(),
+            run_root: self.run_root.clone(),
+            title: self.title.clone(),
+            body: self.body.clone(),
+            trailers: self.trailers.clone(),
+            provenance: self.provenance.clone(),
+            hosting: self.hosting,
+        }
+    }
+}
+
 /// Verify and publish a branch.
 pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome> {
-    let remote_base = format!("origin/{}", context.change_base);
+    // Where this repository last saw the host's copy of the branch, read before the
+    // fetch that is about to update it: a publication that replays its own commits
+    // pushes over that copy, and what it may replace is what it had already seen —
+    // never whatever arrived in between, which is the thing worth refusing over.
+    let last_seen = git::tip(&context.repo, &format!("origin/{}", context.branch));
     if git::has_remote(&context.repo, "origin") {
         // Outside every exclusive section, deliberately.
         git::fetch(&context.repo, "origin")?;
@@ -378,28 +555,52 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
             object(json!({"remote": "origin", "checkout": context.repo.display().to_string()})),
         );
     }
+    // Asked after the fetch and before anything else: a change whose stack the root
+    // already carries is a change onto the root base, and everything below — what it is compared
+    // against, what its gate judges, what its change request targets — follows from
+    // that rather than from the branch it was opened against.
+    let mut replay = None;
+    let landed;
+    let mut context = context;
+    if let Target::Stacked { root, tip, .. } = &context.target {
+        if root_is_known_to_carry_the_stack(&context.repo, &context.branch, root, tip)? {
+            replay = Some(tip.clone());
+            landed = context.onto(Target::Base(root.clone()));
+            context = &landed;
+        }
+    }
+    let remote_base = format!("origin/{}", context.target.base());
     let compared = if git::ref_exists(&context.repo, &format!("refs/remotes/{remote_base}")) {
         remote_base.clone()
     } else {
-        context.change_base.to_string()
+        context.target.base().to_string()
     };
 
-    sync(context, stream, &compared)?;
+    sync(context, stream, &compared, replay.as_deref())?;
 
     if nothing_to_publish(context, &compared)? {
         return Ok(PublishOutcome::NothingToPublish);
     }
 
+    let push = match (&replay, &last_seen) {
+        (Some(_), Some(replaced)) => Push::Replacing {
+            replaced: replaced.clone(),
+        },
+        // Otherwise it is whatever the caller knows: a branch-keyed verb replays
+        // before it hands a publication here, and its branch is rewritten just the
+        // same.
+        _ => context.push.clone(),
+    };
     // The trailers are the publication *commit*'s, so only the local path takes them
     // here — and it re-describes the branch after the queue anyway. Asking now is
     // still what refuses a branch with no usable subject before the gate runs.
     let (subject, _) = describe(context, &compared)?;
-    let environment = gate::comparison_env("origin", &context.change_base);
+    let environment = gate::comparison_env("origin", context.target.base());
     verify(context, stream, &environment)?;
 
     match context.effective {
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
-        _ => publish_as_change(context, stream, &subject, &environment),
+        _ => publish_as_change(context, stream, &subject, &environment, push),
     }
 }
 
@@ -487,7 +688,7 @@ fn verify(
         object(json!({
             "command": command.join(" "),
             "comparison_remote": "origin",
-            "comparison_base": context.change_base,
+            "comparison_base": context.target.base(),
         })),
     );
     let verdict = gate::run(&context.worktree, command, environment);
@@ -511,21 +712,88 @@ fn verify(
     })
 }
 
-/// Merge the current base into the branch, bounded, before anything is published.
-fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()> {
+/// What bringing a branch level with what it lands on did.
+pub(crate) enum Reconciled {
+    /// The branch carries what it lands on now.
+    Settled,
+    /// It conflicted, doing this — which is what a refusal about it has to name,
+    /// since the resolution an operator is sent to is the shape that was attempted.
+    Conflicted(Reconciliation),
+}
+
+/// Which shape bringing a branch level with what it lands on takes.
+pub(crate) enum Reconciliation {
+    /// The base is merged into the branch.
+    Merge,
+    /// Only the branch's own commits are replayed onto the base, because the base
+    /// already carries its history up to this commit.
+    Replay {
+        /// The commit where the branch's own work begins, as `git` spelled it.
+        // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+        from: String,
+    },
+}
+
+/// Bring a branch level with the base it is published onto, once.
+///
+/// Two shapes, and the record decides which rather than this: ordinarily the base is
+/// merged into the branch, and a branch whose recorded stack has landed replays only
+/// its own commits onto the base instead — `git rebase --onto <base> <stack tip>
+/// <branch>`, which is what an operator ends up running by hand. Merging there would
+/// replay the change below against its own squashed equivalent, which conflicts in
+/// every file both touched and conflicts again on every bounded retry.
+///
+/// Shared by `publish` and by the branch-keyed verbs, so the two cannot come to
+/// disagree about what a sync does.
+pub(crate) fn reconcile(
+    worktree: &Path,
+    compared: &str,
+    branch: &str,
+    replay_from: Option<&str>,
+) -> Result<Reconciled> {
+    let (shape, integrated) = match replay_from {
+        Some(tip) => (
+            Reconciliation::Replay {
+                from: tip.to_owned(),
+            },
+            git::rebase_onto(worktree, compared, tip, branch)?,
+        ),
+        None => (
+            Reconciliation::Merge,
+            git::merge_into_branch(
+                worktree,
+                compared,
+                &format!("Merge {compared} into {branch}"),
+            )?,
+        ),
+    };
+    Ok(match integrated {
+        git::Integrated::Settled => Reconciled::Settled,
+        git::Integrated::Conflicted => Reconciled::Conflicted(shape),
+    })
+}
+
+/// Sync the branch with the current base, bounded, before anything is published.
+///
+/// `replay_from` is the recorded stack tip when the change below this one has
+/// landed, and `None` — every publication that is not a stacked one — is the merge
+/// this has always been.
+fn sync(
+    context: &Context<'_>,
+    stream: &mut Stream,
+    compared: &str,
+    replay_from: Option<&str>,
+) -> Result<()> {
     if !git::ref_exists(&context.repo, &format!("refs/remotes/{compared}"))
         && !git::branch_exists(&context.repo, compared)
     {
         return Ok(());
     }
+    let mut attempted = Reconciliation::Merge;
     for attempt in 1..=SYNC_ATTEMPTS {
-        let merged = git::merge_into_branch(
-            &context.worktree,
-            compared,
-            &format!("Merge {compared} into {}", context.branch),
-        )?;
-        if merged {
-            return Ok(());
+        match reconcile(&context.worktree, compared, &context.branch, replay_from)? {
+            Reconciled::Settled => return Ok(()),
+            Reconciled::Conflicted(shape) => attempted = shape,
         }
         if attempt < SYNC_ATTEMPTS && git::has_remote(&context.repo, "origin") {
             git::fetch(&context.repo, "origin")?;
@@ -535,28 +803,42 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
         EventKind::SyncConflict,
         object(json!({
             "branch": context.branch,
-            "base": context.change_base,
+            "base": context.target.base(),
             "attempts": SYNC_ATTEMPTS,
         })),
     );
+    let land = guidance::command([
+        "onevcs",
+        "publish-branch",
+        &context.branch,
+        "--repo",
+        &context.resolution.publication.to_string_lossy(),
+    ]);
     // The branch is retained rather than lost, and the refusal says what would
     // change the answer: another attempt resolves nothing a bounded retry has
     // already tried, and an operator told only that the two conflict is an operator
-    // reaching for raw `git` to land the work.
+    // reaching for raw `git` to land the work. Which resolution it names follows
+    // what was attempted — telling a branch whose stack parent has landed to merge
+    // the base is telling it to reproduce the conflict it is refusing.
     Err(Error::SyncConflict {
-        reason: format!(
-            "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
-             branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
-             and then land it with `{}`",
-            guidance::command([
-                "onevcs",
-                "publish-branch",
-                &context.branch,
-                "--repo",
-                &context.resolution.publication.to_string_lossy(),
-            ]),
-            branch = context.branch,
-        ),
+        reason: match attempted {
+            Reconciliation::Replay { from } => {
+                format!(
+                "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
+                 branch is retained. {compared} already carries what {branch:?} was stacked on, so \
+                 only its own commits are replayed onto it. Resolve the conflict on it — replay it \
+                 with `{}` — and then land it with `{land}`",
+                guidance::command(["git", "rebase", "--onto", compared, &from, &context.branch]),
+                branch = context.branch,
+            )
+            }
+            Reconciliation::Merge => format!(
+                "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
+                 branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
+                 and then land it with `{land}`",
+                branch = context.branch,
+            ),
+        },
     })
 }
 
@@ -568,7 +850,7 @@ fn publish_locally(
     environment: &[(String, String)],
 ) -> Result<PublishOutcome> {
     let publication = &context.resolution.publication;
-    require_publication_checkout_ready(publication, &context.base)?;
+    require_publication_checkout_ready(publication, context.target.base())?;
     let judged = git::tip(&context.repo, compared);
 
     let identity = lock::git_identity(&git::common_dir(publication)?);
@@ -599,7 +881,7 @@ fn publish_locally(
             git::fetch(&context.repo, "origin")?;
         }
         if git::tip(&context.repo, compared) != judged {
-            sync(context, stream, compared)?;
+            sync(context, stream, compared, None)?;
             verify(context, stream, environment)?;
         }
         let (subject, trailers) = describe(context, compared)?;
@@ -615,22 +897,18 @@ fn publish_locally(
             };
             let pushed = git::push(
                 &scratch,
-                &format!("HEAD:refs/heads/{}", context.base),
+                &format!("HEAD:refs/heads/{}", context.target.base()),
                 "origin",
                 environment,
             )?;
             record_push(context, stream, &pushed)?;
-            pushed.map_err(|output| Error::GateFailed {
-                reason: format!(
-                    "the publishing push of {:?} was rejected by the merge path: {}",
-                    context.branch,
-                    output.lines().next_back().unwrap_or("").trim()
-                ),
-            })?;
-            fast_forward_publication(publication, &context.base)?;
+            if !pushed.accepted() {
+                return Err(rejected(context, &pushed));
+            }
+            fast_forward_publication(publication, context.target.base())?;
             stream.emit(
                 EventKind::MergeCompleted,
-                object(json!({"identity": identity, "sha": sha, "base": context.base})),
+                object(json!({"identity": identity, "sha": sha, "base": context.target.base()})),
             );
             Ok(PublishOutcome::Merged(Sha(sha)))
         })();
@@ -643,22 +921,146 @@ fn publish_locally(
     outcome
 }
 
+/// A push the merge path refused, reported as what git said it was.
+///
+/// This is also what an *unclassified* rejection is reported as, deliberately: it
+/// names the push and hands over git's own per-ref summary without deciding what
+/// produced it. The fallback below it is for a failure that never reached a ref at
+/// all — no credential, no remote — where git's last line is the whole answer.
+fn rejected(context: &Context<'_>, pushed: &git::Pushed) -> Error {
+    Error::GateFailed {
+        reason: format!(
+            "the publishing push of {:?} was rejected by the merge path: {}",
+            context.branch,
+            pushed.refusal().unwrap_or_else(|| pushed
+                .output()
+                .lines()
+                .next_back()
+                .unwrap_or("")
+                .trim())
+        ),
+    }
+}
+
+/// Why git turned a leased push down, when the lease is what it turned down.
+///
+/// The two are told apart because the operator's next move differs: one branch has
+/// somebody else's work on it to reconcile with, and the other has nothing on the
+/// host at all.
+enum Declined {
+    /// The branch is on the host at a commit this run never saw.
+    Moved(git::ObjectId),
+    /// The host has no branch of that name any more.
+    Gone,
+}
+
+/// Whether git turned this push down *because the lease was stale*, decided from
+/// what git and the remote report and never from the prose beside it.
+///
+/// Two structural facts have to agree, because neither alone is enough. git has to
+/// have declined this very ref: its `--porcelain` line for the branch carries the
+/// `!` flag, which rules out a push that failed before any ref was negotiated. And
+/// the lease has to be genuinely stale: `--force-with-lease=<branch>:<seen>` is
+/// declined exactly when the remote's value for the branch is not `<seen>`, so the
+/// remote's own answer to "where is this branch" settles whether that is what
+/// happened. A remote that will not say answers `None`, leaving the rejection
+/// unclassified — assuming a stale lease from an answer nobody gave is the same
+/// mistake as reading it out of a message a locale could translate.
+fn declined_the_lease(
+    context: &Context<'_>,
+    pushed: &git::Pushed,
+    replaced: &str,
+    environment: &[(String, String)],
+) -> Result<Option<Declined>> {
+    if !pushed.refused_branch(&context.branch) {
+        return Ok(None);
+    }
+    Ok(
+        match git::remote_tip(&context.worktree, "origin", &context.branch, environment)? {
+            git::RemoteTip::At(tip) if tip.as_str() == replaced => None,
+            git::RemoteTip::At(tip) => Some(Declined::Moved(tip)),
+            // The host no longer has the branch at all, which is not where this run
+            // last saw it either — the lease named a commit, and git declines it
+            // against a ref that is gone just as it does against one that moved.
+            git::RemoteTip::Absent => Some(Declined::Gone),
+            git::RemoteTip::Unknown => None,
+        },
+    )
+}
+
 /// Push the branch, open or adopt its change request, and ask the host to land it.
 fn publish_as_change(
     context: &Context<'_>,
     stream: &mut Stream,
     subject: &str,
     environment: &[(String, String)],
+    push: Push,
 ) -> Result<PublishOutcome> {
-    let pushed = git::push(&context.worktree, &context.branch, "origin", environment)?;
+    // A branch this publication replayed is not a descendant of the one the host has
+    // for it — the change below's commits are gone from it — so the push replaces one
+    // commit and no other, and git refuses it if the host is anywhere else. Every
+    // other publication pushes as it always has: forward or not at all.
+    let replacing = match &push {
+        Push::Replacing { replaced } => Some(replaced.as_str()),
+        Push::Forward => None,
+    };
+    let pushed = git::push_replacing(
+        &context.worktree,
+        &context.branch,
+        "origin",
+        replacing,
+        environment,
+    )?;
     record_push(context, stream, &pushed)?;
-    pushed.map_err(|output| Error::GateFailed {
-        reason: format!(
-            "the publishing push of {:?} was rejected by the merge path: {}",
-            context.branch,
-            output.lines().next_back().unwrap_or("").trim()
-        ),
-    })?;
+    if !pushed.accepted() {
+        // Which refusal this is depends on what git declined, and that is decided
+        // from what git and the host *report* rather than from the sentence either
+        // wrote. A declined lease means somebody else's commit is on this branch
+        // while the work here is a replay that would have written over it. Every
+        // other rejection of the same push is what it has always been — a
+        // credential, a hook, or the host's own policy — and so is every rejection
+        // this cannot tell apart: reading one of those as a branch that moved would
+        // send an operator to reconcile histories that never diverged.
+        let declined = match replacing {
+            Some(replaced) => declined_the_lease(context, &pushed, replaced, environment)?,
+            None => None,
+        };
+        let (Some(replaced), Some(declined)) = (replacing, declined) else {
+            return Err(rejected(context, &pushed));
+        };
+        let branch = &context.branch;
+        let base = context.target.base();
+        let command = guidance::command([
+            "onevcs",
+            "publish-branch",
+            branch,
+            "--repo",
+            &context.resolution.publication.to_string_lossy(),
+        ]);
+        return Err(Error::SyncConflict {
+            // What the host has instead is what the operator has to do something
+            // about, so the refusal says which of the two it is rather than one
+            // sentence that is only true of the commoner one.
+            reason: match declined {
+                Declined::Moved(tip) => format!(
+                    "{branch:?} moved on the host since this run last had it at {replaced} — it \
+                     is at {tip} now — and this publication replayed it onto {base:?}, so pushing \
+                     would replace whatever was pushed there in between. Nothing was overwritten \
+                     and the branch is retained. Reconcile the two — fetch {branch}, and replay \
+                     or merge what the host has into it — and then land it with `{command}`",
+                    tip = tip.as_str(),
+                ),
+                Declined::Gone => format!(
+                    "{branch:?} is gone from the host, which this run last had at {replaced}, and \
+                     this publication replayed it onto {base:?} — so the push would put a branch \
+                     back that somebody deleted, out of a history nobody there has seen. Nothing \
+                     was pushed and the branch is retained. Fetch {branch} so this run sees the \
+                     host as it stands — every fetch here prunes — and then land it with \
+                     `{command}`"
+                ),
+            },
+        });
+    }
 
     let slug = change_host(&context.resolution.key)?;
     let host = context.hosting.for_repo(&slug)?;
@@ -667,12 +1069,12 @@ fn publish_as_change(
     // find out.
     let author = host.authenticated_user()?;
 
-    let existing = host.find_changes(&context.branch, &context.change_base)?;
+    let existing = host.find_changes(&context.branch, context.target.base())?;
     let change = match existing.into_iter().next() {
         Some(change) => change,
         None => host.open_change(ChangeSpec {
             head: context.branch.to_string(),
-            base: context.change_base.to_string(),
+            base: context.target.base().to_string(),
             title: subject.to_owned(),
             // Exactly what the caller passed, or nothing. The caller is the layer
             // that knows what the change is for; this one only knows the branch,
@@ -739,7 +1141,7 @@ fn publish_as_change(
                     EventKind::MergeCompleted,
                     object(json!({"identity": identity, "sha": sha.0})),
                 );
-                fast_forward_publication(&context.resolution.publication, &context.base)?;
+                fast_forward_publication(&context.resolution.publication, context.target.base())?;
                 Ok(PublishOutcome::Merged(sha))
             }
             MergeOutcome::Queued => Ok(PublishOutcome::Queued(change.url.clone())),
@@ -834,15 +1236,13 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
     }
 }
 
-fn record_push(
-    context: &Context<'_>,
-    stream: &mut Stream,
-    pushed: &std::result::Result<String, String>,
-) -> Result<()> {
-    let (ruling, output) = match pushed {
-        Ok(output) => (gate::Ruling::Passed, output),
-        Err(output) => (gate::Ruling::Rejected, output),
+fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed) -> Result<()> {
+    let ruling = if pushed.accepted() {
+        gate::Ruling::Passed
+    } else {
+        gate::Ruling::Rejected
     };
+    let output = pushed.output();
     stream.emit(
         EventKind::Push,
         object(json!({

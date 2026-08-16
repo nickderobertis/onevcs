@@ -211,7 +211,17 @@ failure_line() {
   if [ -z "$line" ]; then
     line="the run named no assertion — see $log"
   fi
-  sed 's/^ *//; s/[│├└─]//g; s/^ *//' <<<"$line" | cut -c1-140
+  # Three things a run spells differently every time — the scratch directory it ran
+  # in, the session tokens it minted, and the clock — are recorded as what they are
+  # rather than as this run's values. A transcript carrying any of them could never
+  # be re-made byte for byte, and an artifact nobody can re-make is exactly what this
+  # harness exists to replace. Nothing else is touched: what a refusal named under
+  # that directory, and every word of what the assertion said, is the evidence.
+  sed 's/^ *//; s/[│├└─]//g; s/^ *//' <<<"$line" \
+    | sed -E 's#[/A-Za-z0-9._-]*/\.tmp[A-Za-z0-9]+#<tmp>#g;
+              s#s-[0-9a-f]{12}#<token>#g;
+              s#[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z#<time>#g' \
+    | cut -c1-140
 }
 
 # Exactly the files the patches touch, read off the patches themselves: a blanket

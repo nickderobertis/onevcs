@@ -25,6 +25,7 @@
 use predicates::prelude::*;
 
 use crate::registry::configure_rules;
+use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, Check, World};
 
 /// A registered hosted repository publishing under `default_policy`.
@@ -582,6 +583,998 @@ fn a_reviewed_change_is_pushed_and_left_open() {
         "https://github.com/acme-corp/hosted/pull/1"
     );
     assert!(!hosted.world.events_of(&token, "push").is_empty());
+}
+
+/// A hosted session stacked on a change below it, cut from that change's branch.
+///
+/// `session open --base` is what records a stack, so this is how a hosted stacked
+/// change is opened: the branch below exists on the origin, and the session is cut
+/// from it.
+fn hosted_stack(hosted: &Hosted, branch: &str) -> (String, std::path::PathBuf) {
+    let world = &hosted.world;
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    // Two commits, because a squash of one is that one: same tree, same parent, same
+    // message, same second, and therefore the same commit — which is a fast-forward
+    // rather than the squash this is about.
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            branch,
+            "--base",
+            "feature/engine",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let worktree = worktree_of(&stdout);
+    world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+    (token_of(&stdout), worktree)
+}
+
+/// Land the branch below on `main` the way a squash-merging host does.
+fn squash_the_change_below(hosted: &Hosted, delete_it: bool) {
+    let below = hosted.world.clone_of(&hosted.origin, "below");
+    hosted
+        .world
+        .git(&below, &["merge", "--squash", "origin/feature/engine"]);
+    hosted
+        .world
+        .git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    hosted.world.git(&below, &["push", "-q", "origin", "main"]);
+    if delete_it {
+        hosted.world.git(
+            &below,
+            &["push", "-q", "origin", "--delete", "feature/engine"],
+        );
+    }
+}
+
+#[test]
+fn a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root() {
+    // The stack's floor is gone, so the change request cannot be opened against it:
+    // what the branch is compared against, replayed onto, and reviewed against all
+    // move to the root together.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    squash_the_change_below(&hosted, true);
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let opened = hosted.world.events_of(&token, "change-opened");
+    assert_eq!(opened.len(), 1);
+    assert_eq!(
+        opened[0]["payload"]["base"], "main",
+        "the review targets the root the change was replayed onto: {opened:?}"
+    );
+    // The branch really is the root plus its own work: the change below is on the
+    // origin once, as the commit that squashed it.
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/filter"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "feat: filter what the engine relays",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ]
+    );
+}
+
+#[test]
+fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it_lands() {
+    // The whole of the trap, as a stacked change actually meets it: the review is
+    // opened against the branch below, that change lands and takes its branch with
+    // it, and the same session is published again. The second publication is the one
+    // that has to move — onto the root, with only this branch's own commits — and it
+    // opens the review there rather than against a branch the host no longer has.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, worktree) = hosted_stack(&hosted, "feature/filter");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    assert_eq!(opened_against(&hosted, &token), "feature/engine");
+
+    squash_the_change_below(&hosted, true);
+    // …and the session works on, so what it replays is ahead of what it published:
+    // the commit its push may replace is the one the host has, not the one it holds.
+    hosted.world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays, revised\n",
+        "fix: relay a little less",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let opened = hosted.world.events_of(&token, "change-opened");
+    assert_eq!(opened.len(), 2, "one review each time: {opened:?}");
+    assert_eq!(
+        opened[1]["payload"]["base"], "main",
+        "the second is against the root the change moved onto: {opened:?}"
+    );
+    // …and it is this branch's own work over the root, with the change below on the
+    // origin once, as the commit that squashed it.
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/filter"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "fix: relay a little less",
+            "feat: filter what the engine relays",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ],
+        "its own work, all of it, over the root the change below landed on"
+    );
+}
+
+#[test]
+fn a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it() {
+    // The one thing a replay must never do: a publication that rewrote its branch
+    // pushes over what the host has for it, and somebody pushed to that branch in
+    // between. The push replaces one commit and no other, so git declines it, nothing
+    // on the host is lost, and the refusal says what happened and what lands the work
+    // once the two histories are one again.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    squash_the_change_below(&hosted, true);
+
+    // Somebody else's commit lands on this branch while the change below is merging.
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.git(
+        &elsewhere,
+        &[
+            "checkout",
+            "-q",
+            "-B",
+            "feature/filter",
+            "origin/feature/filter",
+        ],
+    );
+    hosted.world.commit_file(
+        &elsewhere,
+        "review.txt",
+        "a fix asked for in review\n",
+        "fix: take the review's advice",
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "feature/filter"]);
+    let theirs = hosted
+        .world
+        .git(&hosted.origin, &["rev-parse", "feature/filter"]);
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains(
+            "\"feature/filter\" moved on the host since this run last had it at",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was overwritten and the branch is retained.",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs publish-branch feature/filter --repo {}`",
+            hosted.checkout.display()
+        )));
+    // The refusal names the commit it would have replaced, which is what makes the
+    // lease readable rather than a bare rejection.
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        refusal.contains("fetch feature/filter"),
+        "the refusal says how to reconcile the two:\n{refusal}"
+    );
+
+    // Nothing on the host moved: their commit is still the branch, tip and content.
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["rev-parse", "feature/filter"]),
+        theirs,
+        "the host's copy of the branch is exactly what they pushed"
+    );
+    assert_eq!(
+        hosted.world.git(
+            &hosted.origin,
+            &["log", "-1", "--format=%s", "feature/filter"]
+        ),
+        "fix: take the review's advice"
+    );
+    // …and the work this run replayed is retained where the session left it.
+    assert!(hosted
+        .world
+        .git(&hosted.checkout, &["branch", "--list", "feature/filter"])
+        .contains("feature/filter"));
+}
+
+#[test]
+fn a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone() {
+    // The other way a lease goes stale, and it is not a branch that moved: somebody
+    // deleted this one on the host while the change below was merging. git declines
+    // the leased push just the same — the commit it was allowed to replace is not
+    // there — and telling an operator to reconcile with what the host has would send
+    // them to reconcile with nothing.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    squash_the_change_below(&hosted, true);
+
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.git(
+        &elsewhere,
+        &["push", "-q", "origin", "--delete", "feature/filter"],
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains(
+            "\"feature/filter\" is gone from the host, which this run last had at",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was pushed and the branch is retained.",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host"),
+        "a branch nobody has is not one somebody moved:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("Fetch feature/filter"),
+        "the refusal says how to see the host as it stands:\n{refusal}"
+    );
+
+    // The deletion stands: nothing put the branch back.
+    assert!(hosted
+        .world
+        .git_raw(&hosted.origin, &["rev-parse", "--verify", "feature/filter"])
+        .status
+        .code()
+        .is_some_and(|code| code != 0));
+    assert!(hosted
+        .world
+        .git(&hosted.checkout, &["branch", "--list", "feature/filter"])
+        .contains("feature/filter"));
+}
+
+#[test]
+fn a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is() {
+    // The answer nobody gave. git declines the ref itself — so this looks exactly
+    // like a lease going stale — and then the host is not there to say where the
+    // branch is, which is the one question that tells the two apart. Nothing may be
+    // concluded from silence: the refusal is the rejection it is, and an operator is
+    // not sent to reconcile histories that, for all this run knows, never diverged.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    squash_the_change_below(&hosted, true);
+
+    // The host rejects the push at the ref and is gone by the time it is asked
+    // anything else — a server withdrawn mid-operation, which is what leaves this
+    // run with a rejection and no way to classify it.
+    hosted.world.install_pre_receive(
+        &hosted.origin,
+        &format!(
+            "echo 'the host says no' >&2\nmv {origin} {origin}.withdrawn\nexit 1",
+            origin = hosted.origin.display()
+        ),
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 1 is the contract's code for a verification the merge path refused.
+        .code(1)
+        .stderr(predicate::str::contains(
+            "the publishing push of \"feature/filter\" was rejected by the merge path",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host") && !refusal.contains("is gone from the host"),
+        "a host that answered nothing said nothing about the branch:\n{refusal}"
+    );
+}
+
+#[test]
+fn a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is() {
+    // The same leased push, declined for a reason that has nothing to do with the
+    // lease: the merge path's own hook turned it down. Nothing moved on the host, so
+    // the refusal is the push rejection it has always been — reading it as a branch
+    // somebody else moved would send an operator to reconcile two histories that
+    // never diverged.
+    let hosted = Hosted::new(REVIEWED);
+    let refuse_when = hosted.world.path("the-hook-refuses");
+    hosted.world.install_pre_push(
+        &hosted.checkout,
+        &format!(
+            "if [ -e {refuse} ]; then echo 'the merge path says no' >&2; exit 1; fi\nexit 0",
+            refuse = refuse_when.display()
+        ),
+    );
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    squash_the_change_below(&hosted, true);
+    std::fs::write(&refuse_when, "now\n").expect("the hook's answer");
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 1 is the contract's code for a verification the merge path refused.
+        .code(1)
+        .stderr(predicate::str::contains(
+            "the publishing push of \"feature/filter\" was rejected by the merge path",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host"),
+        "a hook is not a branch somebody moved:\n{refusal}"
+    );
+}
+
+#[test]
+fn a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording() {
+    // The refusal that reaches the ref itself: the host declines this push under its
+    // own policy, with the branch exactly where this run last saw it. git reports
+    // that per ref, and the remote's own answer says the lease is current — so it is
+    // the rejection it is. What it must never be decided by is the *wording*: this
+    // host says "stale info" for a reason of its own, and a classification that read
+    // the diagnostic as prose would send an operator to reconcile two histories that
+    // never diverged. The same reading fails the other way round on a git that
+    // speaks any other language.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    squash_the_change_below(&hosted, true);
+    hosted.world.install_pre_receive(
+        &hosted.origin,
+        "echo 'refusing: the changelog carries stale info' >&2\nexit 1",
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 1 is the contract's code for a verification the merge path refused.
+        .code(1)
+        .stderr(predicate::str::contains(
+            "the publishing push of \"feature/filter\" was rejected by the merge path",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !refusal.contains("moved on the host"),
+        "the host's own policy is not a branch somebody moved:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("[remote rejected]"),
+        "the refusal hands over git's own per-ref summary:\n{refusal}"
+    );
+}
+
+/// Preserved work on a branch stacked on `feature/engine`, left in the checkout.
+///
+/// The change below is on the host; the branch's own work and its preserve marker
+/// are committed and nothing else. What it deliberately does *not* do is push the
+/// branch or land the change below: how the branch reached the host — from this
+/// checkout, or from somewhere this checkout has never fetched — is exactly the
+/// difference the branch-keyed replay journeys below are about.
+fn preserved_stack(hosted: &Hosted, branch: &str) {
+    let world = &hosted.world;
+    let prefix = documented_default_prefix();
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+
+    world.git(&hosted.checkout, &["checkout", "-q", "-b", branch]);
+    world.commit_file(
+        &hosted.checkout,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+    world.git(
+        &hosted.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on {branch}\n\n{}\n{} feature/engine",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
+    // A branch-keyed verb replays before it publishes, so its branch reaches the host
+    // rewritten just as a session's does — and the host already has this one, pushed
+    // when the review was opened against the change below. It replaces exactly the
+    // commit found there, and the review moves to the root.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    preserved_stack(&hosted, "feature/recovered");
+    // The host has the branch, as the review that was opened against the change below
+    // left it — pushed from this very checkout, which is what makes it a copy this
+    // run has seen.
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/recovered"],
+    );
+    squash_the_change_below(&hosted, false);
+
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    assert_eq!(
+        world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/recovered"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "chore: attest verified recovery of preserved work",
+            "chore: preserve work on feature/recovered",
+            "feat: filter what the engine relays",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ],
+        "the host's copy is the replayed branch: its own work, attested, over the root"
+    );
+}
+
+#[test]
+fn a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it() {
+    // The move a branch-keyed verb never witnesses: nobody was running when the other
+    // commit landed, so the only observation of the host's copy this run has is the
+    // one the checkout was left holding. The verb's own fetch then sees the moved
+    // branch — and a lease taken from *that* would name their commit and authorize
+    // replacing it. What the push may replace is what this run had seen, so git turns
+    // it down, their commit stands, and the work is retained where it was found.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    preserved_stack(&hosted, "feature/recovered");
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/recovered"],
+    );
+    squash_the_change_below(&hosted, false);
+
+    // Somebody else pushes to the branch, with nothing of this run's running.
+    let elsewhere = world.clone_of(&hosted.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &[
+            "checkout",
+            "-q",
+            "-B",
+            "feature/recovered",
+            "origin/feature/recovered",
+        ],
+    );
+    world.commit_file(
+        &elsewhere,
+        "review.txt",
+        "a fix asked for in review\n",
+        "fix: take the review's advice",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "feature/recovered"]);
+    let theirs = world.git(&hosted.origin, &["rev-parse", "feature/recovered"]);
+    // What this checkout was left holding, which is the only observation of the
+    // host's copy this run has.
+    let seen = world.git(&hosted.checkout, &["rev-parse", "origin/feature/recovered"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains(
+            "\"feature/recovered\" moved on the host since this run last had it at",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was overwritten and the branch is retained.",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert_ne!(seen, theirs, "the two commits are the point of this");
+    assert!(
+        refusal.contains(&format!("at {seen} — it is at {theirs} now")),
+        "the lease named the commit this run saw, and the refusal says where the host is now:\n\
+         {refusal}"
+    );
+
+    // Nothing on the host moved: their commit is still the branch, tip and content.
+    assert_eq!(
+        world.git(&hosted.origin, &["rev-parse", "feature/recovered"]),
+        theirs,
+        "the host's copy of the branch is exactly what they pushed"
+    );
+    assert_eq!(
+        world.git(
+            &hosted.origin,
+            &["log", "-1", "--format=%s", "feature/recovered"]
+        ),
+        "fix: take the review's advice"
+    );
+    // …and the work this run replayed is retained where it was found.
+    assert!(world
+        .git(&hosted.checkout, &["branch", "--list", "feature/recovered"])
+        .contains("feature/recovered"));
+}
+
+#[test]
+fn a_replay_of_a_branch_this_run_has_never_seen_on_the_host_is_refused_before_it_pushes() {
+    // The same danger with no lease to take at all: the host has a branch of this
+    // name, pushed from somewhere this checkout has never fetched, so nothing here
+    // has ever observed it. A replay pushed without a lease would replace whatever
+    // is there, and a lease taken from this run's own fetch would name their commit
+    // and authorize exactly that. So it is refused before the gate runs, naming the
+    // fetch that would give this run something to lease on.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    preserved_stack(&hosted, "feature/recovered");
+    squash_the_change_below(&hosted, false);
+
+    let elsewhere = world.clone_of(&hosted.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &["checkout", "-q", "-b", "feature/recovered", "origin/main"],
+    );
+    world.commit_file(
+        &elsewhere,
+        "review.txt",
+        "a fix asked for in review\n",
+        "fix: take the review's advice",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "feature/recovered"]);
+    let theirs = world.git(&hosted.origin, &["rev-parse", "feature/recovered"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 3 is the contract's code for what the publication could not reconcile.
+        .code(3)
+        .stderr(predicate::str::contains("and nothing in "))
+        .stderr(predicate::str::contains(
+            "has ever seen it there — so this run has no commit it can safely replace",
+        ))
+        .stderr(predicate::str::contains(
+            "Nothing was pushed and the branch is retained.",
+        ));
+    let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        refusal.contains(&format!(
+            "`git -C {} fetch origin feature/recovered`",
+            hosted.checkout.display()
+        )),
+        "the refusal names the fetch that supplies the observation:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("onevcs recover feature/recovered --repo"),
+        "…and the verb that lands it once it has one:\n{refusal}"
+    );
+
+    // Their branch is untouched, and no review was opened over it.
+    assert_eq!(
+        world.git(&hosted.origin, &["rev-parse", "feature/recovered"]),
+        theirs,
+        "the host's copy of the branch is exactly what they pushed"
+    );
+    assert!(!world.path("gh-state/pr-1.env").exists());
+    assert!(world
+        .git(&hosted.checkout, &["branch", "--list", "feature/recovered"])
+        .contains("feature/recovered"));
+}
+
+#[test]
+fn a_hosted_stack_the_root_independently_matches_is_answered_the_same_way() {
+    // The ambiguity content equality cannot resolve, and the reason the answer is
+    // safe either way: the branch below is still open, but the root already holds
+    // everything it changed — landed there by somebody else, under a name of its
+    // own. What a replay drops is commits whose content the root has, so the
+    // branch's own work is what is left, and it is reviewed against the root.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/lookalike");
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.commit_file(
+        &elsewhere,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: write the engine somewhere else",
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let opened = hosted.world.events_of(&token, "change-opened");
+    assert_eq!(opened[0]["payload"]["base"], "main", "{opened:?}");
+    // The branch below is untouched on the origin — nothing here closes or moves
+    // somebody else's change — and this branch carries its own work over the root.
+    assert_eq!(
+        hosted.world.git(
+            &hosted.origin,
+            &["log", "-1", "--format=%s", "feature/engine"]
+        ),
+        "feat: govern the engine"
+    );
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/lookalike"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "feat: filter what the engine relays",
+            "feat: write the engine somewhere else",
+            "chore: seed the repository",
+        ],
+        "its own work, over the root that already held what it was stacked on"
+    );
+}
+
+/// The change request one publication opened, as the stream recorded it.
+fn opened_against(hosted: &Hosted, token: &str) -> String {
+    let opened = hosted.world.events_of(token, "change-opened");
+    assert_eq!(opened.len(), 1, "one change request: {opened:?}");
+    opened[0]["payload"]["base"]
+        .as_str()
+        .expect("a change request names its base")
+        .to_owned()
+}
+
+#[test]
+fn a_branch_that_left_its_recorded_stack_behind_is_merged_rather_than_replayed() {
+    // The record names the tip this branch was cut from, and the branch no longer has
+    // it: somebody reset it onto the root. Replaying from a commit the branch does not
+    // carry is not a thing to attempt on a guess, so the sync is the merge it has
+    // always been and the review is opened where the record says — even though the
+    // change below has landed and a branch that still carried its commits would move.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, worktree) = hosted_stack(&hosted, "feature/left-behind");
+    squash_the_change_below(&hosted, false);
+    hosted.world.git(&worktree, &["fetch", "-q", "origin"]);
+    hosted
+        .world
+        .git(&worktree, &["reset", "--hard", "origin/main"]);
+    hosted.world.commit_file(
+        &worktree,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    assert_eq!(opened_against(&hosted, &token), "feature/engine");
+    // The merge is what brought the change below in, so the branch carries it by name
+    // rather than replayed onto anything.
+    let published = hosted.world.git(
+        &hosted.origin,
+        &["log", "--format=%s", "feature/left-behind"],
+    );
+    assert!(
+        published.contains("feat: govern the engine"),
+        "the branch took the change below as the merge it always takes: {published}"
+    );
+}
+
+#[test]
+fn a_stack_merged_with_its_own_commits_keeps_targeting_the_stack() {
+    // The change below reached the root as the commits it was written as, so the root
+    // holds them by name and merging it brings them in the way it always has. Nothing
+    // is replayed: a replay is for content the root has under a name of its own, and
+    // this is the other case.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/on-a-merged-stack");
+    let below = hosted.world.clone_of(&hosted.origin, "below");
+    hosted.world.git(
+        &below,
+        &[
+            "merge",
+            "--no-ff",
+            "origin/feature/engine",
+            "-m",
+            "chore: merge the engine",
+        ],
+    );
+    hosted.world.git(&below, &["push", "-q", "origin", "main"]);
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    assert_eq!(opened_against(&hosted, &token), "feature/engine");
+    let published = hosted.world.git(
+        &hosted.origin,
+        &["log", "--format=%s", "feature/on-a-merged-stack"],
+    );
+    assert!(
+        published.contains("feat: govern the engine"),
+        "the branch kept the change below's own commits: {published}"
+    );
+}
+
+#[test]
+fn a_stack_that_shares_no_history_with_the_root_keeps_targeting_the_stack() {
+    // Two histories with nothing in common: there is no point at which the change
+    // below left the root, so there is no answer to what it changed *since* — and a
+    // publication cannot decide that the root carries it. The stack stands.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "--orphan", "feature/engine"],
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/unrelated",
+            "--base",
+            "feature/engine",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let token = token_of(&stdout);
+    world.commit_file(
+        &worktree_of(&stdout),
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    assert_eq!(opened_against(&hosted, &token), "feature/engine");
+}
+
+#[test]
+fn a_stack_that_renamed_a_file_the_root_still_has_keeps_targeting_the_stack() {
+    // Half of a rename is a deletion, and it is the half that says the change below
+    // has not landed: the root here has the destination — somebody wrote the same
+    // content under the new name — and still has the source the change below removed.
+    // Comparing only what a rename is reported under would call that landed and
+    // replay the branch onto a root that never took the deletion.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.git(&hosted.checkout, &["push", "-q", "origin", "main"]);
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.git(&hosted.checkout, &["mv", "engine.txt", "motor.txt"]);
+    world.git(
+        &hosted.checkout,
+        &["commit", "-q", "-m", "refactor: rename the engine"],
+    );
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/renaming",
+            "--base",
+            "feature/engine",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let token = token_of(&stdout);
+    world.commit_file(
+        &worktree_of(&stdout),
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+
+    // The root gains the destination on its own, and keeps the source.
+    let elsewhere = world.clone_of(&hosted.origin, "elsewhere");
+    world.commit_file(
+        &elsewhere,
+        "motor.txt",
+        "the engine\n",
+        "feat: write the motor somewhere else",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    assert_eq!(opened_against(&hosted, &token), "feature/engine");
+    let published = world.git(&hosted.origin, &["log", "--format=%s", "feature/renaming"]);
+    assert!(
+        published.contains("refactor: rename the engine"),
+        "the branch kept the change below it, deletion and all: {published}"
+    );
 }
 
 #[test]

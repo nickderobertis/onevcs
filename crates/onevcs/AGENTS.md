@@ -74,12 +74,24 @@ refusal that only diagnoses leaves an agent to invent a way forward, and what it
 invents is `git push` plus `gh pr create` — the thing this crate exists to make
 unnecessary.
 
-`recoverable` is the report those two verbs are reached from, so the command it
-prints per row is one of them, by path (`--repo`) rather than by cwd. The train is
-deliberately not what it names, even for finished work: `integrate` reads its
-candidates out of the publication checkout alone and refuses a team or remote
-identity outright, so it lands none of the branches this report is most often read
-about — the ones a run left in its own clone.
+**Syncing a branch has two shapes, and its record decides which** (`publish::reconcile`,
+used by all three verbs). Ordinarily the base is merged into the branch. A branch stacked
+on the change below it belongs on the root once that change lands, so it replays only its
+own commits there and retargets — merging instead would replay the change below against
+whatever the base holds of it.
+
+**What makes a publication stacked is its record, never its content.** A branch carrying
+the change below it reads exactly like a branch that wrote those commits itself, so a
+stack inferred from content rewrites branches nobody stacked. Recorded stack state that
+cannot be read is refused, naming what restores it: publishing around it would answer
+"no stack" from a value nothing could read, which is the merge all of this avoids.
+
+`recoverable` is the report `recover` and `publish-branch` are reached from, so
+the command it prints per row is one of them, by path (`--repo`) rather than by
+cwd. The train is deliberately not what it names, even for finished work:
+`integrate` reads its candidates out of the publication checkout alone and
+refuses a team or remote identity outright, so it lands none of the branches this
+report is most often read about — the ones a run left in its own clone.
 
 ## What a report answers about, and what a name already means
 
@@ -135,6 +147,17 @@ failure, because a smoke that can pass without talking to GitHub proves nothing.
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
 builds the crate and runs the contract, boundary, and packaging suites.
+
+Two journeys go one step narrower and skip on Apple platforms: the ones about a path
+listing this process cannot decode. Their premise is a filename that is not UTF-8,
+and only a filesystem storing a name as the bytes it was handed will hold one — git
+prints a repository's own path bytes, and `-z` turns off the quoting that would render
+them as ASCII, so no listing can be made undecodable from a name that decodes. Apple's
+filesystems enforce UTF-8 and refuse the name with `EILSEQ`. It is the fixture that is
+unportable and not the behaviour, so those two carry `#[cfg_attr(target_vendor =
+"apple", ignore = ...)]` — a skip nextest counts, rather than a test that passes
+without having built its premise. `just gate` runs on Linux only, so this is a class of
+defect only the `cross` job sees.
 
 ## The tier that talks to GitHub
 
