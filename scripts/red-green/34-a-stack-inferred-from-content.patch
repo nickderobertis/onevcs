@@ -1,0 +1,52 @@
+Mutation: a branch is stacked whenever its content looks stacked, rather than when its record says so.
+Red: a_branch_the_base_independently_matches_is_still_merged_because_no_record_stacks_it
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index 6b4f694..64b8e84 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -387,6 +387,31 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
+     (root != record.base).then_some(Stack { tip, root })
+ }
+ 
++/// The stack a branch's own content looks like it has.
++fn inferred_stack(repo: &Path, branch: &str, root: &Ref) -> Result<Option<Stack>> {
++    let compared = vcs::base_ref(repo, root);
++    let Some(fork) = git::merge_base(repo, &compared, branch)? else {
++        return Ok(None);
++    };
++    let listed = git::run(
++        &[
++            "rev-list",
++            "--first-parent",
++            &format!("{compared}..{branch}"),
++        ],
++        Some(repo),
++    )?;
++    for candidate in listed.stdout.split_whitespace().skip(1) {
++        if git::carries_changes(repo, &compared, &fork, candidate)? {
++            return Ok(Some(Stack {
++                tip: candidate.to_owned(),
++                root: root.clone(),
++            }));
++        }
++    }
++    Ok(None)
++}
++
+ /// Whether the root base has already landed the change below this one, and this
+ /// change's own commits are therefore all that belongs on it.
+ ///
+@@ -457,7 +482,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
+     let mut replay = None;
+     let landed;
+     let mut context = context;
+-    if let Some(stack) = &context.stack {
++    let stack = match &context.stack {
++        Some(stack) => Some(stack.clone()),
++        None => inferred_stack(&context.repo, &context.branch, &context.base)?,
++    };
++    if let Some(stack) = &stack {
+         if landed_stack(&context.repo, &context.branch, stack)? {
+             replay = Some(stack.tip.clone());
+             landed = context.onto(stack.root.clone());

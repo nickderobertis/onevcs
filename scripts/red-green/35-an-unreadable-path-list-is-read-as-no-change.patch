@@ -1,5 +1,5 @@
 Mutation: a path list this process could not take whole is answered as a commit that changed nothing.
-Red: a_stack_parent_whose_path_this_process_cannot_read_is_replayed_by_content_alone
+Red: a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone
 
 diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
 index 0fd3b20..86e3060 100644

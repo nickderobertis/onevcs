@@ -1,22 +1,20 @@
-Mutation: a stack parent the base already carries is merged into the branch like anything else.
-Red: a_stack_parent_that_squash_merged_is_replayed_out_of_the_branch_rather_than_merged
+Mutation: a recorded stack the root base has already landed is merged into like anything else.
+Red: a_recorded_stack_that_squash_merged_is_replayed_onto_the_root_rather_than_merged
 Red: a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it
-Red: a_stack_parent_the_base_already_carries_is_replayed_by_the_verb_that_publishes_it
-Red: a_replay_conflict_in_a_named_branchs_own_work_names_the_replay_that_resolves_it
-Red: a_recovery_whose_stack_parent_already_landed_is_replayed_onto_the_base
+Red: a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone
+Red: a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root
 Red: a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay
 
-
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index e903e73..64474ca 100644
+index 6b4f694..f8e286d 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -540,7 +540,7 @@ pub(crate) fn reconcile(
-     compared: &str,
-     branch: &str,
- ) -> Result<Reconciled> {
--    let (shape, integrated) = match landed_history_boundary(repo, compared, branch)? {
-+    let (shape, integrated) = match None::<String> {
-         Some(parent) => (
-             Reconciliation::Replay {
-                 from: parent.clone(),
+@@ -396,6 +396,8 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
+ /// else — a change still open has not reached the root at all, and one merged as its
+ /// own commits is already an ancestor there.
+ pub(crate) fn landed_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
++    return Ok(false);
++    #[allow(unreachable_code)]
+     let root = vcs::base_ref(repo, &stack.root);
+     if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
+         return Ok(false);
