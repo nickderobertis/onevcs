@@ -775,15 +775,28 @@ pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Resu
     }
 }
 
+/// What one attempt to bring a ref into a branch did.
+///
+/// Named rather than a `bool`, because "it conflicted" is a domain answer every
+/// caller acts on — it decides a refusal, a skipped candidate, another bounded
+/// attempt — and the one thing a caller must never read it as is a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Integrated {
+    /// The branch carries it now.
+    Settled,
+    /// It conflicted, and the branch is as it was found.
+    Conflicted,
+}
+
 /// Replay `branch`'s commits after `upstream` onto `onto`, keeping nothing else.
 ///
-/// Returns `false` only when the replay conflicted, and leaves the branch as it
-/// was in that case; every other git failure stays an error, so a caller does not
-/// mistake an invalid ref for a conflict it can report.
-pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Result<bool> {
+/// Answers [`Integrated::Conflicted`] only when the replay conflicted, and leaves
+/// the branch as it was in that case; every other git failure stays an error, so a
+/// caller does not mistake an invalid ref for a conflict it can report.
+pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Result<Integrated> {
     let replayed = run(&["rebase", "--onto", onto, upstream, branch], Some(cwd))?;
     if replayed.ok() {
-        return Ok(true);
+        return Ok(Integrated::Settled);
     }
     let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
     let conflicted = unmerged.ok() && !unmerged.trimmed().is_empty();
@@ -791,7 +804,7 @@ pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Resu
     // mid-way is a repository nothing else in this crate knows how to read.
     run(&["rebase", "--abort"], Some(cwd))?;
     if conflicted {
-        return Ok(false);
+        return Ok(Integrated::Conflicted);
     }
     Err(Error::Invalid {
         reason: format!(
@@ -845,12 +858,13 @@ pub fn worktree_prune(cwd: &Path) -> Result<()> {
 /// Merge a ref into the checked-out branch, reporting a conflict rather than
 /// raising one.
 ///
-/// Returns `false` only when the merge conflicted; every other git failure stays
-/// an error, so a caller does not mistake an invalid ref for a sync conflict.
-pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<bool> {
+/// Answers [`Integrated::Conflicted`] only when the merge conflicted; every other
+/// git failure stays an error, so a caller does not mistake an invalid ref for a
+/// sync conflict.
+pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<Integrated> {
     let merged = run(&["merge", "--no-edit", "-m", message, reference], Some(cwd))?;
     if merged.ok() {
-        return Ok(true);
+        return Ok(Integrated::Settled);
     }
     let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
     if !unmerged.ok() || unmerged.trimmed().is_empty() {
@@ -859,7 +873,7 @@ pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<b
         });
     }
     run(&["merge", "--abort"], Some(cwd))?;
-    Ok(false)
+    Ok(Integrated::Conflicted)
 }
 
 /// Squash-merge a ref and commit it, or report that it added no content.

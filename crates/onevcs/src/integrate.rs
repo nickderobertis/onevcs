@@ -392,18 +392,20 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
     git::worktree_add_existing(root, &worktree, branch)?;
 
     let outcome = (|| -> Result<BranchOutcome> {
-        if !git::merge_into_branch(
+        if git::merge_into_branch(
             &worktree,
             remote_base,
             &format!("Merge {remote_base} into {branch}"),
-        )? {
+        )? == git::Integrated::Conflicted
+        {
             return Ok(skipped(branch, "conflict with the current base"));
         }
-        if !git::merge_into_branch(
+        if git::merge_into_branch(
             &worktree,
             base,
             &format!("Merge integration train {base} into {branch}"),
-        )? {
+        )? == git::Integrated::Conflicted
+        {
             return Ok(skipped(branch, "conflict with an earlier candidate"));
         }
         if let Some(command) = gate_command {

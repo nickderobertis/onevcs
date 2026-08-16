@@ -494,13 +494,25 @@ fn verify(
     })
 }
 
-/// What bringing a branch level with what it lands on took, and whether it worked.
-pub(crate) struct Reconciled {
-    /// The commit whose history was dropped as already landed, when the branch had
-    /// to be replayed rather than merged. `None` is an ordinary merge.
-    pub replayed_from: Option<String>,
-    /// Whether the branch now carries what it lands on.
-    pub settled: bool,
+/// What bringing a branch level with what it lands on did.
+pub(crate) enum Reconciled {
+    /// The branch carries what it lands on now.
+    Settled,
+    /// It conflicted, doing this — which is what a refusal about it has to name,
+    /// since the resolution an operator is sent to is the shape that was attempted.
+    Conflicted(Reconciliation),
+}
+
+/// Which shape bringing a branch level with what it lands on takes.
+pub(crate) enum Reconciliation {
+    /// The base is merged into the branch.
+    Merge,
+    /// Only the branch's own commits are replayed onto the base, because the base
+    /// already carries its history up to this commit.
+    Replay {
+        /// The stack parent's tip, which is where the branch's own work begins.
+        from: String,
+    },
 }
 
 /// Bring a branch level with the base it is published onto, once.
@@ -524,18 +536,25 @@ pub(crate) fn reconcile(
     compared: &str,
     branch: &str,
 ) -> Result<Reconciled> {
-    let replayed_from = landed_stack_base(repo, compared, branch)?;
-    let settled = match &replayed_from {
-        Some(parent) => git::rebase_onto(worktree, compared, parent, branch)?,
-        None => git::merge_into_branch(
-            worktree,
-            compared,
-            &format!("Merge {compared} into {branch}"),
-        )?,
+    let (shape, integrated) = match landed_stack_base(repo, compared, branch)? {
+        Some(parent) => (
+            Reconciliation::Replay {
+                from: parent.clone(),
+            },
+            git::rebase_onto(worktree, compared, &parent, branch)?,
+        ),
+        None => (
+            Reconciliation::Merge,
+            git::merge_into_branch(
+                worktree,
+                compared,
+                &format!("Merge {compared} into {branch}"),
+            )?,
+        ),
     };
-    Ok(Reconciled {
-        replayed_from,
-        settled,
+    Ok(match integrated {
+        git::Integrated::Settled => Reconciled::Settled,
+        git::Integrated::Conflicted => Reconciled::Conflicted(shape),
     })
 }
 
@@ -580,13 +599,12 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
     {
         return Ok(());
     }
-    let mut replayed_from = None;
+    let mut attempted = Reconciliation::Merge;
     for attempt in 1..=SYNC_ATTEMPTS {
-        let reconciled = reconcile(&context.repo, &context.worktree, compared, &context.branch)?;
-        if reconciled.settled {
-            return Ok(());
+        match reconcile(&context.repo, &context.worktree, compared, &context.branch)? {
+            Reconciled::Settled => return Ok(()),
+            Reconciled::Conflicted(shape) => attempted = shape,
         }
-        replayed_from = reconciled.replayed_from;
         if attempt < SYNC_ATTEMPTS && git::has_remote(&context.repo, "origin") {
             git::fetch(&context.repo, "origin")?;
         }
@@ -613,18 +631,18 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
     // what was attempted — telling a branch whose stack parent has landed to merge
     // the base is telling it to reproduce the conflict it is refusing.
     Err(Error::SyncConflict {
-        reason: match replayed_from {
-            Some(parent) => {
+        reason: match attempted {
+            Reconciliation::Replay { from } => {
                 format!(
                 "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
                  branch is retained. {compared} already carries what {branch:?} was stacked on, so \
                  only its own commits are replayed onto it. Resolve the conflict on it — replay it \
                  with `{}` — and then land it with `{land}`",
-                guidance::command(["git", "rebase", "--onto", compared, &parent, &context.branch]),
+                guidance::command(["git", "rebase", "--onto", compared, &from, &context.branch]),
                 branch = context.branch,
             )
             }
-            None => format!(
+            Reconciliation::Merge => format!(
                 "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
                  branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
                  and then land it with `{land}`",

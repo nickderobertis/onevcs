@@ -85,9 +85,9 @@ only that own work is replayed onto the base. The boundary is read off the branc
 the newest commit on its own first-parent line whose whole content since the fork the
 base already carries — rather than out of a record, because no record survives all of
 the session that cut the branch, the checkout that kept it, and the clone publishing
-it: the incident this came from (2026-08-15, `onepipeline` #46) left a session record
-naming only `main`. Nothing here is a new event kind, deliberately: the contract fixes
-that list, and a successful sync has always been silent whichever shape it took.
+it; a session record names the base it was opened with and nothing about a stack a
+consumer built on top. Nothing here is a new event kind, deliberately: the contract
+fixes that list, and a successful sync has always been silent whichever shape it took.
 
 ## Tests are journeys, and there are no unit tests
 

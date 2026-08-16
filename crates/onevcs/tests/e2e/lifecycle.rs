@@ -1997,7 +1997,7 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
 /// reason it is a trap: the branch carries the parent's every commit, the base
 /// carries one commit with the same content and none of the same names, so merging
 /// the base replays the whole parent against its own squashed equivalent.
-fn stacked_on_a_squash_merged_parent(fixture: &Fixture, branch: &str) -> (String, PathBuf) {
+pub fn stacked_on_a_squash_merged_parent(fixture: &Fixture, branch: &str) -> (String, PathBuf) {
     let world = &fixture.world;
     let below = world.clone_of(&fixture.origin, "below");
     world.git(&below, &["checkout", "-q", "-b", "feature/engine"]);

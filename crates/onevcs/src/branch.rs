@@ -307,9 +307,9 @@ impl Landing {
             &self.compared_change_base,
             &self.branch,
         )?;
-        if reconciled.settled {
+        let publish::Reconciled::Conflicted(attempted) = reconciled else {
             return Ok(());
-        }
+        };
         stream.emit(
             EventKind::SyncConflict,
             object(json!({"branch": self.branch, "base": self.change_base})),
@@ -319,8 +319,8 @@ impl Landing {
         // landed is one that merging the base conflicts with by construction, so
         // sending an operator to merge it is sending them to reproduce this.
         Err(Error::SyncConflict {
-            reason: match reconciled.replayed_from {
-                Some(parent) => format!(
+            reason: match attempted {
+                publish::Reconciliation::Replay { from } => format!(
                     "{compared} conflicts with {branch:?}, and re-running will conflict again: \
                      {compared} already carries what {branch:?} was stacked on, so this verb \
                      replays only its own commits onto {compared} and nothing about either has \
@@ -335,12 +335,12 @@ impl Landing {
                         "rebase",
                         "--onto",
                         &self.compared_change_base,
-                        &parent,
+                        &from,
                         &self.branch,
                     ]),
                     command = self.command(),
                 ),
-                None => format!(
+                publish::Reconciliation::Merge => format!(
                     "{compared} conflicts with {branch:?}, and re-running will conflict again: \
                      this verb merges {compared} into the branch and nothing about either has \
                      changed. The branch is retained in {source} — resolve the conflict on it \
