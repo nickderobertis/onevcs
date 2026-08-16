@@ -1,0 +1,17 @@
+Mutation: every push a leased publication has refused is read as a branch somebody moved.
+Red: a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index 5cdf711..d8f5879 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -934,8 +934,7 @@ fn publish_as_change(
+         // a credential, a hook, or the host's own policy, and reading one of those as
+         // a branch that moved would send an operator to reconcile histories that
+         // never diverged.
+-        let declined_the_lease = replacing.is_some() && output.contains("stale info");
+-        let Some(replaced) = replacing.filter(|_| declined_the_lease) else {
++        let Some(replaced) = replacing else {
+             return Err(Error::GateFailed {
+                 reason: format!(
+                     "the publishing push of {:?} was rejected by the merge path: {}",
