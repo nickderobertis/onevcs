@@ -2176,8 +2176,8 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
 /// A stacked session over a change below whose paths this process cannot read.
 ///
 /// git prints a repository's own path bytes and this process reads them as UTF-8, so
-/// a path that is not arrives as no name at all — and a sync that scoped its question
-/// by names would then be answering it from a list nobody could read.
+/// a path that is not leaves it no listing it can scope a diff by — and a sync that
+/// asked its question by names alone would be answering from one nobody could read.
 fn an_unreadable_stack(fixture: &Fixture, branch: &str) -> (String, PathBuf) {
     let world = &fixture.world;
     let below = world.clone_of(&fixture.origin, "below");
