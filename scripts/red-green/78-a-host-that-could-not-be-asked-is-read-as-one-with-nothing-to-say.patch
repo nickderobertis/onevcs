@@ -2,21 +2,21 @@ Mutation: status reports a host it could not reach as a host that answered, so a
 Red: a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_rest
 
 diff --git a/crates/onevcs/src/status.rs b/crates/onevcs/src/status.rs
-index cbfd692..dbc56cf 100644
+index e930250..f2ae273 100644
 --- a/crates/onevcs/src/status.rs
 +++ b/crates/onevcs/src/status.rs
-@@ -470,11 +470,11 @@ struct HostAnswer {
+@@ -493,9 +493,12 @@ struct HostAnswer {
  /// command that produces nothing. A local identity has no host at all, which is
  /// the same shape of gap and says so in the same place.
  fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting) -> HostAnswer {
--    let unavailable = |because: String| HostAnswer {
-+    let unavailable = |_because: String| HostAnswer {
-         open: None,
-         checks: ChecksReport {
--            available: false,
--            unavailable_because: Some(because),
-+            available: true,
-+            unavailable_because: None,
-             checks: Vec::new(),
-             sources: Vec::new(),
-         },
+-    let unavailable = |open: Option<String>, because: String| HostAnswer {
++    let unavailable = |open: Option<String>, _because: String| HostAnswer {
+         open,
+-        checks: ChecksReport::Unavailable { because },
++        checks: ChecksReport::Reported {
++            checks: Vec::new(),
++            sources: Vec::new(),
++        },
+     };
+     let nothing_to_report = |open: Option<String>| HostAnswer {
+         open,
