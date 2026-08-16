@@ -2,11 +2,11 @@ Mutation: a base the repository cannot reach is used to judge it anyway.
 Red: a_run_clone_that_cannot_reach_the_base_is_judged_against_the_one_it_can
 
 diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
-index df6cf68..c51bbfe 100644
+index f129111..b990df9 100644
 --- a/crates/onevcs/src/vcs.rs
 +++ b/crates/onevcs/src/vcs.rs
 @@ -224,7 +224,7 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
- // writes — is `Ref`, which neither of these is.
+ // llmlint: ignore[invalid_states_unrepresentable] a comparison target git resolves either way
  pub fn judged_against(repo: &Path, base: &str, current: Option<&Sha>) -> String {
      match current {
 -        Some(sha) if git::has_commit(repo, sha) => sha.0.clone(),
