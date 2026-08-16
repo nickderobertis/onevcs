@@ -381,7 +381,7 @@ fn locate(
     base: &str,
 ) -> Result<PathBuf> {
     let searched = crate::workspace::checkouts_of(registry, resolution)?;
-    let current = crate::vcs::base_now(&resolution.publication, base);
+    let current = crate::vcs::base_commit(&resolution.publication, base);
     let mut spent: Option<PathBuf> = None;
     for candidate in &searched {
         if !git::is_repo(candidate) || !git::branch_exists(candidate, branch) {

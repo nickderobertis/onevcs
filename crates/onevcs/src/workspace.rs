@@ -634,7 +634,7 @@ fn honour_or_refuse(
 ) -> Result<()> {
     // The base as it stands now, so a run clone's frozen view of it cannot make work
     // that landed long ago look like work a pin would lose.
-    let current = crate::vcs::base_now(&resolution.publication, base);
+    let current = crate::vcs::base_commit(&resolution.publication, base);
     for repo in checkouts_of(registry, resolution)? {
         if !git::is_repo(&repo) || !git::branch_exists(&repo, branch) {
             continue;

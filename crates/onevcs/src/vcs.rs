@@ -215,13 +215,13 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
 /// commit the clone has even though no ref of its own names it; one that cannot
 /// reach it — a clone whose lender has itself fallen behind — is judged against its
 /// own view, which is the best answer available there.
-// llmlint: ignore[invalid_states_unrepresentable] the two states this answers with
-// are deliberately one type, as `base_ref` beside it and `Landing::compared_change_base`
-// already are: what comes back is a *comparison target*, and git resolves a ref name
-// and a commit id identically at every call that takes one. Distinguishing them in the
-// type would only oblige each of those call sites to collapse the distinction again,
-// and the thing that must not be confused with either — a branch name this crate
-// writes — is `Ref`, which neither of these is.
+// The two states this answers with are deliberately one type, as `base_ref` beside it
+// and `Landing::compared_change_base` already are: what comes back is a *comparison
+// target*, and git resolves a ref name and a commit id identically at every call that
+// takes one. Distinguishing them in the type would only oblige each of those call
+// sites to collapse the distinction again, and the thing that must not be confused
+// with either — a branch name this crate writes — is `Ref`, which neither of these is.
+// llmlint: ignore[invalid_states_unrepresentable] a comparison target git resolves either way
 pub fn judged_against(repo: &Path, base: &str, current: Option<&Sha>) -> String {
     match current {
         Some(sha) if git::has_commit(repo, sha) => sha.0.clone(),
@@ -229,10 +229,13 @@ pub fn judged_against(repo: &Path, base: &str, current: Option<&Sha>) -> String 
     }
 }
 
-/// The commit an identity's base stands at, read from the checkout publication
-/// fast-forwards — the one place it is kept current.
-pub fn base_now(publication: &Path, base: &str) -> Option<Sha> {
-    git::tip(publication, &base_ref(publication, base)).map(Sha)
+/// The commit a checkout's base ref stands at.
+///
+/// Asked of the publication checkout, which is the one every publication
+/// fast-forwards and therefore the freshest view of the base this host keeps — not
+/// a guarantee of the newest there is, which only the remote can answer for.
+pub fn base_commit(checkout: &Path, base: &str) -> Option<Sha> {
+    git::tip(checkout, &base_ref(checkout, base)).map(Sha)
 }
 
 /// Every preserved, unpublished branch in scope, newest first.
@@ -271,7 +274,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
         let publication = resolution.publication.clone();
         let current = git::default_branch(&publication, "origin")
             .ok()
-            .and_then(|base| base_now(&publication, &base));
+            .and_then(|base| base_commit(&publication, &base));
         for repo in workspace::checkouts_of(&registry, &resolution)? {
             if !git::is_repo(&repo) {
                 continue;
