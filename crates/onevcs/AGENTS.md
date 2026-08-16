@@ -90,10 +90,14 @@ either — so inferring it would replay branches nobody stacked. `session open -
 something other than the identity's root records `stack_tip`: the commit that branch was
 at when this one was cut from it. Absent, which is every ordinary session, and none of
 the replay is reachable. A *name* cannot stand in for the tip: `git::fetch` prunes, the
-branch below is deleted when its own change merges, and nothing then resolves it — which
-is why the branch-keyed verbs, whose stack is the `Change-Base:` trailer's branch name,
-can replay only while some ref still names it and otherwise sync exactly as they always
-did. Nothing here is a new event kind, deliberately: the contract fixes that list, and a
+branch below is deleted when its own change merges, and nothing then resolves it. The
+branch-keyed verbs record a stack as exactly that name — the `Change-Base:` trailer's —
+so they replay while some ref still resolves it and **refuse by name when none does**,
+saying which branch to restore or push, which trailer to correct otherwise, and which
+verb lands the branch afterwards. Publishing around it would answer "no stack" from a
+value nothing could read, which is the merge all of this exists to avoid; a session's
+recorded tip is refused the same way when its own clone does not have that commit.
+Nothing here is a new event kind, deliberately: the contract fixes that list, and a
 successful sync has always been silent whichever shape it took.
 
 ## Tests are journeys, and there are no unit tests

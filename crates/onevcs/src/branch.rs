@@ -207,9 +207,10 @@ pub fn prepare(
     // the target moves to the root here, before anything is compared against it, and
     // the tip it was stacked at is what its own commits are replayed from.
     //
-    // The tip comes from whatever ref still names the recorded base. A branch deleted
-    // when its own change merged has none — every fetch here prunes — and the stack
-    // then stands as recorded, which is this verb exactly as it was.
+    // The tip comes from whatever ref still names the recorded base, and a recorded
+    // base no ref resolves is refused below rather than published around: a branch
+    // deleted when its own change merged leaves none — every fetch here prunes — and
+    // nothing can then tell which of this branch's commits are the change below's.
     let (change_base, stack_replay) = match recorded {
         Some(recorded) if recorded != base => {
             // A recorded base nothing resolves is refused rather than handed on as a
