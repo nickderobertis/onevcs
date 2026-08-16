@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 85. Tests observed red and then green: 109.
+Patches: 87. Tests observed red and then green: 110.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -574,4 +574,16 @@ status stops reading what a gate-verdict event actually said, so a refusal and a
 status hands a stream's recorded branch to git without asking whether it is a branch name at all.
 
 - RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(which is not a branch name git would accept)
+
+### `86-the-report-does-not-say-which-shape-it-is`
+
+the status report stops declaring its schema version, so a consumer reads a shape it inferred from the keys it could find.
+
+- RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the report declares the version the surface record documents
+
+### `87-a-field-that-holds-nothing-is-written-as-null`
+
+the status report writes an optional field even when it holds nothing, so a consumer that never heard of a session is handed one that is null.
+
+- RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the object a report with nothing optional in it writes is its checked-in golden; re-make crates/onevcs/tes
 
