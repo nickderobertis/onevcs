@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 47. Tests observed red and then green: 72.
+Patches: 48. Tests observed red and then green: 73.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -331,4 +331,10 @@ a branch whose history a replay rewrote is pushed as though it had not been.
 the lease names whatever the host has now, rather than the commit this run replaces.
 
 - RED `a_branch_the_host_moved_under_a_replay_is_refused_without_overwriting_it` — Unexpected return code, failed var == 3
+
+### `49-a-refused-push-is-read-as-a-moved-branch`
+
+every push a leased publication has refused is read as a branch somebody moved.
+
+- RED `a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
 
