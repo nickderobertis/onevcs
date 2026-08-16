@@ -1,0 +1,16 @@
+Mutation: the amendment stops naming one of the options `onevcs publish` takes.
+Red: the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_not
+
+diff --git a/docs/contract.md b/docs/contract.md
+index 99d3896..2b3f954 100644
+--- a/docs/contract.md
++++ b/docs/contract.md
+@@ -379,7 +379,7 @@ publication *commit*'s, composed by `compose_message`, and a recovered incomplet
+ step still records `Recovered-Incomplete:` there — they simply stop appearing in a
+ change request's body, which was never a record anything read them back out of.
+ 
+-`onevcs publish` takes the body two ways: `--body` and `--body-file`.
++`onevcs publish` takes the body two ways, one of them `--body`.
+ The first is the text as typed and the second is the path of a file holding it,
+ which is the form a body of real prose arrives in — a shell argument is not where
+ multi-line Markdown survives. Passing both is refused by name before anything is

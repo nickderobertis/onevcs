@@ -1,0 +1,15 @@
+Mutation: naming the body twice stops being refused, and one of the two is silently taken.
+Red: naming_the_body_twice_is_refused_by_name_before_anything_is_published
+
+diff --git a/crates/onevcs/src/app.rs b/crates/onevcs/src/app.rs
+index dabf626..bfb62c1 100644
+--- a/crates/onevcs/src/app.rs
++++ b/crates/onevcs/src/app.rs
+@@ -310,6 +310,7 @@ fn explicit_title(title: Option<&String>) -> Result<Option<Subject>> {
+ /// argument — so a path that cannot be read names itself rather than the option.
+ fn explicit_body(args: &PublishArgs) -> Result<Option<String>> {
+     match (args.body.as_ref(), args.body_file.as_ref()) {
++        (Some(body), Some(path)) if path.exists() => Ok(Some(body.clone())),
+         (Some(_), Some(path)) => Err(error::invalid(format!(
+             "--body and --body-file both name the body of the change request, and it is opened \
+              with one body. Keep the one that holds it: `{}` for the body in {}, or `{}` for the \

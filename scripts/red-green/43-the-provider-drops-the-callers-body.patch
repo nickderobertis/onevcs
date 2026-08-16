@@ -1,0 +1,16 @@
+Mutation: the testing repository stops handing the caller's body to the host it publishes through.
+Red: a_requested_title_and_body_are_the_ones_the_host_is_given
+
+diff --git a/crates/onevcs-testing/src/repository.rs b/crates/onevcs-testing/src/repository.rs
+index 23be3fb..43371b5 100644
+--- a/crates/onevcs-testing/src/repository.rs
++++ b/crates/onevcs-testing/src/repository.rs
+@@ -506,7 +506,7 @@ fn publish_as_change(
+             // Verbatim, and nothing when there is none — the real publication
+             // composes no body either, so a provider that composed one would be a
+             // consumer's suite proving a change request nobody opens.
+-            body: request.body.clone(),
++            body: None,
+         })?,
+     };
+     let mut emissions = vec![Emission {
