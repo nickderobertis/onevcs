@@ -2101,11 +2101,13 @@ fn a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning()
         &script,
         format!(
             "#!/usr/bin/env bash\nset -euo pipefail\n\
+             echo ran >> {ran}\n\
              [ -e {marker} ] && exit 0\n\
              : > {marker}\n\
              cd {other}\n\
              git commit -q --allow-empty -m 'feat: land something else while the gate ran'\n\
              git push -q origin main\n",
+            ran = world.path("the-gate-ran").display(),
             marker = world.path("the-root-advanced").display(),
             other = other.display(),
         ),
@@ -2126,6 +2128,16 @@ fn a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning()
         .success()
         .stdout(predicate::str::contains("merged at"));
 
+    // The base that moved is re-synced *and* re-judged: what the gate cleared the
+    // first time is not what would have landed.
+    assert_eq!(
+        std::fs::read_to_string(world.path("the-gate-ran"))
+            .expect("the gate ran")
+            .lines()
+            .count(),
+        2,
+        "the gate judged the base it landed on, not only the base it started from"
+    );
     let subjects = fixture.origin_log();
     assert_eq!(
         subjects,
