@@ -305,23 +305,26 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
 #[test]
 fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // Somebody is working in that run root, which is the state the whole journey is
+    // about: resuming is an optimisation, and an optimisation that cannot be taken
+    // must never be a session that will not open.
+    //
+    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock on
+    // a run root, and holding it is the only thing that makes the lease answer
+    // "taken": no verb holds one across time — each takes it, works, and releases it
+    // before the process that opened the session exits — so there is no command to
+    // run that leaves a run root occupied for the length of a journey. The lock is
+    // found the only way anything can find it, by what appeared when the session was
+    // opened (it is named after a digest of the run root), and held while the real
+    // CLI meets it. `edges.rs` reaches occupancy the same way.
     let before = fixture.world.locks();
     let (first, worktree) = fixture.open(&["--branch", "feature/busy"]);
     let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
     let [lease] = opened.as_slice() else {
         panic!("opening one session takes exactly one new lease, not {opened:?}");
     };
-    // Somebody is working in there. Resuming is an optimisation, and an optimisation
-    // that cannot be taken must never be a session that will not open.
-    //
-    // llmlint: ignore[tests_mirror_real_usage] the state under test is the run
-    // root's occupancy lease answering "taken", and an exclusive holder of that lock
-    // is the only thing that produces it — no verb holds a lease across time, since
-    // every one of them takes it, works, and releases it before the process that
-    // opened the session exits. So it is held here, on the lock file the run root
-    // itself named, and everything the journey then asserts about is the real CLI
-    // meeting a run root somebody is inside. `edges.rs` holds occupancy the same way.
     let occupant = World::occupy(lease);
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let (second, cut) = fixture.open(&["--branch", "feature/busy"]);
     assert_ne!(second, first, "a session nobody could take up is cut fresh");
