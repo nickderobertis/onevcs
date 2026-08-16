@@ -1,0 +1,16 @@
+Mutation: status stops reading a landing off the base's content, which is the answer a squash-merge leaves and the one a planner got wrong.
+Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
+
+diff --git a/crates/onevcs/src/status.rs b/crates/onevcs/src/status.rs
+index cbfd692..668cbfe 100644
+--- a/crates/onevcs/src/status.rs
++++ b/crates/onevcs/src/status.rs
+@@ -435,7 +435,7 @@ fn landing(seen: Landed, asked_the_host_to_land: bool) -> Landing {
+     if seen.carried {
+         return match seen.ahead {
+             Some(0) | None => Landing::NothingToPublish,
+-            Some(_) => Landing::Landed,
++            Some(_) => Landing::Unpublished,
+         };
+     }
+     if seen.open_on_the_host {

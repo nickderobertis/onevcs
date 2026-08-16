@@ -1,0 +1,23 @@
+Mutation: import writes the branch's own name whatever --as asked for, so work whose name is already spent has nowhere to go.
+Red: a_spent_name_does_not_block_an_import_under_another
+Red: a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree
+
+diff --git a/crates/onevcs/src/import.rs b/crates/onevcs/src/import.rs
+index 41cf681..bca3c4e 100644
+--- a/crates/onevcs/src/import.rs
++++ b/crates/onevcs/src/import.rs
+@@ -116,12 +116,8 @@ pub fn run(
+             ),
+         });
+     }
+-    let name = match under {
+-        Some(under) => Ref::try_from(under.to_owned()).map_err(|reason| Error::Invalid {
+-            reason: format!("--as {reason}: it is not a valid branch name"),
+-        })?,
+-        None => Ref::from_git(branch),
+-    };
++    let name = Ref::from_git(branch);
++    let _ = under;
+     // Refused before anything is fetched: the whole promise of this verb is that no
+     // working tree moves, and pointing a checked-out branch somewhere else leaves
+     // git holding an index and a tree that describe a commit the ref no longer names.
