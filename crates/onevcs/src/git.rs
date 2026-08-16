@@ -960,32 +960,45 @@ pub fn merge_ff_only(cwd: &Path, reference: &str) -> Result<()> {
 
 /// What a push did, in the form git reports rather than in the prose beside it.
 ///
-/// Two things a caller needs, and they are not the same thing. `output` is
-/// everything the push wrote, kept whole because a `pre-push` hook runs the
-/// repository's complete gate and reports that run here — it is the merge path's
-/// only verification evidence, and callers preserve it whether the push passed or
-/// was rejected. `refused` is which refs git itself declined to update, read out of
-/// `--porcelain`'s one line per ref: `<flag>\t<from>:<to>\t<summary>`, where `!` is
-/// the flag for a ref git turned down. That flag and that ref name are git's
-/// machine-readable answer — no locale renames them and no hook's message can
-/// produce them — so a decision about *why* a push failed is made from them and
-/// never from the sentence a human would read.
+/// One case or the other, so a push cannot be both accepted and carrying refs git
+/// turned down. Either way it keeps `output`: everything the push wrote, whole,
+/// because a `pre-push` hook runs the repository's complete gate and reports that
+/// run here — it is the merge path's only verification evidence, and callers
+/// preserve it whether the push passed or was rejected. A refusal keeps the refs
+/// besides, read out of `--porcelain`'s one line per ref —
+/// `<flag>\t<from>:<to>\t<summary>`, where `!` is the flag for a ref git declined.
+/// That flag and that ref name are git's machine-readable answer: no locale renames
+/// them and no hook's message can produce them, so a decision about *why* a push
+/// failed is made from them and never from the sentence a human would read.
 #[derive(Debug, Clone)]
-pub struct Pushed {
-    accepted: bool,
-    output: String,
-    refused: Vec<String>,
+pub enum Pushed {
+    /// git took every ref it was given.
+    Accepted {
+        /// Everything the push wrote.
+        output: String,
+    },
+    /// git did not.
+    Refused {
+        /// Everything the push wrote.
+        output: String,
+        /// The remote refs it declined to update — none at all where it failed
+        /// before any ref was negotiated, which a credential or an unreachable
+        /// remote does.
+        refs: Vec<String>,
+    },
 }
 
 impl Pushed {
     /// Whether git accepted the push whole.
     pub fn accepted(&self) -> bool {
-        self.accepted
+        matches!(self, Pushed::Accepted { .. })
     }
 
     /// Everything the push wrote, porcelain and diagnostics together.
     pub fn output(&self) -> &str {
-        &self.output
+        match self {
+            Pushed::Accepted { output } | Pushed::Refused { output, .. } => output,
+        }
     }
 
     /// Whether git declined to update one particular remote branch.
@@ -995,7 +1008,10 @@ impl Pushed {
     /// than about a substring that could match another.
     pub fn refused_branch(&self, branch: &str) -> bool {
         let reference = format!("refs/heads/{branch}");
-        self.refused.contains(&reference)
+        match self {
+            Pushed::Accepted { .. } => false,
+            Pushed::Refused { refs, .. } => refs.contains(&reference),
+        }
     }
 
     /// Why the push was refused, as git's own per-ref summary, for a human to read.
@@ -1005,7 +1021,10 @@ impl Pushed {
     /// stderr, so without this a rejection would read only as "failed to push some
     /// refs".
     pub fn refusal(&self) -> Option<&str> {
-        self.output
+        let Pushed::Refused { output, .. } = self else {
+            return None;
+        };
+        output
             .lines()
             .find(|line| line.starts_with("!\t"))
             .and_then(|line| line.split('\t').nth(2))
@@ -1038,10 +1057,15 @@ pub fn push_replacing(
         args.insert(1, lease);
     }
     let output = run_with_env(&args, Some(cwd), env)?;
-    Ok(Pushed {
-        accepted: output.ok(),
-        refused: refused_refs(&output.stdout),
-        output: output.combined(),
+    Ok(if output.ok() {
+        Pushed::Accepted {
+            output: output.combined(),
+        }
+    } else {
+        Pushed::Refused {
+            refs: refused_refs(&output.stdout),
+            output: output.combined(),
+        }
     })
 }
 
