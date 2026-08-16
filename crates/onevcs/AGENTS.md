@@ -148,6 +148,17 @@ as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
 builds the crate and runs the contract, boundary, and packaging suites.
 
+Two journeys go one step narrower and skip on Apple platforms: the ones about a path
+listing this process cannot decode. Their premise is a filename that is not UTF-8,
+and only a filesystem storing a name as the bytes it was handed will hold one — git
+prints a repository's own path bytes, and `-z` turns off the quoting that would render
+them as ASCII, so no listing can be made undecodable from a name that decodes. Apple's
+filesystems enforce UTF-8 and refuse the name with `EILSEQ`. It is the fixture that is
+unportable and not the behaviour, so those two carry `#[cfg_attr(target_vendor =
+"apple", ignore = ...)]` — a skip nextest counts, rather than a test that passes
+without having built its premise. `just gate` runs on Linux only, so this is a class of
+defect only the `cross` job sees.
+
 ## The tier that talks to GitHub
 
 Every other journey here is offline, and the cost of that was measured rather than

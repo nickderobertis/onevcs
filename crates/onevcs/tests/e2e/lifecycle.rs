@@ -2771,7 +2771,19 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
     );
 }
 
+// The premise is a path this process cannot decode, and the only place one can come
+// from is a filesystem that stores a name as the bytes it was given: git prints a
+// repository's own path bytes, and `-z` turns off the quoting that would otherwise
+// render them as ASCII — so there is no listing git can be asked to print undecodably
+// from a name that decodes. Apple's filesystems enforce UTF-8 and refuse the name
+// outright with `EILSEQ`, before any of this has been asked anything. What that
+// platform refuses is the fixture and not the behaviour, so this skips there rather
+// than passing without having built its premise.
 #[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "the fixture needs a filesystem that stores a path as bytes; this one enforces UTF-8 names"
+)]
 fn a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone() {
     // git prints a repository's own path bytes and this process reads them as UTF-8,
     // so a change below that touched a path which is not leaves no listing to scope
@@ -2976,7 +2988,14 @@ fn a_root_this_clone_no_longer_has_leaves_the_stack_where_it_is() {
     );
 }
 
+// The same undecodable name, so the same platform refuses to hold it — see
+// `a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone` for why
+// there is no portable way to manufacture one.
 #[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "the fixture needs a filesystem that stores a path as bytes; this one enforces UTF-8 names"
+)]
 fn an_unreadable_listing_and_a_root_that_moved_on_leaves_the_stack_where_it_is() {
     // The other side of the same boundary, and the conservative one: with the paths
     // unreadable the question can only be asked of whole trees, and a root carrying
