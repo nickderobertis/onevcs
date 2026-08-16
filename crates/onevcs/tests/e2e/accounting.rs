@@ -131,14 +131,16 @@ fn every_spelling_of_one_piece_of_work_resolves_to_the_same_report() {
     assert_eq!(by_token["identity"]["key"], "github.com/acme-corp/hosted");
     assert_eq!(by_token["identity"]["workflow"], "remote");
     assert_eq!(by_token["identity"]["repo_type"], "team");
-    assert_eq!(by_token["identity"]["gate"], "checks");
+    assert_eq!(
+        by_token["identity"]["gate"],
+        serde_json::json!({"kind": "checks"})
+    );
     assert_eq!(by_token["identity"]["approvals"], "required");
     assert_eq!(by_token["branch"]["ahead"], 1);
     assert_eq!(by_token["branch"]["provenance"], "complete");
     assert_eq!(by_token["publication"]["state"], "open");
-    assert_eq!(by_token["publication"]["landed"], false);
     assert_eq!(by_token["publication"]["merge_policy"], "change-open");
-    assert_eq!(by_token["checks"]["available"], true);
+    assert_eq!(by_token["checks"]["state"], "reported");
     assert_eq!(
         by_token["checks"]["checks"],
         serde_json::json!([
@@ -211,6 +213,23 @@ fn an_ambiguous_reference_is_refused_by_naming_the_candidates() {
         refusal = refusal.stderr(predicate::str::contains(key.as_str()));
     }
 
+    // A commit two branches carry is ambiguous for the same reason and is refused
+    // the same way: the commit is on both, and neither is "the" work.
+    let checkout = world.path("one");
+    let shared = world.git(&checkout, &["rev-parse", "feature/shared"]);
+    world.git(
+        &checkout,
+        &["branch", "feature/also-shared", "feature/shared"],
+    );
+    world
+        .onevcs()
+        .args(["status", &shared])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("ambiguous commit"))
+        .stderr(predicate::str::contains("feature/also-shared"));
+    world.git(&checkout, &["branch", "-D", "feature/also-shared"]);
+
     // A reference nothing answers to is refused as one, naming what does answer.
     world
         .onevcs()
@@ -255,7 +274,6 @@ fn work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it() {
     assert_eq!(answer["branch"]["ahead"], 1);
     assert_eq!(answer["branch"]["provenance"], "complete");
     assert_eq!(answer["publication"]["state"], "unpublished");
-    assert_eq!(answer["publication"]["landed"], false);
     assert_eq!(answer["session"]["state"], "open");
     assert_eq!(
         answer["next"]["command"],
@@ -370,7 +388,6 @@ fn landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed() {
     // reported a landed change as unpublished.
     let answer = report(&hosted.world, "feature/landed");
     assert_eq!(answer["publication"]["state"], "landed");
-    assert_eq!(answer["publication"]["landed"], true);
     assert!(answer["branch"]["ahead"].as_u64().expect("a count") > 0);
     assert!(
         answer["next"]["command"].is_null(),
@@ -432,7 +449,6 @@ fn landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed() {
         .stdout(predicate::str::contains("merge queued for"));
     let answer = report(&queued.world, "feature/queued");
     assert_eq!(answer["publication"]["state"], "queued");
-    assert_eq!(answer["publication"]["landed"], false);
     assert_eq!(answer["gate"]["verdict"], "pass");
     assert!(
         answer["gate"]["log"]
@@ -498,12 +514,11 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         .success();
     let answer: Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("one JSON object");
-    assert_eq!(answer["checks"]["available"], false);
-    assert!(answer["checks"]["unavailable_because"]
+    assert_eq!(answer["checks"]["state"], "unavailable");
+    assert!(answer["checks"]["because"]
         .as_str()
         .expect("a reason the host could not be asked")
         .contains("no-such-gh"));
-    assert_eq!(answer["checks"]["checks"], serde_json::json!([]));
     assert_eq!(
         answer["publication"]["state"], "published",
         "a host that would not say has not said the change was closed"
@@ -531,8 +546,8 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
     hosted.world.answer_malformed("checks-refused");
     let answer = report(&hosted.world, "feature/unreachable");
     assert_eq!(answer["publication"]["state"], "open");
-    assert_eq!(answer["checks"]["available"], false);
-    assert!(answer["checks"]["unavailable_because"]
+    assert_eq!(answer["checks"]["state"], "unavailable");
+    assert!(answer["checks"]["because"]
         .as_str()
         .expect("a reason the checks could not be read")
         .contains("Actions: Read"));
@@ -821,6 +836,25 @@ fn a_branch_is_imported_from_another_checkout_and_from_a_remote_ref() {
             "has no branch \"feature/nobody-has\" to import",
         ));
 
+    // …and a remote ref whose branch half git would not accept is refused as the
+    // argument it is, rather than reaching a fetch as a refspec nothing can mean.
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "import",
+            "feature/next-door",
+            "--repo",
+            &repo,
+            "--from",
+            "origin/..",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "which is not a branch name git would accept",
+        ));
+
     // A source that is neither a repository nor a remote is refused naming both,
     // rather than falling through to whichever spelling happened to work.
     fixture
@@ -1020,6 +1054,29 @@ fn an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose() 
         .assert()
         .success()
         .stdout(predicate::str::contains("fast-forwarded feature/forward"));
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "feature/forward"]),
+        further
+    );
+
+    // …and an import that moves nothing says so rather than naming an advance that
+    // did not happen.
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "import",
+            "feature/forward",
+            "--repo",
+            &repo,
+            "--from",
+            &elsewhere.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already had feature/forward"));
     assert_eq!(
         fixture
             .world

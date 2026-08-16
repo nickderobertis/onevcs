@@ -483,10 +483,10 @@ fn import_branch(args: &ImportArgs) -> Result<u8> {
     )?;
     println!(
         "{} {} in {} from {}, at {}",
-        if imported.advanced {
-            "fast-forwarded"
-        } else {
-            "imported"
+        match imported.wrote {
+            import::Wrote::Created => "imported",
+            import::Wrote::FastForwarded => "fast-forwarded",
+            import::Wrote::Unchanged => "already had",
         },
         imported.name,
         imported.destination.display(),

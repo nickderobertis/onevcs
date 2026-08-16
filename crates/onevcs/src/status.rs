@@ -32,11 +32,13 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::event::EventKind;
 use crate::host::{CheckSource, Hosting};
 use crate::registry::{Registry, RepoType, Workflow};
+use crate::rules::{Approvals, Gate, MergePolicy};
 use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
 use crate::store::{self, Resolution};
-use crate::{gh, git, guidance, home, policy, provenance, vcs, workspace};
+use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace};
 
 /// Everything `onevcs` knows about one piece of work.
 #[derive(Debug, Clone, Serialize)]
@@ -97,13 +99,13 @@ pub struct IdentityReport {
     /// The checkout publication fast-forwards, never works in.
     pub publication_checkout: PathBuf,
     /// Whether work publishes locally or through the remote host.
-    pub workflow: String,
+    pub workflow: Workflow,
     /// Whether the repository is one person's or a team's.
-    pub repo_type: String,
-    /// The gate the rules resolve to, spelled as `onevcs rules check` spells it.
-    pub gate: String,
+    pub repo_type: RepoType,
+    /// The gate the rules resolve to, as the rules file spells it.
+    pub gate: Gate,
     /// Whether the rules require approvals.
-    pub approvals: String,
+    pub approvals: Approvals,
 }
 
 /// The session that holds or held the branch.
@@ -183,15 +185,14 @@ pub enum BranchProvenance {
 /// What was proposed for the work, and whether it reached the base.
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicationReport {
-    /// Where the work is.
+    /// Where the work is. Whether it *landed* is this and nothing beside it: a
+    /// second field saying so could disagree with the state that decided it.
     pub state: Landing,
-    /// Whether the base already carries this branch's content.
-    pub landed: bool,
     /// The change request, when one is recorded or open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_url: Option<String>,
     /// The policy this identity's rules publish under.
-    pub merge_policy: String,
+    pub merge_policy: MergePolicy,
 }
 
 /// Where one piece of work has got to.
@@ -219,20 +220,36 @@ pub enum Landing {
     Unpublished,
 }
 
+impl Landing {
+    /// Whether the base already carries this branch's content.
+    pub fn landed(self) -> bool {
+        self == Landing::Landed
+    }
+}
+
 /// What the host reports about the change request's checks.
+///
+/// One or the other, never both halves of each: a section carrying an answer *and*
+/// the reason there is none could report "could not look" as "nothing blocks this",
+/// which is the one thing that turns an ungated merge into one that looks gated.
 #[derive(Debug, Clone, Serialize)]
-pub struct ChecksReport {
-    /// Whether the host answered at all.
-    pub available: bool,
-    /// Why it did not, when it did not. The whole reason this section degrades
-    /// rather than failing the command: an unreachable host is a gap in the
-    /// answer, and the rest of the answer is still true.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unavailable_because: Option<String>,
-    /// One entry per check the host reports.
-    pub checks: Vec<CheckReport>,
-    /// Which of the host's sources the answer was read from.
-    pub sources: Vec<CheckSource>,
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum ChecksReport {
+    /// The host answered, with these checks and from these sources. Empty is an
+    /// answer: a change request with no checks on it, or none open at all.
+    Reported {
+        /// One entry per check the host reports.
+        checks: Vec<CheckReport>,
+        /// Which of the host's sources the answer was read from.
+        sources: Vec<CheckSource>,
+    },
+    /// The host could not be asked, and this is why. The whole reason this section
+    /// degrades rather than failing the command: an unreachable host is a gap in
+    /// the answer, and the rest of the answer is still true.
+    Unavailable {
+        /// What the host, the credential, or `gh` itself said.
+        because: String,
+    },
 }
 
 /// One check, as the host reports it.
@@ -252,8 +269,8 @@ pub struct CheckReport {
 /// The last gate verdict recorded for this work, and where its log was kept.
 #[derive(Debug, Clone, Serialize)]
 pub struct GateReport {
-    /// `pass` or `fail`, as the `gate-verdict` event spells it.
-    pub verdict: String,
+    /// What it ruled.
+    pub verdict: Verdict,
     /// What ran.
     pub command: String,
     /// The preserved log, which outlives the tree the gate ran in.
@@ -261,6 +278,22 @@ pub struct GateReport {
     pub log: Option<PathBuf>,
     /// The session stream that recorded it.
     pub recorded_by: String,
+}
+
+/// What a gate said about the work it was handed.
+///
+/// The two words a `gate-verdict` event is written with, and a third for one this
+/// build cannot read: a verdict it did not understand is not a rejection, and
+/// reporting it as one would name a gate that never refused anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Verdict {
+    /// It verified the change.
+    Pass,
+    /// It refused the change.
+    Fail,
+    /// The event named a verdict this build does not read.
+    Unrecorded,
 }
 
 /// The command that advances the work, or why none does.
@@ -354,7 +387,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             carried,
             ahead,
             open_on_the_host: host.open.is_some(),
-            host_answered: host.checks.available,
+            host_answered: matches!(host.checks, ChecksReport::Reported { .. }),
             change_recorded: change_url.is_some(),
         },
         asked_the_host_to_land,
@@ -380,19 +413,10 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         identity: IdentityReport {
             key: resolution.key.clone(),
             publication_checkout: resolution.publication.clone(),
-            workflow: match resolution.identity.workflow {
-                Workflow::Local => "local".to_owned(),
-                Workflow::Remote => "remote".to_owned(),
-            },
-            repo_type: match resolution.identity.repo_type {
-                RepoType::SingleOwner => "single-owner".to_owned(),
-                RepoType::Team => "team".to_owned(),
-            },
-            gate: policy::spell_gate(&resolved.policy.gate),
-            approvals: match resolved.policy.approvals {
-                crate::rules::Approvals::Required => "required".to_owned(),
-                crate::rules::Approvals::None => "none".to_owned(),
-            },
+            workflow: resolution.identity.workflow,
+            repo_type: resolution.identity.repo_type,
+            gate: resolved.policy.gate.clone(),
+            approvals: resolved.policy.approvals,
         },
         session,
         branch: BranchReport {
@@ -405,9 +429,8 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         },
         publication: PublicationReport {
             state,
-            landed: state == Landing::Landed,
             change_url,
-            merge_policy: policy::spell(resolved.policy.publication).to_owned(),
+            merge_policy: resolved.policy.publication,
         },
         checks: host.checks,
         gate,
@@ -470,47 +493,42 @@ struct HostAnswer {
 /// command that produces nothing. A local identity has no host at all, which is
 /// the same shape of gap and says so in the same place.
 fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting) -> HostAnswer {
-    let unavailable = |because: String| HostAnswer {
-        open: None,
-        checks: ChecksReport {
-            available: false,
-            unavailable_because: Some(because),
+    let unavailable = |open: Option<String>, because: String| HostAnswer {
+        open,
+        checks: ChecksReport::Unavailable { because },
+    };
+    let nothing_to_report = |open: Option<String>| HostAnswer {
+        open,
+        checks: ChecksReport::Reported {
             checks: Vec::new(),
             sources: Vec::new(),
         },
     };
     let Some(slug) = gh::slug(identity) else {
-        return unavailable(format!(
-            "identity {identity:?} is not a {} repository, so no host answers for it",
-            gh::HOST
-        ));
+        return unavailable(
+            None,
+            format!(
+                "identity {identity:?} is not a {} repository, so no host answers for it",
+                gh::HOST
+            ),
+        );
     };
     let host = match hosting.for_repo(&slug) {
         Ok(host) => host,
-        Err(error) => return unavailable(error.to_string()),
+        Err(error) => return unavailable(None, error.to_string()),
     };
     let open = match host.find_changes(branch, base) {
         Ok(changes) => changes.into_iter().next(),
-        Err(error) => return unavailable(error.to_string()),
+        Err(error) => return unavailable(None, error.to_string()),
     };
     let Some(change) = open else {
-        return HostAnswer {
-            open: None,
-            checks: ChecksReport {
-                available: true,
-                unavailable_because: None,
-                checks: Vec::new(),
-                sources: Vec::new(),
-            },
-        };
+        return nothing_to_report(None);
     };
     let url = change.url.to_string();
     match host.change_checks(&change) {
         Ok(answer) => HostAnswer {
             open: Some(url),
-            checks: ChecksReport {
-                available: true,
-                unavailable_because: None,
+            checks: ChecksReport::Reported {
                 checks: answer
                     .checks
                     .into_iter()
@@ -526,15 +544,7 @@ fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting)
         },
         // The change request is open — that much the host did say — and only what
         // its checks are doing is missing.
-        Err(error) => HostAnswer {
-            open: Some(url),
-            checks: ChecksReport {
-                available: false,
-                unavailable_because: Some(error.to_string()),
-                checks: Vec::new(),
-                sources: Vec::new(),
-            },
-        },
+        Err(error) => unavailable(Some(url), error.to_string()),
     }
 }
 
@@ -771,12 +781,16 @@ fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>> {
         .collect())
 }
 
-/// One stream, read leniently and said so.
+/// One stream, read as the values it holds and said so where it could not be.
 ///
-/// A line this build cannot parse is skipped and *reported* in the report's own
-/// notes rather than passed over: everything a stream decides here is a
-/// description of what was proposed, and the one answer that must never be
-/// inferred — whether the work landed — is read off the base's content instead.
+/// Every line goes through [`crate::stream::attributed`], which is the seam
+/// `EventStream` reads through — so a line this build cannot parse, and one
+/// carrying another stream's event, are refused here for the same two reasons they
+/// are refused there rather than being interpreted as an envelope this happens to
+/// be able to index into. What differs is what a refusal does: this command is
+/// asked what became of a piece of work, so a line it could not read becomes a note
+/// in the report rather than the whole answer. Nothing safety-critical rests on it
+/// — whether the work *landed* is read off the base's content, never off a stream.
 fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Recorded {
     let mut record = Recorded {
         token: token.to_owned(),
@@ -791,44 +805,47 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         return record;
     };
     for (index, line) in raw.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(event) = serde_json::from_str::<Value>(line) else {
-            notes.push(format!(
-                "line {} of the event stream at {} is not an event envelope, so whatever it \
-                 recorded is not in this report",
-                index + 1,
-                path.display()
-            ));
-            continue;
+        let event = match stream::attributed(line, token, index + 1) {
+            Ok(event) => event,
+            Err(refusal) => {
+                notes.push(format!(
+                    "{refusal}, so whatever it recorded is not in this report ({})",
+                    path.display()
+                ));
+                continue;
+            }
         };
-        let payload = &event["payload"];
-        let at = text(&event["ts"]).unwrap_or_default();
+        let at = event.ts.clone();
         if record.identity.is_none() {
-            record.identity = text(&event["labels"]["identity"]);
+            record.identity = event.labels.extra.get("identity").and_then(text);
         }
         if record.branch.is_none() {
-            record.branch = text(&payload["branch"]);
+            record.branch = event.payload.get("branch").and_then(text);
         }
-        match event["kind"].as_str().unwrap_or_default() {
-            "change-opened" => {
-                if let Some(url) = text(&payload["url"]) {
+        let field = |name: &str| event.payload.get(name).and_then(text);
+        match event.kind {
+            EventKind::ChangeOpened => {
+                if let Some(url) = field("url") {
                     record.change_url = Some(Stamped { at, value: url });
                 }
             }
             // Emitted with the change request's URL only where this crate went on to
             // ask the host to land it; the local merge train emits one without.
-            "merge-queued" => {
-                record.asked_the_host_to_land |= text(&payload["url"]).is_some();
+            EventKind::MergeQueued => {
+                record.asked_the_host_to_land |= field("url").is_some();
             }
-            "gate-verdict" => {
+            EventKind::GateVerdict => {
                 record.gate = Some(Stamped {
                     at,
                     value: GateReport {
-                        verdict: text(&payload["verdict"]).unwrap_or_else(|| "unknown".to_owned()),
-                        command: text(&payload["command"]).unwrap_or_else(|| "unknown".to_owned()),
-                        log: text(&payload["preserved_log"]).map(PathBuf::from),
+                        verdict: match field("verdict").as_deref() {
+                            Some("pass") => Verdict::Pass,
+                            Some("fail") => Verdict::Fail,
+                            _ => Verdict::Unrecorded,
+                        },
+                        command: field("command")
+                            .unwrap_or_else(|| "a command the event did not name".to_owned()),
+                        log: field("preserved_log").map(PathBuf::from),
                         recorded_by: token.to_owned(),
                     },
                 });
@@ -1053,10 +1070,10 @@ impl Report {
              gate: {}\n  approvals: {}\n",
             self.identity.key,
             self.identity.publication_checkout.display(),
-            self.identity.workflow,
-            self.identity.repo_type,
-            self.identity.gate,
-            self.identity.approvals,
+            spell_workflow(self.identity.workflow),
+            spell_repo_type(self.identity.repo_type),
+            policy::spell_gate(&self.identity.gate),
+            spell_approvals(self.identity.approvals),
         ));
         match &self.session {
             Some(session) => out.push_str(&format!(
@@ -1118,7 +1135,11 @@ impl Report {
         ));
         out.push_str(&format!(
             "  landed: {}\n",
-            if self.publication.landed { "yes" } else { "no" }
+            if self.publication.state.landed() {
+                "yes"
+            } else {
+                "no"
+            }
         ));
         out.push_str(&format!(
             "  change request: {}\n",
@@ -1129,19 +1150,18 @@ impl Report {
         ));
         out.push_str(&format!(
             "  merge policy: {}\n",
-            self.publication.merge_policy
+            policy::spell(self.publication.merge_policy)
         ));
-        match (
-            &self.checks.unavailable_because,
-            self.checks.checks.is_empty(),
-        ) {
-            (Some(because), _) => {
+        match &self.checks {
+            ChecksReport::Unavailable { because } => {
                 out.push_str(&format!("checks: unavailable — {because}\n"));
             }
-            (None, true) => out.push_str("checks: none reported on this work\n"),
-            (None, false) => {
+            ChecksReport::Reported { checks, .. } if checks.is_empty() => {
+                out.push_str("checks: none reported on this work\n");
+            }
+            ChecksReport::Reported { checks, sources } => {
                 out.push_str("checks:\n");
-                for check in &self.checks.checks {
+                for check in checks {
                     out.push_str(&format!(
                         "  {}\t{}\t{}\t{}\n",
                         check.name,
@@ -1156,8 +1176,7 @@ impl Report {
                 }
                 out.push_str(&format!(
                     "  sources: {}\n",
-                    self.checks
-                        .sources
+                    sources
                         .iter()
                         .map(spell_source)
                         .collect::<Vec<_>>()
@@ -1169,7 +1188,9 @@ impl Report {
             Some(gate) => {
                 out.push_str(&format!(
                     "gate:\n  verdict: {}\n  command: {}\n  recorded by: {}\n",
-                    gate.verdict, gate.command, gate.recorded_by
+                    spell_verdict(gate.verdict),
+                    gate.command,
+                    gate.recorded_by
                 ));
                 if let Some(log) = &gate.log {
                     out.push_str(&format!("  log: {}\n", log.display()));
@@ -1199,6 +1220,35 @@ fn spell_landing(state: Landing) -> &'static str {
         Landing::Published => "published (the host could not be asked what became of it)",
         Landing::NothingToPublish => "nothing to publish",
         Landing::Unpublished => "unpublished",
+    }
+}
+
+fn spell_workflow(workflow: Workflow) -> &'static str {
+    match workflow {
+        Workflow::Local => "local",
+        Workflow::Remote => "remote",
+    }
+}
+
+fn spell_repo_type(repo_type: RepoType) -> &'static str {
+    match repo_type {
+        RepoType::SingleOwner => "single-owner",
+        RepoType::Team => "team",
+    }
+}
+
+fn spell_approvals(approvals: Approvals) -> &'static str {
+    match approvals {
+        Approvals::Required => "required",
+        Approvals::None => "none",
+    }
+}
+
+fn spell_verdict(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Pass => "pass",
+        Verdict::Fail => "fail",
+        Verdict::Unrecorded => "a verdict this build does not read",
     }
 }
 

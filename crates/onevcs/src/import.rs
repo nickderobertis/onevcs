@@ -92,8 +92,24 @@ pub struct Imported {
     // this command had just fetched; the crate's `Sha` is the contract's public wrapper
     // and validates nothing, so spelling it here would make no state unrepresentable.
     pub tip: String,
-    /// Whether the destination already had the name, and this moved it forward.
-    pub advanced: bool,
+    /// What the write actually did to the name.
+    pub wrote: Wrote,
+}
+
+/// What one import did to the name it wrote.
+///
+/// Three answers, because a caller reads this to find out what changed and the two
+/// that are not "the name is new" differ: a branch already at the commit the source
+/// has moved nothing, and reporting that as a fast-forward names an advance that
+/// did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wrote {
+    /// The destination had no branch of that name.
+    Created,
+    /// It had one, and the import moved it forward.
+    FastForwarded,
+    /// It had one, already at the commit the source has.
+    Unchanged,
 }
 
 /// Make one branch reachable from an identity's registered checkouts.
@@ -172,17 +188,22 @@ pub fn run(
                 branch = source.branch(branch),
             ),
         })?;
-        let advanced = git::branch_exists(&destination, &name);
-        if advanced {
-            refuse_a_rewrite(&destination, &name, &scratch, repo, branch)?;
-        }
+        let held = git::tip(&destination, &format!("refs/heads/{name}"));
+        let wrote = match &held {
+            Some(held) if *held == tip => Wrote::Unchanged,
+            Some(_) => {
+                refuse_a_rewrite(&destination, &name, &scratch, repo, branch)?;
+                Wrote::FastForwarded
+            }
+            None => Wrote::Created,
+        };
         git::update_ref(&destination, &format!("refs/heads/{name}"), &tip)?;
         Ok(Imported {
             destination: destination.clone(),
             name: name.clone(),
             source: source.clone(),
             tip,
-            advanced,
+            wrote,
         })
     })();
     git::delete_ref(&destination, &scratch);
@@ -271,7 +292,19 @@ fn source_of(
         });
     }
     if let Some((remote, named)) = from.split_once('/') {
-        if remotes.iter().any(|candidate| candidate == remote) && !named.is_empty() {
+        if remotes.iter().any(|candidate| candidate == remote) {
+            // The half after the remote goes on to spell a refspec, so it is
+            // decided by the parser that decides branch names rather than merely
+            // being non-empty — `origin/` and `origin/..` both name a remote this
+            // repository has and no branch anything could fetch.
+            if !git::is_valid_branch_name(named) {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "--from {from:?} names remote {remote:?} and {named:?}, which is not a \
+                         branch name git would accept; spell it `{remote}/<branch>`"
+                    ),
+                });
+            }
             return Ok(Source::Remote {
                 remote: remote.to_owned(),
                 branch: named.to_owned(),
