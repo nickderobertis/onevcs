@@ -1195,17 +1195,18 @@ fn a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_over
         .assert()
         // 3 is the contract's code for what the publication could not reconcile.
         .code(3)
-        .stderr(predicate::str::contains(format!(
-            "\"feature/recovered\" moved on the host since this run last had it at {seen} — it is \
-             at {theirs} now"
-        )))
+        .stderr(predicate::str::contains(
+            "\"feature/recovered\" moved on the host since this run last had it at",
+        ))
         .stderr(predicate::str::contains(
             "Nothing was overwritten and the branch is retained.",
         ));
     let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
-    assert_ne!(
-        seen, theirs,
-        "the commit the lease named is the one this run saw, never the one it found:\n{refusal}"
+    assert_ne!(seen, theirs, "the two commits are the point of this");
+    assert!(
+        refusal.contains(&format!("at {seen} — it is at {theirs} now")),
+        "the lease named the commit this run saw, and the refusal says where the host is now:\n\
+         {refusal}"
     );
 
     // Nothing on the host moved: their commit is still the branch, tip and content.

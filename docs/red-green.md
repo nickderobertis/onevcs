@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 71. Tests observed red and then green: 97.
+Patches: 73. Tests observed red and then green: 99.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -464,12 +464,15 @@ every push a leased publication has refused is read as a branch somebody moved.
 
 - RED `a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
 - RED `a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording` — Unexpected return code, failed var == 1
+- RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
 
 ### `69-a-declined-lease-is-read-out-of-the-prose`
 
-whether the lease was declined is read out of git's diagnostic prose.
+whether the lease was declined, and what the host has instead, is read out of git's diagnostic prose.
 
 - RED `a_leased_push_the_host_refuses_is_read_from_what_git_reports_and_not_from_its_wording` — Unexpected return code, failed var == 1
+- RED `a_branch_the_host_moved_before_a_recovery_was_invoked_is_refused_without_overwriting_it` — Unexpected stderr, failed var.contains("feature/recovered" moved on the host since this run last had it at b5518d1d8d0f7facb6d0bdad96a7ee7ea
+- RED `a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone` — Unexpected stderr, failed var.contains("feature/filter" is gone from the host, which this run last had at)
 
 ### `70-a-lease-taken-from-what-the-fetch-found`
 
@@ -483,4 +486,16 @@ the lease is taken from what this run's own fetch found on the host.
 a host copy this run has never seen is pushed over rather than refused.
 
 - RED `a_replay_of_a_branch_this_run_has_never_seen_on_the_host_is_refused_before_it_pushes` — Unexpected return code, failed var == 3
+
+### `72-a-branch-gone-from-the-host-declined-nothing`
+
+a branch deleted on the host is a rejection nothing classified, rather than the lease it declined.
+
+- RED `a_branch_deleted_on_the_host_under_a_replay_is_refused_as_the_branch_that_is_gone` — Unexpected return code, failed var == 3
+
+### `73-a-host-that-would-not-say-is-read-as-one-with-no-branch`
+
+a host that would not say where the branch is is read as one that has no such branch.
+
+- RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
 
