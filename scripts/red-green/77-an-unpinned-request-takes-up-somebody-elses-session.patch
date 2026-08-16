@@ -1,0 +1,22 @@
+Mutation: a request that pinned no branch resumes whatever session it finds.
+Red: a_session_that_pins_no_branch_is_cut_fresh_every_time
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index d91e6b6..3442fbe 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -710,12 +710,10 @@ fn resumable(
+     request: &SessionRequest,
+     execution: &Path,
+ ) -> Result<Option<Record>> {
+-    let Some(branch) = request.branch.as_deref() else {
+-        return Ok(None);
+-    };
++    let branch = request.branch.as_deref().unwrap_or_default();
+     let mut held = all()?.into_iter().filter(|record| {
+         record.identity == resolution.key
+-            && *record.branch == *branch
++            && (branch.is_empty() || *record.branch == *branch)
+             // Closing a session is the statement that it is finished: it hands the
+             // branch back to the execution checkout and lets its worktree go. A name
+             // taken again after that is a new session under a spent name, which is a
