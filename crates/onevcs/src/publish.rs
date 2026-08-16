@@ -433,14 +433,10 @@ impl Target {
 /// records only for a base that is not the identity's root, and a root to land on
 /// once the change below has landed.
 ///
-/// The recorded tip is resolved through git before it is one, because a record is a
-/// file under the state root and this is the field that goes on to name commits to
-/// git. A record naming a commit this session's own clone does not have is refused
-/// rather than read as an ordinary publication: what the field decides is which of a
-/// branch's commits belong to the change below it, and a publication that answers
-/// "none of them" because the record was unreadable is one that merges the change
-/// below against its own squashed equivalent — the failure this whole path exists to
-/// stop, arrived at through a silence.
+/// The recorded tip is resolved through git before it is trusted — a record is a file
+/// under the state root — and one this session's clone does not have is refused rather
+/// than read as no stack: answering "no stack" from a value nothing could read is the
+/// merge this whole path exists to stop.
 ///
 /// A root nobody can name is different and is no stack: nothing here fails, there is
 /// simply nowhere to move the change to, and the publication is the one it always

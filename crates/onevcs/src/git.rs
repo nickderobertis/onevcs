@@ -721,13 +721,9 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 
 /// The commit two refs last had in common, or `None` when they share no history.
 ///
-/// A SHA is spelled the way `tip`, `head_sha`, and `CommitMessage` have always spelled
-/// one here: the crate's `Sha` is the *contract's* wrapper at the public surface and
-/// wraps an unvalidated `String`, so it would make no state here unrepresentable and
-/// would give one module two vocabularies for one answer. Git's own answer to a command
-/// this module just ran is likewise not a trust boundary — the input this crate checks
-/// is what a caller supplied — and a check no journey could reach is a path this crate
-/// deletes rather than adds.
+/// A plain `String`, as every other SHA this module reads is: the crate's `Sha` is the
+/// contract's wrapper for its public surface and validates nothing, and git's answer to
+/// a command this module just ran is not a caller's input.
 // llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] see above.
 pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String>> {
     let output = run(&["merge-base", first, second], Some(cwd))?;
