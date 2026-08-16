@@ -99,7 +99,8 @@ pub fn session(p: &Providers, token: &SessionToken) -> Result<SessionRecord>;
 pub struct SessionRecord { pub session: Session, pub identity: String,
                            pub lifecycle: Lifecycle, pub provenance: Provenance }
 pub enum Lifecycle { Open, Closed }
-pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<Subject> }
+pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<Subject>,
+                            pub body: Option<String> }   // widened by the body amendment
 pub struct Subject(String);                  // TryFrom<String>: a title that can be one
 pub struct Publication { pub session: SessionToken, pub branch: String,
                          pub policy: MergePolicy, pub outcome: PublishOutcome }
@@ -358,6 +359,34 @@ here rather than resolved:
   shared and enrichers stamp them; making `onevcs` stamp them is a question about
   what a session knows of the run around it, not about filtering, and is not
   answered here.
+
+**A change request opens with the body its caller passed, or with none at all.**
+The contract gives `ChangeSpec` a `body` and says nothing about where one comes
+from, so this crate composed one: every change request it opened carried the
+branch's own subject echoed back under `## What`, `Published by onevcs.` under
+`## Why`, and an `## Additional info` section holding the publication's provenance
+trailers. A reviewer who opened one learned nothing the title had not already told
+them, and the layer that does know what the change is *for* — the agent or the
+pipeline that asked for the publication — had no way to say it. This crate is the
+layer that decides what body a change request gets, so it is the layer that accepts
+one.
+
+`PublishRequest` therefore carries the body, declared with the amendment above, and
+a publication opens its change request with exactly that text or with no body
+whatsoever. Nothing is composed, nothing is appended, and an absent body is absent
+rather than empty scaffolding. The provenance trailers do not move: they are the
+publication *commit*'s, composed by `compose_message`, and a recovered incomplete
+step still records `Recovered-Incomplete:` there — they simply stop appearing in a
+change request's body, which was never a record anything read them back out of.
+
+`onevcs publish` takes the body two ways: `--body` and `--body-file`.
+The first is the text as typed and the second is the path of a file holding it,
+which is the form a body of real prose arrives in — a shell argument is not where
+multi-line Markdown survives. Passing both is refused by name before anything is
+published, because two bodies is a caller that meant one of them and a publication
+that guessed would open a change request nobody wrote. Neither branch-keyed verb
+takes one: `recover` and `publish-branch` are reached by an operator naming a
+branch, not by a caller that drafted a body.
 
 ---
 

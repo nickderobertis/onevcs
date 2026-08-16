@@ -141,6 +141,8 @@ pub fn full_host_state() -> HostState {
     heads.insert(id.clone(), "feature/seeded".to_owned());
     let mut titles = BTreeMap::new();
     titles.insert(id.clone(), "feat: the seeded change".to_owned());
+    let mut bodies = BTreeMap::new();
+    bodies.insert(id.clone(), "The body the caller drafted.\n".to_owned());
     let mut checks = BTreeMap::new();
     checks.insert(
         id.clone(),
@@ -171,6 +173,7 @@ pub fn full_host_state() -> HostState {
         }],
         heads,
         titles,
+        bodies,
         checks,
         check_logs,
         // The credential the real implementation meets in CI: a fine-grained token,

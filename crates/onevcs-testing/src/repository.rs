@@ -503,7 +503,10 @@ fn publish_as_change(
                 .title
                 .as_deref()
                 .map_or_else(|| format!("Publish {}", session.branch), str::to_owned),
-            body: None,
+            // Verbatim, and nothing when there is none — the real publication
+            // composes no body either, so a provider that composed one would be a
+            // consumer's suite proving a change request nobody opens.
+            body: request.body.clone(),
         })?,
     };
     let mut emissions = vec![Emission {

@@ -181,6 +181,17 @@ pub struct HostState {
     // that is refused below and in `open_change`, at the boundary the value arrives at.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub titles: BTreeMap<ChangeId, String>,
+    /// The body each change request was opened with, for the change requests that
+    /// were opened with one.
+    ///
+    /// Beside [`titles`](HostState::titles) and for its reason: the body is what a
+    /// caller passes on the `PublishRequest` and nothing else records it, so a
+    /// journey asserting that the body it drafted is the one the host was given has
+    /// nowhere else to read it. A change request with no entry was opened with no
+    /// body at all, which is what a publication nobody gave one does — the two are
+    /// different scenarios, and an empty string is the first rather than the second.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub bodies: BTreeMap<ChangeId, String>,
     /// The checks the host reports on each change request. A change with no entry
     /// has no checks, which is what a repository with no CI reports.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -227,6 +238,7 @@ impl Default for HostState {
             changes: Vec::new(),
             heads: BTreeMap::new(),
             titles: BTreeMap::new(),
+            bodies: BTreeMap::new(),
             checks: BTreeMap::new(),
             check_logs: BTreeMap::new(),
             check_sources: None,
@@ -500,6 +512,11 @@ impl Checked for HostState {
             // The real host refuses a title that names nothing, so a seeded one is
             // refused for the same reason.
             titled(title)?;
+        }
+        for id in self.bodies.keys() {
+            // Nothing is refused about the body itself: a host places no shape on
+            // prose, and a change request opened with an empty one is a scenario.
+            opened_change(self, id, "a body")?;
         }
         Ok(())
     }

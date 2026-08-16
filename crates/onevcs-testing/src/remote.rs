@@ -151,7 +151,13 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
                 id: id.clone(),
             };
             state.heads.insert(id.clone(), req.head.clone());
-            state.titles.insert(id, req.title.clone());
+            state.titles.insert(id.clone(), req.title.clone());
+            // Only when there is one: a change request opened with no body records
+            // none, so a journey can tell "nobody drafted one" from "the body is
+            // empty" — which is the distinction the real host draws too.
+            if let Some(body) = req.body.clone() {
+                state.bodies.insert(id, body);
+            }
             state.changes.push(change.clone());
             Ok(change)
         })

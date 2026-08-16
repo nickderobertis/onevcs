@@ -349,6 +349,10 @@ impl Landing {
             change_base: self.change_base.clone(),
             run_root: self.run_root.clone(),
             title,
+            // Neither branch-keyed verb takes a body: they are reached by an
+            // operator naming a branch, not by a caller that drafted one, and the
+            // option to pass one belongs where there is something to pass.
+            body: None,
             trailers: Vec::new(),
             provenance: self.trailers.clone(),
             hosting,

@@ -15,6 +15,9 @@
   "titles": {
     "1": "feat: the seeded change"
   },
+  "bodies": {
+    "1": "The body the caller drafted.\n"
+  },
   "checks": {
     "1": [
       {

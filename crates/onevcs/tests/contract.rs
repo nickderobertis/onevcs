@@ -978,6 +978,7 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
     let request = PublishRequest {
         policy: Some(MergePolicy::ChangeOpen),
         title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
+        body: Some("Why the seam is where it is.".to_owned()),
     };
     let publication = Publication {
         session: record.session.token.clone(),
@@ -993,7 +994,8 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         "pub struct SessionRecord { pub session: Session, pub identity: String,",
         "pub lifecycle: Lifecycle, pub provenance: Provenance }",
         "pub enum Lifecycle { Open, Closed }",
-        "pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<Subject> }",
+        "pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<Subject>,",
+        "pub body: Option<String> }",
         "pub struct Publication { pub session: SessionToken, pub branch: String,",
         "pub policy: MergePolicy, pub outcome: PublishOutcome }",
         "pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented }",
@@ -1028,6 +1030,51 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
 
     assert_eq!(publication.session, record.session.token);
     assert_eq!(request.policy, Some(MergePolicy::ChangeOpen));
+    assert_eq!(
+        request.body.as_deref(),
+        Some("Why the seam is where it is.")
+    );
+}
+
+#[test]
+fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_not() {
+    // The approved usage block is committed verbatim and spells `publish` with two
+    // options, so an option added since is written down in an amendment or nowhere.
+    // `every_flag_the_contract_spells_exists_on_the_command_that_takes_it` holds the
+    // other direction — a documented flag the parser lacks — and could not hold this
+    // one: a flag nobody wrote down is a flag nothing reads.
+    let approved: BTreeSet<String> = block("")
+        .lines()
+        .filter(|line| line.starts_with("onevcs publish "))
+        .flat_map(|line| line.split(|c: char| c.is_whitespace() || c == '[' || c == ']'))
+        .filter_map(|token| token.strip_prefix("--").map(str::to_owned))
+        .collect();
+    assert!(
+        approved.contains("title"),
+        "the approved usage no longer spells `onevcs publish`'s options: {approved:?}"
+    );
+
+    let mut implemented = BTreeSet::new();
+    collect_long_flags(
+        Cli::command()
+            .get_subcommands()
+            .find(|command| command.get_name() == "publish")
+            .expect("the parser has a publish command"),
+        &mut implemented,
+    );
+    // clap's own, on every command it generates — not part of anybody's contract.
+    implemented.remove("help");
+
+    let amended: BTreeSet<String> = backticked_on_line("`onevcs publish` takes the body two ways")
+        .into_iter()
+        .filter_map(|span| span.strip_prefix("--").map(str::to_owned))
+        .collect();
+    assert_eq!(
+        amended,
+        implemented.difference(&approved).cloned().collect(),
+        "the amendment and `onevcs publish` disagree about which options it takes \
+         beyond the approved two"
+    );
 }
 
 #[test]

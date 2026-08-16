@@ -233,12 +233,14 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
     // and merges its base first, and a refusal after those is one an operator cannot
     // undo.
     let title = explicit_title(args.title.as_ref())?;
+    let body = explicit_body(args)?;
     let publication = crate::publish(
         providers,
         &SessionToken(args.token.clone()),
         &PublishRequest {
             policy: args.policy,
             title,
+            body,
         },
     )?;
     let PublishOutcome::Failed {
@@ -296,6 +298,38 @@ fn explicit_title(title: Option<&String>) -> Result<Option<Subject>> {
         .map(Subject::try_from)
         .transpose()
         .map_err(error::invalid)
+}
+
+/// The body an explicit `--body` or `--body-file` names, read where the command
+/// line hands it over.
+///
+/// The two are mutually exclusive and are refused *by name*, before the session is
+/// even loaded: two bodies is a caller that meant one of them, and a publication
+/// that guessed which would open a change request nobody wrote. The file is the
+/// form a real body arrives in — it is prose, and prose does not survive a shell
+/// argument — so a path that cannot be read names itself rather than the option.
+fn explicit_body(args: &PublishArgs) -> Result<Option<String>> {
+    match (args.body.as_ref(), args.body_file.as_ref()) {
+        (Some(_), Some(path)) => Err(error::invalid(format!(
+            "--body and --body-file both name the body of the change request, and it is opened \
+             with one body. Keep the one that holds it: `{}` for the body in {}, or `{}` for the \
+             text as typed",
+            guidance::command([
+                "onevcs",
+                "publish",
+                &args.token,
+                "--body-file",
+                &path.to_string_lossy()
+            ]),
+            path.display(),
+            guidance::command(["onevcs", "publish", &args.token, "--body", "TEXT"]),
+        ))),
+        (Some(body), None) => Ok(Some(body.clone())),
+        (None, Some(path)) => std::fs::read_to_string(path)
+            .map(Some)
+            .map_err(error::at("read the change request's body from", path)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {

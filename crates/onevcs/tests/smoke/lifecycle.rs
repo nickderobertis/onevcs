@@ -157,6 +157,7 @@ fn a_session_opens_preserves_publishes_and_the_change_lands_on_the_real_reposito
             &PublishRequest {
                 policy: None,
                 title: Some(Subject::try_from(title.clone()).expect("a usable title")),
+                body: None,
             },
             providers.hosting,
         )

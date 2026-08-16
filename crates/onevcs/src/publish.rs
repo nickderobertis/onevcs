@@ -36,8 +36,8 @@ pub const SYNC_ATTEMPTS: usize = 3;
 
 /// What one publication was asked for beyond the session it publishes.
 ///
-/// The two options `onevcs publish` takes, and nothing else: everything else about
-/// a publication comes from the session and from the repository's rules.
+/// The options `onevcs publish` takes, and nothing else: everything else about a
+/// publication comes from the session and from the repository's rules.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishRequest {
     /// A per-run policy. It may narrow the repository's but never widen it.
@@ -46,6 +46,16 @@ pub struct PublishRequest {
     /// An explicit title, which replaces the subject synthesized from the branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<Subject>,
+    /// The body the change request is opened with, verbatim.
+    ///
+    /// Absent opens it with no body at all. Nothing here composes one: every
+    /// change request this crate opened used to carry the same three lines — the
+    /// branch's own subject echoed back under `## What`, and `Published by
+    /// onevcs.` under `## Why` — which told a reviewer nothing the title had not.
+    /// Unvalidated, because a body is prose and a host places no shape on it; a
+    /// title is a [`Subject`] for the opposite reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// A title that can be the subject of the commit a publication lands.
@@ -282,6 +292,7 @@ pub fn run_for_session(
         change_base,
         run_root: record.run_root.clone(),
         title: request.title.clone(),
+        body: request.body.clone(),
         trailers: Vec::new(),
         provenance: provenance::from_rules(&file),
         hosting,
@@ -342,7 +353,10 @@ pub struct Context<'a> {
     /// was built, so nothing here can compose a message from one that is not a
     /// subject.
     pub title: Option<Subject>,
-    /// Trailers the publication commit or change body must carry.
+    /// The body the change request is opened with, verbatim, or none at all. A
+    /// branch-keyed verb has no caller to take one from and publishes without one.
+    pub body: Option<String>,
+    /// Trailers the publication commit must carry.
     pub trailers: Vec<String>,
     /// The provenance trailer keys this host reads and writes, which decide which
     /// of the branch's commits describe the change and which record the session.
@@ -376,13 +390,16 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         return Ok(PublishOutcome::NothingToPublish);
     }
 
-    let (subject, trailers) = describe(context, &compared)?;
+    // The trailers are the publication *commit*'s, so only the local path takes them
+    // here — and it re-describes the branch after the queue anyway. Asking now is
+    // still what refuses a branch with no usable subject before the gate runs.
+    let (subject, _) = describe(context, &compared)?;
     let environment = gate::comparison_env("origin", &context.change_base);
     verify(context, stream, &environment)?;
 
     match context.effective {
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
-        _ => publish_as_change(context, stream, &subject, &trailers, &environment),
+        _ => publish_as_change(context, stream, &subject, &environment),
     }
 }
 
@@ -631,7 +648,6 @@ fn publish_as_change(
     context: &Context<'_>,
     stream: &mut Stream,
     subject: &str,
-    trailers: &[String],
     environment: &[(String, String)],
 ) -> Result<PublishOutcome> {
     let pushed = git::push(&context.worktree, &context.branch, "origin", environment)?;
@@ -658,7 +674,10 @@ fn publish_as_change(
             head: context.branch.to_string(),
             base: context.change_base.to_string(),
             title: subject.to_owned(),
-            body: Some(compose_body(subject, trailers)),
+            // Exactly what the caller passed, or nothing. The caller is the layer
+            // that knows what the change is for; this one only knows the branch,
+            // and everything it could say from that the title already says.
+            body: context.body.clone(),
         })?,
     };
     stream.emit(
@@ -927,17 +946,6 @@ pub fn compose_message(subject: &str, trailers: &[String]) -> String {
     } else {
         format!("{subject}\n\n{}", trailers.join("\n"))
     }
-}
-
-/// The body a change request is opened with.
-pub fn compose_body(subject: &str, trailers: &[String]) -> String {
-    let mut body = format!("## What\n\n{subject}\n\n## Why\n\nPublished by onevcs.\n");
-    if !trailers.is_empty() {
-        body.push_str("\n## Additional info\n\n");
-        body.push_str(&trailers.join("\n"));
-        body.push('\n');
-    }
-    body
 }
 
 /// The policy a run publishes under, once the rules and any `--policy` have both
