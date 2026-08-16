@@ -750,6 +750,22 @@ pub fn commits_since(cwd: &Path, base: &str, branch: &str) -> Result<Vec<String>
         .collect())
 }
 
+/// How many files git says two commits differ in.
+///
+/// `--shortstat` is a count and a summary, in ASCII whatever a repository names its
+/// files, which is what makes it the check on a listing of those names rather than a
+/// second copy of it.
+fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
+    let summary = checked(&["diff", "--shortstat", from, to], Some(cwd))?.trimmed();
+    let Some((count, _)) = summary.split_once(" file") else {
+        // No files changed is the empty summary; git prints nothing at all for it.
+        return Ok(0);
+    };
+    count.trim().parse().map_err(|_| Error::Invalid {
+        reason: format!("git diff --shortstat {from} {to} did not begin with a count: {summary}"),
+    })
+}
+
 /// Whether `base` already carries everything `commit` changed since `fork`.
 ///
 /// Content rather than ancestry, for the reason [`trees_differ`] gives: a branch
@@ -759,16 +775,8 @@ pub fn commits_since(cwd: &Path, base: &str, branch: &str) -> Result<Vec<String>
 /// on the commit — which is the question asked here, and asked over the paths that
 /// commit actually touched so that unrelated work landing on the base beside it
 /// does not change the answer.
-// llmlint: ignore[boundary_inputs_validated] the decoding this rests on is checked rather
-// than assumed: an unreadable listing is told from an empty one below, and answered.
 pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
     let listed = checked(&["diff", "--name-only", "-z", fork, commit], Some(cwd))?;
-    // `-z` terminates every path with a NUL, so a listing that is not empty and does
-    // not end in one is not the whole listing — which is how this tells a complete
-    // answer from one this process could not take. A repository path that is not
-    // UTF-8 is where that arises: git prints the bytes, and reading them as text
-    // yields no listing rather than a shorter one.
-    let whole = listed.stdout.is_empty() || listed.stdout.ends_with('\0');
     // Pathspecs, not names: a path is a repository's own content and one beginning
     // with `:` would otherwise be read as pathspec magic rather than as the file it
     // names.
@@ -778,18 +786,21 @@ pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Resu
         .filter(|path| !path.is_empty())
         .map(|path| format!(":(literal){path}"))
         .collect();
-    if touched.is_empty() || !whole {
-        // Nothing to scope a diff by, for one of two reasons: the commit changed
-        // nothing since the fork, or its paths did not reach this process whole. The
-        // two are told apart by asking git, and the second is answered by the same
-        // question asked without paths — a base carrying this commit's whole tree
-        // carries its changes too, which is the one answer that cannot be wrong about
-        // a path nobody here could name.
-        if trees_differ(cwd, fork, commit)? {
-            return Ok(!trees_differ(cwd, base, commit)?);
-        }
-        // Otherwise the commit changed nothing since the fork, and a base built on
-        // that fork carries the nothing it changed.
+    // How many paths there are is asked of git separately, in a report that is ASCII
+    // whatever the repository names its files, and the two answers have to agree
+    // before a diff is scoped by the names. Paths are bytes and this process reads
+    // git's output as text, so how much of a listing survived that is a question to
+    // settle rather than to assume — a comparison scoped by *some* of the paths a
+    // commit touched would answer that the base carries it when the base does not.
+    if touched.len() != counted_files(cwd, fork, commit)? {
+        // Which leaves the same question asked without paths: a base carrying this
+        // commit's whole tree carries its changes too, and that is the one answer
+        // that cannot be wrong about a path nobody here could name.
+        return Ok(!trees_differ(cwd, base, commit)?);
+    }
+    if touched.is_empty() {
+        // The commit changed nothing since the fork, and a base built on that fork
+        // carries the nothing it changed.
         return Ok(true);
     }
     let mut args = vec!["diff", "--quiet", commit, base, "--"];
