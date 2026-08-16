@@ -292,15 +292,20 @@ impl Landing {
         .map(|_| ())
     }
 
-    /// Merge the change base into the branch before anything is verified.
+    /// Bring the branch level with the change base before anything is verified.
+    ///
+    /// Which of [`publish::reconcile`]'s two shapes that takes — the base merged in,
+    /// or the branch's own commits replayed onto a base that already carries what it
+    /// was stacked on — is decided there, so this verb and `publish` cannot come to
+    /// sync a branch differently.
     ///
     /// A conflict here is deterministic — the same two trees conflict on every
-    /// re-run — and it is what a branch whose recorded change base is missing or
-    /// unreadable produces, because the root base is then merged in its place. So
-    /// the refusal names what would change the answer, where the branch is, and the
-    /// command that lands it afterwards, rather than leaving the work to be
-    /// salvaged with raw `git` and `gh`.
-    pub fn merge_change_base(&self, stream: &mut Stream) -> Result<()> {
+    /// re-run — and it is also what a branch whose recorded change base is missing or
+    /// unreadable produces, because the root base takes its place. So the refusal
+    /// names what would change the answer, where the branch is, and the command that
+    /// lands it afterwards, rather than leaving the work to be salvaged with raw
+    /// `git` and `gh`.
+    pub fn sync_change_base(&self, stream: &mut Stream) -> Result<()> {
         let reconciled = publish::reconcile(
             &self.clone,
             &self.worktree,
