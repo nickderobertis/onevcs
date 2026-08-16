@@ -760,7 +760,14 @@ fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
         })
 }
 
-/// Whether `base` already carries everything `commit` changed since `fork`.
+/// Whether `base` is *known* to carry everything `commit` changed since `fork`.
+///
+/// One-sided deliberately: `true` is established, and `false` is either established
+/// or the answer to a question this could not put to git — a listing that did not
+/// arrive whole leaves only the whole trees to compare, and a base carrying those
+/// changes beside unrelated ones then answers `false`. Every caller acts on `true`
+/// by rewriting history, so uncertainty belongs on the side that leaves a branch
+/// alone.
 ///
 /// Content rather than ancestry, for the reason [`trees_differ`] gives: a branch
 /// that reached the base as one squashed commit is an ancestor of nothing, and its
@@ -769,7 +776,7 @@ fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
 /// on the base exactly as it reads on the commit — which is the question asked here, and asked over the paths that
 /// commit actually touched so that unrelated work landing on the base beside it
 /// does not change the answer.
-pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
+pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
     // Renames are deliberately not detected: git reports one under its destination
     // alone, and a comparison scoped by that would never ask whether the source is
     // still on the base — which is the half of a rename that says the change below has

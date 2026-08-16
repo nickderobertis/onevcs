@@ -95,10 +95,9 @@ pub struct Landing {
     pub run_root: PathBuf,
     /// The branch itself.
     pub branch: Ref,
-    /// The identity's root base.
-    pub base: Ref,
-    /// What the branch is published onto, which for a stacked branch is the branch
-    /// below it rather than the root.
+    /// What the branch is published onto and compared against: the branch below it
+    /// while its stack stands, and the identity's root once that stack has landed —
+    /// which is what `prepare` settled before this existed.
     pub change_base: Ref,
     /// The change base as it is actually compared: origin's copy where there is one.
     // llmlint: ignore[invalid_states_unrepresentable] deliberately not a `Ref`, which
@@ -229,12 +228,8 @@ pub fn prepare(
                     command = verb.command(branch, repo),
                 ),
             })?;
-            let stack = publish::Stack {
-                tip,
-                root: base.clone(),
-            };
-            if publish::root_carries_the_stack(&clone, branch, &stack)? {
-                (base.clone(), Some(stack.tip))
+            if publish::root_is_known_to_carry_the_stack(&clone, branch, &base, &tip)? {
+                (base.clone(), Some(tip))
             } else {
                 (recorded, None)
             }
@@ -257,7 +252,6 @@ pub fn prepare(
         worktree,
         run_root,
         branch: Ref::from_git(branch),
-        base,
         change_base,
         compared_change_base,
         stack_replay,
@@ -430,11 +424,10 @@ impl Landing {
             repo: self.clone.clone(),
             worktree: self.worktree.clone(),
             branch: self.branch.clone(),
-            base: self.base.clone(),
-            change_base: self.change_base.clone(),
-            // Resolved above and acted on already: the branch is on the root base by
-            // the time this publishes, so there is no stack left to ask about.
-            stack: None,
+            // Resolved and acted on before this publishes: `prepare` moved a landed
+            // stack to the root and `sync_change_base` replayed it, so what is left
+            // is one branch this lands on and is compared against.
+            target: publish::Target::Root(self.change_base.clone()),
             run_root: self.run_root.clone(),
             title,
             trailers: Vec::new(),

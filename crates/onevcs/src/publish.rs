@@ -270,8 +270,7 @@ pub fn run_for_session(
     if git::is_dirty(&record.worktree)? {
         vcs::preserve_into(&record, &mut stream, Provenance::Complete)?;
     }
-    let change_base = preserved_change_base(&record.base, record.change_base.as_ref());
-    let stack = recorded_stack(&record, &resolution.publication)?;
+    let target = recorded_target(&record, &resolution.publication)?;
     let context = Context {
         resolution,
         policy: resolved.policy.clone(),
@@ -279,9 +278,7 @@ pub fn run_for_session(
         repo: record.clone.clone(),
         worktree: record.worktree.clone(),
         branch: record.branch.clone(),
-        base: record.base.clone(),
-        change_base,
-        stack,
+        target,
         run_root: record.run_root.clone(),
         title: request.title.clone(),
         trailers: Vec::new(),
@@ -333,13 +330,8 @@ pub struct Context<'a> {
     pub worktree: PathBuf,
     /// The branch carrying the change.
     pub branch: Ref,
-    /// The root base.
-    pub base: Ref,
-    /// What the change is published onto, which for a stacked change is the branch
-    /// below it rather than the root.
-    pub change_base: Ref,
-    /// The stack this change sits on, when its own record names one.
-    pub stack: Option<Stack>,
+    /// Where this publication lands, and what it is compared against on the way.
+    pub target: Target,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
     /// An explicit title, which replaces the synthesized subject. Checked where it
@@ -357,22 +349,43 @@ pub struct Context<'a> {
     pub hosting: &'a dyn Hosting,
 }
 
-/// The stack a change sits on, as the record that opened it wrote it down.
+/// Where a publication lands, and what it is compared against on the way there.
 ///
-/// Recorded, never inferred: a branch that carries the change below it commit for
-/// commit is indistinguishable from a branch that wrote those commits itself — the
-/// base can hold the same content under a name of its own for either — and the two
-/// want opposite things from a sync. So the only thing that makes a publication
-/// stacked here is its own record saying so, and a publication with no such record
-/// cannot reach any of the behaviour below.
+/// One or the other and never a mixture: everything that follows from being stacked
+/// — what the branch is compared against, what its change request targets, where it
+/// lands, and which commit its own work begins after — comes from this one value, so
+/// a publication cannot hold a stack and a root that disagree about any of it.
+///
+/// Stacked is *recorded*, never inferred: a branch that carries the change below it
+/// commit for commit reads exactly like a branch that wrote those commits itself, so
+/// a stack read off content would rewrite branches nobody stacked.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stack {
-    /// The commit the branch below this change was at when this one was cut from it.
-    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
-    pub tip: String,
-    /// The identity's root base, which is what this change lands on once the branch
-    /// below it has landed.
-    pub root: Ref,
+pub enum Target {
+    /// Onto one branch, which is also what the change is compared against. Every
+    /// ordinary publication is this, and so is a stacked one whose change below has
+    /// landed — that is what moving to the root means.
+    Root(Ref),
+    /// Onto the change below this one, until the root carries that change.
+    Stacked {
+        /// The branch below: what this change targets and is compared against.
+        below: Ref,
+        /// The identity's root base, which this moves onto once the root carries
+        /// the change below.
+        root: Ref,
+        /// The commit the branch was cut from, after which its own work begins.
+        // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+        tip: String,
+    },
+}
+
+impl Target {
+    /// The branch this change is compared against and lands on.
+    pub fn base(&self) -> &Ref {
+        match self {
+            Target::Root(base) => base,
+            Target::Stacked { below, .. } => below,
+        }
+    }
 }
 
 /// The stack a session's record wrote down, or `None` for the branch every ordinary
@@ -394,9 +407,10 @@ pub struct Stack {
 /// A root nobody can name is different and is no stack: nothing here fails, there is
 /// simply nowhere to move the change to, and the publication is the one it always
 /// was.
-fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Option<Stack>> {
+fn recorded_target(record: &workspace::Record, publication: &Path) -> Result<Target> {
+    let base = preserved_change_base(&record.base, record.change_base.as_ref());
     let Some(recorded) = record.stack_tip.as_deref() else {
-        return Ok(None);
+        return Ok(Target::Root(base));
     };
     let Some(tip) = git::tip(&record.clone, recorded) else {
         return Err(Error::Invalid {
@@ -420,10 +434,17 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Opti
         });
     };
     let Some(root) = git::default_branch(publication, "origin").ok() else {
-        return Ok(None);
+        return Ok(Target::Root(base));
     };
     let root = Ref::from_git(root);
-    Ok((root != record.base).then_some(Stack { tip, root }))
+    if root == base {
+        return Ok(Target::Root(base));
+    }
+    Ok(Target::Stacked {
+        below: base,
+        root,
+        tip,
+    })
 }
 
 /// Whether the root base already carries everything the change below this one
@@ -439,32 +460,33 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Opti
 /// work is what is left either way. A change still open whose content has *not*
 /// reached the root fails the last test, and one merged as its own commits fails the
 /// second.
-pub(crate) fn root_carries_the_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
-    let root = vcs::base_ref(repo, &stack.root);
+pub(crate) fn root_is_known_to_carry_the_stack(
+    repo: &Path,
+    branch: &str,
+    root: &Ref,
+    tip: &str,
+) -> Result<bool> {
+    let root = vcs::base_ref(repo, root);
     if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
         return Ok(false);
     }
-    if !git::is_ancestor(repo, &stack.tip, branch)? {
+    if !git::is_ancestor(repo, tip, branch)? {
         return Ok(false);
     }
     // Still in the root as the commits it was written as: merging the root brings
     // them in the way it always has, and there is nothing to replay past.
-    if git::is_ancestor(repo, &stack.tip, &root)? {
+    if git::is_ancestor(repo, tip, &root)? {
         return Ok(false);
     }
-    let Some(fork) = git::merge_base(repo, &root, &stack.tip)? else {
+    let Some(fork) = git::merge_base(repo, &root, tip)? else {
         return Ok(false);
     };
-    git::carries_changes(repo, &root, &fork, &stack.tip)
+    git::known_to_carry_changes(repo, &root, &fork, tip)
 }
 
 impl<'a> Context<'a> {
-    /// The same publication, landing on `root` instead of the stack below it.
-    ///
-    /// Both names move together: what a change is compared against and what it is
-    /// opened against are the same branch, and a stack whose floor has landed has
-    /// neither of them left to point at.
-    fn onto(&self, root: Ref) -> Context<'a> {
+    /// The same publication, landing where `target` says instead.
+    fn onto(&self, target: Target) -> Context<'a> {
         Context {
             resolution: self.resolution.clone(),
             policy: self.policy.clone(),
@@ -472,9 +494,7 @@ impl<'a> Context<'a> {
             repo: self.repo.clone(),
             worktree: self.worktree.clone(),
             branch: self.branch.clone(),
-            base: root.clone(),
-            change_base: root,
-            stack: None,
+            target,
             run_root: self.run_root.clone(),
             title: self.title.clone(),
             trailers: self.trailers.clone(),
@@ -501,18 +521,18 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     let mut replay = None;
     let landed;
     let mut context = context;
-    if let Some(stack) = &context.stack {
-        if root_carries_the_stack(&context.repo, &context.branch, stack)? {
-            replay = Some(stack.tip.clone());
-            landed = context.onto(stack.root.clone());
+    if let Target::Stacked { root, tip, .. } = &context.target {
+        if root_is_known_to_carry_the_stack(&context.repo, &context.branch, root, tip)? {
+            replay = Some(tip.clone());
+            landed = context.onto(Target::Root(root.clone()));
             context = &landed;
         }
     }
-    let remote_base = format!("origin/{}", context.change_base);
+    let remote_base = format!("origin/{}", context.target.base());
     let compared = if git::ref_exists(&context.repo, &format!("refs/remotes/{remote_base}")) {
         remote_base.clone()
     } else {
-        context.change_base.to_string()
+        context.target.base().to_string()
     };
 
     sync(context, stream, &compared, replay.as_deref())?;
@@ -522,7 +542,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     }
 
     let (subject, trailers) = describe(context, &compared)?;
-    let environment = gate::comparison_env("origin", &context.change_base);
+    let environment = gate::comparison_env("origin", context.target.base());
     verify(context, stream, &environment)?;
 
     match context.effective {
@@ -615,7 +635,7 @@ fn verify(
         object(json!({
             "command": command.join(" "),
             "comparison_remote": "origin",
-            "comparison_base": context.change_base,
+            "comparison_base": context.target.base(),
         })),
     );
     let verdict = gate::run(&context.worktree, command, environment);
@@ -730,7 +750,7 @@ fn sync(
         EventKind::SyncConflict,
         object(json!({
             "branch": context.branch,
-            "base": context.change_base,
+            "base": context.target.base(),
             "attempts": SYNC_ATTEMPTS,
         })),
     );
@@ -777,7 +797,7 @@ fn publish_locally(
     environment: &[(String, String)],
 ) -> Result<PublishOutcome> {
     let publication = &context.resolution.publication;
-    require_publication_checkout_ready(publication, &context.base)?;
+    require_publication_checkout_ready(publication, context.target.base())?;
     let judged = git::tip(&context.repo, compared);
 
     let identity = lock::git_identity(&git::common_dir(publication)?);
@@ -824,7 +844,7 @@ fn publish_locally(
             };
             let pushed = git::push(
                 &scratch,
-                &format!("HEAD:refs/heads/{}", context.base),
+                &format!("HEAD:refs/heads/{}", context.target.base()),
                 "origin",
                 environment,
             )?;
@@ -836,10 +856,10 @@ fn publish_locally(
                     output.lines().next_back().unwrap_or("").trim()
                 ),
             })?;
-            fast_forward_publication(publication, &context.base)?;
+            fast_forward_publication(publication, context.target.base())?;
             stream.emit(
                 EventKind::MergeCompleted,
-                object(json!({"identity": identity, "sha": sha, "base": context.base})),
+                object(json!({"identity": identity, "sha": sha, "base": context.target.base()})),
             );
             Ok(PublishOutcome::Merged(Sha(sha)))
         })();
@@ -877,12 +897,12 @@ fn publish_as_change(
     // find out.
     let author = host.authenticated_user()?;
 
-    let existing = host.find_changes(&context.branch, &context.change_base)?;
+    let existing = host.find_changes(&context.branch, context.target.base())?;
     let change = match existing.into_iter().next() {
         Some(change) => change,
         None => host.open_change(ChangeSpec {
             head: context.branch.to_string(),
-            base: context.change_base.to_string(),
+            base: context.target.base().to_string(),
             title: subject.to_owned(),
             body: Some(compose_body(subject, trailers)),
         })?,
@@ -946,7 +966,7 @@ fn publish_as_change(
                     EventKind::MergeCompleted,
                     object(json!({"identity": identity, "sha": sha.0})),
                 );
-                fast_forward_publication(&context.resolution.publication, &context.base)?;
+                fast_forward_publication(&context.resolution.publication, context.target.base())?;
                 Ok(PublishOutcome::Merged(sha))
             }
             MergeOutcome::Queued => Ok(PublishOutcome::Queued(change.url.clone())),
