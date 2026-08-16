@@ -279,6 +279,8 @@ pub fn run_for_session(
         worktree: record.worktree.clone(),
         branch: record.branch.clone(),
         target,
+        // Nothing has rewritten this branch yet; a replay below decides otherwise.
+        push: Push::Forward,
         run_root: record.run_root.clone(),
         title: request.title.clone(),
         trailers: Vec::new(),
@@ -332,6 +334,10 @@ pub struct Context<'a> {
     pub branch: Ref,
     /// Where this publication lands, and what it is compared against on the way.
     pub target: Target,
+    /// How its branch reaches the host, for a caller that rewrote the branch before
+    /// handing it here. A publication that replays during its own run decides this
+    /// for itself.
+    pub push: Push,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
     /// An explicit title, which replaces the synthesized subject. Checked where it
@@ -513,6 +519,7 @@ impl<'a> Context<'a> {
             worktree: self.worktree.clone(),
             branch: self.branch.clone(),
             target,
+            push: self.push.clone(),
             run_root: self.run_root.clone(),
             title: self.title.clone(),
             trailers: self.trailers.clone(),
@@ -568,7 +575,10 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         (Some(_), Some(replaced)) => Push::Replacing {
             replaced: replaced.clone(),
         },
-        _ => Push::Forward,
+        // Otherwise it is whatever the caller knows: a branch-keyed verb replays
+        // before it hands a publication here, and its branch is rewritten just the
+        // same.
+        _ => context.push.clone(),
     };
     let (subject, trailers) = describe(context, &compared)?;
     let environment = gate::comparison_env("origin", context.target.base());

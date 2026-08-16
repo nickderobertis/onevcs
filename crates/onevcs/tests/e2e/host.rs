@@ -25,6 +25,7 @@
 use predicates::prelude::*;
 
 use crate::registry::configure_rules;
+use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, Check, World};
 
 /// A registered hosted repository publishing under `default_policy`.
@@ -888,6 +889,101 @@ fn a_replays_push_the_merge_path_rejects_is_reported_as_the_rejection_it_is() {
     assert!(
         !refusal.contains("moved on the host"),
         "a hook is not a branch somebody moved:\n{refusal}"
+    );
+}
+
+#[test]
+fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
+    // A branch-keyed verb replays before it publishes, so its branch reaches the host
+    // rewritten just as a session's does — and the host already has this one, pushed
+    // when the review was opened against the change below. It replaces exactly the
+    // commit found there, and the review moves to the root.
+    let hosted = Hosted::new(REVIEWED);
+    let world = &hosted.world;
+    let prefix = documented_default_prefix();
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/recovered"],
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+    world.git(
+        &hosted.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/recovered\n\n{}\n{} feature/engine",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    // The host has the branch, as the review that was opened against the change below
+    // left it.
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/recovered"],
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let below = world.clone_of(&hosted.origin, "below");
+    world.git(&below, &["merge", "--squash", "origin/feature/engine"]);
+    world.git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    world.git(&below, &["push", "-q", "origin", "main"]);
+
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/recovered",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    assert_eq!(
+        world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/recovered"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "chore: attest verified recovery of preserved work",
+            "chore: preserve work on feature/recovered",
+            "feat: filter what the engine relays",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ],
+        "the host's copy is the replayed branch: its own work, attested, over the root"
     );
 }
 

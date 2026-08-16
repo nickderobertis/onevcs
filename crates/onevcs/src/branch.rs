@@ -107,6 +107,10 @@ pub struct Landing {
     // it be passed where a branch is expected. `vcs::base_ref` answers a `String` for
     // the same reason at every other caller.
     pub compared_change_base: String,
+    /// What the host had for this branch when it was located, which is the commit a
+    /// replay's push may replace and nothing else.
+    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it.
+    pub published: Option<String>,
     /// The recorded stack tip this branch's own commits are replayed from, when the
     /// change below it has already landed on the root base.
     // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it, and this
@@ -183,6 +187,7 @@ pub fn prepare(
     }
     git::worktree_add_existing(&clone, &worktree, branch)?;
     git::fetch(&clone, "origin")?;
+    let published = git::tip(&clone, &format!("origin/{branch}"));
 
     let compared = crate::vcs::base_ref(&clone, &base);
     // A recorded base is read back out of a commit the repository carries, so it is
@@ -254,6 +259,7 @@ pub fn prepare(
         branch: Ref::from_git(branch),
         change_base,
         compared_change_base,
+        published,
         stack_replay,
     })
 }
@@ -426,8 +432,16 @@ impl Landing {
             branch: self.branch.clone(),
             // Resolved and acted on before this publishes: `prepare` moved a landed
             // stack to the root and `sync_change_base` replayed it, so what is left
-            // is one branch this lands on and is compared against.
+            // is one branch this lands on and is compared against — and, where that
+            // replay rewrote a branch the host already has, a push that replaces
+            // exactly the commit this run found there.
             target: publish::Target::Base(self.change_base.clone()),
+            push: match (&self.stack_replay, &self.published) {
+                (Some(_), Some(replaced)) => publish::Push::Replacing {
+                    replaced: replaced.clone(),
+                },
+                _ => publish::Push::Forward,
+            },
             run_root: self.run_root.clone(),
             title,
             trailers: Vec::new(),
