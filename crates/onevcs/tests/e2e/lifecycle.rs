@@ -1156,17 +1156,40 @@ fn a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_i
 
     // The checkout's copy of the name is spent, and a spent copy answers for
     // nobody: the live work is under the same name in the run clone.
-    fixture
+    let assert = fixture
         .world
         .onevcs()
         .args(["recoverable"])
         .assert()
+        .success();
+    let reported = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(reported.contains("feature/reused"), "{reported}");
+    assert!(
+        reported.contains(&format!("Found in: {}", clone.display())),
+        "{reported}"
+    );
+
+    // …and the command it names lands *that* copy. Locating by name alone would
+    // reach the checkout's spent one first and answer that there is nothing to
+    // publish, with the work still where it was.
+    let resume = reported
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Resume: "))
+        .expect("the row names the command that lands it")
+        .to_owned();
+    fixture
+        .world
+        .shell(&resume)
+        .assert()
         .success()
-        .stdout(predicate::str::contains("feature/reused"))
-        .stdout(predicate::str::contains(format!(
-            "Found in: {}",
-            clone.display()
-        )));
+        .stdout(predicate::str::contains("merged at"));
+    assert!(
+        fixture
+            .origin_log()
+            .contains(&"feat: the work that must still be found".to_owned()),
+        "the live copy reached the base: {:?}",
+        fixture.origin_log()
+    );
 }
 
 #[test]
@@ -2249,13 +2272,13 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
     // Whichever reached the push first is held there, so the queue is read rather
     // than timed: two live tickets is the second publication waiting behind the
     // first, and only then is the first let go.
-    //
-    // llmlint: ignore[tests_mirror_real_usage] a *waiting* ticket is observable
-    // nowhere else. `lock-wait` is emitted once the turn has been granted, so every
-    // surface a user has reports the wait only after it is over — and a journey
-    // about two publications contending has to see the contention rather than infer
-    // it from how long something took, which is the flake this replaced.
     World::until("the merge queue holds both publications", || {
+        // llmlint: ignore[tests_mirror_real_usage] a *waiting* ticket is observable
+        // nowhere else. `lock-wait` is emitted once the turn has been granted, so
+        // every surface a user has reports the wait only after it is over — and a
+        // journey about two publications contending has to see the contention
+        // rather than infer it from how long it took, which is the flake this
+        // replaced. What the journey then asserts is read back through the events.
         fixture.world.queued_tickets() == 2
     });
     std::fs::write(&release, "go\n").expect("the held publication is released");
