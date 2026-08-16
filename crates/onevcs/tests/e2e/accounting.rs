@@ -1273,6 +1273,15 @@ fn named(golden: &str, path: &[&str]) -> Option<Value> {
     Some(value)
 }
 
+/// The stand-in a golden names a session token by.
+///
+/// A *token*, not a placeholder shaped like one: a golden is read back as a report
+/// by `status::round_trip`, and every value in it therefore has to be one its own
+/// type accepts. `<token>` is not a session token, and a golden carrying it would be
+/// bytes no consumer could parse — which is the opposite of what a golden is for.
+/// All zeros because no run mints that one.
+const TOKEN: &str = "s-000000000000";
+
 /// One report with everything a run cannot repeat replaced by what it is.
 ///
 /// A scratch root and a session token differ on every machine and in every run;
@@ -1289,7 +1298,7 @@ fn readable(report: &Value, world: &World, token: Option<&str>) -> String {
     let rendered = serde_json::to_string_pretty(report).expect("a report");
     let rendered = rendered.replace(&root, "<root>");
     let rendered = match token {
-        Some(token) => rendered.replace(token, "<token>"),
+        Some(token) => rendered.replace(token, TOKEN),
         None => rendered,
     };
     format!("{rendered}\n")

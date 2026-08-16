@@ -28,7 +28,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
@@ -55,12 +55,53 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
 pub const REPORT_VERSION: u32 = 1;
 
+/// A schema version this build reads, checked where a report is read.
+///
+/// The check is in the conversion, as it is for every other validated value in this
+/// crate: a report declaring a version this build does not know does not deserialize
+/// at all, rather than deserializing into something a reader then has to remember to
+/// question. That matters more here than for most, because the whole purpose of the
+/// number is to be *acted on* — a consumer that read a v2 document as a v1 one would
+/// be reading fields that moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct ReportVersion(u32);
+
+impl ReportVersion {
+    /// The version this build writes.
+    pub fn current() -> Self {
+        ReportVersion(REPORT_VERSION)
+    }
+}
+
+impl TryFrom<u32> for ReportVersion {
+    type Error = String;
+
+    fn try_from(value: u32) -> std::result::Result<Self, Self::Error> {
+        if value == REPORT_VERSION {
+            Ok(ReportVersion(value))
+        } else {
+            Err(format!(
+                "a status report declares version {value}; this build reads version \
+                 {REPORT_VERSION}"
+            ))
+        }
+    }
+}
+
+impl From<ReportVersion> for u32 {
+    fn from(version: ReportVersion) -> Self {
+        version.0
+    }
+}
+
 /// Everything `onevcs` knows about one piece of work.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Report {
     /// The schema version this object is written at, so a consumer reads a shape it
     /// was told rather than one it guessed.
-    pub version: u32,
+    pub version: ReportVersion,
     /// The reference as it was asked for, and how it was read.
     #[serde(rename = "ref")]
     pub reference: Reference,
@@ -82,12 +123,12 @@ pub struct Report {
     pub next: NextReport,
     /// Anything this report could not read, so a gap is stated rather than left to
     /// look like an answer.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
 /// The reference, and which of the four spellings it turned out to be.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
     /// What was typed.
     pub given: String,
@@ -96,7 +137,7 @@ pub struct Reference {
 }
 
 /// Which spelling a reference was read as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RefKind {
     /// A change request's URL.
@@ -110,7 +151,7 @@ pub enum RefKind {
 }
 
 /// The identity, and what its rules resolve to for this repository.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityReport {
     /// The identity key.
     pub key: String,
@@ -127,7 +168,7 @@ pub struct IdentityReport {
 }
 
 /// The session that holds or held the branch.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionReport {
     /// The token every session-keyed command takes.
     pub token: Token,
@@ -144,7 +185,7 @@ pub struct SessionReport {
 }
 
 /// The branch: everywhere it is, what it is ahead of, and what it records.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchReport {
     /// The branch name.
     pub name: Ref,
@@ -165,7 +206,7 @@ pub struct BranchReport {
 }
 
 /// One repository holding the branch, and what that repository is.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Holder {
     /// Where it is.
     pub path: PathBuf,
@@ -177,7 +218,7 @@ pub struct Holder {
 }
 
 /// Which of the three places an identity keeps a branch this holder is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HolderKind {
     /// The checkout publication fast-forwards.
@@ -189,7 +230,7 @@ pub enum HolderKind {
 }
 
 /// What a branch's provenance says about how its work came to be there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BranchProvenance {
     /// Every step finished.
@@ -201,7 +242,7 @@ pub enum BranchProvenance {
 }
 
 /// What was proposed for the work, and whether it reached the base.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicationReport {
     /// Where the work is. Whether it *landed* is this and nothing beside it: a
     /// second field saying so could disagree with the state that decided it.
@@ -214,7 +255,7 @@ pub struct PublicationReport {
 }
 
 /// Where one piece of work has got to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Landing {
     /// The base carries this branch's content: the change reached it, however it
@@ -250,7 +291,7 @@ impl Landing {
 /// One or the other, never both halves of each: a section carrying an answer *and*
 /// the reason there is none could report "could not look" as "nothing blocks this",
 /// which is the one thing that turns an ungated merge into one that looks gated.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ChecksReport {
     /// The host answered, with these checks and from these sources. Empty is an
@@ -271,7 +312,7 @@ pub enum ChecksReport {
 }
 
 /// One check, as the host reports it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckReport {
     /// The check's name.
     pub name: String,
@@ -296,7 +337,7 @@ pub struct CheckReport {
 }
 
 /// The last gate verdict recorded for this work, and where its log was kept.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateReport {
     /// What it ruled.
     pub verdict: Verdict,
@@ -314,7 +355,7 @@ pub struct GateReport {
 /// The two words a `gate-verdict` event is written with, and a third for one this
 /// build cannot read: a verdict it did not understand is not a rejection, and
 /// reporting it as one would name a gate that never refused anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {
     /// It verified the change.
@@ -326,7 +367,7 @@ pub enum Verdict {
 }
 
 /// The command that advances the work, or why none does.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NextReport {
     /// The exact invocation, quoted so that running it as printed runs it over
     /// the same arguments.
@@ -453,7 +494,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     });
 
     Ok(Report {
-        version: REPORT_VERSION,
+        version: ReportVersion::current(),
         reference: Reference {
             given: reference.to_owned(),
             kind,
@@ -1369,5 +1410,92 @@ fn spell_source(source: &CheckSource) -> &'static str {
         CheckSource::StatusChecks => "status-checks",
         CheckSource::Actions => "actions",
         CheckSource::BranchRules => "branch-rules",
+    }
+}
+
+/// The report is a *type's* serialization contract, and this is the only place it
+/// can be held to one.
+///
+/// The fourth `#[cfg(test)]` module in this crate, for the reason the other three
+/// exist: what it exercises is reachable no other way. `tests/e2e/accounting.rs`
+/// drives the real CLI and holds its bytes to the goldens below, which is the half a
+/// consumer meets — but a consumer also *reads* those bytes back, and the types that
+/// answer for that are deliberately private, so proving they round-trip from outside
+/// the crate would mean making a dozen of them public for a test's benefit. The two
+/// halves read the same two files, so neither can drift from the other.
+#[cfg(test)]
+mod round_trip {
+    use super::{Report, ReportVersion, REPORT_VERSION};
+    use serde_json::Value;
+
+    /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
+    const FULL: &str = include_str!("../tests/golden/status-report-v1.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v1-minimal.json");
+
+    /// One golden as the object a consumer parses.
+    fn parsed(golden: &str) -> Value {
+        serde_json::from_str(golden).expect("a golden is JSON")
+    }
+
+    #[test]
+    fn both_checked_in_goldens_read_back_as_reports_and_write_themselves_again() {
+        for (name, golden) in [("full", FULL), ("minimal", MINIMAL)] {
+            let report: Report = serde_json::from_str(golden)
+                .unwrap_or_else(|e| panic!("the {name} golden reads back as a report: {e}"));
+            assert_eq!(
+                serde_json::to_value(&report).expect("a report serializes"),
+                parsed(golden),
+                "the {name} golden and the report it reads back as disagree"
+            );
+        }
+
+        // The values arrive as the validated shapes they were written from, rather
+        // than as text a reader would have to check again.
+        let full: Report = serde_json::from_str(FULL).expect("the full golden");
+        assert_eq!(full.version, ReportVersion::current());
+        assert_eq!(&*full.branch.name, "feature/full");
+        assert_eq!(
+            full.branch.change_base.as_deref(),
+            Some("feature/below"),
+            "a recorded change base reads back as the branch name it is"
+        );
+        assert_eq!(
+            &*full.session.expect("the full golden names a session").token,
+            "s-000000000000"
+        );
+
+        // …and a field the minimal golden omits reads back as absent rather than as
+        // a value, which is the other half of writing it out only when it is held.
+        let minimal: Report = serde_json::from_str(MINIMAL).expect("the minimal golden");
+        assert!(minimal.session.is_none());
+        assert!(minimal.gate.is_none());
+        assert!(minimal.branch.change_base.is_none());
+        assert!(minimal.publication.change_url.is_none());
+        assert!(minimal.notes.is_empty());
+    }
+
+    #[test]
+    fn a_report_declaring_a_version_this_build_does_not_read_is_refused_where_it_is_read() {
+        // The number exists to be acted on, so a document this build cannot read is
+        // refused at the boundary rather than read as the shape it is not.
+        for declared in [0, REPORT_VERSION + 1, u32::MAX] {
+            let mut document = parsed(FULL);
+            document["version"] = Value::from(declared);
+            let refusal = serde_json::from_value::<Report>(document)
+                .expect_err("a version this build does not read is refused")
+                .to_string();
+            assert!(
+                refusal.contains(&format!("declares version {declared}"))
+                    && refusal.contains(&format!("this build reads version {REPORT_VERSION}")),
+                "the refusal names neither the version nor the one this build reads: {refusal}"
+            );
+        }
+
+        // A key nobody declared is refused for the same reason the registry document
+        // refuses one: it is usually a typo for one that matters, and half-reading a
+        // document is how a consumer acts on a field it never saw.
+        let mut document = parsed(FULL);
+        document["landed"] = Value::Bool(true);
+        assert!(serde_json::from_value::<Report>(document).is_err());
     }
 }

@@ -17,12 +17,12 @@
     "approvals": "required"
   },
   "session": {
-    "token": "<token>",
+    "token": "s-000000000000",
     "state": "closed",
     "liveness": "stale",
     "base": "feature/below",
-    "clone": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/clone",
-    "worktree": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/worktree"
+    "clone": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/s-000000000000/clone",
+    "worktree": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/s-000000000000/worktree"
   },
   "branch": {
     "name": "feature/full",
@@ -34,9 +34,9 @@
         "kind": "publication-checkout"
       },
       {
-        "path": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/clone",
+        "path": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/s-000000000000/clone",
         "kind": "run-clone",
-        "session": "<token>"
+        "session": "s-000000000000"
       }
     ],
     "ahead": 3,
@@ -69,8 +69,8 @@
   "gate": {
     "verdict": "pass",
     "command": "true",
-    "log": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/<token>/gate-logs/feature-full/gate-0001.log",
-    "recorded_by": "<token>"
+    "log": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/s-000000000000/gate-logs/feature-full/gate-0001.log",
+    "recorded_by": "s-000000000000"
   },
   "next": {
     "because": "https://github.com/acme-corp/hosted/pull/1 is open on the host and lands when what its policy waits for — review, or the host's required checks — is done"

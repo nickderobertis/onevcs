@@ -138,13 +138,24 @@ could not reach it, so two things are stated rather than left to be inferred.
   means. The bar is not that the name is unused; it is that the session carries
   whatever the name refers to.
 
-## Tests are journeys, and there are no unit tests
+## Tests are journeys, and the four unit tests say why they are not
 
-This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the
-approved surface to the contract text it is extracted from; everything else in
-`tests/e2e/` spawns the compiled binary and drives it against real git. A path
-only an in-process test could reach is a path to delete, not one to unit-test —
-which is also how the 95% coverage floor is met.
+Behaviour is a journey. `tests/contract.rs` holds the approved surface to the
+contract text it is extracted from; everything else in `tests/e2e/` spawns the
+compiled binary and drives it against real git. A path only an in-process test
+could reach is a path to *delete*, not one to unit-test — which is also how the
+95% coverage floor is met.
+
+The `#[cfg(test)]` modules in `src/` are the exceptions to that, and each one is
+there because what it holds is reachable no other way: a process's creation
+identity (`workspace.rs`), a reader overlapping an atomic replace (`home.rs`),
+Windows' verbatim paths crossing every git boundary (`git.rs`), and the *type*
+side of the status report's serialized contract (`status.rs`). The last is the
+one to be careful with, because it looks like it belongs outside: the report's
+types are deliberately private, so proving the checked-in goldens read back as
+reports from `tests/` would mean making a dozen types public for a test's benefit.
+Both halves read the same two files — the CLI's bytes there, the type's round trip
+here — so neither can drift from the other.
 
 `tests/e2e/honesty.rs`, `tests/e2e/seam.rs`, and `tests/e2e/library.rs` are the
 modules that do not spawn the binary, and the reason is the thing they test: the

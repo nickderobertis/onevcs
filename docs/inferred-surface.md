@@ -269,13 +269,23 @@ Two rules follow, and they are the ones the goldens exist to enforce:
 - **A field that holds nothing is omitted rather than written as `null`.** A
   consumer that has never heard of a field must not be handed one, and `null` and
   absent are different answers to "was there a session".
+- **A version this build does not read is refused where the object is read**, by
+  the conversion that decides it — so a document declaring one does not deserialize
+  at all rather than becoming a value a reader has to remember to question. The
+  number exists to be acted on, and reading a v2 document as a v1 one is reading
+  fields that moved. A key nobody declared is refused for the reason the registry
+  document refuses one: it is usually a typo for one that matters.
 
 `crates/onevcs/tests/golden/status-report-v1.json` and
 `status-report-v1-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
-`tests/e2e/accounting.rs`. Two fields cannot share a golden with the rest and are
+`tests/e2e/accounting.rs`, and read back *as reports* by `status::round_trip` — the
+same two files, held from both sides, so the bytes a consumer meets and the shape it
+parses them into cannot drift apart. That is also why a golden's stand-in for a
+session token is a token (`s-000000000000`) rather than a placeholder shaped like
+one: a golden nothing can parse is the opposite of what a golden is for. Two fields cannot share a golden with the rest and are
 covered by name elsewhere: `next.command`, which no report carrying an open change
 request has (there is nothing to advance), and `notes`, which reports a gap in what
 could be *read* rather than anything about the work.
