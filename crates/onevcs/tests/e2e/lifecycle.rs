@@ -277,14 +277,6 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
         "resuming brings the clone's view of origin up to date too"
     );
 
-    // Resuming fetches, because opening a session is what fetching is for: one per
-    // opening, on the one stream.
-    assert_eq!(
-        fixture.world.events_of(&first, "fetch").len(),
-        2,
-        "the resumed opening fetched origin as the first one did"
-    );
-
     // The dirty half is committed behind the incomplete-step marker, by the one path
     // that writes that commit — so a recovery reads the same marker it always does.
     let preserved = fixture.world.events_of(&first, "commit-preserved");
@@ -294,16 +286,30 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
         .git(&worktree, &["log", "-1", "--format=%B"])
         .contains("Onevcs-Status: incomplete"));
 
-    // …and the stream says which of the two openings cut a session and which took
-    // one up, so a reader following the run can tell.
+    // A tree somebody removed is rebuilt from the branch it belongs to, because that
+    // is what adopting a session does — and the work is on the branch by now.
+    std::fs::remove_dir_all(&worktree).expect("a worktree an operator swept away");
+    let (third, rebuilt) = fixture.open(&["--branch", "feature/resumed"]);
+    assert_eq!(third, first, "still the same session");
+    assert_eq!(rebuilt, worktree);
+    assert!(
+        rebuilt.join("one.txt").is_file() && rebuilt.join("two.txt").is_file(),
+        "the branch is checked out again, carrying both halves"
+    );
+
+    // …and the stream says which of the openings cut a session and which took one
+    // up, so a reader following the run can tell.
     let opened = fixture.world.events_of(&first, "session-opened");
-    assert_eq!(opened.len(), 2, "both openings are on the one stream");
+    assert_eq!(opened.len(), 3, "every opening is on the one stream");
     assert!(
         opened[0]["payload"]["reused"].is_null(),
         "the first cut a session: {:?}",
         opened[0]["payload"]
     );
     assert_eq!(opened[1]["payload"]["reused"], true);
+    assert_eq!(opened[2]["payload"]["reused"], true);
+    // Each of them fetched, because that is what opening a session does.
+    assert_eq!(fixture.world.events_of(&first, "fetch").len(), 3);
     assert_eq!(
         opened[1]["payload"]["worktree"],
         worktree.to_string_lossy().into_owned()
@@ -409,6 +415,20 @@ fn a_pin_resumes_only_the_session_it_asked_for() {
     assert_ne!(
         rooted, stacked,
         "an unnamed base is the root, not whichever base was last used"
+    );
+
+    // The root is the root *now*: a repository that renames its default branch does
+    // not thereby make every session it has open one that nothing asked for.
+    let (moving, _tree) = fixture.open(&["--branch", "feature/moving", "--base", "sibling"]);
+    world.git(
+        &fixture.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/sibling"],
+    );
+    world.git(&fixture.checkout, &["remote", "set-head", "origin", "-a"]);
+    let (after_rename, _tree) = fixture.open(&["--branch", "feature/moving"]);
+    assert_eq!(
+        after_rename, moving,
+        "with sibling the root, a request naming no base is a request for that session"
     );
 
     // A record outlives the directory it names: a run root holding no unpublished
