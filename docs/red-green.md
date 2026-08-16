@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 73. Tests observed red and then green: 99.
+Patches: 77. Tests observed red and then green: 103.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -498,4 +498,28 @@ a branch deleted on the host is a rejection nothing classified, rather than the 
 a host that would not say where the branch is is read as one that has no such branch.
 
 - RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
+
+### `74-a-session-is-cut-from-a-stale-local-base`
+
+the clone takes the lender's local branches for origin's own refs.
+
+- RED `a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch` — assertion `left == right` failed: the worktree is cut at what origin holds, not at what the lender remembers
+
+### `75-a-pinned-resume-cuts-a-second-worktree`
+
+a pinned branch a session already holds is not resumed.
+
+- RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — Unexpected failure.
+
+### `76-an-occupied-session-is-taken-up-anyway`
+
+a session somebody is already inside is resumed into anyway.
+
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — Unexpected failure.
+
+### `77-an-unpinned-request-takes-up-somebody-elses-session`
+
+a request that pinned no branch resumes whatever session it finds.
+
+- RED `a_session_that_pins_no_branch_is_cut_fresh_every_time` — assertion `left != right` failed
 
