@@ -2,13 +2,13 @@ Mutation: the report does not say which identity it answered for.
 Red: a_scoped_recoverable_answer_names_the_identity_it_covers
 
 diff --git a/crates/onevcs/src/app.rs b/crates/onevcs/src/app.rs
-index 1aa2a5f..0345dcb 100644
+index f0298cf..abe4889 100644
 --- a/crates/onevcs/src/app.rs
 +++ b/crates/onevcs/src/app.rs
-@@ -347,13 +347,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8>
-     // hypothetical: it is how a branch holding a day of finished work was declared
-     // missing while the checkout it was asked from happily reported sixty of
-     // somebody else's.
+@@ -349,13 +349,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8>
+     // Nobody types the scope — the directory decides it — so every rendering names
+     // it. Unsaid, a scoped answer reads as the whole host's, and another identity's
+     // preserved work reads as work nobody has.
 -    let scoped = here.as_ref().map(|resolution| {
 -        format!(
 -            "{} — the identity of {}, the registered checkout this was run in",
