@@ -5,16 +5,34 @@ Red: a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone
 Red: a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root
 Red: a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 6b4f694..f8e286d 100644
+index 6b4f694..1ad0fd2 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -396,6 +396,8 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
+@@ -395,23 +395,8 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
+ /// changed. Which together are a squash-merge of the change below and are nothing
  /// else — a change still open has not reached the root at all, and one merged as its
  /// own commits is already an ancestor there.
- pub(crate) fn landed_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
-+    return Ok(false);
-+    #[allow(unreachable_code)]
-     let root = vcs::base_ref(repo, &stack.root);
-     if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
-         return Ok(false);
+-pub(crate) fn landed_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
+-    let root = vcs::base_ref(repo, &stack.root);
+-    if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
+-        return Ok(false);
+-    }
+-    if !git::is_ancestor(repo, &stack.tip, branch)? {
+-        return Ok(false);
+-    }
+-    // Still in the root as the commits it was written as: merging the root brings
+-    // them in the way it always has, and there is nothing to replay past.
+-    if git::is_ancestor(repo, &stack.tip, &root)? {
+-        return Ok(false);
+-    }
+-    let Some(fork) = git::merge_base(repo, &root, &stack.tip)? else {
+-        return Ok(false);
+-    };
+-    git::carries_changes(repo, &root, &fork, &stack.tip)
++pub(crate) fn landed_stack(_repo: &Path, _branch: &str, _stack: &Stack) -> Result<bool> {
++    Ok(false)
+ }
+ 
+ impl<'a> Context<'a> {

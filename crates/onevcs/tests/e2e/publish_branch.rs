@@ -1360,6 +1360,12 @@ fn a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body
 
 /// A preserved branch that records the change below it, and that change squash-merged.
 ///
+/// The marker is written here with `git` rather than driven out of a session, and has
+/// to be: the `Change-Base:` trailer is a *consumer's* record of a stack — nothing
+/// this crate exposes writes one, since a session records its stack on itself — so a
+/// branch carrying one can only arrive the way this repository's other stack journeys
+/// build it. Everything past it is the compiled binary doing what an operator asks.
+///
 /// The branch-keyed verbs read the stack out of the `Change-Base:` trailer a
 /// preserved commit carries, which is a *branch* — so the tip it names has to be one
 /// this repository still has. That is `recover`'s subject by construction: the

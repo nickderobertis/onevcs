@@ -110,6 +110,10 @@ pub struct Landing {
     pub compared_change_base: String,
     /// The recorded stack tip this branch's own commits are replayed from, when the
     /// change below it has already landed on the root base.
+    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it, and this
+    // module carries it to `publish::reconcile` unchanged; the crate's `Sha` wraps an
+    // unvalidated `String` at the public surface and would make no state here
+    // unrepresentable.
     pub stack_replay: Option<String>,
 }
 
