@@ -1,12 +1,13 @@
 Mutation: a branch is stacked whenever its content looks stacked, rather than when its record says so.
 Red: a_branch_the_base_independently_matches_is_still_merged_because_no_record_stacks_it
 
+
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 7782dcb..9c35306 100644
+index 8bcb33b..59f2910 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -393,6 +393,31 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
-     (root != record.base).then_some(Stack { tip, root })
+@@ -426,6 +426,31 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Result<Opti
+     Ok((root != record.base).then_some(Stack { tip, root }))
  }
  
 +/// The stack a branch's own content looks like it has.
@@ -37,7 +38,7 @@ index 7782dcb..9c35306 100644
  /// Whether the root base already carries everything the change below this one
  /// contributed, while carrying none of the commits that contributed it.
  ///
-@@ -468,7 +493,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
+@@ -501,7 +526,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
      let mut replay = None;
      let landed;
      let mut context = context;
