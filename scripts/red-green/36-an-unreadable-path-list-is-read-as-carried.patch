@@ -1,0 +1,16 @@
+Mutation: a path list this process could not read is answered as content the base already carries.
+Red: an_unreadable_path_and_a_base_that_moved_on_is_refused_rather_than_replayed_on_a_guess
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index e4d6f56..b4e3ecd 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -782,7 +782,7 @@ pub fn carries_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Resu
+         // this commit's whole tree carries its changes too, and that is the one
+         // answer that cannot be wrong about a path nobody here could name.
+         if trees_differ(cwd, fork, commit)? {
+-            return Ok(!trees_differ(cwd, base, commit)?);
++            return Ok(true);
+         }
+         return Ok(false);
+     }
