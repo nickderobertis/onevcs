@@ -216,7 +216,7 @@ pub fn prepare(
                 tip,
                 root: base.clone(),
             }) {
-                Some(stack) if publish::landed_stack(&clone, branch, &stack)? => {
+                Some(stack) if publish::root_carries_the_stack(&clone, branch, &stack)? => {
                     (base.clone(), Some(stack.tip))
                 }
                 _ => (recorded, None),

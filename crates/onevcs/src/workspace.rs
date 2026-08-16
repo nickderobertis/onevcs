@@ -43,8 +43,13 @@ pub const RETAINED_DEAD_RUNS: usize = 3;
 ///
 /// A record outlives the command that wrote it and is read by the next one, so it
 /// is a stored contract like the registry document — and like that document, an
-/// unreadable version is refused by name rather than guessed at.
-pub const RECORD_VERSION: u32 = 2;
+/// unreadable version is refused by name rather than guessed at. There is no
+/// migration and deliberately so: a record names a clone, a worktree, and a lease
+/// that belong to a live process, and a build that guessed at one it does not
+/// understand would act on somebody else's tree.
+///
+/// `3` added `stack_tip`, which is what makes a session a stacked one.
+pub const RECORD_VERSION: u32 = 3;
 
 /// One OS process instance's creation identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

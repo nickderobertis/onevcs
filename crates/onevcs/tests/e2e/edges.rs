@@ -2699,7 +2699,14 @@ fn a_stored_record_that_disagrees_with_itself_is_rejected_where_it_is_read() {
         (
             "version",
             serde_json::json!(99),
-            "declares version 99; this build reads version 2",
+            "declares version 99; this build reads version 3",
+        ),
+        // A record written by the build before this one is a prior version, and the
+        // policy for one is the same: refused by name, never migrated or guessed at.
+        (
+            "version",
+            serde_json::json!(2),
+            "declares version 2; this build reads version 3",
         ),
     ] {
         let mut broken = original.clone();
@@ -2795,6 +2802,94 @@ fn a_registry_whose_records_disagree_is_rejected_however_it_was_versioned() {
     }
 }
 
+/// One session record with everything a run cannot repeat replaced by what it is.
+///
+/// A token, a path, and a process are different on every machine and in every run;
+/// what the golden is for is the *shape* — which keys a record has, and which of
+/// them an empty field leaves out.
+fn readable_record(record: &serde_json::Value) -> String {
+    let mut readable = record.clone();
+    for (key, placeholder) in [
+        ("token", serde_json::json!("<token>")),
+        ("identity", serde_json::json!("<identity>")),
+        ("worktree", serde_json::json!("<path>")),
+        ("clone", serde_json::json!("<path>")),
+        ("run_root", serde_json::json!("<path>")),
+        ("execution_checkout", serde_json::json!("<path>")),
+        ("publication_checkout", serde_json::json!("<path>")),
+        ("owner_pid", serde_json::json!(0)),
+        ("owner_started", serde_json::json!(0)),
+        ("stack_tip", serde_json::json!("<sha>")),
+    ] {
+        if readable.get(key).is_some() {
+            readable[key] = placeholder;
+        }
+    }
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&readable).expect("a record")
+    )
+}
+
+#[test]
+fn a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life() {
+    // The field that makes a publication a stacked one, written down at the only
+    // moment it can be read: `session open --base` on a branch that is not the
+    // identity's root. It is the tip of that branch, and it survives the record
+    // being closed and adopted, because every later command reads it back.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/below"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "below.txt",
+        "below\n",
+        "feat: the change below",
+    );
+    let below = fixture.world.git(&fixture.checkout, &["rev-parse", "HEAD"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/above", "--base", "feature/below"]);
+    let path = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+    let stored = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("a session record"))
+            .expect("the record is JSON")
+    };
+
+    let opened = stored();
+    assert_eq!(opened["stack_tip"], below, "{opened}");
+    assert_eq!(
+        readable_record(&opened),
+        include_str!("../golden/session-record-v3-stacked.json"),
+        "the record a stacked session writes is the checked-in one"
+    );
+
+    fixture
+        .world
+        .commit_file(&worktree, "above.txt", "above\n", "feat: the change above");
+    for verb in ["close", "adopt"] {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", verb, &token])
+            .assert()
+            .success();
+        assert_eq!(
+            stored()["stack_tip"],
+            below,
+            "the recorded stack survives `session {verb}`"
+        );
+    }
+}
+
 #[test]
 fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
     let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
@@ -2812,7 +2907,18 @@ fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
     // Written as the state it names, not as a flag whose meaning a reader has to
     // remember — and stamped with the schema it was written at.
     let opened = stored();
-    assert_eq!(opened["version"], 2, "{opened}");
+    assert_eq!(opened["version"], 3, "{opened}");
+    // The document itself, byte for byte, with only what one run cannot repeat
+    // replaced: a record outlives the build that wrote it, so a field that changes
+    // shape has to reach a reader through a diff rather than through a surprise.
+    assert_eq!(
+        readable_record(&opened),
+        include_str!("../golden/session-record-v3.json"),
+        "the record a session writes is the checked-in one"
+    );
+    // An optional field is omitted when it is empty: this session was cut from the
+    // identity's root, so there is no stack for it to name.
+    assert!(opened.get("stack_tip").is_none(), "{opened}");
     assert!(opened["owner_started"].is_u64(), "{opened}");
     let opened_owner = opened["owner_started"].clone();
     assert_eq!(opened["state"], "open", "{opened}");

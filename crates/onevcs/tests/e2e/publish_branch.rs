@@ -1421,6 +1421,76 @@ fn a_stacked_incomplete_branch_in_the_checkout(fixture: &Fixture, branch: &str) 
     world.git(&below, &["push", "-q", "origin", "main"]);
 }
 
+/// Attest the branch's incomplete marker the way a recovery does.
+///
+/// What separates the two branch-keyed verbs is provenance and nothing else, so a
+/// branch `publish-branch` will take is one whose marker something already attested.
+fn attest_the_marker(fixture: &Fixture, branch: &str) {
+    let world = &fixture.world;
+    world.git(&fixture.checkout, &["checkout", "-q", branch]);
+    let marker = world.git(&fixture.checkout, &["rev-parse", "HEAD"]);
+    world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: attest the preserved step\n\n{} {marker}",
+                documented_trailer("Recovered-Incomplete", &documented_default_prefix()),
+            ),
+        ],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
+    // The other branch-keyed verb reaches the same reconciliation, and reaches it on
+    // work that is already complete: a recovery attested this branch's marker and its
+    // publication did not land, so `publish-branch` is what takes it from here — with
+    // the stack the marker recorded still on it.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/attested-filter");
+    attest_the_marker(&fixture, "feature/attested-filter");
+
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/attested-filter",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let subjects = fixture.origin_log();
+    assert_eq!(subjects[0], "feat: filter what the engine relays");
+    assert_eq!(
+        subjects.len(),
+        3,
+        "the change below landed once, not again under this one: {subjects:?}"
+    );
+    // A replay rewrites the commits it moves, so an attestation that names its marker
+    // by SHA stops naming it and the publication carries no recovery trailer. Pinned
+    // rather than assumed: it is why `recover` attests *after* the sync, and it is
+    // what an operator gets when the two happen the other way round.
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        !landed.contains(&documented_trailer(
+            "Recovered-Incomplete",
+            &documented_default_prefix()
+        )),
+        "the attestation named the marker by a SHA the replay rewrote: {landed}"
+    );
+}
+
 #[test]
 fn a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));

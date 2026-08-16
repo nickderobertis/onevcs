@@ -393,15 +393,20 @@ fn recorded_stack(record: &workspace::Record, publication: &Path) -> Option<Stac
     (root != record.base).then_some(Stack { tip, root })
 }
 
-/// Whether the root base has already landed the change below this one, and this
-/// change's own commits are therefore all that belongs on it.
+/// Whether the root base already carries everything the change below this one
+/// contributed, while carrying none of the commits that contributed it.
 ///
 /// Three things past the record: the branch was cut from that tip, the root does not
 /// hold the tip's commits under their own names, and the root does hold what they
-/// changed. Which together are a squash-merge of the change below and are nothing
-/// else — a change still open has not reached the root at all, and one merged as its
-/// own commits is already an ancestor there.
-pub(crate) fn landed_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
+/// changed. What that establishes is exactly its name and no more — it is what a
+/// squash-merge of the change below leaves, and a root that came by the same content
+/// some other way is indistinguishable from one here, because content equality is all
+/// git can be asked. Both are answered the same way deliberately: the commits a
+/// replay drops are commits whose content the root already has, so the branch's own
+/// work is what is left either way. A change still open whose content has *not*
+/// reached the root fails the last test, and one merged as its own commits fails the
+/// second.
+pub(crate) fn root_carries_the_stack(repo: &Path, branch: &str, stack: &Stack) -> Result<bool> {
     let root = vcs::base_ref(repo, &stack.root);
     if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
         return Ok(false);
@@ -456,15 +461,15 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
             object(json!({"remote": "origin", "checkout": context.repo.display().to_string()})),
         );
     }
-    // Asked after the fetch and before anything else: a change whose stack has landed
-    // is a change onto the root base, and everything below — what it is compared
+    // Asked after the fetch and before anything else: a change whose stack the root
+    // already carries is a change onto the root base, and everything below — what it is compared
     // against, what its gate judges, what its change request targets — follows from
     // that rather than from the branch it was opened against.
     let mut replay = None;
     let landed;
     let mut context = context;
     if let Some(stack) = &context.stack {
-        if landed_stack(&context.repo, &context.branch, stack)? {
+        if root_carries_the_stack(&context.repo, &context.branch, stack)? {
             replay = Some(stack.tip.clone());
             landed = context.onto(stack.root.clone());
             context = &landed;

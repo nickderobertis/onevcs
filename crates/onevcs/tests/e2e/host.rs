@@ -584,6 +584,172 @@ fn a_reviewed_change_is_pushed_and_left_open() {
     assert!(!hosted.world.events_of(&token, "push").is_empty());
 }
 
+/// A hosted session stacked on a change below it, cut from that change's branch.
+///
+/// `session open --base` is what records a stack, so this is how a hosted stacked
+/// change is opened: the branch below exists on the origin, and the session is cut
+/// from it.
+fn hosted_stack(hosted: &Hosted, branch: &str) -> String {
+    let world = &hosted.world;
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/engine"],
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\n",
+        "feat: write the engine",
+    );
+    // Two commits, because a squash of one is that one: same tree, same parent, same
+    // message, same second, and therefore the same commit — which is a fast-forward
+    // rather than the squash this is about.
+    world.commit_file(
+        &hosted.checkout,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: govern the engine",
+    );
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "feature/engine"],
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            branch,
+            "--base",
+            "feature/engine",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    world.commit_file(
+        &worktree_of(&stdout),
+        "filter.txt",
+        "what it relays\n",
+        "feat: filter what the engine relays",
+    );
+    token_of(&stdout)
+}
+
+/// Land the branch below on `main` the way a squash-merging host does.
+fn squash_the_change_below(hosted: &Hosted, delete_it: bool) {
+    let below = hosted.world.clone_of(&hosted.origin, "below");
+    hosted
+        .world
+        .git(&below, &["merge", "--squash", "origin/feature/engine"]);
+    hosted
+        .world
+        .git(&below, &["commit", "-q", "-m", "feat: write the engine"]);
+    hosted.world.git(&below, &["push", "-q", "origin", "main"]);
+    if delete_it {
+        hosted.world.git(
+            &below,
+            &["push", "-q", "origin", "--delete", "feature/engine"],
+        );
+    }
+}
+
+#[test]
+fn a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root() {
+    // The stack's floor is gone, so the change request cannot be opened against it:
+    // what the branch is compared against, replayed onto, and reviewed against all
+    // move to the root together.
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted_stack(&hosted, "feature/filter");
+    squash_the_change_below(&hosted, true);
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let opened = hosted.world.events_of(&token, "change-opened");
+    assert_eq!(opened.len(), 1);
+    assert_eq!(
+        opened[0]["payload"]["base"], "main",
+        "the review targets the root the change was replayed onto: {opened:?}"
+    );
+    // The branch really is the root plus its own work: the change below is on the
+    // origin once, as the commit that squashed it.
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/filter"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "feat: filter what the engine relays",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ]
+    );
+}
+
+#[test]
+fn a_hosted_stack_the_root_independently_matches_is_answered_the_same_way() {
+    // The ambiguity content equality cannot resolve, and the reason the answer is
+    // safe either way: the branch below is still open, but the root already holds
+    // everything it changed — landed there by somebody else, under a name of its
+    // own. What a replay drops is commits whose content the root has, so the
+    // branch's own work is what is left, and it is reviewed against the root.
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted_stack(&hosted, "feature/lookalike");
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.commit_file(
+        &elsewhere,
+        "engine.txt",
+        "the engine\nand its governor\n",
+        "feat: write the engine somewhere else",
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let opened = hosted.world.events_of(&token, "change-opened");
+    assert_eq!(opened[0]["payload"]["base"], "main", "{opened:?}");
+    // The branch below is untouched on the origin — nothing here closes or moves
+    // somebody else's change — and this branch carries its own work over the root.
+    assert_eq!(
+        hosted.world.git(
+            &hosted.origin,
+            &["log", "-1", "--format=%s", "feature/engine"]
+        ),
+        "feat: govern the engine"
+    );
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/lookalike"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "feat: filter what the engine relays",
+            "feat: write the engine somewhere else",
+            "chore: seed the repository",
+        ],
+        "its own work, over the root that already held what it was stacked on"
+    );
+}
+
 #[test]
 fn an_automated_change_merges_once_every_required_check_is_green() {
     let hosted = Hosted::new(AUTOMATED);
