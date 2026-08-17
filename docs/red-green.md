@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 85. Tests observed red and then green: 113.
+Patches: 86. Tests observed red and then green: 114.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -258,13 +258,13 @@ a pinned branch name is taken on trust.
 
 the first repository to hold a name answers for it, spent or not.
 
-- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
+- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
 
 ### `38-a-spent-copy-of-a-name-is-published`
 
 a branch is located by name alone, spent copy or not.
 
-- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — Unexpected stdout, failed var.contains(merged at)
+- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
 
 ### `39-a-base-nobody-can-reach-judges-the-branch`
 
@@ -540,7 +540,7 @@ a pin resumes a record without asking whether it is the session asked for, or st
 the copies of a branch are ordered rather than compared, so the first checkout that holds work wins.
 
 - RED `a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other` — the copy that carries the other is the one that reached the base: README.md
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — Unexpected stderr, failed var.contains(no copy holding work carries the rest)
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other` — Unexpected return code, failed var == 2
 - RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected return code, failed var == 2
 - RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected return code, failed var == 2
@@ -577,6 +577,13 @@ the check on the working directory is inverted, so each way git cannot start is 
 
 a copy whose content the base already carries is left out of the copies a landing reports, so the answer is not about every checkout holding the branch.
 
-- RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — and so is the copy in <tmp>/project, as one the base already carries:
+- RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — and so is the one the base already carries:
 - RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — and so is the other copy of the name:
+
+### `86-a-spent-copy-is-left-out-of-the-comparison`
+
+the copies whose content the base already carries are left out of the comparison, so a lone work-carrying copy is chosen beside a tip nothing descends from.
+
+- RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected return code, failed var == 2
+- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
 
