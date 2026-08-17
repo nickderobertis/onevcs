@@ -2130,6 +2130,79 @@ fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_
 }
 
 #[test]
+fn an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name() {
+    // Every copy spent is the one state where "nothing to publish" is the true answer,
+    // and it is the same answer whichever copy is read — so the search order stands. It
+    // is also the answer an operator most often disbelieves, because a copy they are
+    // looking at is ahead of the base: the copies and the commits they hold are what
+    // settle that, so they are said here too rather than only where work was chosen.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, tree) = fixture.open(&["--branch", "feature/all-spent"]);
+    fixture
+        .world
+        .commit_file(&tree, "a.txt", "a\n", "feat: the work that landed");
+    // Two commits, so what landed is a squash of both and no copy of the branch is a
+    // commit the base has.
+    fixture
+        .world
+        .commit_file(&tree, "a.txt", "a\nand more\n", "fix: the rest of it");
+    for argv in [vec!["publish", &token], vec!["session", "close", &token]] {
+        fixture.world.onevcs().args(&argv).assert().success();
+    }
+    let clone = tree.parent().expect("a run root").join("clone");
+    let handed_back = tip_of(&fixture, &clone, "feature/all-spent");
+
+    // An empty commit on the checkout's copy: a second commit holding the tree the base
+    // already carries, so both copies are spent and the two are at different commits.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "feature/all-spent"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "chore: touch nothing",
+        ],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let ahead = tip_of(&fixture, &fixture.checkout, "feature/all-spent");
+    assert_ne!(ahead, handed_back, "the two spent copies are two commits");
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/all-spent",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nothing to publish"));
+    let said = stderr_of(&assert);
+    assert!(
+        said.contains(&format!(
+            "the copy in {} at {ahead} (already in the base) is the one being published",
+            fixture.checkout.display()
+        )),
+        "the copy the answer came from is named:\n{said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "{} at {handed_back} (already in the base)",
+            clone.display()
+        )),
+        "and so is the other copy of the name:\n{said}"
+    );
+}
+
+#[test]
 fn every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them() {
     // What an operator is deciding about is where the name is, so the answer covers
     // every checkout that has it — the copy at the chosen commit as much as the one at a

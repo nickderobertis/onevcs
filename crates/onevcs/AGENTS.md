@@ -87,24 +87,14 @@ cannot be read is refused, naming what restores it: publishing around it would a
 "no stack" from a value nothing could read, which is the merge all of this avoids.
 
 **A name in two checkouts is two copies, and they are compared rather than ordered**
-(`branch::locate`). `workspace::checkouts_of`'s tiers are a search order, not a
-preference: taking the first tier that has the name publishes a stale copy and reports
-about a tree the operator is not looking at. One copy holding work must carry all the
-others, and it is then published whichever tier it came from; where none does they have
-diverged and the landing is **refused**, naming every checkout with the tip it holds
-(spent copies included, as copies that answer for none of it — what an operator decides
-about is where the name is). Equal tips keep the search order. Wherever the tips
-differed, which copy was chosen is said on stderr: without it a stale selection and a
-current one read identically, and a sync-conflict refusal cannot be told from a stale
-copy's.
-
-**A rewritten copy is refused with the rest, and it costs a workflow.** Selecting one
-would mean guessing that a rewrite supersedes what it rewrote, which is
-indistinguishable from a second line of work on the same name — so it is refused, and
-resolving `sync_change_base`'s replay conflict in the publication checkout leaves exactly
-that pair. The landing that refusal names is then refused too, until one copy is gone:
-closing the session and deleting the run clone's ref, neither of which any verb here
-does. The replay-conflict journey carries those steps, so the cost stays measured.
+(`branch::locate`). `workspace::checkouts_of` is a search order, not a preference: one
+copy holding work has to carry all the others or the landing is refused, because
+publishing the first tier that has the name publishes a stale copy. Whichever way it
+goes, the answer is about every checkout holding the name — a stale selection and a
+current one read identically otherwise. A rewritten copy is refused with the rest, since
+selecting it would guess that a rewrite supersedes what it rewrote, and the price is
+paid where `sync_change_base` sends an operator to replay: that leaves the pre-replay tip
+in another checkout, and no verb here removes it.
 
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
