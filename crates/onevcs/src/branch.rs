@@ -551,21 +551,25 @@ impl Held {
 /// order rather than a preference. One name can be in several of those checkouts at
 /// once, and two things decide which copy of it answers.
 ///
-/// A copy whose content the base already carries is spent: publishing it would answer
-/// that there is nothing to publish while the work sat under the same name somewhere
-/// else. It holds nothing the base lacks, so passing it over discards nothing, and it
-/// is taken only when every copy is spent — where "nothing to publish" is the true
-/// answer, and a better one than a branch nobody has.
+/// **Every** copy is compared, and one of them must carry all the others: its
+/// publication is then the only one that discards nothing, and it wins whichever tier it
+/// was found in. Copies where none does have diverged and are refused. A rewritten copy
+/// — a replay onto the base, which is what [`Landing::sync_change_base`]'s own conflict
+/// refusal sends an operator to make — is one of those: it carries nothing of what it
+/// replaced, and nothing here can tell it from a second, competing line of work.
+/// Choosing it would discard the other copy on a guess, so the refusal stands and an
+/// operator says which copy is the work by leaving one of them.
 ///
-/// The copies that carry work are compared, and one of them must carry all of the
-/// others: its publication is then the only one that discards nothing, and it wins
-/// whichever tier it was found in. Copies where none does have diverged and are
-/// refused. A rewritten copy — a replay onto the base, which is what
-/// [`Landing::sync_change_base`]'s own conflict refusal sends an operator to make — is
-/// one of those: it carries nothing of what it replaced, and nothing here can tell it
-/// from a second, competing line of work. Choosing it would discard the other copy on a
-/// guess, so the refusal stands and an operator says which copy is the work by leaving
-/// one of them.
+/// A copy whose content the base already carries is compared like any other. Its
+/// *content* is spent — publishing it answers that there is nothing to publish — but the
+/// commit under that name is a commit like the rest, and one no other copy descends from
+/// is a divergence whether or not what it once held has landed. Judging those copies
+/// separately is what let a lone work-carrying copy be chosen silently beside a spent
+/// tip nothing descends from.
+///
+/// One state has nothing to compare: every copy spent. The answer there is that there is
+/// nothing to publish whichever copy is read, so the first in search order is taken —
+/// and that is a better answer than a branch nobody has.
 ///
 /// Every checkout holding the branch is named in the line that chooses and in the
 /// refusal that cannot, spent copies included: what an operator is deciding about is
@@ -604,23 +608,21 @@ fn locate(
             holds,
         });
     }
-    let working: Vec<&Held> = held
-        .iter()
-        .filter(|copy| copy.holds == Holds::Work)
-        .collect();
-    // One copy carrying work is the state this search has always answered for, and it
-    // answers the same way — there was nothing to compare. With none, the first spent
-    // copy in search order is the answer, which is where "nothing to publish" comes
-    // from.
-    let [first, second, ..] = working.as_slice() else {
-        let Some(chosen) = working.first().copied().or_else(|| held.first()) else {
+    // One copy is the state this search has always answered for, and it answers the same
+    // way: there was nothing to compare.
+    let [first, second, ..] = held.as_slice() else {
+        let Some(only) = held.first() else {
             return Err(nowhere(&resolution.key, branch, &searched));
         };
-        announce(branch, chosen, &held);
-        return Ok(chosen.checkout.clone());
+        announce(branch, only, &held);
+        return Ok(only.checkout.clone());
     };
-    for copy in &working {
-        if !carries_the_rest(copy, &working)? {
+    if held.iter().all(|copy| copy.holds == Holds::WhatTheBaseHas) {
+        announce(branch, first, &held);
+        return Ok(first.checkout.clone());
+    }
+    for copy in &held {
+        if !carries_the_rest(copy, &held)? {
             continue;
         }
         announce(branch, copy, &held);
@@ -631,10 +633,9 @@ fn locate(
     // moves nothing. Such a pair exists wherever this is reached — copies all at one
     // commit each carry the rest and were chosen above — so `second` stands in for a
     // state that cannot get here.
-    let differing = working
+    let differing = held
         .iter()
         .find(|copy| copy.tip != first.tip)
-        .copied()
         .unwrap_or(second);
     Err(diverged(
         branch,
@@ -646,14 +647,14 @@ fn locate(
     ))
 }
 
-/// Whether one copy's tip carries every other work-carrying copy's, which is what makes
-/// it the one to publish.
+/// Whether one copy's tip carries every other copy's, which is what makes it the one to
+/// publish.
 ///
 /// Asked of that copy's own checkout, and of every copy including itself: equal tips
 /// are the same commit, so each of them carries the rest and the first in tier order
 /// wins — which is the order this module has always read a branch in.
-fn carries_the_rest(copy: &Held, working: &[&Held]) -> Result<bool> {
-    for other in working {
+fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
+    for other in held {
         if !git::known_to_reach(&copy.checkout, &other.tip, &copy.tip)? {
             return Ok(false);
         }
@@ -710,9 +711,9 @@ fn diverged(
 ) -> Error {
     Error::Invalid {
         reason: format!(
-            "branch {branch:?} is in {count} checkouts of identity {identity:?}, and no copy \
-             holding work carries the rest, so nothing here can tell which copy is the work and \
-             publishing one would discard the other: {listed}. Reconcile them in one checkout — \
+            "branch {branch:?} is in {count} checkouts of identity {identity:?}, and no copy of it \
+             carries the rest, so nothing here can tell which copy is the work and publishing one \
+             would discard the other: {listed}. Reconcile them in one checkout — \
              `{fetch}` brings {from}'s copy into {into} as FETCH_HEAD, to merge or rebase onto the \
              one that is there — or delete the copy that is not the work, and then land it with \
              `{command}`",
