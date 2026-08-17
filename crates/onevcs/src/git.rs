@@ -780,40 +780,26 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     }
 }
 
-/// Whether `descendant` reaches `ancestor` in a repository that may not have it.
+/// Whether this repository can *show* that `descendant` reaches `ancestor`.
 ///
-/// An `ancestor` this repository does not have is `false`, because ancestry is
-/// reachability and nothing here descends from a commit it cannot see. A repository that
-/// could not answer at all is an error, because that is a different thing. [`is_ancestor`]
-/// alone cannot separate them — a missing object is a failure there, spelled exactly like
-/// a repository nothing can be read out of — so presence is established first, by an
-/// existence check whose "no" and "cannot say" are two exit statuses.
+/// "Can show", because it is asked exactly where the commit may be absent — of one
+/// checkout, about another checkout's tip — and [`is_ancestor`] alone answers that with a
+/// failure rather than a verdict. So absence is `false`, as it is for [`has_commit`]
+/// beside it: ancestry is reachability, and nothing a repository has descends from a
+/// commit it cannot see. A repository that could not be read at all is the same `false`,
+/// which is the safe direction here — that copy of a branch loses the comparison, and a
+/// comparison nothing wins is refused rather than resolved by picking.
 ///
 /// Both are revisions as [`is_ancestor`] and [`merge_base`] beside it take them: a commit
 /// id, or any name git resolves to one.
 // llmlint: ignore[invalid_states_unrepresentable] see `merge_base` for the same reason —
 // the crate's `Sha` is the contract's wrapper for its public surface and validates
 // nothing, and what this takes is what git just answered.
-pub fn reaches(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
-    // `--quiet` is what makes the three answers three: 0 resolved it, 1 is a revision
-    // this repository does not have, and anything else is a repository that could not
-    // be read. Without it the second and the third are both a fatal error on stderr.
-    let resolved = run(
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("{ancestor}^{{commit}}"),
-        ],
-        Some(cwd),
-    )?;
-    match resolved.status {
-        0 => is_ancestor(cwd, ancestor, descendant),
-        1 => Ok(false),
-        _ => Err(Error::Invalid {
-            reason: format!("git rev-parse {ancestor} failed: {}", resolved.diagnostic()),
-        }),
+pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    if !has_commit(cwd, &Sha(ancestor.to_owned())) {
+        return Ok(false);
     }
+    is_ancestor(cwd, ancestor, descendant)
 }
 
 /// The commit two refs last had in common, or `None` when they share no history.

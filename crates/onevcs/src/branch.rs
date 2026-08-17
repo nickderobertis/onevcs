@@ -632,7 +632,7 @@ fn locate(
 /// wins — which is the order this module has always read a branch in.
 fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
     for other in held {
-        if !git::reaches(&copy.checkout, &other.tip, &copy.tip)? {
+        if !git::known_to_reach(&copy.checkout, &other.tip, &copy.tip)? {
             return Ok(false);
         }
     }
@@ -650,7 +650,7 @@ fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
 fn only_reconciled(held: &[Held]) -> Result<Option<&Held>> {
     let mut reconciled: Option<&Held> = None;
     for copy in held {
-        if !git::reaches(&copy.checkout, &copy.compared, &copy.tip)? {
+        if !git::known_to_reach(&copy.checkout, &copy.compared, &copy.tip)? {
             continue;
         }
         if reconciled.replace(copy).is_some() {
