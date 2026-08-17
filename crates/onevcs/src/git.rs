@@ -185,14 +185,12 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 
 /// Why git never started, naming whichever of the two things is actually missing.
 ///
-/// `spawn` raises `NotFound` for a missing program *and* for a missing
-/// `current_dir`, so blaming the binary unconditionally sends a reader after their
-/// toolchain: the measured case was `cannot run git: No such file or directory (is
-/// git installed and on PATH?)` with git at `/usr/bin/git` throughout and a removed
-/// worktree as the real cause. The directory is checked before the binary because
-/// only one of the two can be answered here — a `git` this process could not find
-/// is exactly what an absent `PATH` entry looks like, while a working directory that
-/// is not there is a fact about the filesystem.
+/// `spawn` raises `NotFound` for a missing program *and* for a missing `current_dir`,
+/// and only one of the two can be checked here: a directory that is not there is a fact
+/// about the filesystem, while a `git` this process could not find is indistinguishable
+/// from an absent `PATH` entry. So the directory is asked about first and the binary is
+/// what is left — blaming the binary for both sends a reader after a toolchain that was
+/// never broken.
 fn unstarted(error: &std::io::Error, args: &[&str], cwd: Option<&Path>) -> Error {
     let missing = cwd.filter(|_| error.kind() == std::io::ErrorKind::NotFound);
     match missing.filter(|directory| !git_path(directory).is_dir()) {
@@ -782,27 +780,40 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     }
 }
 
-/// Whether one commit carries another, asked of a repository that may not have it.
+/// Whether `descendant` reaches `ancestor` in a repository that may not have it.
 ///
-/// `false` when this repository cannot reach `ancestor` at all, which is the answer
-/// rather than a failure: ancestry is reachability, so a commit a repository does not
-/// have is one nothing of its own descends from — while `merge-base --is-ancestor`
-/// meets a missing object with an error, and reading that as "not an ancestor" would
-/// also read a genuinely broken repository that way. Which is what makes this the
-/// question to ask across two checkouts holding one branch: each is asked about the
-/// other's tip, and the one that carries the rest is the copy that discards nothing.
+/// An `ancestor` this repository does not have is `false`, because ancestry is
+/// reachability and nothing here descends from a commit it cannot see. A repository that
+/// could not answer at all is an error, because that is a different thing. [`is_ancestor`]
+/// alone cannot separate them — a missing object is a failure there, spelled exactly like
+/// a repository nothing can be read out of — so presence is established first, by an
+/// existence check whose "no" and "cannot say" are two exit statuses.
 ///
-/// Both are revisions as [`is_ancestor`] and [`merge_base`] beside it take them — a
-/// commit id or any name git resolves to one, which is what a caller comparing a tip
-/// against a base ref has.
-// llmlint: ignore[invalid_states_unrepresentable] see above, and `merge_base` for the
-// same reason: the crate's `Sha` is the contract's wrapper for its public surface and
-// validates nothing, and what this takes is what git just answered.
+/// Both are revisions as [`is_ancestor`] and [`merge_base`] beside it take them: a commit
+/// id, or any name git resolves to one.
+// llmlint: ignore[invalid_states_unrepresentable] see `merge_base` for the same reason —
+// the crate's `Sha` is the contract's wrapper for its public surface and validates
+// nothing, and what this takes is what git just answered.
 pub fn reaches(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
-    if !has_commit(cwd, &Sha(ancestor.to_owned())) {
-        return Ok(false);
+    // `--quiet` is what makes the three answers three: 0 resolved it, 1 is a revision
+    // this repository does not have, and anything else is a repository that could not
+    // be read. Without it the second and the third are both a fatal error on stderr.
+    let resolved = run(
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{ancestor}^{{commit}}"),
+        ],
+        Some(cwd),
+    )?;
+    match resolved.status {
+        0 => is_ancestor(cwd, ancestor, descendant),
+        1 => Ok(false),
+        _ => Err(Error::Invalid {
+            reason: format!("git rev-parse {ancestor} failed: {}", resolved.diagnostic()),
+        }),
     }
-    is_ancestor(cwd, ancestor, descendant)
 }
 
 /// The commit two refs last had in common, or `None` when they share no history.

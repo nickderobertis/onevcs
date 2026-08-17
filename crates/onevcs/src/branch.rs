@@ -543,33 +543,20 @@ enum Chose {
 /// Find the checkout a branch can be read out of, and the copy of it that is the
 /// work rather than the name.
 ///
-/// The order is [`crate::workspace::checkouts_of`]'s, and the publication checkout
-/// is first in it because a branch only reaches that one once something has already
-/// pushed it — a branch that reaches publication on its first attempt exists solely
-/// in the execution checkout the work was done in, or in the run clone of the
-/// session that stopped. A name can be in several of them at once, though, and two
-/// things follow from that.
+/// [`crate::workspace::checkouts_of`] is where it looks, and that list is a search
+/// order rather than a preference. One name can be in several of those checkouts at
+/// once, and two things decide which copy of it answers.
 ///
-/// A copy whose content the base already carries is spent: publishing that one would
-/// answer that there is nothing to publish while the work sat under the same name
-/// somewhere else. So a spent copy is taken only when every copy is spent — where
-/// "nothing to publish" is the true answer, and a better one than a branch nobody
-/// has.
+/// A copy whose content the base already carries is spent: publishing it would answer
+/// that there is nothing to publish while the work sat under the same name somewhere
+/// else. So a spent copy is taken only when every copy is spent — where "nothing to
+/// publish" is the true answer, and a better one than a branch nobody has.
 ///
-/// And where several copies carry work, they are *compared* rather than ordered: the
-/// one whose tip carries every other's is the one whose publication discards nothing,
-/// whichever tier it was found in. Taking the first in tier order instead is what
-/// published a publication checkout's stale copy of a branch whose conflict had
-/// already been resolved in a run clone, and reported a merge conflict that no longer
-/// existed on the resolved work.
-///
-/// A copy can also be the others *rewritten* rather than added to, and a replay onto
-/// the base is what rewrites one — which is exactly the resolution a conflict refusal
-/// on this path sends an operator to make, so it is not a state to refuse. The replay
-/// carries the base and what it replaced does not, so where no copy carries the rest
-/// and exactly one carries the base, that one is the work. Copies nothing separates
-/// have genuinely diverged and are refused, because publishing one would discard the
-/// other and nothing here can tell which is which.
+/// The copies that carry work are compared. One whose tip carries every other's
+/// discards nothing when published, so it wins whichever tier it was found in; failing
+/// that, the one copy that carries the base is the rest replayed onto it, which is the
+/// resolution [`Landing::sync_change_base`]'s own refusal asks for. Copies nothing
+/// separates are refused, because publishing one discards the other.
 fn locate(
     registry: &Registry,
     resolution: &Resolution,
