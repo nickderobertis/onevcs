@@ -1,20 +1,23 @@
 Mutation: the copy a landing chose is no longer said, so a stale selection and a current one read identically.
 Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
-Red: a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it
+Red: a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none_of
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 2698752..9b60e8c 100644
+index 164a293..3263c50 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -617,11 +617,9 @@ fn locate(
-         if !carries_the_rest(copy, &held)? {
+@@ -602,14 +602,12 @@ fn locate(
+         let Some(chosen) = working.first().copied().or_else(|| held.first()) else {
+             return Err(nowhere(&resolution.key, branch, &searched));
+         };
+-        announce(branch, chosen, &held);
+         return Ok(chosen.checkout.clone());
+     };
+     for copy in &working {
+         if !carries_the_rest(copy, &working)? {
              continue;
          }
--        announce(branch, copy, &held, Chose::CarriesTheRest);
-         return Ok(copy.checkout.clone());
-     }
-     if let Some(copy) = only_reconciled(&held)? {
--        announce(branch, copy, &held, Chose::Reconciled);
+-        announce(branch, copy, &held);
          return Ok(copy.checkout.clone());
      }
      Err(diverged(

@@ -1,23 +1,22 @@
-Mutation: the copies of a branch are ordered rather than compared, so the first checkout that has the name wins.
+Mutation: the copies of a branch are ordered rather than compared, so the first checkout that holds work wins.
 Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
 Red: copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one
+Red: a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other
+Red: a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it
+
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 2698752..a53e56e 100644
+index 164a293..9dc0096 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -613,17 +613,7 @@ fn locate(
-             .or(spent)
-             .ok_or_else(|| nowhere(&resolution.key, branch, &searched));
+@@ -605,13 +605,7 @@ fn locate(
+         announce(branch, chosen, &held);
+         return Ok(chosen.checkout.clone());
      };
--    for copy in &held {
--        if !carries_the_rest(copy, &held)? {
+-    for copy in &working {
+-        if !carries_the_rest(copy, &working)? {
 -            continue;
 -        }
--        announce(branch, copy, &held, Chose::CarriesTheRest);
--        return Ok(copy.checkout.clone());
--    }
--    if let Some(copy) = only_reconciled(&held)? {
--        announce(branch, copy, &held, Chose::Reconciled);
+-        announce(branch, copy, &held);
 -        return Ok(copy.checkout.clone());
 -    }
 +    return Ok(first.checkout.clone());

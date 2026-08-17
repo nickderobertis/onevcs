@@ -2,25 +2,22 @@ Mutation: a branch is located by name alone, spent copy or not.
 Red: a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 2698752..fc0e103 100644
+index 164a293..10ee511 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -591,16 +591,8 @@ fn locate(
+@@ -585,13 +585,8 @@ fn locate(
          else {
              continue;
          };
 -        let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
--        if !git::trees_differ(candidate, &compared, branch)? {
--            spent.get_or_insert_with(|| candidate.clone());
--            continue;
--        }
+-        let spent = !git::trees_differ(candidate, &compared, branch)?;
 -        held.push(Held {
 -            checkout: candidate.clone(),
 -            tip,
--            compared,
+-            spent,
 -        });
-+        let _ = (tip, &current, &spent, &held);
++        let _ = (tip, &current, &held);
 +        return Ok(candidate.clone());
      }
+     let working: Vec<&Held> = held.iter().filter(|copy| !copy.spent).collect();
      // One copy carrying work is the state this search has always answered for, and it
-     // answers the same way — there was nothing to choose between, so there is nothing

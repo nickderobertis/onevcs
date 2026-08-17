@@ -3,20 +3,10 @@ Red: copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searc
 Red: work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 2698752..9d01dba 100644
+index 164a293..593def0 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -607,6 +607,9 @@ fn locate(
-     // to say about a choice. With none, the spent copy is the answer where there is
-     // one.
-     let [first, second, ..] = held.as_slice() else {
-+        if let Some(only) = held.first() {
-+            announce(branch, only, &held, Chose::CarriesTheRest);
-+        }
-         return held
-             .first()
-             .map(|only| only.checkout.clone())
-@@ -688,9 +691,6 @@ fn announce(branch: &str, chosen: &Held, held: &[Held], chose: Chose) {
+@@ -655,9 +655,6 @@ fn announce(branch: &str, chosen: &Held, held: &[Held]) {
          .filter(|copy| copy.tip != chosen.tip)
          .map(Held::describe)
          .collect();
@@ -25,4 +15,4 @@ index 2698752..9d01dba 100644
 -    }
      eprintln!(
          "onevcs: branch {branch:?} is in {count} checkouts of this identity, and the copy in \
-          {chosen} {why}, so that is the one being published; passed over: {passed_over}",
+          {chosen} is the one being published; passed over: {passed_over}",
