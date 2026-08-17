@@ -698,10 +698,7 @@ fn announce(branch: &str, chosen: &Held, held: &[Held], chose: Chose) {
         chosen = chosen.describe(),
         why = match chose {
             Chose::CarriesTheRest => "carries the rest".to_owned(),
-            Chose::Reconciled => format!(
-                "is the only one that carries {}, so it is the rest replayed onto it",
-                chosen.compared
-            ),
+            Chose::Reconciled => format!("is the only one that carries {}", chosen.compared),
         },
         passed_over = passed_over.join(", "),
     );

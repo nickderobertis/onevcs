@@ -2,10 +2,10 @@ Mutation: --policy stops narrowing the policy the rules resolved.
 Red: a_per_run_policy_narrows_the_rules_resolved_one_and_never_widens_it
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 384ae51..83da136 100644
+index 2698752..96ef139 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -147,7 +147,10 @@ pub fn prepare(
+@@ -171,7 +171,10 @@ pub fn prepare(
      let normalized = store::normalize(&resolution.identity.origin);
      let resolved = policy::resolve(&file, &rules_source, &normalized, &resolution.publication);
      let rules_file = rules_source.file()?;
@@ -15,5 +15,5 @@ index 384ae51..83da136 100644
 +        None
 +    })?;
      let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
-     let source = locate(registry, &resolution, branch, &base)?;
+     let source = locate(registry, &resolution, verb, repo, branch, &base)?;
  
