@@ -1,0 +1,16 @@
+Mutation: the check on the working directory is inverted, so each way git cannot start is answered with the other's message.
+Red: a_git_command_whose_working_directory_is_gone_names_that_directory
+Red: a_git_binary_nothing_can_find_still_names_the_binary
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index ab69ec9..37ea0a7 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -195,7 +195,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
+ /// is not there is a fact about the filesystem.
+ fn unstarted(error: &std::io::Error, args: &[&str], cwd: Option<&Path>) -> Error {
+     let missing = cwd.filter(|_| error.kind() == std::io::ErrorKind::NotFound);
+-    match missing.filter(|directory| !git_path(directory).is_dir()) {
++    match missing.filter(|directory| git_path(directory).is_dir()) {
+         Some(directory) => error::invalid(format!(
+             "cannot run git {} in {}: that directory does not exist, so nothing ran there — the \
+              checkout or worktree it names has been removed",

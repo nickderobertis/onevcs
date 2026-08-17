@@ -1,0 +1,19 @@
+Mutation: the copy a landing chose is no longer said, so a stale selection and a current one read identically.
+Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index 2698752..9b60e8c 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -617,11 +617,9 @@ fn locate(
+         if !carries_the_rest(copy, &held)? {
+             continue;
+         }
+-        announce(branch, copy, &held, Chose::CarriesTheRest);
+         return Ok(copy.checkout.clone());
+     }
+     if let Some(copy) = only_reconciled(&held)? {
+-        announce(branch, copy, &held, Chose::Reconciled);
+         return Ok(copy.checkout.clone());
+     }
+     Err(diverged(

@@ -1,0 +1,26 @@
+Mutation: the copies of a branch are ordered rather than compared, so the first checkout that has the name wins.
+Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
+Red: copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index 2698752..a53e56e 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -613,17 +613,7 @@ fn locate(
+             .or(spent)
+             .ok_or_else(|| nowhere(&resolution.key, branch, &searched));
+     };
+-    for copy in &held {
+-        if !carries_the_rest(copy, &held)? {
+-            continue;
+-        }
+-        announce(branch, copy, &held, Chose::CarriesTheRest);
+-        return Ok(copy.checkout.clone());
+-    }
+-    if let Some(copy) = only_reconciled(&held)? {
+-        announce(branch, copy, &held, Chose::Reconciled);
+-        return Ok(copy.checkout.clone());
+-    }
++    return Ok(first.checkout.clone());
+     Err(diverged(
+         branch,
+         &resolution.key,
