@@ -796,9 +796,18 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 // the crate's `Sha` is the contract's wrapper for its public surface and validates
 // nothing, and what this takes is what git just answered.
 pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: the half of this
+    // predicate that answers `false` because the repository could not be read at all
+    // rather than because it does not have the commit. `locate` resolved this checkout's
+    // own branch tip and diffed its tree moments earlier, so no journey gets it to fail
+    // here — which is why the strict three-way version of this was deleted rather than
+    // kept behind a fixture nothing can build. Deferred with the arm that does happen
+    // covered end to end by
+    // `a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison`.
     if !has_commit(cwd, &Sha(ancestor.to_owned())) {
         return Ok(false);
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     is_ancestor(cwd, ancestor, descendant)
 }
 
