@@ -5,10 +5,10 @@ Red: a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_an
 Red: a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 164a293..9dc0096 100644
+index 297cf26..80c4b9f 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -605,13 +605,7 @@ fn locate(
+@@ -619,13 +619,7 @@ fn locate(
          announce(branch, chosen, &held);
          return Ok(chosen.checkout.clone());
      };
@@ -20,6 +20,6 @@ index 164a293..9dc0096 100644
 -        return Ok(copy.checkout.clone());
 -    }
 +    return Ok(first.checkout.clone());
-     Err(diverged(
-         branch,
-         &resolution.key,
+     // The fetch the refusal prints has to be between copies at *different* commits:
+     // copies at one commit are one copy for this purpose, and fetching between them
+     // moves nothing. Such a pair exists wherever this is reached — copies all at one

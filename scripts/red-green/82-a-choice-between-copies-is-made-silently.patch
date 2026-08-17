@@ -4,10 +4,10 @@ Red: every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_th
 Red: an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 164a293..3263c50 100644
+index 297cf26..23fa682 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -602,14 +602,12 @@ fn locate(
+@@ -616,14 +616,12 @@ fn locate(
          let Some(chosen) = working.first().copied().or_else(|| held.first()) else {
              return Err(nowhere(&resolution.key, branch, &searched));
          };
@@ -21,4 +21,4 @@ index 164a293..3263c50 100644
 -        announce(branch, copy, &held);
          return Ok(copy.checkout.clone());
      }
-     Err(diverged(
+     // The fetch the refusal prints has to be between copies at *different* commits:
