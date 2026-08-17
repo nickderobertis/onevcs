@@ -1889,14 +1889,14 @@ fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
             "the copy in {} at {resolved} carries the rest",
             clone.display()
         )),
-        "{said}"
+        "the copy that was published is named with the commit it held:\n{said}"
     );
     assert!(
         said.contains(&format!(
             "passed over: {} at {stale}",
             fixture.checkout.display()
         )),
-        "{said}"
+        "…and so is the stale copy it was chosen over:\n{said}"
     );
 }
 
