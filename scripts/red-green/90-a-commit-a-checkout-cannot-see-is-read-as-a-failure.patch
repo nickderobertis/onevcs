@@ -8,23 +8,24 @@ Red: an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_bac
 Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
 
 diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
-index b8084f0..07044c8 100644
+index e29086f..1f205fe 100644
 --- a/crates/onevcs/src/git.rs
 +++ b/crates/onevcs/src/git.rs
-@@ -796,18 +796,6 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
+@@ -797,19 +797,6 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
  // the crate's `Sha` is the contract's wrapper for its public surface and validates
  // nothing, and what this takes is what git just answered.
  pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
--    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: the half of this
--    // predicate that answers `false` because the repository could not be read at all
--    // rather than because it does not have the commit. `locate` resolved this checkout's
--    // own branch tip and diffed its tree moments earlier, so no journey gets it to fail
--    // here — which is why the strict three-way version of this was deleted rather than
--    // kept behind a fixture nothing can build. Deferred with the arm that does happen
--    // covered end to end by
+-    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: the answers this guard
+-    // gives about a `descendant` the repository does not have, and about one it could not
+-    // be read for at all. Its only caller passes the tip `locate` resolved out of this
+-    // very checkout moments earlier, so no journey reaches either — which is why the
+-    // strict three-way version of this was deleted rather than kept behind a fixture
+-    // nothing can build. Deferred with the arm that does happen covered end to end by
 -    // `a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison`.
--    if !has_commit(cwd, &Sha(ancestor.to_owned())) {
--        return Ok(false);
+-    for revision in [ancestor, descendant] {
+-        if !has_commit(cwd, &Sha(revision.to_owned())) {
+-            return Ok(false);
+-        }
 -    }
 -    // llmlint: ignore-end[changed_behavior_has_e2e]
      is_ancestor(cwd, ancestor, descendant)
