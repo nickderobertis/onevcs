@@ -782,6 +782,22 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     }
 }
 
+/// Whether one commit carries another, asked of a repository that may not have it.
+///
+/// `false` when this repository cannot reach `ancestor` at all, which is the answer
+/// rather than a failure: ancestry is reachability, so a commit a repository does not
+/// have is one nothing of its own descends from — while `merge-base --is-ancestor`
+/// meets a missing object with an error, and reading that as "not an ancestor" would
+/// also read a genuinely broken repository that way. Which is what makes this the
+/// question to ask across two checkouts holding one branch: each is asked about the
+/// other's tip, and the one that carries the rest is the copy that discards nothing.
+pub fn reaches(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    if !has_commit(cwd, &Sha(ancestor.to_owned())) {
+        return Ok(false);
+    }
+    is_ancestor(cwd, ancestor, descendant)
+}
+
 /// The commit two refs last had in common, or `None` when they share no history.
 ///
 /// A plain `String`, as every other SHA this module reads is: the crate's `Sha` is the

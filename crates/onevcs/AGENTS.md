@@ -86,6 +86,21 @@ stack inferred from content rewrites branches nobody stacked. Recorded stack sta
 cannot be read is refused, naming what restores it: publishing around it would answer
 "no stack" from a value nothing could read, which is the merge all of this avoids.
 
+**A name in two checkouts is two copies, and they are compared rather than ordered**
+(`branch::locate`). `workspace::checkouts_of`'s tiers are a search order, not a
+preference: the copy whose tip carries every other's is the one whose publication
+discards nothing, and taking the first tier that had the name is what published a
+publication checkout's copy of a branch whose conflict had already been resolved in a
+run clone — reporting a merge conflict that no longer existed on the resolved work.
+Two rules keep that from becoming a second bug. A copy can be the others *replayed*
+rather than added to, and a replay is exactly what this path's own conflict refusal
+sends an operator to make, so where no copy carries the rest the one that carries the
+base is the resolution and the rest are what it replaced. And copies nothing separates
+are refused, naming each checkout with the tip it holds: publishing one would discard
+the other. Which copy was chosen is said on stderr wherever the tips differed —
+without it a stale selection and a current one read identically, which is what left a
+planner unable to tell a real sync conflict from a stale copy's.
+
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
 cwd. The train is deliberately not what it names, even for finished work:

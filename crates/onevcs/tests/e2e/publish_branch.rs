@@ -16,6 +16,8 @@
 // push`, and when that program merges a change it does so with real git against the
 // same bare origin.
 
+use std::path::{Path, PathBuf};
+
 use predicates::prelude::*;
 
 use crate::host::{Hosted, AUTOMATED, REVIEWED};
@@ -33,10 +35,16 @@ fn stderr_of(assert: &assert_cmd::assert::Assert) -> String {
 /// journey runs is the text an operator would paste rather than a restatement of
 /// it.
 fn printed_command(refusal: &str) -> String {
+    printed(refusal, "onevcs ")
+}
+
+/// The same for a refusal whose next action is git itself, which the ones about two
+/// copies of a branch are: reconciling them happens in a checkout, not in a verb.
+fn printed(refusal: &str, program: &str) -> String {
     refusal
         .split('`')
-        .find(|span| span.starts_with("onevcs "))
-        .unwrap_or_else(|| panic!("the refusal names no command:\n{refusal}"))
+        .find(|span| span.starts_with(program))
+        .unwrap_or_else(|| panic!("the refusal names no {program}command:\n{refusal}"))
         .to_owned()
 }
 
@@ -96,6 +104,60 @@ fn finished_hosted_branch(hosted: &Hosted, branch: &str, subject: &str) {
         .args(["session", "close", &token_of(&stdout)])
         .assert()
         .success();
+}
+
+/// A branch two checkouts hold: the publication checkout at what a failed
+/// publication handed back, and the session's own run clone, still open on it.
+///
+/// The measured incident's shape, reached the way it was reached — a publication that
+/// does not land hands the branch back to the execution checkout whatever refused it,
+/// and the session it came from is still there for the resolution to be committed in.
+/// The fixture's gate must be one that fails; `gate_that_passes` is what lets the
+/// re-run go through afterwards.
+fn handed_back_and_still_open(fixture: &Fixture, branch: &str) -> (PathBuf, PathBuf) {
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    let file = format!("{}.txt", branch.replace('/', "-"));
+    fixture.world.commit_file(
+        &worktree,
+        &file,
+        "one\n",
+        "feat: the half the gate rejected",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 1 is the contract's code for a gate that rejected the change.
+        .code(1);
+    assert!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["branch", "--list", branch])
+            .contains(branch),
+        "a publication that did not land hands the branch back to the checkout"
+    );
+    let clone = worktree.parent().expect("a run root").join("clone");
+    (worktree, clone)
+}
+
+/// Give the identity a gate that passes, once a journey has used a failing one to
+/// hand a branch back.
+fn gate_that_passes(fixture: &Fixture) {
+    configure_rules(
+        &fixture.world,
+        format!(
+            "version: 1\nrules: []\ndefault: {}\n",
+            local_direct("[\"true\"]")
+        ),
+    );
+}
+
+/// What one checkout has a branch at.
+fn tip_of(fixture: &Fixture, checkout: &Path, branch: &str) -> String {
+    fixture
+        .world
+        .git(checkout, &["rev-parse", &format!("refs/heads/{branch}")])
 }
 
 /// One green required check, which is what a `change-auto` policy waits for.
@@ -1771,4 +1833,220 @@ fn a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay() {
             &["branch", "--list", "feature/recovered-clash"]
         )
         .contains("feature/recovered-clash"));
+}
+
+#[test]
+fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other() {
+    // The measured incident. A publication failed and handed the branch back, so the
+    // publication checkout holds it at that commit; the operator then resolved what
+    // failed in the session's own worktree, so the run clone holds the same name one
+    // commit further on. Taking the first copy in search order publishes the one from
+    // before the resolution — and reports about a tree the operator is not looking at.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let (worktree, clone) = handed_back_and_still_open(&fixture, "feature/resolved");
+    let stale = tip_of(&fixture, &fixture.checkout, "feature/resolved");
+    fixture.world.commit_file(
+        &worktree,
+        "resolution.txt",
+        "resolved\n",
+        "fix: what the operator resolved",
+    );
+    let resolved = tip_of(&fixture, &clone, "feature/resolved");
+    assert_ne!(
+        stale, resolved,
+        "the journey is about one name at two different commits"
+    );
+    gate_that_passes(&fixture);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/resolved",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    // What landed is the resolution, rather than the copy from before it.
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(
+        landed.contains("resolution.txt"),
+        "the copy that carries the other is the one that reached the base: {landed}"
+    );
+
+    // …and which copy that was is said where an operator reads it, with the commit
+    // each checkout held — which is what tells a current selection from a stale one
+    // without diffing checkouts by hand.
+    let said = stderr_of(&assert);
+    assert!(
+        said.contains(&format!(
+            "the copy in {} at {resolved} carries the rest",
+            clone.display()
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "passed over: {} at {stale}",
+            fixture.checkout.display()
+        )),
+        "{said}"
+    );
+}
+
+#[test]
+fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one() {
+    // Two resolutions of one name, one in each checkout, neither carrying the other.
+    // Nothing here can tell which is the work, so publishing either would discard
+    // somebody's — and the refusal is what an operator can act on, where a silent
+    // choice is not.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let (worktree, clone) = handed_back_and_still_open(&fixture, "feature/two-ways");
+    fixture.world.commit_file(
+        &worktree,
+        "mine.txt",
+        "mine\n",
+        "fix: the resolution in the session",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "feature/two-ways"]);
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "theirs.txt",
+        "theirs\n",
+        "fix: a different resolution in the checkout",
+    );
+    gate_that_passes(&fixture);
+    let mine = tip_of(&fixture, &clone, "feature/two-ways");
+    let theirs = tip_of(&fixture, &fixture.checkout, "feature/two-ways");
+
+    let landing = format!(
+        "onevcs publish-branch feature/two-ways --repo {}",
+        fixture.checkout.display()
+    );
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/two-ways",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("none of which carries the rest"))
+        .stderr(predicate::str::contains(format!(
+            "{} at {theirs}",
+            fixture.checkout.display()
+        )))
+        .stderr(predicate::str::contains(format!(
+            "{} at {mine}",
+            clone.display()
+        )))
+        .stderr(predicate::str::contains(format!(
+            "land it with `{landing}`"
+        )));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    // The refusal's own guidance is what resolves it: the fetch it prints brings the
+    // other copy in, and once one checkout carries both, the landing it names goes
+    // through and carries both resolutions.
+    let refusal = stderr_of(&assert);
+    let fetch = printed(&refusal, "git ");
+    fixture.world.shell(&fetch).assert().success();
+    fixture.world.git(
+        &fixture.checkout,
+        &["merge", "--no-edit", "-q", "FETCH_HEAD"],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    fixture
+        .world
+        .shell(&landing)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["ls-tree", "-r", "--name-only", "main"]);
+    for file in ["mine.txt", "theirs.txt"] {
+        assert!(
+            landed.contains(file),
+            "the reconciled copy carries both resolutions: {landed}"
+        );
+    }
+}
+
+#[test]
+fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched() {
+    // The ordinary state after every session: closing hands the branch back, so the
+    // checkout and the run clone hold one name at one commit. Nothing has to be chosen
+    // there — whichever copy is read, the tree is the same — so the search order
+    // stands, and the verb says nothing about a choice it did not make. Which copy it
+    // read is what its refusals name, and a base that conflicts is what makes one.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/one-commit"]);
+    fixture.world.commit_file(
+        &worktree,
+        "shared.txt",
+        "from the session\n",
+        "feat: change the shared file",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let clone = worktree.parent().expect("a run root").join("clone");
+    assert_eq!(
+        tip_of(&fixture, &clone, "feature/one-commit"),
+        tip_of(&fixture, &fixture.checkout, "feature/one-commit"),
+        "closing hands the branch back, so both checkouts hold the one commit"
+    );
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: change it differently",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/one-commit",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(3);
+    let refusal = stderr_of(&assert);
+    assert!(
+        refusal.contains(&format!(
+            "The branch is retained in {}",
+            fixture.checkout.display()
+        )),
+        "the first checkout searched is the one it was read out of:\n{refusal}"
+    );
+    assert!(
+        !refusal.contains(&clone.display().to_string()),
+        "and the copy it passed over is not the one an operator is sent to:\n{refusal}"
+    );
+    assert!(
+        !refusal.contains("carries the rest"),
+        "nothing was chosen between, so nothing is said about a choice:\n{refusal}"
+    );
 }

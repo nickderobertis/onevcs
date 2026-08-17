@@ -173,7 +173,7 @@ pub fn prepare(
     let rules_file = rules_source.file()?;
     let effective = publish::effective_policy(&resolved.policy, requested)?;
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
-    let source = locate(registry, &resolution, branch, &base)?;
+    let source = locate(registry, &resolution, verb, repo, branch, &base)?;
 
     let run_root = home::workspaces_dir()?.join(verb.runs()).join(format!(
         "{}-{}",
@@ -505,6 +505,38 @@ impl Landing {
     }
 }
 
+/// One checkout's copy of a branch: where it was found and what it stands at.
+struct Held {
+    /// The checkout the copy is in.
+    checkout: PathBuf,
+    /// The commit that checkout has the branch at.
+    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it, as every
+    // other commit this module carries did; the crate's `Sha` wraps an unvalidated
+    // `String` at the public surface and would make no state here unrepresentable.
+    tip: String,
+    /// The base this copy is judged against, as that checkout can name it — the
+    /// identity's base now where it has that commit, and its own view where it does
+    /// not. [`crate::vcs::judged_against`] answered it.
+    compared: String,
+}
+
+impl Held {
+    /// The copy as a refusal or a report names it: the checkout and the commit.
+    fn describe(&self) -> String {
+        format!("{} at {}", self.checkout.display(), self.tip)
+    }
+}
+
+/// Why one copy of a branch was chosen over the others, as the line about it says.
+#[derive(Debug, Clone, Copy)]
+enum Chose {
+    /// Its tip carries every other copy's, so publishing it discards nothing.
+    CarriesTheRest,
+    /// The copies were rewritten rather than added to, and this is the only one that
+    /// carries the base they are published onto.
+    Reconciled,
+}
+
 /// Find the checkout a branch can be read out of, and the copy of it that is the
 /// work rather than the name.
 ///
@@ -512,44 +544,223 @@ impl Landing {
 /// is first in it because a branch only reaches that one once something has already
 /// pushed it — a branch that reaches publication on its first attempt exists solely
 /// in the execution checkout the work was done in, or in the run clone of the
-/// session that stopped. A name can be in several of them at once, though, and a
-/// copy whose content the base already carries is spent: publishing that one would
+/// session that stopped. A name can be in several of them at once, though, and two
+/// things follow from that.
+///
+/// A copy whose content the base already carries is spent: publishing that one would
 /// answer that there is nothing to publish while the work sat under the same name
-/// somewhere else. So the first copy holding work wins, and a spent one is taken
-/// only when every copy is spent — where "nothing to publish" is the true answer,
-/// and a better one than a branch nobody has.
+/// somewhere else. So a spent copy is taken only when every copy is spent — where
+/// "nothing to publish" is the true answer, and a better one than a branch nobody
+/// has.
+///
+/// And where several copies carry work, they are *compared* rather than ordered: the
+/// one whose tip carries every other's is the one whose publication discards nothing,
+/// whichever tier it was found in. Taking the first in tier order instead is what
+/// published a publication checkout's stale copy of a branch whose conflict had
+/// already been resolved in a run clone, and reported a merge conflict that no longer
+/// existed on the resolved work.
+///
+/// A copy can also be the others *rewritten* rather than added to, and a replay onto
+/// the base is what rewrites one — which is exactly the resolution a conflict refusal
+/// on this path sends an operator to make, so it is not a state to refuse. The replay
+/// carries the base and what it replaced does not, so where no copy carries the rest
+/// and exactly one carries the base, that one is the work. Copies nothing separates
+/// have genuinely diverged and are refused, because publishing one would discard the
+/// other and nothing here can tell which is which.
 fn locate(
     registry: &Registry,
     resolution: &Resolution,
+    verb: Verb,
+    repo: &Path,
     branch: &str,
     base: &str,
 ) -> Result<PathBuf> {
     let searched = crate::workspace::checkouts_of(registry, resolution)?;
     let current = crate::vcs::base_commit(&resolution.publication, base);
+    let mut held: Vec<Held> = Vec::new();
     let mut spent: Option<PathBuf> = None;
     for candidate in &searched {
-        if !git::is_repo(candidate) || !git::branch_exists(candidate, branch) {
+        // The branch's own commit, by its full ref name so that a tag or a
+        // remote-tracking ref of the same name is not read as a copy of the branch:
+        // what the copies are chosen between by is commits. A checkout that is not a
+        // repository, or whose ref resolves to no commit of its own, holds no copy to
+        // choose at all.
+        let Some(tip) = git::is_repo(candidate)
+            .then(|| git::tip(candidate, &format!("refs/heads/{branch}")))
+            .flatten()
+        else {
+            continue;
+        };
+        let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
+        if !git::trees_differ(candidate, &compared, branch)? {
+            spent.get_or_insert_with(|| candidate.clone());
             continue;
         }
-        let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
-        if git::trees_differ(candidate, &compared, branch)? {
-            return Ok(candidate.clone());
+        held.push(Held {
+            checkout: candidate.clone(),
+            tip,
+            compared,
+        });
+    }
+    // One copy carrying work is the state this search has always answered for, and it
+    // answers the same way — there was nothing to choose between, so there is nothing
+    // to say about a choice. With none, the spent copy is the answer where there is
+    // one.
+    let [first, second, ..] = held.as_slice() else {
+        return held
+            .first()
+            .map(|only| only.checkout.clone())
+            .or(spent)
+            .ok_or_else(|| nowhere(&resolution.key, branch, &searched));
+    };
+    for copy in &held {
+        if !carries_the_rest(copy, &held)? {
+            continue;
         }
-        spent.get_or_insert_with(|| candidate.clone());
+        announce(branch, copy, &held, Chose::CarriesTheRest);
+        return Ok(copy.checkout.clone());
     }
-    if let Some(candidate) = spent {
-        return Ok(candidate);
+    if let Some(copy) = only_reconciled(&held)? {
+        announce(branch, copy, &held, Chose::Reconciled);
+        return Ok(copy.checkout.clone());
     }
-    Err(Error::Invalid {
+    Err(diverged(
+        branch,
+        &resolution.key,
+        &verb.command(branch, repo),
+        &held,
+        first,
+        second,
+    ))
+}
+
+/// Whether one copy's tip carries every other copy's, which is what makes it the one
+/// to publish.
+///
+/// Asked of that copy's own checkout, and of every copy including itself: equal tips
+/// are the same commit, so each of them carries the rest and the first in tier order
+/// wins — which is the order this module has always read a branch in.
+fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
+    for other in held {
+        if !git::reaches(&copy.checkout, &other.tip, &copy.tip)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The one copy that carries the base it is published onto, when exactly one does.
+///
+/// Which is what separates a copy that was rewritten from the copies it was rewritten
+/// *from*: replaying a branch onto the base is what a conflict refusal on this path
+/// sends an operator to do, and the result carries the base while the copy it replaced
+/// — a tip nothing rewrote, still sitting under the base it was cut from — does not.
+/// Where several copies carry the base, or none does, nothing here separates them and
+/// `None` is the honest answer.
+fn only_reconciled(held: &[Held]) -> Result<Option<&Held>> {
+    let mut reconciled: Option<&Held> = None;
+    for copy in held {
+        if !git::reaches(&copy.checkout, &copy.compared, &copy.tip)? {
+            continue;
+        }
+        if reconciled.replace(copy).is_some() {
+            return Ok(None);
+        }
+    }
+    Ok(reconciled)
+}
+
+/// Say which copy of a branch is being published, and which were passed over.
+///
+/// On stderr, because it is a question asked of the terminal rather than of the
+/// record: without it a stale selection and a current one read identically, and
+/// telling them apart means diffing checkouts by hand — which is what an operator
+/// resolving a conflict twice on one branch had to do. It never fails a landing: the
+/// selection is a fact about the publication that is about to happen, not a condition
+/// on it.
+///
+/// Silent where every copy is at the chosen commit, which is the ordinary state after
+/// a session hands its branch back: nothing was chosen between there, and a line about
+/// a choice nobody made is what makes the line about a real one unremarkable.
+fn announce(branch: &str, chosen: &Held, held: &[Held], chose: Chose) {
+    let passed_over: Vec<String> = held
+        .iter()
+        .filter(|copy| copy.tip != chosen.tip)
+        .map(Held::describe)
+        .collect();
+    if passed_over.is_empty() {
+        return;
+    }
+    eprintln!(
+        "onevcs: branch {branch:?} is in {count} checkouts of this identity, and the copy in \
+         {chosen} {why}, so that is the one being published; passed over: {passed_over}",
+        count = held.len(),
+        chosen = chosen.describe(),
+        why = match chose {
+            Chose::CarriesTheRest => "carries the rest".to_owned(),
+            Chose::Reconciled => format!(
+                "is the only one that carries {}, so it is the rest replayed onto it",
+                chosen.compared
+            ),
+        },
+        passed_over = passed_over.join(", "),
+    );
+}
+
+/// Why copies of one branch that have diverged are refused, and what resolves it.
+///
+/// Every copy is named with the commit it holds, because the operator's question is
+/// which of them is their work — and the guidance is the fetch that brings one into
+/// the other, since whichever way they reconcile them it starts there. `into` and
+/// `from` are two of the copies that have actually diverged, so the command printed
+/// is one that runs as printed rather than a shape to fill in.
+fn diverged(
+    branch: &str,
+    identity: &str,
+    command: &str,
+    held: &[Held],
+    into: &Held,
+    from: &Held,
+) -> Error {
+    Error::Invalid {
         reason: format!(
-            "branch {branch:?} is in none of the checkouts of identity {:?}: {}. `onevcs \
+            "branch {branch:?} is in {count} checkouts of identity {identity:?} at commits none of \
+             which carries the rest, so nothing here can tell which copy is the work and \
+             publishing one would discard the other: {listed}. Reconcile them in one checkout — \
+             `{fetch}` brings {from}'s copy into {into} as FETCH_HEAD, to merge or rebase onto the \
+             one that is there — or delete the copy that is not the work, and then land it with \
+             `{command}`",
+            count = held.len(),
+            listed = held
+                .iter()
+                .map(Held::describe)
+                .collect::<Vec<_>>()
+                .join(", "),
+            fetch = guidance::command([
+                "git",
+                "-C",
+                &into.checkout.to_string_lossy(),
+                "fetch",
+                &from.checkout.to_string_lossy(),
+                branch,
+            ]),
+            from = from.checkout.display(),
+            into = into.checkout.display(),
+        ),
+    }
+}
+
+/// Why a branch no checkout of the identity holds is refused, naming where it looked.
+fn nowhere(identity: &str, branch: &str, searched: &[PathBuf]) -> Error {
+    Error::Invalid {
+        reason: format!(
+            "branch {branch:?} is in none of the checkouts of identity {identity:?}: {}. `onevcs \
              recoverable` lists every preserved branch and the checkout it is in",
-            resolution.key,
             searched
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-    })
+    }
 }

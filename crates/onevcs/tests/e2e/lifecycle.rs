@@ -1470,12 +1470,19 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
 
     // The claim is that the printed command lands it, so it is run as printed —
     // from outside every checkout, which is where an operator reading this stands.
-    fixture
+    let landed = fixture
         .world
         .shell(&resume)
         .assert()
         .success()
         .stdout(predicate::str::contains("merged at"));
+    // One checkout holds the branch, so nothing was chosen between copies of it and
+    // nothing is said about a choice: the line naming a chosen copy belongs to the
+    // state where two checkouts hold one name at different commits.
+    assert!(
+        !String::from_utf8_lossy(&landed.get_output().stderr).contains("carries the rest"),
+        "a lone copy is published without a word about copies"
+    );
     assert!(
         fixture
             .origin_log()
