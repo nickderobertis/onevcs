@@ -1480,7 +1480,8 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
     // nothing is said about a choice: the line naming a chosen copy belongs to the
     // state where two checkouts hold one name at different commits.
     assert!(
-        !String::from_utf8_lossy(&landed.get_output().stderr).contains("is the one being read"),
+        !String::from_utf8_lossy(&landed.get_output().stderr)
+            .contains("is the one being published"),
         "a lone copy is published without a word about copies"
     );
     assert!(

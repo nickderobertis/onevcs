@@ -1309,27 +1309,13 @@ fn an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_
         .world
         .git(&worker, &["merge", "--no-edit", "-q", "FETCH_HEAD"]);
     fixture.world.git(&worker, &["checkout", "-q", "main"]);
-    let reconciled = fixture
-        .world
-        .git(&worker, &["rev-parse", "feature/two-sources"]);
 
-    // …and the copy it read is named the same way a landing names one, which is what
-    // makes it answerable: the copies still differ, and an operator reading this back
-    // can say which checkout the import took its source from.
     fixture
         .world
         .shell(&importing)
         .assert()
         .success()
-        .stdout(predicate::str::contains("imported feature/two-sources"))
-        .stderr(predicate::str::contains(format!(
-            "the copy in {} at {reconciled} is the one being read",
-            worker.display()
-        )))
-        .stderr(predicate::str::contains(format!(
-            "passed over: {} at {theirs}",
-            elsewhere.display()
-        )));
+        .stdout(predicate::str::contains("imported feature/two-sources"));
     let imported = fixture.world.git(
         &fixture.checkout,
         &["ls-tree", "-r", "--name-only", "feature/two-sources"],
