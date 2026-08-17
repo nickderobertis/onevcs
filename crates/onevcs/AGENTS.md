@@ -98,17 +98,13 @@ differed, which copy was chosen is said on stderr: without it a stale selection 
 current one read identically, and a sync-conflict refusal cannot be told from a stale
 copy's.
 
-**A rewritten copy is refused with the rest, and that has a cost this repository has
-already paid once.** A replay carries nothing of what it replaced, so resolving
-`sync_change_base`'s replay conflict in the publication checkout leaves exactly such a
-pair — the resolution there, the pre-replay tip in the session's run clone — and the
-landing that refusal names is then refused itself. The way out is to leave one copy, and
-nothing here does that: the session must be closed (its worktree has the name checked
-out, and git moves no branch a worktree holds) and the clone's ref deleted by hand.
-`a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it`
-carries those steps so the cost is measured rather than described. It is deliberate:
-selecting the rewritten copy means guessing that a rewrite supersedes what it rewrote,
-and a second, competing line of work on one name is indistinguishable from it.
+**A rewritten copy is refused with the rest, and it costs a workflow.** Selecting one
+would mean guessing that a rewrite supersedes what it rewrote, which is
+indistinguishable from a second line of work on the same name — so it is refused, and
+resolving `sync_change_base`'s replay conflict in the publication checkout leaves exactly
+that pair. The landing that refusal names is then refused too, until one copy is gone:
+closing the session and deleting the run clone's ref, neither of which any verb here
+does. The replay-conflict journey carries those steps, so the cost stays measured.
 
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by

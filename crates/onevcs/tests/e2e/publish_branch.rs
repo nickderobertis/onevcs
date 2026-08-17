@@ -2130,13 +2130,25 @@ fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_
 }
 
 #[test]
-fn a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none_of() {
-    // A spent copy answers for nobody — its content is in the base, so publishing it
-    // would report that there is nothing to publish — and passing it over discards
-    // nothing for the same reason. It is still a checkout holding the branch, though,
-    // and what an operator is deciding about is where the name is: a copy left out of
-    // the answer is one they cannot account for.
+fn every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them() {
+    // What an operator is deciding about is where the name is, so the answer covers
+    // every checkout that has it — the copy at the chosen commit as much as the one at a
+    // different commit, and a copy whose content the base already carries as much as
+    // either. That last one answers for none of the work and passing it over discards
+    // nothing, which is exactly why it would otherwise be the one dropped from the
+    // report, leaving an operator to account for a checkout nothing mentioned.
+    //
+    // Four copies of one name are built here: a spent pair from a use of the name that
+    // was published, and the work of a second use in both a worker checkout and the run
+    // clone that handed it there — two copies at one commit, one of which is chosen.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let worker = fixture.world.clone_of(&fixture.origin, "worker");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
     let (first, first_tree) = fixture.open(&["--branch", "feature/reused"]);
     fixture.world.commit_file(
         &first_tree,
@@ -2165,8 +2177,23 @@ fn a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none
     let spent = tip_of(&fixture, &fixture.checkout, "feature/reused");
 
     // The name is taken again — allowed precisely because the base carries what it meant
-    // — and this run stops before anything hands its branch back.
-    let (_second, second_tree) = fixture.open(&["--branch", "feature/reused"]);
+    // — in the worker checkout this time, and closing that session hands the work there.
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/reused",
+        ])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let second_tree = worktree_of(&stdout);
     fixture.world.commit_file(
         &second_tree,
         "b.txt",
@@ -2174,7 +2201,19 @@ fn a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none
         "feat: the work that must still be found",
     );
     let live_clone = second_tree.parent().expect("a run root").join("clone");
-    let live = tip_of(&fixture, &live_clone, "feature/reused");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token_of(&stdout)])
+        .assert()
+        .success();
+    let live = tip_of(&fixture, &worker, "feature/reused");
+    assert_eq!(
+        live,
+        tip_of(&fixture, &live_clone, "feature/reused"),
+        "closing hands the work to the worker, so two checkouts hold that commit"
+    );
+    assert_ne!(live, spent, "and two others hold what the base already has");
 
     let assert = fixture
         .world
@@ -2196,16 +2235,20 @@ fn a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none
         fixture.origin_log()
     );
 
-    // Three checkouts hold the name: the live copy, and two whose content the base
-    // already has. All three are named, and the spent ones say why they answered for
-    // nothing.
+    // The worker's copy is the chosen one — first in search order among the two holding
+    // that commit — and the other three are named beside it: the run clone at the same
+    // commit, and the two the base already carries.
     let said = stderr_of(&assert);
     assert!(
         said.contains(&format!(
             "the copy in {} at {live} is the one being published",
-            live_clone.display()
+            worker.display()
         )),
-        "the live copy is named as the one that was published:\n{said}"
+        "the copy that was published is named:\n{said}"
+    );
+    assert!(
+        said.contains(&format!("{} at {live}", live_clone.display())),
+        "so is the copy at that same commit, which was passed over too:\n{said}"
     );
     for copy in [&fixture.checkout, &spent_clone] {
         assert!(
@@ -2213,7 +2256,7 @@ fn a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none
                 "{} at {spent} (already in the base)",
                 copy.display()
             )),
-            "the copy in {} is named as one the base already carries:\n{said}",
+            "and so is the copy in {}, as one the base already carries:\n{said}",
             copy.display()
         );
     }

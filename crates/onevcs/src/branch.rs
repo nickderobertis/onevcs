@@ -505,16 +505,25 @@ impl Landing {
     }
 }
 
+/// What one copy of a branch holds that the base it would be published onto does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holds {
+    /// Content the base does not have: work a publication would land.
+    Work,
+    /// Nothing the base does not already have. Publishing this copy would answer that
+    /// there is nothing to publish, and passing it over discards nothing.
+    WhatTheBaseHas,
+}
+
 /// One checkout's copy of a branch: the commit the name stands at there — a name being
-/// what two copies already have in common — and whether the base already carries what
-/// that copy means.
+/// what two copies already have in common — and what that copy holds.
 // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered the commit, as
 // every other one this module carries did; the crate's `Sha` wraps an unvalidated
 // `String` at the public surface and would make no state here unrepresentable.
 struct Held {
     checkout: PathBuf,
     tip: String,
-    spent: bool,
+    holds: Holds,
 }
 
 impl Held {
@@ -527,10 +536,9 @@ impl Held {
             "{} at {}{}",
             self.checkout.display(),
             self.tip,
-            if self.spent {
-                " (already in the base)"
-            } else {
-                ""
+            match self.holds {
+                Holds::Work => "",
+                Holds::WhatTheBaseHas => " (already in the base)",
             }
         )
     }
@@ -586,14 +594,20 @@ fn locate(
             continue;
         };
         let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
-        let spent = !git::trees_differ(candidate, &compared, branch)?;
+        let holds = match git::trees_differ(candidate, &compared, branch)? {
+            true => Holds::Work,
+            false => Holds::WhatTheBaseHas,
+        };
         held.push(Held {
             checkout: candidate.clone(),
             tip,
-            spent,
+            holds,
         });
     }
-    let working: Vec<&Held> = held.iter().filter(|copy| !copy.spent).collect();
+    let working: Vec<&Held> = held
+        .iter()
+        .filter(|copy| copy.holds == Holds::Work)
+        .collect();
     // One copy carrying work is the state this search has always answered for, and it
     // answers the same way — there was nothing to compare. With none, the first spent
     // copy in search order is the answer, which is where "nothing to publish" comes
@@ -648,16 +662,19 @@ fn carries_the_rest(copy: &Held, working: &[&Held]) -> Result<bool> {
 ///
 /// Silent where every copy is at the chosen commit, which is the ordinary state after
 /// a session hands its branch back: nothing was chosen between there, and a line about
-/// a choice nobody made is what makes the line about a real one unremarkable.
+/// a choice nobody made is what makes the line about a real one unremarkable. Where the
+/// tips do differ, every other checkout holding the branch is listed — a copy at the
+/// chosen commit included, because it was passed over too and an operator counting the
+/// places this name is cannot be left one short.
 fn announce(branch: &str, chosen: &Held, held: &[Held]) {
-    let passed_over: Vec<String> = held
-        .iter()
-        .filter(|copy| copy.tip != chosen.tip)
-        .map(Held::describe)
-        .collect();
-    if passed_over.is_empty() {
+    if held.iter().all(|copy| copy.tip == chosen.tip) {
         return;
     }
+    let passed_over: Vec<String> = held
+        .iter()
+        .filter(|copy| copy.checkout != chosen.checkout)
+        .map(Held::describe)
+        .collect();
     eprintln!(
         "onevcs: branch {branch:?} is in {count} checkouts of this identity, and the copy in \
          {chosen} is the one being published; passed over: {passed_over}",
