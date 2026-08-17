@@ -544,40 +544,20 @@ impl Held {
 /// Find the checkout a branch can be read out of, and the copy of it that is the
 /// work rather than the name.
 ///
-/// [`crate::workspace::checkouts_of`] is where it looks, and that list is a search
-/// order rather than a preference. One name can be in several of those checkouts at
-/// once, and two things decide which copy of it answers.
+/// [`crate::workspace::checkouts_of`] is the search order, and it is an order rather
+/// than a preference: every copy is compared, one whose content the base already
+/// carries included, and the copy carrying all the others is the one returned. Where no
+/// copy carries the rest they have diverged and the search refuses. The one state with
+/// nothing to compare is every copy spent, and the first in search order answers it.
+/// Both the line that chooses and the refusal that cannot name every checkout holding
+/// the branch. Why it is a comparison and not a tier order is in this crate's
+/// `AGENTS.md`.
 ///
-/// **Every** copy is compared, and one of them must carry all the others: its
-/// publication is then the only one that discards nothing, and it wins whichever tier it
-/// was found in. Copies where none does have diverged and are refused. A rewritten copy
-/// — a replay onto the base, which is what [`Landing::sync_change_base`]'s own conflict
-/// refusal sends an operator to make — is one of those: it carries nothing of what it
-/// replaced, and nothing here can tell it from a second, competing line of work.
-/// Choosing it would discard the other copy on a guess, so the refusal stands and an
-/// operator says which copy is the work by leaving one of them.
-///
-/// A copy whose content the base already carries is compared like any other. Its
-/// *content* is spent — publishing it answers that there is nothing to publish — but the
-/// commit under that name is a commit like the rest, and one no other copy descends from
-/// is a divergence whether or not what it once held has landed. Judging those copies
-/// separately is what let a lone work-carrying copy be chosen silently beside a spent
-/// tip nothing descends from.
-///
-/// One state has nothing to compare: every copy spent. The answer there is that there is
-/// nothing to publish whichever copy is read, so the first in search order is taken —
-/// and that is a better answer than a branch nobody has.
-///
-/// Every checkout holding the branch is named in the line that chooses and in the
-/// refusal that cannot, spent copies included: what an operator is deciding about is
-/// where the name is, and a copy left out of that answer is one they cannot account for.
-///
-/// `onevcs import` reaches it too, for the source it takes when nobody named one:
-/// finding a branch wherever this identity left it is one question, and a second
-/// search beside this one would answer it differently the first time either moved.
-/// `next` is why the divergence refusal is not spelled from a [`Verb`]: it is the
-/// clause telling an operator what to do once they have reconciled the copies, and
-/// the three verbs that reach here are not all landing one.
+/// `next` is the clause the divergence refusal ends in — what to do with the branch once
+/// the copies are reconciled — and it is a parameter rather than spelled from a
+/// [`Verb`] because the three verbs that reach here are not all landing one: `import`
+/// comes here for the source it takes when nobody passed `--from`, and what it sends an
+/// operator back to is that same import.
 pub(crate) fn locate(
     registry: &Registry,
     resolution: &Resolution,
