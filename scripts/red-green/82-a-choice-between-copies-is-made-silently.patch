@@ -1,6 +1,6 @@
 Mutation: the copy a landing chose is no longer said, so a stale selection and a current one read identically.
 Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
-Red: a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none_of
+Red: every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
 index 164a293..3263c50 100644

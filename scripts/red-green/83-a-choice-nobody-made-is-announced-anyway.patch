@@ -3,16 +3,16 @@ Red: copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searc
 Red: work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 164a293..593def0 100644
+index 50adf12..3b7c4a4 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -655,9 +655,6 @@ fn announce(branch: &str, chosen: &Held, held: &[Held]) {
-         .filter(|copy| copy.tip != chosen.tip)
-         .map(Held::describe)
-         .collect();
--    if passed_over.is_empty() {
+@@ -667,9 +667,6 @@ fn carries_the_rest(copy: &Held, working: &[&Held]) -> Result<bool> {
+ /// chosen commit included, because it was passed over too and an operator counting the
+ /// places this name is cannot be left one short.
+ fn announce(branch: &str, chosen: &Held, held: &[Held]) {
+-    if held.iter().all(|copy| copy.tip == chosen.tip) {
 -        return;
 -    }
-     eprintln!(
-         "onevcs: branch {branch:?} is in {count} checkouts of this identity, and the copy in \
-          {chosen} is the one being published; passed over: {passed_over}",
+     let passed_over: Vec<String> = held
+         .iter()
+         .filter(|copy| copy.checkout != chosen.checkout)
