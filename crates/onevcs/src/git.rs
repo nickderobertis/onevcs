@@ -782,13 +782,14 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 
 /// Whether this repository can *show* that `descendant` reaches `ancestor`.
 ///
-/// "Can show", because it is asked exactly where the commit may be absent — of one
+/// "Can show", because it is asked exactly where a commit may be absent — of one
 /// checkout, about another checkout's tip — and [`is_ancestor`] alone answers that with a
-/// failure rather than a verdict. So absence is `false`, as it is for [`has_commit`]
-/// beside it: ancestry is reachability, and nothing a repository has descends from a
-/// commit it cannot see. A repository that could not be read at all is the same `false`,
-/// which is the safe direction here — that copy of a branch loses the comparison, and a
-/// comparison nothing wins is refused rather than resolved by picking.
+/// failure rather than a verdict. So absence of *either* revision is `false`, as it is for
+/// [`has_commit`] beside it: ancestry is reachability, and a repository that cannot see
+/// both ends of the question cannot show one reaches the other. A repository that could
+/// not be read at all is the same `false`, which is the safe direction here — that copy of
+/// a branch loses the comparison, and a comparison nothing wins is refused rather than
+/// resolved by picking.
 ///
 /// Both are revisions as [`is_ancestor`] and [`merge_base`] beside it take them: a commit
 /// id, or any name git resolves to one.
@@ -796,16 +797,17 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 // the crate's `Sha` is the contract's wrapper for its public surface and validates
 // nothing, and what this takes is what git just answered.
 pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
-    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: the half of this
-    // predicate that answers `false` because the repository could not be read at all
-    // rather than because it does not have the commit. `locate` resolved this checkout's
-    // own branch tip and diffed its tree moments earlier, so no journey gets it to fail
-    // here — which is why the strict three-way version of this was deleted rather than
-    // kept behind a fixture nothing can build. Deferred with the arm that does happen
-    // covered end to end by
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: the answers this guard
+    // gives about a `descendant` the repository does not have, and about one it could not
+    // be read for at all. Its only caller passes the tip `locate` resolved out of this
+    // very checkout moments earlier, so no journey reaches either — which is why the
+    // strict three-way version of this was deleted rather than kept behind a fixture
+    // nothing can build. Deferred with the arm that does happen covered end to end by
     // `a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison`.
-    if !has_commit(cwd, &Sha(ancestor.to_owned())) {
-        return Ok(false);
+    for revision in [ancestor, descendant] {
+        if !has_commit(cwd, &Sha(revision.to_owned())) {
+            return Ok(false);
+        }
     }
     // llmlint: ignore-end[changed_behavior_has_e2e]
     is_ancestor(cwd, ancestor, descendant)
