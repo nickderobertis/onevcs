@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 85. Tests observed red and then green: 112.
+Patches: 85. Tests observed red and then green: 113.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -543,6 +543,7 @@ the copies of a branch are ordered rather than compared, so the first checkout t
 - RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — Unexpected stderr, failed var.contains(no copy holding work carries the rest)
 - RED `a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other` — Unexpected return code, failed var == 2
 - RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected return code, failed var == 2
+- RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected return code, failed var == 2
 
 ### `81-a-tie-between-copies-is-broken-backwards`
 
