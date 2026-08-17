@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 85. Tests observed red and then green: 111.
+Patches: 85. Tests observed red and then green: 112.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -527,7 +527,7 @@ a request that pinned no branch resumes whatever session it finds.
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -556,6 +556,7 @@ the copy a landing chose is no longer said, so a stale selection and a current o
 
 - RED `a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other` — the copy that was published is named with the commit it held:
 - RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — the copy that was published is named:
+- RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — the copy the answer came from is named:
 
 ### `83-a-choice-nobody-made-is-announced-anyway`
 
@@ -576,4 +577,5 @@ the check on the working directory is inverted, so each way git cannot start is 
 a copy whose content the base already carries is left out of the copies a landing reports, so the answer is not about every checkout holding the branch.
 
 - RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — and so is the copy in <tmp>/project, as one the base already carries:
+- RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — and so is the other copy of the name:
 
