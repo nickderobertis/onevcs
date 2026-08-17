@@ -517,11 +517,11 @@ enum Holds {
 
 /// One checkout's copy of a branch: the commit the name stands at there — a name being
 /// what two copies already have in common — and what that copy holds.
-// llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered the commit, as
-// every other one this module carries did; the crate's `Sha` wraps an unvalidated
-// `String` at the public surface and would make no state here unrepresentable.
 struct Held {
     checkout: PathBuf,
+    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it, as every
+    // other commit this module carries did; the crate's `Sha` wraps an unvalidated
+    // `String` at the public surface and would make no state here unrepresentable.
     tip: String,
     holds: Holds,
 }
