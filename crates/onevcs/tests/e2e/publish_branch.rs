@@ -2205,7 +2205,7 @@ fn a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none
             "the copy in {} at {live} is the one being published",
             live_clone.display()
         )),
-        "{said}"
+        "the live copy is named as the one that was published:\n{said}"
     );
     for copy in [&fixture.checkout, &spent_clone] {
         assert!(
