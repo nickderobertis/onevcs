@@ -642,19 +642,13 @@ fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
 
 /// Say which copy of a branch is being published, and which were passed over.
 ///
-/// On stderr, because it is a question asked of the terminal rather than of the
-/// record: without it a stale selection and a current one read identically, and
-/// telling them apart means diffing checkouts by hand — which is what an operator
-/// resolving a conflict twice on one branch had to do. It never fails a landing: the
-/// selection is a fact about the publication that is about to happen, not a condition
-/// on it.
+/// On stderr and never a condition on the landing: a stale selection and a current one
+/// otherwise read identically, and telling them apart means diffing checkouts by hand.
 ///
-/// Silent where every copy is at the chosen commit, which is the ordinary state after
-/// a session hands its branch back: nothing was chosen between there, and a line about
-/// a choice nobody made is what makes the line about a real one unremarkable. Where the
-/// tips do differ, every other checkout holding the branch is listed — a copy at the
-/// chosen commit included, because it was passed over too and an operator counting the
-/// places this name is cannot be left one short.
+/// Silent where every copy is at the chosen commit — nothing was chosen between there,
+/// and a line about a choice nobody made is what makes a real one unremarkable. Where the
+/// tips differ, every other checkout holding the branch is listed, one at the chosen
+/// commit included: it was passed over too.
 fn announce(branch: &str, chosen: &Held, held: &[Held]) {
     if held.iter().all(|copy| copy.tip == chosen.tip) {
         return;
