@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 79. Tests observed red and then green: 104.
+Patches: 85. Tests observed red and then green: 109.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -527,11 +527,51 @@ a request that pinned no branch resumes whatever session it finds.
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
 a pin resumes a record without asking whether it is the session asked for, or still there.
 
 - RED `a_pin_resumes_only_the_session_it_asked_for` — assertion `left != right` failed: a closed session is not resumed
+
+### `80-a-stale-copy-of-a-branch-is-published`
+
+the copies of a branch are ordered rather than compared, so the first checkout that has the name wins.
+
+- RED `a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other` — the copy that carries the other is the one that reached the base: README.md
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — Unexpected stderr, failed var.contains(none of which carries the rest)
+
+### `81-a-tie-between-copies-is-broken-backwards`
+
+equal tips are broken by the last checkout searched rather than by the search order.
+
+- RED `copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched` — the first checkout searched is the one it was read out of:
+
+### `82-a-choice-between-copies-is-made-silently`
+
+the copy a landing chose is no longer said, so a stale selection and a current one read identically.
+
+- RED `a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other` — the copy that was published is named with the commit it held:
+- RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — the replayed copy is named as the one that carries the base:
+
+### `83-a-choice-nobody-made-is-announced-anyway`
+
+a copy is announced whether or not anything was chosen between, which is every landing after a session.
+
+- RED `copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched` — nothing was chosen between, so nothing is said about a choice:
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — a lone copy is published without a word about copies
+
+### `84-a-missing-directory-and-a-missing-git-are-swapped`
+
+the check on the working directory is inverted, so each way git cannot start is answered with the other's message.
+
+- RED `a_git_command_whose_working_directory_is_gone_names_that_directory` — Unexpected stderr, failed var.contains(in <tmp>/project: that directory does not exist)
+- RED `a_git_binary_nothing_can_find_still_names_the_binary` — Unexpected stderr, failed var.contains(is git installed and on PATH?)
+
+### `85-a-replayed-resolution-is-refused-as-a-divergence`
+
+a copy that is the rest replayed onto the base is read as a divergence, which refuses the resolution this path's own conflict refusal names.
+
+- RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected failure.
 
