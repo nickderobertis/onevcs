@@ -1,0 +1,19 @@
+Mutation: status resolves a change request's URL as no reference at all, which is the state before this branch: the URL is the host's name for the work and nothing here reads it.
+Red: every_spelling_of_one_piece_of_work_resolves_to_the_same_report
+Red: an_ambiguous_reference_is_refused_by_naming_the_candidates
+Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
+
+diff --git a/crates/onevcs/src/status.rs b/crates/onevcs/src/status.rs
+index cbfd692..339f275 100644
+--- a/crates/onevcs/src/status.rs
++++ b/crates/onevcs/src/status.rs
+@@ -880,9 +880,6 @@ fn relevant_streams<'a>(
+ /// can belong to two identities, and answering about whichever came first would be
+ /// a report about work nobody asked after.
+ fn resolve(registry: &Registry, reference: &str, streams: &[Recorded]) -> Result<(Work, RefKind)> {
+-    if reference.starts_with("http://") || reference.starts_with("https://") {
+-        return change_url(registry, reference, streams).map(|work| (work, RefKind::ChangeUrl));
+-    }
+     if let Ok(record) = workspace::load(reference) {
+         return Ok((
+             Work {

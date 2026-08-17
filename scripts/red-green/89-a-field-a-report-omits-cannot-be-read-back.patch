@@ -1,0 +1,16 @@
+Mutation: a field the report leaves out when it holds nothing becomes one a reader requires, so the very bytes this build writes are bytes it cannot read.
+Red: both_checked_in_goldens_read_back_as_reports_and_write_themselves_again
+
+diff --git a/crates/onevcs/src/status.rs b/crates/onevcs/src/status.rs
+index b12edb6..cc6eb70 100644
+--- a/crates/onevcs/src/status.rs
++++ b/crates/onevcs/src/status.rs
+@@ -123,7 +123,7 @@ pub struct Report {
+     pub next: NextReport,
+     /// Anything this report could not read, so a gap is stated rather than left to
+     /// look like an answer.
+-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    #[serde(skip_serializing_if = "Vec::is_empty")]
+     pub notes: Vec<String>,
+ }
+ 

@@ -9,9 +9,10 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::cli::{
-    ArtifactCommand, Command, EventsArgs, IntegrateArgs, PublishArgs, PublishBranchArgs,
-    RecoverArgs, RecoverableArgs, RegisterArgs, ReposArgs, ResolveArgs, RulesCheckArgs,
-    RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, SyncArgs,
+    ArtifactCommand, Command, EventsArgs, ImportArgs, IntegrateArgs, PublishArgs,
+    PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReposArgs, ResolveArgs,
+    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
+    SessionTokenArgs, StatusArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
@@ -22,8 +23,8 @@ use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken}
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::{
-    git, guidance, integrate, lock, policy, provenance, publish, publish_branch, recover, stream,
-    workspace,
+    git, guidance, import, integrate, lock, policy, provenance, publish, publish_branch, recover,
+    status, stream, workspace,
 };
 
 /// Run one parsed command, returning its exit code.
@@ -57,6 +58,8 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::PublishBranch(args) => publish_branch(args, providers),
         Command::Recover(args) => recover_branch(args, providers),
         Command::Recoverable(args) => recoverable(args, providers),
+        Command::Status(args) => report_status(args, providers),
+        Command::Import(args) => import_branch(args),
         Command::Integrate(args) => integrate_branches(args),
         Command::Sync(args) => sync(args),
         Command::Events(args) => events(args, providers),
@@ -446,6 +449,49 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     if scoped.is_some() {
         println!("{widen}");
     }
+    Ok(0)
+}
+
+/// Render everything this host knows about one piece of work.
+///
+/// One rendering of one answer: [`status::Report`] is what was found, and `--json`
+/// and the human form are two spellings of it rather than two readings of the
+/// store. The host is reached through the seam like every other command that
+/// touches one, and a host that could not be reached leaves a section of the report
+/// unavailable rather than failing the command — which is the whole reason this
+/// answers at all when `gh pr checks` would not.
+fn report_status(args: &StatusArgs, providers: &Providers<'_>) -> Result<u8> {
+    let registry = store::load()?;
+    let report = status::run(&registry, &args.reference, providers.hosting)?;
+    if args.json {
+        println!("{}", serde_json::to_string(&report).map_err(serialization)?);
+    } else {
+        print!("{}", report.render());
+    }
+    Ok(0)
+}
+
+fn import_branch(args: &ImportArgs) -> Result<u8> {
+    let registry = store::load()?;
+    let imported = import::run(
+        &registry,
+        &args.repo,
+        &args.branch,
+        args.from.as_deref(),
+        args.r#as.as_deref(),
+    )?;
+    println!(
+        "{} {} in {} from {}, at {}",
+        match imported.wrote {
+            import::Wrote::Created => "imported",
+            import::Wrote::FastForwarded => "fast-forwarded",
+            import::Wrote::Unchanged => "already had",
+        },
+        imported.name,
+        imported.destination.display(),
+        imported.source.describe(),
+        imported.tip,
+    );
     Ok(0)
 }
 

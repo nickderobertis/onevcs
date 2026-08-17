@@ -33,6 +33,20 @@ that same rules-resolved policy: `onevcs publish-branch feature/thing --repo
 stopped half way, which publishes it with the attestation that a green gate
 cleared it. Whichever of the three refuses a branch names the one that takes it.
 
+`onevcs status REF` answers what became of a piece of work, asked by whichever
+name you hold — a change request's URL, a session token, a branch, or a commit. It
+reports the identity's resolved policy, the session, every checkout and per-run
+clone holding the branch, whether the change **landed**, the host's checks, the
+last gate verdict, and the command that advances it. A change that squash-merged
+reads as landed rather than as unpublished, and a host that cannot be reached
+leaves its section unavailable instead of failing the command.
+
+`onevcs import BRANCH --repo PATH [--from SOURCE] [--as NAME]` makes a branch
+reachable from an identity's registered checkouts, so a later run's clone can see
+work a stopped run left in its own. It writes refs and nothing else — no checkout,
+no working tree — and refuses a non-fast-forward overwrite by naming the commits
+it would lose.
+
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.
 

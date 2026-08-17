@@ -146,18 +146,9 @@ pub fn prepare(
     branch: &str,
     requested: Option<MergePolicy>,
 ) -> Result<Landing> {
-    // A path this build cannot read as text is refused here rather than resolved
-    // through a lossy rendering of itself: the replacement characters name a
-    // checkout nobody registered, and the refusal would then be about the wrong
-    // thing entirely.
-    let named = repo.to_str().ok_or_else(|| Error::Invalid {
-        reason: format!(
-            "the repository path {} is not valid UTF-8, so it can name no registered checkout; \
-             `onevcs repos` lists them as they are recorded",
-            repo.display()
-        ),
-    })?;
-    let resolution = store::resolve(registry, named)?;
+    // A path this build cannot read as text is refused where every `--repo` is,
+    // rather than resolved through a lossy rendering of itself.
+    let resolution = store::resolve_path(registry, repo)?;
     let (file, rules_source) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     if !git::is_valid_branch_name(branch) {
@@ -173,7 +164,13 @@ pub fn prepare(
     let rules_file = rules_source.file()?;
     let effective = publish::effective_policy(&resolved.policy, requested)?;
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
-    let source = locate(registry, &resolution, verb, repo, branch, &base)?;
+    let source = locate(
+        registry,
+        &resolution,
+        branch,
+        &base,
+        &format!("land it with `{}`", verb.command(branch, repo)),
+    )?;
 
     let run_root = home::workspaces_dir()?.join(verb.runs()).join(format!(
         "{}-{}",
@@ -574,13 +571,19 @@ impl Held {
 /// Every checkout holding the branch is named in the line that chooses and in the
 /// refusal that cannot, spent copies included: what an operator is deciding about is
 /// where the name is, and a copy left out of that answer is one they cannot account for.
-fn locate(
+///
+/// `onevcs import` reaches it too, for the source it takes when nobody named one:
+/// finding a branch wherever this identity left it is one question, and a second
+/// search beside this one would answer it differently the first time either moved.
+/// `next` is why the divergence refusal is not spelled from a [`Verb`]: it is the
+/// clause telling an operator what to do once they have reconciled the copies, and
+/// the three verbs that reach here are not all landing one.
+pub(crate) fn locate(
     registry: &Registry,
     resolution: &Resolution,
-    verb: Verb,
-    repo: &Path,
     branch: &str,
     base: &str,
+    next: &str,
 ) -> Result<PathBuf> {
     let searched = crate::workspace::checkouts_of(registry, resolution)?;
     let current = crate::vcs::base_commit(&resolution.publication, base);
@@ -640,7 +643,7 @@ fn locate(
     Err(diverged(
         branch,
         &resolution.key,
-        &verb.command(branch, repo),
+        next,
         &held,
         first,
         differing,
@@ -700,11 +703,12 @@ fn announce(branch: &str, chosen: &Held, held: &[Held]) {
 /// Every checkout holding the branch is named with the commit it holds: the operator's
 /// question is which of them is their work. `into` and `from` must be copies at two
 /// different commits — the caller's job — because the guidance is a fetch between them,
-/// and whichever way they reconcile the two it starts there.
+/// and whichever way they reconcile the two it starts there. `next` is the caller's
+/// too: what to do with the branch afterwards is what that verb came here for.
 fn diverged(
     branch: &str,
     identity: &str,
-    command: &str,
+    next: &str,
     held: &[Held],
     into: &Held,
     from: &Held,
@@ -712,11 +716,10 @@ fn diverged(
     Error::Invalid {
         reason: format!(
             "branch {branch:?} is in {count} checkouts of identity {identity:?}, and no copy of it \
-             carries the rest, so nothing here can tell which copy is the work and publishing one \
+             carries the rest, so nothing here can tell which copy is the work and taking one \
              would discard the other: {listed}. Reconcile them in one checkout — \
              `{fetch}` brings {from}'s copy into {into} as FETCH_HEAD, to merge or rebase onto the \
-             one that is there — or delete the copy that is not the work, and then land it with \
-             `{command}`",
+             one that is there — or delete the copy that is not the work, and then {next}",
             count = held.len(),
             listed = held
                 .iter()

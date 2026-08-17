@@ -10,6 +10,12 @@
 //! implementation is something only a caller embedding the crate can do — the
 //! binary deliberately has no flag for it. Each says so at its head.
 
+// Unix only: `accounting` publishes through the same substituted `gh` as `host.rs`,
+// and cuts real sessions and real run clones. Its own header carries the reason in
+// full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod accounting;
 mod cli;
 // The terms two backends' event streams are compared on. Shared with the
 // real-backend tier in `tests/smoke`, so one leg cannot accept a difference the
