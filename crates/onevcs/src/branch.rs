@@ -736,8 +736,6 @@ fn diverged(
     }
 }
 
-/// Beside the search rather than inside it, so [`locate`] reads as the choice it makes
-/// rather than as the three messages it composes.
 fn nowhere(identity: &str, branch: &str, searched: &[PathBuf]) -> Error {
     Error::Invalid {
         reason: format!(

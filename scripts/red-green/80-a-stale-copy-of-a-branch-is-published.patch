@@ -3,6 +3,7 @@ Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_oth
 Red: copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one
 Red: a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other
 Red: a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it
+Red: recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
 index 297cf26..80c4b9f 100644

@@ -2117,6 +2117,90 @@ fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_
 }
 
 #[test]
+fn recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by() {
+    // Both verbs meet this refusal, and the command it prints is the one an operator
+    // typed: sent to the other one here, they would be refused again — for provenance
+    // this time — with the copies still where they were.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let worker = fixture.world.clone_of(&fixture.origin, "worker");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+    let prefix = documented_default_prefix();
+    for (checkout, file) in [(&fixture.checkout, "here.txt"), (&worker, "there.txt")] {
+        fixture
+            .world
+            .git(checkout, &["checkout", "-q", "-b", "feature/two-halves"]);
+        fixture
+            .world
+            .commit_file(checkout, file, "half\n", "feat: the half that stopped");
+        fixture.world.git(
+            checkout,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!(
+                    "chore: preserve work on feature/two-halves\n\n{}",
+                    documented_trailer("Status", &prefix)
+                ),
+            ],
+        );
+        fixture.world.git(checkout, &["checkout", "-q", "main"]);
+    }
+    let here = tip_of(&fixture, &fixture.checkout, "feature/two-halves");
+    let there = tip_of(&fixture, &worker, "feature/two-halves");
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/two-halves",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "no copy holding work carries the rest",
+        ))
+        .stderr(predicate::str::contains(format!(
+            "land it with `onevcs recover feature/two-halves --repo {}`",
+            fixture.checkout.display()
+        )));
+    let refusal = stderr_of(&assert);
+    for copy in [
+        format!("{} at {here}", fixture.checkout.display()),
+        format!("{} at {there}", worker.display()),
+    ] {
+        assert!(
+            refusal.contains(&copy),
+            "the refusal names {copy}:\n{refusal}"
+        );
+    }
+    // The fetch it prints is between the two commits: run as printed it brings the other
+    // checkout's copy in, which is what a reconciliation starts with.
+    let fetch = printed(&refusal, "git ");
+    assert!(
+        fetch.contains(&worker.to_string_lossy().into_owned()),
+        "the fetch names the checkout holding the other commit: {fetch}"
+    );
+    fixture.world.shell(&fetch).assert().success();
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "FETCH_HEAD"]),
+        there,
+        "and it fetched that commit"
+    );
+}
+
+#[test]
 fn an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name() {
     // "Nothing to publish" is the answer an operator most often disbelieves, because a
     // copy they are looking at is ahead of the base. What settles it is which copies of
