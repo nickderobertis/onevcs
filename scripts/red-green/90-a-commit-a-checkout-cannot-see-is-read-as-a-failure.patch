@@ -1,0 +1,31 @@
+Mutation: the copies whose commit a checkout cannot see are asked about anyway, so an absence git cannot answer ends the landing instead of losing the comparison.
+Red: a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison
+Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
+Red: copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one
+Red: a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing
+Red: recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by
+Red: an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_to_it
+Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index 04ee77a..0c8b12f 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -790,17 +790,6 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
+ // the crate's `Sha` is the contract's wrapper for its public surface and validates
+ // nothing, and what this takes is what git just answered.
+ pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+-    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this answering `false`
+-    // for an absent `descendant`, or for a repository it could not read. Its caller passes
+-    // the tip `locate` resolved out of that same checkout moments earlier, so no journey
+-    // reaches either; the absent-`ancestor` arm is driven by
+-    // `a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison`.
+-    for revision in [ancestor, descendant] {
+-        if !has_commit(cwd, &Sha(revision.to_owned())) {
+-            return Ok(false);
+-        }
+-    }
+-    // llmlint: ignore-end[changed_behavior_has_e2e]
+     is_ancestor(cwd, ancestor, descendant)
+ }
+ 

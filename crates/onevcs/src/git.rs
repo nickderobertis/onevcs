@@ -129,11 +129,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     }
     detach_process_group(&mut command);
 
-    let mut child = command.spawn().map_err(|e| {
-        error::invalid(format!(
-            "cannot run git: {e} (is git installed and on PATH?)"
-        ))
-    })?;
+    let mut child = command.spawn().map_err(|e| unstarted(&e, args, cwd))?;
 
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
@@ -185,6 +181,29 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         stdout,
         stderr,
     })
+}
+
+/// Why git never started, naming whichever of the two things is actually missing.
+///
+/// `spawn` raises `NotFound` for a missing program *and* for a missing `current_dir`,
+/// and only one of the two can be checked here: a directory that is not there is a fact
+/// about the filesystem, while a `git` this process could not find is indistinguishable
+/// from an absent `PATH` entry. So the directory is asked about first and the binary is
+/// what is left — blaming the binary for both sends a reader after a toolchain that was
+/// never broken.
+fn unstarted(error: &std::io::Error, args: &[&str], cwd: Option<&Path>) -> Error {
+    let missing = cwd.filter(|_| error.kind() == std::io::ErrorKind::NotFound);
+    match missing.filter(|directory| !git_path(directory).is_dir()) {
+        Some(directory) => error::invalid(format!(
+            "cannot run git {} in {}: that directory does not exist, so nothing ran there — the \
+             checkout or worktree it names has been removed",
+            args.join(" "),
+            directory.display()
+        )),
+        None => error::invalid(format!(
+            "cannot run git: {error} (is git installed and on PATH?)"
+        )),
+    }
 }
 
 /// The ordinary Win32 spelling Git expects at its process boundary.
@@ -759,6 +778,30 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
             reason: format!("git merge-base failed: {}", output.diagnostic()),
         }),
     }
+}
+
+/// Whether this repository can *show* that `descendant` reaches `ancestor`.
+///
+/// A revision it cannot see — either one, or a repository it could not read at all — is
+/// `false` rather than the failure [`is_ancestor`] alone answers with. That is the safe
+/// direction: the copy loses the comparison, and a comparison nothing wins is refused
+/// rather than resolved by picking. Both are revisions as [`is_ancestor`] takes them.
+// llmlint: ignore[invalid_states_unrepresentable] see `merge_base` for the same reason —
+// the crate's `Sha` is the contract's wrapper for its public surface and validates
+// nothing, and what this takes is what git just answered.
+pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this answering `false`
+    // for an absent `descendant`, or for a repository it could not read. Its caller passes
+    // the tip `locate` resolved out of that same checkout moments earlier, so no journey
+    // reaches either; the absent-`ancestor` arm is driven by
+    // `a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison`.
+    for revision in [ancestor, descendant] {
+        if !has_commit(cwd, &Sha(revision.to_owned())) {
+            return Ok(false);
+        }
+    }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+    is_ancestor(cwd, ancestor, descendant)
 }
 
 /// The commit two refs last had in common, or `None` when they share no history.

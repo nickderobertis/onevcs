@@ -169,7 +169,7 @@ pub fn run(
         });
     }
 
-    let source = source_of(registry, &resolution, &destination, &asked, from)?;
+    let source = source_of(registry, &resolution, repo, &destination, &asked, from)?;
     let scratch = format!("refs/onevcs/import/{}", ids::unique());
     let fetched = git::fetch_into_ref(
         &destination,
@@ -278,14 +278,26 @@ fn refuse_a_rewrite(
 fn source_of(
     registry: &Registry,
     resolution: &Resolution,
+    repo: &Path,
     destination: &Path,
     branch: &Ref,
     from: Option<&str>,
 ) -> Result<Source> {
     let Some(from) = from else {
         let base = git::default_branch(destination, "origin")?;
+        // Copies of the branch that have diverged are the search's own refusal, and
+        // what it tells an operator to do once they have reconciled them is this
+        // verb's: an import that could not decide where to read from is answered by
+        // running the same import again, not by landing anything.
+        let named: &str = branch;
+        let again =
+            guidance::command(["onevcs", "import", named, "--repo", &repo.to_string_lossy()]);
         return Ok(Source::Repository(branch::locate(
-            registry, resolution, branch, &base,
+            registry,
+            resolution,
+            branch,
+            &base,
+            &format!("run `{again}` again"),
         )?));
     };
     if git::is_repo(Path::new(from)) {

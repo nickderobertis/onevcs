@@ -1,21 +1,26 @@
 Mutation: a branch is located by name alone, spent copy or not.
-Red: a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it
+Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index f66d95c..93217aa 100644
+index a2d4af7..30f0a19 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -387,11 +387,8 @@ fn locate(
-         if !git::is_repo(candidate) || !git::branch_exists(candidate, branch) {
+@@ -597,16 +597,8 @@ fn locate(
+         else {
              continue;
-         }
+         };
 -        let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
--        if git::trees_differ(candidate, &compared, branch)? {
--            return Ok(candidate.clone());
--        }
--        spent.get_or_insert_with(|| candidate.clone());
-+        let _ = &current;
+-        let holds = match git::trees_differ(candidate, &compared, branch)? {
+-            true => Holds::Work,
+-            false => Holds::WhatTheBaseHas,
+-        };
+-        held.push(Held {
+-            checkout: candidate.clone(),
+-            tip,
+-            holds,
+-        });
++        let _ = (tip, &current, &held);
 +        return Ok(candidate.clone());
      }
-     if let Some(candidate) = spent {
-         return Ok(candidate);
+     // One copy is the state this search has always answered for, and it answers the same
+     // way: there was nothing to compare.

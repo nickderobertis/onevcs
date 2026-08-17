@@ -86,6 +86,24 @@ stack inferred from content rewrites branches nobody stacked. Recorded stack sta
 cannot be read is refused, naming what restores it: publishing around it would answer
 "no stack" from a value nothing could read, which is the merge all of this avoids.
 
+**A name in two checkouts is two copies, and they are compared rather than ordered**
+(`branch::locate`). `workspace::checkouts_of` is a search order, not a preference: one
+copy has to carry all the others or the landing is refused, because publishing the first
+tier that has the name publishes a stale copy. Every copy is in that comparison,
+including one whose content the base already carries — its *content* is spent, but its
+commit is a commit like the rest, and one nothing descends from is a divergence whatever
+became of what it held. Only where every copy is spent is nothing compared: the answer is
+that there is nothing to publish, from the first in search order. Whichever way it goes,
+the answer names every checkout holding the name — a stale selection and a current one
+read identically otherwise.
+
+**Refusing a copy nothing descends from costs two workflows**, both recorded as journeys
+rather than described here. A rewrite is one: selecting it would guess that a rewrite
+supersedes what it rewrote, so replaying where `sync_change_base` sends an operator leaves
+a pair this refuses. A name reused after its first use landed is the other: the spent copy
+and the fresh one are no relation. Both end the same way — one copy has to be left behind,
+and no verb here does that.
+
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
 cwd. The train is deliberately not what it names, even for finished work:

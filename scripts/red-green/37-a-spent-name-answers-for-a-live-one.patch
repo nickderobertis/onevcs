@@ -1,5 +1,5 @@
 Mutation: the first repository to hold a name answers for it, spent or not.
-Red: a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it
+Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
 
 diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
 index d54609a..3df2e29 100644

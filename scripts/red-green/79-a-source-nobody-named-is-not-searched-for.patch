@@ -3,16 +3,27 @@ Red: a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree
 Red: a_spent_name_does_not_block_an_import_under_another
 
 diff --git a/crates/onevcs/src/import.rs b/crates/onevcs/src/import.rs
-index 41cf681..7fe2427 100644
+index c7b3e93..ad735c3 100644
 --- a/crates/onevcs/src/import.rs
 +++ b/crates/onevcs/src/import.rs
-@@ -255,10 +255,9 @@ fn source_of(
+@@ -284,21 +284,9 @@ fn source_of(
      from: Option<&str>,
  ) -> Result<Source> {
      let Some(from) = from else {
 -        let base = git::default_branch(destination, "origin")?;
+-        // Copies of the branch that have diverged are the search's own refusal, and
+-        // what it tells an operator to do once they have reconciled them is this
+-        // verb's: an import that could not decide where to read from is answered by
+-        // running the same import again, not by landing anything.
+-        let named: &str = branch;
+-        let again =
+-            guidance::command(["onevcs", "import", named, "--repo", &repo.to_string_lossy()]);
 -        return Ok(Source::Repository(branch::locate(
--            registry, resolution, branch, &base,
+-            registry,
+-            resolution,
+-            branch,
+-            &base,
+-            &format!("run `{again}` again"),
 -        )?));
 +        return Err(Error::Invalid {
 +            reason: format!("nothing here says where to import {branch:?} from"),

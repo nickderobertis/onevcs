@@ -1230,6 +1230,105 @@ fn an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose() 
 }
 
 #[test]
+fn an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_to_it() {
+    // With no `--from`, the source is wherever this identity left the branch — and two
+    // checkouts holding lines of work neither of which carries the other are not one
+    // source. Reading either would import somebody else's commits under the name, so
+    // the refusal names every copy and says to run *this* import again once they are
+    // reconciled: nothing here lands anything, which is what makes rerunning it the
+    // whole of the answer.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let repo = fixture.checkout.to_string_lossy().into_owned();
+    let mut copies = Vec::new();
+    for (name, file) in [("worker", "worker.txt"), ("elsewhere", "elsewhere.txt")] {
+        let checkout = fixture.world.clone_of(&fixture.origin, name);
+        fixture
+            .world
+            .onevcs()
+            .args(["register", &checkout.to_string_lossy()])
+            .assert()
+            .success();
+        fixture
+            .world
+            .git(&checkout, &["checkout", "-qb", "feature/two-sources"]);
+        fixture
+            .world
+            .commit_file(&checkout, file, "work\n", "feat: one of the two lines");
+        fixture.world.git(&checkout, &["checkout", "-q", "main"]);
+        let tip = fixture
+            .world
+            .git(&checkout, &["rev-parse", "feature/two-sources"]);
+        copies.push((checkout, tip));
+    }
+    let (worker, ours) = copies[0].clone();
+    let (elsewhere, theirs) = copies[1].clone();
+
+    let importing = format!("onevcs import feature/two-sources --repo {repo}");
+    fixture
+        .world
+        .onevcs()
+        .args(["import", "feature/two-sources", "--repo", &repo])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no copy of it carries the rest"))
+        .stderr(predicate::str::contains(format!(
+            "{} at {ours}",
+            worker.display()
+        )))
+        .stderr(predicate::str::contains(format!(
+            "{} at {theirs}",
+            elsewhere.display()
+        )))
+        .stderr(predicate::str::contains(format!(
+            "and then run `{importing}` again"
+        )));
+    assert_eq!(
+        fixture.world.git(
+            &fixture.checkout,
+            &["branch", "--list", "feature/two-sources"]
+        ),
+        "",
+        "a refused import wrote no ref in the destination"
+    );
+
+    // Reconciling the copies is the operator's, and then the command the refusal named
+    // is the whole of what is left: it imports the copy that now carries both.
+    fixture.world.git(
+        &worker,
+        &[
+            "fetch",
+            "-q",
+            &elsewhere.to_string_lossy(),
+            "feature/two-sources",
+        ],
+    );
+    fixture
+        .world
+        .git(&worker, &["checkout", "-q", "feature/two-sources"]);
+    fixture
+        .world
+        .git(&worker, &["merge", "--no-edit", "-q", "FETCH_HEAD"]);
+    fixture.world.git(&worker, &["checkout", "-q", "main"]);
+
+    fixture
+        .world
+        .shell(&importing)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported feature/two-sources"));
+    let imported = fixture.world.git(
+        &fixture.checkout,
+        &["ls-tree", "-r", "--name-only", "feature/two-sources"],
+    );
+    for file in ["worker.txt", "elsewhere.txt"] {
+        assert!(
+            imported.contains(file),
+            "the reconciled copy is what was imported: {imported}"
+        );
+    }
+}
+
+#[test]
 fn the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names() {
     // The gate's verdict is the evidence a publication rested on, and it outlives
     // the tree it ran in — so a report about work that did not land has to be able

@@ -1,0 +1,28 @@
+Mutation: the copy a landing chose is no longer said, so a stale selection and a current one read identically.
+Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
+Red: every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them
+Red: an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index a2d4af7..e3ff6ed 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -614,18 +614,15 @@ fn locate(
+         let Some(only) = held.first() else {
+             return Err(nowhere(&resolution.key, branch, &searched));
+         };
+-        announce(branch, only, &held);
+         return Ok(only.checkout.clone());
+     };
+     if held.iter().all(|copy| copy.holds == Holds::WhatTheBaseHas) {
+-        announce(branch, first, &held);
+         return Ok(first.checkout.clone());
+     }
+     for copy in &held {
+         if !carries_the_rest(copy, &held)? {
+             continue;
+         }
+-        announce(branch, copy, &held);
+         return Ok(copy.checkout.clone());
+     }
+     // The fetch the refusal prints has to be between copies at *different* commits:

@@ -1,0 +1,18 @@
+Mutation: the copies whose content the base already carries are left out of the comparison, so a lone work-carrying copy is chosen beside a tip nothing descends from.
+Red: a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing
+Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index a2d4af7..42d5cdd 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -655,6 +655,9 @@ fn locate(
+ /// wins — which is the order this module has always read a branch in.
+ fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
+     for other in held {
++        if other.holds == Holds::WhatTheBaseHas {
++            continue;
++        }
+         if !git::known_to_reach(&copy.checkout, &other.tip, &copy.tip)? {
+             return Ok(false);
+         }
