@@ -7,6 +7,17 @@ failed on, reverts it, and then runs the same tests green.
 
 Patches: 86. Tests observed red and then green: 114.
 
+This transcript is the run made before this branch merged `main`, so it describes
+86 of the 103 rounds now under `scripts/red-green/`: the 16 that arrived with the
+merge and `90-a-commit-a-checkout-cannot-see-is-read-as-a-failure` are not in it.
+Re-making it is blocked rather than skipped —
+`34-the-command-a-row-names-cannot-land-it` no longer turns
+`recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns` red
+against the merged `crates/onevcs/src/vcs.rs`, and `just red-green` stops at the
+first round that observes nothing. That mutation has to be re-made against the
+current tree before this file can be, and every round is its patch either way:
+round 90 was observed red by hand over the seven journeys its header names.
+
 ### `01-the-verb-has-no-implementation`
 
 publish-branch answers NotImplemented, which is the state before this branch: the verb parses and nothing is behind it.
