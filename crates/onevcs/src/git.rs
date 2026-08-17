@@ -791,6 +791,13 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 /// also read a genuinely broken repository that way. Which is what makes this the
 /// question to ask across two checkouts holding one branch: each is asked about the
 /// other's tip, and the one that carries the rest is the copy that discards nothing.
+///
+/// Both are revisions as [`is_ancestor`] and [`merge_base`] beside it take them — a
+/// commit id or any name git resolves to one, which is what a caller comparing a tip
+/// against a base ref has.
+// llmlint: ignore[invalid_states_unrepresentable] see above, and `merge_base` for the
+// same reason: the crate's `Sha` is the contract's wrapper for its public surface and
+// validates nothing, and what this takes is what git just answered.
 pub fn reaches(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
     if !has_commit(cwd, &Sha(ancestor.to_owned())) {
         return Ok(false);

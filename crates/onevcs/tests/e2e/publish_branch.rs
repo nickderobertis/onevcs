@@ -153,7 +153,8 @@ fn gate_that_passes(fixture: &Fixture) {
     );
 }
 
-/// What one checkout has a branch at.
+/// Read by its full ref name, so a journey about two copies of a branch is not built
+/// on whatever else that checkout happens to resolve the bare name to.
 fn tip_of(fixture: &Fixture, checkout: &Path, branch: &str) -> String {
     fixture
         .world
@@ -1871,7 +1872,6 @@ fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
         .success()
         .stdout(predicate::str::contains("merged at"));
 
-    // What landed is the resolution, rather than the copy from before it.
     let landed = fixture
         .world
         .git(&fixture.origin, &["ls-tree", "-r", "--name-only", "main"]);

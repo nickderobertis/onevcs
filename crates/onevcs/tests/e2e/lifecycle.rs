@@ -3160,12 +3160,29 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
         .world
         .git(&fixture.checkout, &["checkout", "-q", "main"]);
 
-    fixture
+    // The replay rewrote the branch, so the checkout's copy is no descendant of the one
+    // the run clone still holds — and the landing has to publish it anyway: it is the
+    // resolution this refusal asked for. Which copy it took is said, and why, because a
+    // choice made on something other than "it carries the other" is one an operator
+    // cannot re-derive from the two tips alone.
+    let landed = fixture
         .world
         .shell(&land)
         .assert()
         .success()
         .stdout(predicate::str::contains("merged at"));
+    let said = String::from_utf8_lossy(&landed.get_output().stderr).into_owned();
+    let replayed = fixture.world.git(
+        &fixture.checkout,
+        &["rev-parse", "refs/heads/feature/clashing-filter"],
+    );
+    assert!(
+        said.contains(&format!(
+            "the copy in {} at {replayed} is the only one that carries",
+            fixture.checkout.display()
+        )),
+        "the replayed copy is named as the one that carries the base:\n{said}"
+    );
     assert_eq!(
         fixture.origin_log()[0],
         "feat: filter what the engine relays"

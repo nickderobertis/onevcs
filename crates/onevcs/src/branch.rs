@@ -505,23 +505,26 @@ impl Landing {
     }
 }
 
-/// One checkout's copy of a branch: where it was found and what it stands at.
+/// One checkout's copy of a branch, and the two things a choice between copies is
+/// made on: the commit the name stands at there, since a name is what two copies
+/// already have in common, and the base that copy is judged against, which is what
+/// says whether it has been reconciled with what it would be published onto.
+// llmlint: ignore-block[invalid_states_unrepresentable] `git::tip` and
+// `crate::vcs::judged_against` answered these, and the second is a *comparison target*
+// git resolves as a name or as an id indifferently — which is why
+// `Landing::compared_change_base` is deliberately not a `Ref` either. Spelling either as
+// the crate's `Sha` would wrap an unvalidated `String` from the public surface and make
+// no state here unrepresentable.
 struct Held {
-    /// The checkout the copy is in.
     checkout: PathBuf,
-    /// The commit that checkout has the branch at.
-    // llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered it, as every
-    // other commit this module carries did; the crate's `Sha` wraps an unvalidated
-    // `String` at the public surface and would make no state here unrepresentable.
     tip: String,
-    /// The base this copy is judged against, as that checkout can name it — the
-    /// identity's base now where it has that commit, and its own view where it does
-    /// not. [`crate::vcs::judged_against`] answered it.
     compared: String,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 impl Held {
-    /// The copy as a refusal or a report names it: the checkout and the commit.
+    /// One spelling for both the line that chooses and the refusal that cannot, so an
+    /// operator compares the same pair of facts either way.
     fn describe(&self) -> String {
         format!("{} at {}", self.checkout.display(), self.tip)
     }
@@ -747,7 +750,8 @@ fn diverged(
     }
 }
 
-/// Why a branch no checkout of the identity holds is refused, naming where it looked.
+/// Beside the search rather than inside it, so [`locate`] reads as the choice it makes
+/// rather than as the three messages it composes.
 fn nowhere(identity: &str, branch: &str, searched: &[PathBuf]) -> Error {
     Error::Invalid {
         reason: format!(

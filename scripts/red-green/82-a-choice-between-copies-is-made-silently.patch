@@ -1,5 +1,6 @@
 Mutation: the copy a landing chose is no longer said, so a stale selection and a current one read identically.
 Red: a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
+Red: a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
 index 2698752..9b60e8c 100644
