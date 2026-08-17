@@ -129,11 +129,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     }
     detach_process_group(&mut command);
 
-    let mut child = command.spawn().map_err(|e| {
-        error::invalid(format!(
-            "cannot run git: {e} (is git installed and on PATH?)"
-        ))
-    })?;
+    let mut child = command.spawn().map_err(|e| unstarted(&e, args, cwd))?;
 
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
@@ -185,6 +181,31 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         stdout,
         stderr,
     })
+}
+
+/// Why git never started, naming whichever of the two things is actually missing.
+///
+/// `spawn` raises `NotFound` for a missing program *and* for a missing
+/// `current_dir`, so blaming the binary unconditionally sends a reader after their
+/// toolchain: the measured case was `cannot run git: No such file or directory (is
+/// git installed and on PATH?)` with git at `/usr/bin/git` throughout and a removed
+/// worktree as the real cause. The directory is checked before the binary because
+/// only one of the two can be answered here — a `git` this process could not find
+/// is exactly what an absent `PATH` entry looks like, while a working directory that
+/// is not there is a fact about the filesystem.
+fn unstarted(error: &std::io::Error, args: &[&str], cwd: Option<&Path>) -> Error {
+    let missing = cwd.filter(|_| error.kind() == std::io::ErrorKind::NotFound);
+    match missing.filter(|directory| !git_path(directory).is_dir()) {
+        Some(directory) => error::invalid(format!(
+            "cannot run git {} in {}: that directory does not exist, so nothing ran there — the \
+             checkout or worktree it names has been removed",
+            args.join(" "),
+            directory.display()
+        )),
+        None => error::invalid(format!(
+            "cannot run git: {error} (is git installed and on PATH?)"
+        )),
+    }
 }
 
 /// The ordinary Win32 spelling Git expects at its process boundary.

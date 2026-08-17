@@ -3136,3 +3136,48 @@ fn a_train_that_lands_without_pushing_says_so_in_both_answers() {
         fixture.world.git(&fixture.origin, &["rev-parse", "main"])
     );
 }
+
+#[test]
+fn a_git_command_whose_working_directory_is_gone_names_that_directory() {
+    // `spawn` raises `NotFound` for a missing program *and* for a missing working
+    // directory, and blaming the binary for either sends a reader after their
+    // toolchain: measured as `cannot run git: No such file or directory (is git
+    // installed and on PATH?)` with git at /usr/bin/git throughout and a removed
+    // worktree as the cause.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let removed = fixture.checkout.clone();
+    std::fs::remove_dir_all(&removed).expect("the checkout goes away under the tool");
+
+    // Named by its alias, because the path it had is the thing that is gone.
+    fixture
+        .world
+        .onevcs()
+        .args(["publish-branch", "feature/anything", "--repo", "project"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!(
+            "in {}: that directory does not exist",
+            removed.display()
+        )))
+        .stderr(predicate::str::contains("is git installed").not());
+}
+
+#[test]
+fn a_git_binary_nothing_can_find_still_names_the_binary() {
+    // The other half of that answer, and the reason the check is on the directory
+    // rather than on the message: a `git` this process cannot find is exactly what an
+    // absent PATH entry looks like, and it is still what a reader must be sent after.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    fixture
+        .world
+        .onevcs()
+        // A directory nothing was installed into, rather than an empty value: what
+        // an empty `PATH` means is left to the platform, and the premise here is a
+        // search that finds nothing.
+        .env("PATH", fixture.world.path("no-tools-here"))
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is git installed and on PATH?"));
+}
