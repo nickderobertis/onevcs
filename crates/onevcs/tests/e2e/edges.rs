@@ -3139,11 +3139,8 @@ fn a_train_that_lands_without_pushing_says_so_in_both_answers() {
 
 #[test]
 fn a_git_command_whose_working_directory_is_gone_names_that_directory() {
-    // `spawn` raises `NotFound` for a missing program *and* for a missing working
-    // directory, and blaming the binary for either sends a reader after their
-    // toolchain: measured as `cannot run git: No such file or directory (is git
-    // installed and on PATH?)` with git at /usr/bin/git throughout and a removed
-    // worktree as the cause.
+    // `spawn` raises `NotFound` for a missing program and for a missing working
+    // directory alike, and only one of them is what a reader must be sent after.
     let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
     let removed = fixture.checkout.clone();
     std::fs::remove_dir_all(&removed).expect("the checkout goes away under the tool");

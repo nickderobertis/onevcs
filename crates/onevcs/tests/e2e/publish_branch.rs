@@ -106,14 +106,10 @@ fn finished_hosted_branch(hosted: &Hosted, branch: &str, subject: &str) {
         .success();
 }
 
-/// A branch two checkouts hold: the publication checkout at what a failed
-/// publication handed back, and the session's own run clone, still open on it.
+/// A branch two checkouts hold, reached the way an operator reaches it: a publication
+/// that does not land hands the branch back, and its session stays open on the same name.
 ///
-/// The measured incident's shape, reached the way it was reached — a publication that
-/// does not land hands the branch back to the execution checkout whatever refused it,
-/// and the session it came from is still there for the resolution to be committed in.
-/// The fixture's gate must be one that fails; `gate_that_passes` is what lets the
-/// re-run go through afterwards.
+/// The fixture's gate must be one that fails; `gate_that_passes` clears the re-run.
 fn handed_back_and_still_open(fixture: &Fixture, branch: &str) -> (PathBuf, PathBuf) {
     let (token, worktree) = fixture.open(&["--branch", branch]);
     let file = format!("{}.txt", branch.replace('/', "-"));
@@ -1838,11 +1834,8 @@ fn a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay() {
 
 #[test]
 fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other() {
-    // The measured incident. A publication failed and handed the branch back, so the
-    // publication checkout holds it at that commit; the operator then resolved what
-    // failed in the session's own worktree, so the run clone holds the same name one
-    // commit further on. Taking the first copy in search order publishes the one from
-    // before the resolution — and reports about a tree the operator is not looking at.
+    // The measured incident: the resolution is committed in the session's worktree, so
+    // the run clone is one commit ahead of the copy the failure handed back.
     let fixture = Fixture::local(&local_direct("[\"false\"]"));
     let (worktree, clone) = handed_back_and_still_open(&fixture, "feature/resolved");
     let stale = tip_of(&fixture, &fixture.checkout, "feature/resolved");
@@ -1990,11 +1983,9 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
 
 #[test]
 fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched() {
-    // The ordinary state after every session: closing hands the branch back, so the
-    // checkout and the run clone hold one name at one commit. Nothing has to be chosen
-    // there — whichever copy is read, the tree is the same — so the search order
-    // stands, and the verb says nothing about a choice it did not make. Which copy it
-    // read is what its refusals name, and a base that conflicts is what makes one.
+    // Closing hands the branch back, so one name is at one commit in two checkouts —
+    // nothing to choose between. Which copy was read is what a refusal names, and a base
+    // that conflicts is what makes one.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/one-commit"]);
     fixture.world.commit_file(
@@ -2055,12 +2046,8 @@ fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searche
 
 #[test]
 fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other() {
-    // A replay rewrites the commits, so what it produces carries nothing of what it
-    // replaced — and what it replaced is still under that name in the session's own run
-    // clone. Nothing here can tell that rewrite from a second line of work on the same
-    // name: the tips are two, neither carries the other, and only the operator knows
-    // which one they meant. So it is refused like any other pair that has diverged,
-    // rather than published on the guess that a rewrite supersedes what it rewrote.
+    // A rewrite is indistinguishable from a second line of work on the same name: two
+    // tips, neither carrying the other, and only the operator knows which they meant.
     let fixture = Fixture::local(&local_direct("[\"false\"]"));
     let (_worktree, clone) = handed_back_and_still_open(&fixture, "feature/replayed");
     let replaced = tip_of(&fixture, &clone, "feature/replayed");
@@ -2131,11 +2118,9 @@ fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_
 
 #[test]
 fn an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name() {
-    // Every copy spent is the one state where "nothing to publish" is the true answer,
-    // and it is the same answer whichever copy is read — so the search order stands. It
-    // is also the answer an operator most often disbelieves, because a copy they are
-    // looking at is ahead of the base: the copies and the commits they hold are what
-    // settle that, so they are said here too rather than only where work was chosen.
+    // "Nothing to publish" is the answer an operator most often disbelieves, because a
+    // copy they are looking at is ahead of the base. What settles it is which copies of
+    // the name there are and what they hold, so that is said here too.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, tree) = fixture.open(&["--branch", "feature/all-spent"]);
     fixture
@@ -2204,16 +2189,9 @@ fn an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name()
 
 #[test]
 fn every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them() {
-    // What an operator is deciding about is where the name is, so the answer covers
-    // every checkout that has it — the copy at the chosen commit as much as the one at a
-    // different commit, and a copy whose content the base already carries as much as
-    // either. That last one answers for none of the work and passing it over discards
-    // nothing, which is exactly why it would otherwise be the one dropped from the
-    // report, leaving an operator to account for a checkout nothing mentioned.
-    //
-    // Four copies of one name are built here: a spent pair from a use of the name that
-    // was published, and the work of a second use in both a worker checkout and the run
-    // clone that handed it there — two copies at one commit, one of which is chosen.
+    // Four copies of one name, because the two easiest to drop from an answer are a copy
+    // at the chosen commit and one the base already carries — neither of which changes
+    // what is published, and both of which are checkouts an operator has to account for.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let worker = fixture.world.clone_of(&fixture.origin, "worker");
     fixture

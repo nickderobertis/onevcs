@@ -626,13 +626,23 @@ fn locate(
         announce(branch, copy, &held);
         return Ok(copy.checkout.clone());
     }
+    // The fetch the refusal prints has to be between copies at *different* commits:
+    // copies at one commit are one copy for this purpose, and fetching between them
+    // moves nothing. Such a pair exists wherever this is reached — copies all at one
+    // commit each carry the rest and were chosen above — so `second` stands in for a
+    // state that cannot get here.
+    let differing = working
+        .iter()
+        .find(|copy| copy.tip != first.tip)
+        .copied()
+        .unwrap_or(second);
     Err(diverged(
         branch,
         &resolution.key,
         &verb.command(branch, repo),
         &held,
         first,
-        second,
+        differing,
     ))
 }
 
@@ -686,12 +696,10 @@ fn announce(branch: &str, chosen: &Held, held: &[Held]) {
 
 /// Why copies of one branch that have diverged are refused, and what resolves it.
 ///
-/// Every checkout holding the branch is named with the commit it holds, because the
-/// operator's question is which of them is their work — and the guidance is the fetch
-/// that brings one into the other, since whichever way they reconcile them it starts
-/// there. `into` and `from` are two of the copies that carry work and have actually
-/// diverged, so the command printed is one that runs as printed rather than a shape to
-/// fill in.
+/// Every checkout holding the branch is named with the commit it holds: the operator's
+/// question is which of them is their work. `into` and `from` must be copies at two
+/// different commits — the caller's job — because the guidance is a fetch between them,
+/// and whichever way they reconcile the two it starts there.
 fn diverged(
     branch: &str,
     identity: &str,

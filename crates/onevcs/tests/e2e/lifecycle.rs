@@ -3161,12 +3161,10 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
         .world
         .git(&fixture.checkout, &["checkout", "-q", "main"]);
 
-    // The replay rewrote the branch, so what the checkout now holds carries none of what
-    // the session's run clone still holds under that name — and the landing refuses to
-    // choose between two copies where neither carries the other, whichever of them was
-    // rewritten. So the resolution this refusal asked for does not land on its own: the
-    // copy it replaced has to be gone first, and getting rid of that one is not something
-    // any verb here does.
+    // The replay rewrote the branch, so the resolution this refusal asked for carries
+    // nothing of the copy the run clone still holds — and the landing refuses that pair
+    // like any other. Which is the cost of the rule, and it is met here rather than
+    // described.
     let clone = worktree.parent().expect("a run root").join("clone");
     let replayed = fixture.world.git(
         &fixture.checkout,
@@ -3191,10 +3189,7 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
         );
     }
 
-    // Leaving one copy is what says which is the work. The session is closed first
-    // because its worktree has that name checked out, and git moves or deletes no branch
-    // a worktree holds — so this is two steps outside the tool, which is the cost of the
-    // refusal above and the reason it is recorded here rather than in prose.
+    // Closing comes first because git deletes no branch a worktree holds.
     fixture
         .world
         .onevcs()
