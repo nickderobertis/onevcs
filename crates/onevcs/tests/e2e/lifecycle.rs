@@ -1480,7 +1480,8 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
     // nothing is said about a choice: the line naming a chosen copy belongs to the
     // state where two checkouts hold one name at different commits.
     assert!(
-        !String::from_utf8_lossy(&landed.get_output().stderr).contains("carries the rest"),
+        !String::from_utf8_lossy(&landed.get_output().stderr)
+            .contains("is the one being published"),
         "a lone copy is published without a word about copies"
     );
     assert!(
@@ -3160,29 +3161,55 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
         .world
         .git(&fixture.checkout, &["checkout", "-q", "main"]);
 
-    // The replay rewrote the branch, so the checkout's copy is no descendant of the one
-    // the run clone still holds — and the landing has to publish it anyway: it is the
-    // resolution this refusal asked for. Which copy it took is said, and why, because a
-    // choice made on something other than "it carries the other" is one an operator
-    // cannot re-derive from the two tips alone.
-    let landed = fixture
+    // The replay rewrote the branch, so what the checkout now holds carries none of what
+    // the session's run clone still holds under that name — and the landing refuses to
+    // choose between two copies where neither carries the other, whichever of them was
+    // rewritten. So the resolution this refusal asked for does not land on its own: the
+    // copy it replaced has to be gone first, and getting rid of that one is not something
+    // any verb here does.
+    let clone = worktree.parent().expect("a run root").join("clone");
+    let replayed = fixture.world.git(
+        &fixture.checkout,
+        &["rev-parse", "refs/heads/feature/clashing-filter"],
+    );
+    let replaced = fixture
+        .world
+        .git(&clone, &["rev-parse", "refs/heads/feature/clashing-filter"]);
+    let refused = fixture.world.shell(&land).assert().code(2);
+    let between = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    assert!(
+        between.contains("no copy holding work carries the rest"),
+        "the two copies are refused rather than chosen between:\n{between}"
+    );
+    for copy in [
+        format!("{} at {replayed}", fixture.checkout.display()),
+        format!("{} at {replaced}", clone.display()),
+    ] {
+        assert!(
+            between.contains(&copy),
+            "the refusal names {copy}:\n{between}"
+        );
+    }
+
+    // Leaving one copy is what says which is the work. The session is closed first
+    // because its worktree has that name checked out, and git moves or deletes no branch
+    // a worktree holds — so this is two steps outside the tool, which is the cost of the
+    // refusal above and the reason it is recorded here rather than in prose.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    fixture
+        .world
+        .git(&clone, &["branch", "-D", "feature/clashing-filter"]);
+    fixture
         .world
         .shell(&land)
         .assert()
         .success()
         .stdout(predicate::str::contains("merged at"));
-    let said = String::from_utf8_lossy(&landed.get_output().stderr).into_owned();
-    let replayed = fixture.world.git(
-        &fixture.checkout,
-        &["rev-parse", "refs/heads/feature/clashing-filter"],
-    );
-    assert!(
-        said.contains(&format!(
-            "the copy in {} at {replayed} is the only one that carries",
-            fixture.checkout.display()
-        )),
-        "the replayed copy is named as the one that carries the base:\n{said}"
-    );
     assert_eq!(
         fixture.origin_log()[0],
         "feat: filter what the engine relays"

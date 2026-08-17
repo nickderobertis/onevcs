@@ -1886,7 +1886,7 @@ fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
     let said = stderr_of(&assert);
     assert!(
         said.contains(&format!(
-            "the copy in {} at {resolved} carries the rest",
+            "the copy in {} at {resolved} is the one being published",
             clone.display()
         )),
         "the copy that was published is named with the commit it held:\n{said}"
@@ -1942,7 +1942,9 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
         ])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("none of which carries the rest"))
+        .stderr(predicate::str::contains(
+            "no copy holding work carries the rest",
+        ))
         .stderr(predicate::str::contains(format!(
             "{} at {theirs}",
             fixture.checkout.display()
@@ -2046,7 +2048,173 @@ fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searche
         "and the copy it passed over is not the one an operator is sent to:\n{refusal}"
     );
     assert!(
-        !refusal.contains("carries the rest"),
+        !refusal.contains("is the one being published"),
         "nothing was chosen between, so nothing is said about a choice:\n{refusal}"
     );
+}
+
+#[test]
+fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other() {
+    // A replay rewrites the commits, so what it produces carries nothing of what it
+    // replaced — and what it replaced is still under that name in the session's own run
+    // clone. Nothing here can tell that rewrite from a second line of work on the same
+    // name: the tips are two, neither carries the other, and only the operator knows
+    // which one they meant. So it is refused like any other pair that has diverged,
+    // rather than published on the guess that a rewrite supersedes what it rewrote.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let (_worktree, clone) = handed_back_and_still_open(&fixture, "feature/replayed");
+    let replaced = tip_of(&fixture, &clone, "feature/replayed");
+
+    // The base moves, and the operator replays their copy onto it — which is what this
+    // path's own sync-conflict refusal sends them to do.
+    let other = fixture.world.clone_of(&fixture.origin, "advancing");
+    fixture.world.commit_file(
+        &other,
+        "moved.txt",
+        "moved\n",
+        "feat: the base moves on without them",
+    );
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "feature/replayed"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["rebase", "-q", "main"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let replayed = tip_of(&fixture, &fixture.checkout, "feature/replayed");
+    assert_ne!(
+        replayed, replaced,
+        "the replay is what makes the two copies no relation of each other"
+    );
+    gate_that_passes(&fixture);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/replayed",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "no copy holding work carries the rest",
+        ));
+    let refusal = stderr_of(&assert);
+    for copy in [
+        format!("{} at {replayed}", fixture.checkout.display()),
+        format!("{} at {replaced}", clone.display()),
+    ] {
+        assert!(
+            refusal.contains(&copy),
+            "the refusal names {copy}:\n{refusal}"
+        );
+    }
+    assert_eq!(
+        fixture.origin_log().len(),
+        2,
+        "the replayed copy is not landed over the one it replaced"
+    );
+}
+
+#[test]
+fn a_copy_the_base_already_carries_is_named_among_the_copies_it_answers_for_none_of() {
+    // A spent copy answers for nobody — its content is in the base, so publishing it
+    // would report that there is nothing to publish — and passing it over discards
+    // nothing for the same reason. It is still a checkout holding the branch, though,
+    // and what an operator is deciding about is where the name is: a copy left out of
+    // the answer is one they cannot account for.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (first, first_tree) = fixture.open(&["--branch", "feature/reused"]);
+    fixture.world.commit_file(
+        &first_tree,
+        "a.txt",
+        "a\n",
+        "feat: the first use of the name",
+    );
+    // Two commits, so what lands is a squash of both: the copy left behind is then ahead
+    // of the base by commits the base will never carry, while holding nothing it lacks.
+    fixture
+        .world
+        .commit_file(&first_tree, "a.txt", "a\nand more\n", "fix: the rest of it");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &first])
+        .assert()
+        .success();
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &first])
+        .assert()
+        .success();
+    let spent_clone = first_tree.parent().expect("a run root").join("clone");
+    let spent = tip_of(&fixture, &fixture.checkout, "feature/reused");
+
+    // The name is taken again — allowed precisely because the base carries what it meant
+    // — and this run stops before anything hands its branch back.
+    let (_second, second_tree) = fixture.open(&["--branch", "feature/reused"]);
+    fixture.world.commit_file(
+        &second_tree,
+        "b.txt",
+        "b\n",
+        "feat: the work that must still be found",
+    );
+    let live_clone = second_tree.parent().expect("a run root").join("clone");
+    let live = tip_of(&fixture, &live_clone, "feature/reused");
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/reused",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert!(
+        fixture
+            .origin_log()
+            .contains(&"feat: the work that must still be found".to_owned()),
+        "the live copy is the one that landed: {:?}",
+        fixture.origin_log()
+    );
+
+    // Three checkouts hold the name: the live copy, and two whose content the base
+    // already has. All three are named, and the spent ones say why they answered for
+    // nothing.
+    let said = stderr_of(&assert);
+    assert!(
+        said.contains(&format!(
+            "the copy in {} at {live} is the one being published",
+            live_clone.display()
+        )),
+        "{said}"
+    );
+    for copy in [&fixture.checkout, &spent_clone] {
+        assert!(
+            said.contains(&format!(
+                "{} at {spent} (already in the base)",
+                copy.display()
+            )),
+            "the copy in {} is named as one the base already carries:\n{said}",
+            copy.display()
+        );
+    }
 }

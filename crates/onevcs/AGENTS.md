@@ -89,14 +89,26 @@ cannot be read is refused, naming what restores it: publishing around it would a
 **A name in two checkouts is two copies, and they are compared rather than ordered**
 (`branch::locate`). `workspace::checkouts_of`'s tiers are a search order, not a
 preference: taking the first tier that has the name publishes a stale copy and reports
-about a tree the operator is not looking at. Three rules, in order. The copy whose tip
-carries every other's is the one whose publication discards nothing. Failing that, the
-one copy that carries the base is the rest *replayed* onto it — which is the resolution
-this path's own conflict refusal asks for, so it is not a state to refuse. Copies
-nothing separates are refused, naming each checkout with the tip it holds, because
-publishing one discards the other. And wherever the tips differed, which copy was
-chosen is said on stderr: without it a stale selection and a current one read
-identically, and a sync-conflict refusal cannot be told from a stale copy's.
+about a tree the operator is not looking at. One copy holding work must carry all the
+others, and it is then published whichever tier it came from; where none does they have
+diverged and the landing is **refused**, naming every checkout with the tip it holds
+(spent copies included, as copies that answer for none of it — what an operator decides
+about is where the name is). Equal tips keep the search order. Wherever the tips
+differed, which copy was chosen is said on stderr: without it a stale selection and a
+current one read identically, and a sync-conflict refusal cannot be told from a stale
+copy's.
+
+**A rewritten copy is refused with the rest, and that has a cost this repository has
+already paid once.** A replay carries nothing of what it replaced, so resolving
+`sync_change_base`'s replay conflict in the publication checkout leaves exactly such a
+pair — the resolution there, the pre-replay tip in the session's run clone — and the
+landing that refusal names is then refused itself. The way out is to leave one copy, and
+nothing here does that: the session must be closed (its worktree has the name checked
+out, and git moves no branch a worktree holds) and the clone's ref deleted by hand.
+`a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it`
+carries those steps so the cost is measured rather than described. It is deliberate:
+selecting the rewritten copy means guessing that a rewrite supersedes what it rewrote,
+and a second, competing line of work on one name is indistinguishable from it.
 
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by

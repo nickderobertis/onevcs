@@ -505,39 +505,35 @@ impl Landing {
     }
 }
 
-/// One checkout's copy of a branch, and the two things a choice between copies is
-/// made on: the commit the name stands at there, since a name is what two copies
-/// already have in common, and the base that copy is judged against, which is what
-/// says whether it has been reconciled with what it would be published onto.
-// llmlint: ignore-block[invalid_states_unrepresentable] `git::tip` and
-// `crate::vcs::judged_against` answered these, and the second is a *comparison target*
-// git resolves as a name or as an id indifferently — which is why
-// `Landing::compared_change_base` is deliberately not a `Ref` either. Spelling either as
-// the crate's `Sha` would wrap an unvalidated `String` from the public surface and make
-// no state here unrepresentable.
+/// One checkout's copy of a branch: the commit the name stands at there — a name being
+/// what two copies already have in common — and whether the base already carries what
+/// that copy means.
+// llmlint: ignore[invalid_states_unrepresentable] `git::tip` answered the commit, as
+// every other one this module carries did; the crate's `Sha` wraps an unvalidated
+// `String` at the public surface and would make no state here unrepresentable.
 struct Held {
     checkout: PathBuf,
     tip: String,
-    compared: String,
+    spent: bool,
 }
-// llmlint: ignore-end[invalid_states_unrepresentable]
 
 impl Held {
     /// One spelling for both the line that chooses and the refusal that cannot, so an
-    /// operator compares the same pair of facts either way.
+    /// operator compares the same facts either way — and a copy the base already
+    /// carries says so, because it is a checkout holding the branch that nonetheless
+    /// answers for none of it.
     fn describe(&self) -> String {
-        format!("{} at {}", self.checkout.display(), self.tip)
+        format!(
+            "{} at {}{}",
+            self.checkout.display(),
+            self.tip,
+            if self.spent {
+                " (already in the base)"
+            } else {
+                ""
+            }
+        )
     }
-}
-
-/// Why one copy of a branch was chosen over the others, as the line about it says.
-#[derive(Debug, Clone, Copy)]
-enum Chose {
-    /// Its tip carries every other copy's, so publishing it discards nothing.
-    CarriesTheRest,
-    /// The copies were rewritten rather than added to, and this is the only one that
-    /// carries the base they are published onto.
-    Reconciled,
 }
 
 /// Find the checkout a branch can be read out of, and the copy of it that is the
@@ -549,14 +545,23 @@ enum Chose {
 ///
 /// A copy whose content the base already carries is spent: publishing it would answer
 /// that there is nothing to publish while the work sat under the same name somewhere
-/// else. So a spent copy is taken only when every copy is spent — where "nothing to
-/// publish" is the true answer, and a better one than a branch nobody has.
+/// else. It holds nothing the base lacks, so passing it over discards nothing, and it
+/// is taken only when every copy is spent — where "nothing to publish" is the true
+/// answer, and a better one than a branch nobody has.
 ///
-/// The copies that carry work are compared. One whose tip carries every other's
-/// discards nothing when published, so it wins whichever tier it was found in; failing
-/// that, the one copy that carries the base is the rest replayed onto it, which is the
-/// resolution [`Landing::sync_change_base`]'s own refusal asks for. Copies nothing
-/// separates are refused, because publishing one discards the other.
+/// The copies that carry work are compared, and one of them must carry all of the
+/// others: its publication is then the only one that discards nothing, and it wins
+/// whichever tier it was found in. Copies where none does have diverged and are
+/// refused. A rewritten copy — a replay onto the base, which is what
+/// [`Landing::sync_change_base`]'s own conflict refusal sends an operator to make — is
+/// one of those: it carries nothing of what it replaced, and nothing here can tell it
+/// from a second, competing line of work. Choosing it would discard the other copy on a
+/// guess, so the refusal stands and an operator says which copy is the work by leaving
+/// one of them.
+///
+/// Every checkout holding the branch is named in the line that chooses and in the
+/// refusal that cannot, spent copies included: what an operator is deciding about is
+/// where the name is, and a copy left out of that answer is one they cannot account for.
 fn locate(
     registry: &Registry,
     resolution: &Resolution,
@@ -568,7 +573,6 @@ fn locate(
     let searched = crate::workspace::checkouts_of(registry, resolution)?;
     let current = crate::vcs::base_commit(&resolution.publication, base);
     let mut held: Vec<Held> = Vec::new();
-    let mut spent: Option<PathBuf> = None;
     for candidate in &searched {
         // The branch's own commit, by its full ref name so that a tag or a
         // remote-tracking ref of the same name is not read as a copy of the branch:
@@ -582,36 +586,30 @@ fn locate(
             continue;
         };
         let compared = crate::vcs::judged_against(candidate, base, current.as_ref());
-        if !git::trees_differ(candidate, &compared, branch)? {
-            spent.get_or_insert_with(|| candidate.clone());
-            continue;
-        }
+        let spent = !git::trees_differ(candidate, &compared, branch)?;
         held.push(Held {
             checkout: candidate.clone(),
             tip,
-            compared,
+            spent,
         });
     }
+    let working: Vec<&Held> = held.iter().filter(|copy| !copy.spent).collect();
     // One copy carrying work is the state this search has always answered for, and it
-    // answers the same way — there was nothing to choose between, so there is nothing
-    // to say about a choice. With none, the spent copy is the answer where there is
-    // one.
-    let [first, second, ..] = held.as_slice() else {
-        return held
-            .first()
-            .map(|only| only.checkout.clone())
-            .or(spent)
-            .ok_or_else(|| nowhere(&resolution.key, branch, &searched));
+    // answers the same way — there was nothing to compare. With none, the first spent
+    // copy in search order is the answer, which is where "nothing to publish" comes
+    // from.
+    let [first, second, ..] = working.as_slice() else {
+        let Some(chosen) = working.first().copied().or_else(|| held.first()) else {
+            return Err(nowhere(&resolution.key, branch, &searched));
+        };
+        announce(branch, chosen, &held);
+        return Ok(chosen.checkout.clone());
     };
-    for copy in &held {
-        if !carries_the_rest(copy, &held)? {
+    for copy in &working {
+        if !carries_the_rest(copy, &working)? {
             continue;
         }
-        announce(branch, copy, &held, Chose::CarriesTheRest);
-        return Ok(copy.checkout.clone());
-    }
-    if let Some(copy) = only_reconciled(&held)? {
-        announce(branch, copy, &held, Chose::Reconciled);
+        announce(branch, copy, &held);
         return Ok(copy.checkout.clone());
     }
     Err(diverged(
@@ -624,40 +622,19 @@ fn locate(
     ))
 }
 
-/// Whether one copy's tip carries every other copy's, which is what makes it the one
-/// to publish.
+/// Whether one copy's tip carries every other work-carrying copy's, which is what makes
+/// it the one to publish.
 ///
 /// Asked of that copy's own checkout, and of every copy including itself: equal tips
 /// are the same commit, so each of them carries the rest and the first in tier order
 /// wins — which is the order this module has always read a branch in.
-fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
-    for other in held {
+fn carries_the_rest(copy: &Held, working: &[&Held]) -> Result<bool> {
+    for other in working {
         if !git::known_to_reach(&copy.checkout, &other.tip, &copy.tip)? {
             return Ok(false);
         }
     }
     Ok(true)
-}
-
-/// The one copy that carries the base it is published onto, when exactly one does.
-///
-/// Which is what separates a copy that was rewritten from the copies it was rewritten
-/// *from*: replaying a branch onto the base is what a conflict refusal on this path
-/// sends an operator to do, and the result carries the base while the copy it replaced
-/// — a tip nothing rewrote, still sitting under the base it was cut from — does not.
-/// Where several copies carry the base, or none does, nothing here separates them and
-/// `None` is the honest answer.
-fn only_reconciled(held: &[Held]) -> Result<Option<&Held>> {
-    let mut reconciled: Option<&Held> = None;
-    for copy in held {
-        if !git::known_to_reach(&copy.checkout, &copy.compared, &copy.tip)? {
-            continue;
-        }
-        if reconciled.replace(copy).is_some() {
-            return Ok(None);
-        }
-    }
-    Ok(reconciled)
 }
 
 /// Say which copy of a branch is being published, and which were passed over.
@@ -672,7 +649,7 @@ fn only_reconciled(held: &[Held]) -> Result<Option<&Held>> {
 /// Silent where every copy is at the chosen commit, which is the ordinary state after
 /// a session hands its branch back: nothing was chosen between there, and a line about
 /// a choice nobody made is what makes the line about a real one unremarkable.
-fn announce(branch: &str, chosen: &Held, held: &[Held], chose: Chose) {
+fn announce(branch: &str, chosen: &Held, held: &[Held]) {
     let passed_over: Vec<String> = held
         .iter()
         .filter(|copy| copy.tip != chosen.tip)
@@ -683,24 +660,21 @@ fn announce(branch: &str, chosen: &Held, held: &[Held], chose: Chose) {
     }
     eprintln!(
         "onevcs: branch {branch:?} is in {count} checkouts of this identity, and the copy in \
-         {chosen} {why}, so that is the one being published; passed over: {passed_over}",
+         {chosen} is the one being published; passed over: {passed_over}",
         count = held.len(),
         chosen = chosen.describe(),
-        why = match chose {
-            Chose::CarriesTheRest => "carries the rest".to_owned(),
-            Chose::Reconciled => format!("is the only one that carries {}", chosen.compared),
-        },
         passed_over = passed_over.join(", "),
     );
 }
 
 /// Why copies of one branch that have diverged are refused, and what resolves it.
 ///
-/// Every copy is named with the commit it holds, because the operator's question is
-/// which of them is their work — and the guidance is the fetch that brings one into
-/// the other, since whichever way they reconcile them it starts there. `into` and
-/// `from` are two of the copies that have actually diverged, so the command printed
-/// is one that runs as printed rather than a shape to fill in.
+/// Every checkout holding the branch is named with the commit it holds, because the
+/// operator's question is which of them is their work — and the guidance is the fetch
+/// that brings one into the other, since whichever way they reconcile them it starts
+/// there. `into` and `from` are two of the copies that carry work and have actually
+/// diverged, so the command printed is one that runs as printed rather than a shape to
+/// fill in.
 fn diverged(
     branch: &str,
     identity: &str,
@@ -711,8 +685,8 @@ fn diverged(
 ) -> Error {
     Error::Invalid {
         reason: format!(
-            "branch {branch:?} is in {count} checkouts of identity {identity:?} at commits none of \
-             which carries the rest, so nothing here can tell which copy is the work and \
+            "branch {branch:?} is in {count} checkouts of identity {identity:?}, and no copy \
+             holding work carries the rest, so nothing here can tell which copy is the work and \
              publishing one would discard the other: {listed}. Reconcile them in one checkout — \
              `{fetch}` brings {from}'s copy into {into} as FETCH_HEAD, to merge or rebase onto the \
              one that is there — or delete the copy that is not the work, and then land it with \
