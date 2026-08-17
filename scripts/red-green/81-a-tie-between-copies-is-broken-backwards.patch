@@ -1,15 +1,15 @@
 Mutation: equal tips are broken by the last checkout searched rather than by the search order.
 Red: copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 164a293..c67087f 100644
+index a2d4af7..7b13e77 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -605,7 +605,7 @@ fn locate(
-         announce(branch, chosen, &held);
-         return Ok(chosen.checkout.clone());
-     };
--    for copy in &working {
-+    for copy in working.iter().rev() {
-         if !carries_the_rest(copy, &working)? {
+@@ -621,7 +621,7 @@ fn locate(
+         announce(branch, first, &held);
+         return Ok(first.checkout.clone());
+     }
+-    for copy in &held {
++    for copy in held.iter().rev() {
+         if !carries_the_rest(copy, &held)? {
              continue;
          }

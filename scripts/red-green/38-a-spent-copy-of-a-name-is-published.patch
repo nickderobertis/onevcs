@@ -1,11 +1,11 @@
 Mutation: a branch is located by name alone, spent copy or not.
-Red: a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it
+Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index 50adf12..c90248c 100644
+index a2d4af7..30f0a19 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -593,16 +593,8 @@ fn locate(
+@@ -597,16 +597,8 @@ fn locate(
          else {
              continue;
          };
@@ -22,5 +22,5 @@ index 50adf12..c90248c 100644
 +        let _ = (tip, &current, &held);
 +        return Ok(candidate.clone());
      }
-     let working: Vec<&Held> = held
-         .iter()
+     // One copy is the state this search has always answered for, and it answers the same
+     // way: there was nothing to compare.
