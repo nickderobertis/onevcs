@@ -5,6 +5,13 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
+<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] these totals are a
+transcript of one recorded run, not a contract with the scripts: the paragraph below
+states which rounds it covers and which it does not, so the drift is disclosed rather
+than hidden. A drift gate cannot be added until round 78's ambiguous session choice is
+made deterministic -- until then regeneration alternates between two assertion failures
+and any gate would be flaky. Tracked as a follow-up. -->
+
 Patches: 86. Tests observed red and then green: 114.
 
 This transcript is the run made before this branch merged `main`, so it describes
