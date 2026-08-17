@@ -544,14 +544,9 @@ impl Held {
 /// Find the checkout a branch can be read out of, and the copy of it that is the
 /// work rather than the name.
 ///
-/// [`crate::workspace::checkouts_of`] is the search order, and it is an order rather
-/// than a preference: every copy is compared, one whose content the base already
-/// carries included, and the copy carrying all the others is the one returned. Where no
-/// copy carries the rest they have diverged and the search refuses. The one state with
-/// nothing to compare is every copy spent, and the first in search order answers it.
-/// Both the line that chooses and the refusal that cannot name every checkout holding
-/// the branch. Why it is a comparison and not a tier order is in this crate's
-/// `AGENTS.md`.
+/// Searches [`crate::workspace::checkouts_of`] and answers with the copy carrying every
+/// other, refusing where none does. Which copies are compared, and why it is a
+/// comparison rather than a tier order, is this crate's `AGENTS.md`.
 ///
 /// `next` is the clause the divergence refusal ends in — what to do with the branch once
 /// the copies are reconciled — and it is a parameter rather than spelled from a
@@ -645,14 +640,17 @@ fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
     Ok(true)
 }
 
-/// Say which copy of a branch is being published, and which were passed over.
+/// Say which copy of a branch was chosen, and which were passed over.
+///
+/// Which copy is *read*, not which is published: `import` chooses a source through this
+/// same search and lands nothing, so a line claiming a publication would be false half
+/// the times it is printed.
 ///
 /// On stderr, because it is a question asked of the terminal rather than of the
 /// record: without it a stale selection and a current one read identically, and
 /// telling them apart means diffing checkouts by hand — which is what an operator
-/// resolving a conflict twice on one branch had to do. It never fails a landing: the
-/// selection is a fact about the publication that is about to happen, not a condition
-/// on it.
+/// resolving a conflict twice on one branch had to do. It never fails the command that
+/// asked: the selection is a fact about what is about to happen, not a condition on it.
 ///
 /// Silent where every copy is at the chosen commit, which is the ordinary state after
 /// a session hands its branch back: nothing was chosen between there, and a line about
@@ -671,7 +669,7 @@ fn announce(branch: &str, chosen: &Held, held: &[Held]) {
         .collect();
     eprintln!(
         "onevcs: branch {branch:?} is in {count} checkouts of this identity, and the copy in \
-         {chosen} is the one being published; passed over: {passed_over}",
+         {chosen} is the one being read; passed over: {passed_over}",
         count = held.len(),
         chosen = chosen.describe(),
         passed_over = passed_over.join(", "),

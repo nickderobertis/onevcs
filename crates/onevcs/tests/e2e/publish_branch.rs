@@ -1879,7 +1879,7 @@ fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
     let said = stderr_of(&assert);
     assert!(
         said.contains(&format!(
-            "the copy in {} at {resolved} is the one being published",
+            "the copy in {} at {resolved} is the one being read",
             clone.display()
         )),
         "the copy that was published is named with the commit it held:\n{said}"
@@ -2037,7 +2037,7 @@ fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searche
         "and the copy it passed over is not the one an operator is sent to:\n{refusal}"
     );
     assert!(
-        !refusal.contains("is the one being published"),
+        !refusal.contains("is the one being read"),
         "nothing was chosen between, so nothing is said about a choice:\n{refusal}"
     );
 }
@@ -2337,7 +2337,7 @@ fn an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name()
     let said = stderr_of(&assert);
     assert!(
         said.contains(&format!(
-            "the copy in {} at {ahead} (already in the base) is the one being published",
+            "the copy in {} at {ahead} (already in the base) is the one being read",
             fixture.checkout.display()
         )),
         "the copy the answer came from is named:\n{said}"
@@ -2445,7 +2445,7 @@ fn every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them
     let said = stderr_of(&assert);
     assert!(
         said.contains(&format!(
-            "the copy in {} at {live} is the one being published",
+            "the copy in {} at {live} is the one being read",
             fixture.checkout.display()
         )),
         "the copy that was published is named:\n{said}"
