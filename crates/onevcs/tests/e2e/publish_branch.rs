@@ -2462,3 +2462,112 @@ fn every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them
         "and so is the one the base already carries:\n{said}"
     );
 }
+
+#[test]
+fn a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison() {
+    // Two independent clones, so neither borrows the other's object store: the commit
+    // one of them adds is nowhere in the other, and the checkout searched first cannot
+    // run the ancestry question at all. What it answers instead is the whole of this
+    // journey — a verdict that copy loses, not a git failure that ends the landing, so
+    // the copy carrying the rest still lands.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let worker = fixture.world.clone_of(&fixture.origin, "worker");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+
+    // The branch starts in the publication checkout, and the second checkout takes that
+    // copy of it from there and carries on. Fetched between checkouts rather than
+    // through the origin, because what the origin has both of them have.
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/two-stores"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "half.txt",
+        "half\n",
+        "feat: the half both checkouts have",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    fixture.world.git(
+        &worker,
+        &[
+            "fetch",
+            "-q",
+            &fixture.checkout.to_string_lossy(),
+            "+refs/heads/feature/two-stores:refs/heads/feature/two-stores",
+        ],
+    );
+    fixture
+        .world
+        .git(&worker, &["checkout", "-q", "feature/two-stores"]);
+    fixture.world.commit_file(
+        &worker,
+        "whole.txt",
+        "whole\n",
+        "feat: the rest of it, added where the other cannot see it",
+    );
+    fixture.world.git(&worker, &["checkout", "-q", "main"]);
+    let behind = tip_of(&fixture, &fixture.checkout, "feature/two-stores");
+    let ahead = tip_of(&fixture, &worker, "feature/two-stores");
+
+    // The state the journey is about, asserted rather than assumed: the fetch went one
+    // way, so one checkout has both commits and the other has one of them. Assumed, a
+    // fixture that quietly shared an object store would run this journey as an ordinary
+    // ancestry comparison and report it as this one.
+    let commit = |checkout: &Path, sha: &str| {
+        fixture
+            .world
+            .git_raw(checkout, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
+            .status
+            .success()
+    };
+    assert!(
+        !commit(&fixture.checkout, &ahead),
+        "the publication checkout must not have {ahead}, which the other checkout added"
+    );
+    assert!(
+        commit(&worker, &behind),
+        "while the copy that carries the rest can see both commits"
+    );
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/two-stores",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    // Both halves reached the base, which is what says the copy that could not answer
+    // lost the comparison rather than ending it: read as an error, the landing would
+    // have stopped with a diagnostic about `git merge-base` and nothing would be here.
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["ls-tree", "-r", "--name-only", "main"]);
+    for file in ["half.txt", "whole.txt"] {
+        assert!(
+            landed.contains(file),
+            "the copy that carries the rest is the one that landed, with {file}: {landed}"
+        );
+    }
+    let said = stderr_of(&assert);
+    assert!(
+        said.contains(&format!(
+            "the copy in {} at {ahead} is the one being published",
+            worker.display()
+        )),
+        "and it is named as the copy that was chosen:\n{said}"
+    );
+}
