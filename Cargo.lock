@@ -491,6 +491,7 @@ dependencies = [
  "clap",
  "dunce",
  "fs4",
+ "icu_properties",
  "libc",
  "onevcs-testing",
  "predicates",

@@ -500,7 +500,7 @@ fn a_hook_that_refuses_in_characters_that_render_as_nothing_is_read_as_it_was_wr
         &hosted.checkout,
         // The bytes rather than a `\\u` escape: the shell a hook runs under is the
         // repository's to choose, and the one here does not read that spelling.
-        "printf 'refused\\342\\200\\256 by policy\\342\\200\\213\\363\\240\\201\\264\\363\\240\\201\\250\\n' >&2; exit 1",
+        "printf 'refused\\342\\200\\256 by\\302\\255 policy\\342\\200\\213\\363\\240\\201\\264\\363\\240\\201\\250\\n' >&2; exit 1",
     );
 
     let assert = hosted
@@ -516,14 +516,18 @@ fn a_hook_that_refuses_in_characters_that_render_as_nothing_is_read_as_it_was_wr
         .code(1);
 
     let said = stderr_of(&assert);
-    for hidden in ['\u{202e}', '\u{200b}', '\u{e0074}', '\u{e0068}'] {
+    // The soft hyphen is here for what it is not: no bidi control and no tag
+    // character, and in none of the three groups this used to carry a typed-out list
+    // of. It is escaped because Unicode files it under the same category as the rest,
+    // which is the whole reason that category is what gets asked.
+    for hidden in ['\u{202e}', '\u{00ad}', '\u{200b}', '\u{e0074}', '\u{e0068}'] {
         assert!(
             !said.contains(hidden),
             "a character that renders as nothing must not reach the terminal: {hidden:?}\n{said:?}"
         );
     }
     assert!(
-        said.contains("refused\\u{202e} by policy\\u{200b}\\u{e0074}\\u{e0068}"),
+        said.contains("refused\\u{202e} by\\u{00ad} policy\\u{200b}\\u{e0074}\\u{e0068}"),
         "…each is shown as the code point it is, and the words between them survive:\n{said}"
     );
     assert!(!origin_has(&hosted, "feature/bidi"));

@@ -20,7 +20,9 @@ ignore = []
 allow = [
     "MIT",
     "Apache-2.0",
-    # IDNA tables behind `url`, which parses a change request's URL.
+    # Unicode's tables: `icu_properties`, which answers whether a character a
+    # repository's hook wrote renders as anything, and the IDNA data behind `url`,
+    # which parses a change request's URL.
     "Unicode-3.0",
 ]
 confidence-threshold = 0.9

@@ -8,6 +8,9 @@
 //! as. A command that has to be repaired before it works is a refusal that names
 //! no command, which is the thing this whole surface exists to stop.
 
+use icu_properties::props::GeneralCategory;
+use icu_properties::CodePointMapData;
+
 /// One runnable invocation, from the arguments it is made of.
 pub fn command<'a>(argv: impl IntoIterator<Item = &'a str>) -> String {
     argv.into_iter().map(word).collect::<Vec<_>>().join(" ")
@@ -61,33 +64,18 @@ pub fn quoted_output(value: &str) -> String {
 /// anything itself.
 ///
 /// The other half of the problem an escape sequence is, and the half
-/// `char::is_control` does not reach — it answers for `Cc` alone, so every one of
-/// these arrives as an ordinary character. Three closed sets, each named rather
-/// than a slice of a category that grows:
+/// `char::is_control` does not reach: it answers for `Cc` alone, so every one of
+/// these arrives as an ordinary character. U+202E reverses every word after it and
+/// U+2069 closes an isolate a hook never opened, so a refusal can be composed to be
+/// read as its own opposite; U+200B and the tag characters take up no width at all,
+/// so one can be padded with text no terminal shows.
 ///
-/// - The **explicit bidirectional formatting characters** (UAX #9): U+202E reverses
-///   every word after it and U+2069 closes an isolate a hook never opened, so a
-///   refusal can be composed to be read as its own opposite. Unicode fixed this set
-///   at twelve in 6.3 and has added none since.
-/// - The **zero-width characters** in U+200B-U+200D, U+2060, and U+FEFF, which take
-///   up no width: a refusal can be padded with text no terminal shows.
-/// - The **tag characters**, the whole U+E0000 block, which is the same trick with
-///   a whole alphabet behind it — and a block is closed by definition.
-///
-/// Deliberately not "Unicode's `Cf` category": that is a moving classification, and
-/// mirroring it here by hand would be a copy of somebody else's table with nothing
-/// to notice when it moved. What each set above is for is stated, so a character
-/// somebody wants added arrives with the reason it belongs to one of them.
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] there is no upstream
-// table for a gate to reconcile against: each of the three sets is closed, and that
-// is why they are the sets. UAX #9 fixed the explicit bidirectional formatting
-// characters at twelve in Unicode 6.3 and has added none in the decade since, and
-// U+E0000 is a block. The version of this that did mirror a moving classification —
-// `Cf` whole — is what this replaced, for exactly the reason this rule names.
+/// Unicode's own name for that population is the `Cf` general category, and this
+/// asks for it rather than keeping a copy of it. A copy is what this function used
+/// to be — code points typed out here, right on the day and with nothing to notice
+/// the day the category moved. `icu_properties` is already in the graph behind
+/// `url`'s IDNA tables, so the table it answers from costs this crate no dependency
+/// it did not already have and cannot drift from Unicode's.
 fn formatting(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x061c | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060 | 0x2066..=0x2069 | 0xfeff
-            | 0xe0000..=0xe007f
-    )
+    CodePointMapData::<GeneralCategory>::new().get(c) == GeneralCategory::Format
 }
