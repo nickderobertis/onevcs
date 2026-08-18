@@ -252,8 +252,7 @@ fn bounded(
         });
     };
 
-    let status =
-        collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
+    let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
     Ok(Ran {
         status: status.code().unwrap_or(128),
         stdout: out_reader.join().unwrap_or_default(),
