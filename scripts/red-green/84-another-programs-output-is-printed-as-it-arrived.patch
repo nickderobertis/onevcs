@@ -2,7 +2,7 @@ Mutation: text a hook wrote is interpolated into the refusal exactly as it arriv
 Red: a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land
 
 diff --git a/crates/onevcs/src/guidance.rs b/crates/onevcs/src/guidance.rs
-index 281e5d4..4ed6432 100644
+index bfb46b9..ffc308a 100644
 --- a/crates/onevcs/src/guidance.rs
 +++ b/crates/onevcs/src/guidance.rs
 @@ -46,15 +46,7 @@ fn bare(c: char) -> bool {
@@ -21,4 +21,4 @@ index 281e5d4..4ed6432 100644
 +    value.to_owned()
  }
  
- /// Whether a character renders as nothing itself while changing what renders
+ /// Whether a character changes how the text around it renders without rendering as

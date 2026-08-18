@@ -57,43 +57,31 @@ pub fn quoted_output(value: &str) -> String {
         .collect()
 }
 
-/// Whether a character renders as nothing itself while changing what renders
-/// around it.
+/// Whether a character changes how the text around it renders without rendering as
+/// anything itself.
 ///
-/// The other half of the same problem an escape sequence is, and the half
-/// `char::is_control` does not reach: it answers for `Cc` alone, so U+202E arrives
-/// as an ordinary character and reverses every word after it, U+2069 closes an
-/// isolate a hook never opened, and U+200B and the U+E0020 tag characters take up
-/// no width at all. A refusal that can be read backwards, or that ends wherever the
-/// text it refused decided it does, is the concealment the escaping above is here
-/// to stop, so these are shown as their code points too.
+/// The other half of the problem an escape sequence is, and the half
+/// `char::is_control` does not reach — it answers for `Cc` alone, so every one of
+/// these arrives as an ordinary character. Three closed sets, each named rather
+/// than a slice of a category that grows:
 ///
-/// The set is Unicode's `Cf` category, whole rather than the few that are famous:
-/// picking out the ones somebody thought of is how the next one gets through.
-/// Compare it against the category, not against a list of attacks.
+/// - The **explicit bidirectional formatting characters** (UAX #9): U+202E reverses
+///   every word after it and U+2069 closes an isolate a hook never opened, so a
+///   refusal can be composed to be read as its own opposite. Unicode fixed this set
+///   at twelve in 6.3 and has added none since.
+/// - The **zero-width characters** in U+200B-U+200D, U+2060, and U+FEFF, which take
+///   up no width: a refusal can be padded with text no terminal shows.
+/// - The **tag characters**, the whole U+E0000 block, which is the same trick with
+///   a whole alphabet behind it — and a block is closed by definition.
+///
+/// Deliberately not "Unicode's `Cf` category": that is a moving classification, and
+/// mirroring it here by hand would be a copy of somebody else's table with nothing
+/// to notice when it moved. What each set above is for is stated, so a character
+/// somebody wants added arrives with the reason it belongs to one of them.
 fn formatting(c: char) -> bool {
     matches!(
         c as u32,
-        0x00ad
-            | 0x0600..=0x0605
-            | 0x061c
-            | 0x06dd
-            | 0x070f
-            | 0x0890..=0x0891
-            | 0x08e2
-            | 0x180e
-            | 0x200b..=0x200f
-            | 0x202a..=0x202e
-            | 0x2060..=0x2064
-            | 0x2066..=0x206f
-            | 0xfeff
-            | 0xfff9..=0xfffb
-            | 0x110bd
-            | 0x110cd
-            | 0x13430..=0x1343f
-            | 0x1bca0..=0x1bca3
-            | 0x1d173..=0x1d17a
-            | 0xe0001
-            | 0xe0020..=0xe007f
+        0x061c | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060 | 0x2066..=0x2069 | 0xfeff
+            | 0xe0000..=0xe007f
     )
 }
