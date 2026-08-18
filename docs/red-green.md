@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 83. Tests observed red and then green: 114.
+Patches: 84. Tests observed red and then green: 114.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -527,7 +527,7 @@ a request that pinned no branch resumes whatever session it finds.
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -565,4 +565,10 @@ a hook that refuses without writing anything is reported as a refusal with nothi
 a hook that rewrites the message file has its rewrite taken as the subject, rather than only its verdict.
 
 - RED `a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about` — assertion `left == right` failed
+
+### `84-another-programs-output-is-printed-as-it-arrived`
+
+text a hook wrote is interpolated into the refusal exactly as it arrived, control characters and all.
+
+- RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — an escape sequence a hook wrote must not reach the terminal:
 
