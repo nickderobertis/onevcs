@@ -2,10 +2,10 @@ Mutation: a hook that rewrites the message file has its rewrite taken as the sub
 Red: a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about
 
 diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
-index f4ff4c7..ba75bdd 100644
+index 8e3238c..561bd37 100644
 --- a/crates/onevcs/src/git.rs
 +++ b/crates/onevcs/src/git.rs
-@@ -631,7 +631,7 @@ pub enum MessagePolicy {
+@@ -653,7 +653,7 @@ pub enum MessagePolicy {
  /// commits the rewrite because the commit is git's to compose, whereas the subject
  /// asked about here is already composed, and for a change request's title there is
  /// no commit anywhere for a rewrite to reach.
@@ -14,14 +14,14 @@ index f4ff4c7..ba75bdd 100644
      let hook = hooks_dir(cwd)?.join(COMMIT_MSG_HOOK);
      if !is_executable(&hook)? {
          return Ok(MessagePolicy::Unstated);
-@@ -661,8 +661,12 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
+@@ -683,8 +683,12 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
              ))
          },
      );
 +    let rewritten = std::fs::read_to_string(&file).unwrap_or_default();
      let _ = std::fs::remove_file(&file);
      let ran = ran?;
-+    if ran.ok() {
++    if ran.status == 0 {
 +        *message = rewritten.lines().next().unwrap_or_default().to_owned();
 +    }
      Ok(match NonZeroI32::new(ran.status) {
