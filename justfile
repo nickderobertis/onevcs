@@ -56,7 +56,7 @@ _ensure-tool tool:
 # target `just check-affected` uses — which replays from the cache in a second and
 # is what stops the full sweep and the affected sweep from covering different tiers.
 # Deterministic quality gate, every project.
-check: fmt-check lint test doc
+check: red-green-check fmt-check lint test doc
     @bash scripts/nx.sh run-many -t check
     @echo "check: ok"
 
@@ -70,7 +70,7 @@ gate base="origin/main": check (lint-llm-diff base)
 # What PR CI runs: the same gate, scoped to the projects this branch's diff can
 # reach. Fails closed — with no derivable merge base it runs everything.
 # Deterministic quality gate, affected projects only.
-check-affected:
+check-affected: red-green-check
     @bash scripts/nx-affected.sh -t check
     @echo "check-affected: ok"
 
@@ -170,6 +170,21 @@ test-one name:
 # Re-make the red/green evidence for the tests this branch adds.
 red-green base="origin/main":
     @./scripts/red-green.sh --record docs/red-green.md --base {{quote(base)}}
+
+# Inside `check` where `red-green` cannot be, and the two are answering different
+# questions: `red-green` re-makes the evidence by running every mutation, which
+# takes minutes, while this only asks whether the committed record still describes
+# the mutations it was made from — the totals in its header, one round per patch,
+# and each round's subject and red tests. It reads the record and the patch headers
+# and nothing else, so it applies no mutation, runs no test, and answers in under a
+# second.
+#
+# It is a dependency of `check-affected` too rather than an Nx target: the record
+# and the mutations are workspace artifacts belonging to no project, so affected
+# selection has nothing to select them by.
+# Check the committed red/green record still describes its mutations.
+red-green-check:
+    @./scripts/red-green.sh --check-record docs/red-green.md
 
 # Drives the compiled binary as a subprocess — never an in-process `main()`.
 # The end-to-end binary journeys in isolation (also run by `test`/`check`).

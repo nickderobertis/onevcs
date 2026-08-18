@@ -1,0 +1,19 @@
+Mutation: a hook that refuses without writing anything is reported as a refusal with nothing after it.
+Red: a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index d4bca9e..2dc0e3d 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -650,11 +650,6 @@ fn hold_to_repository_policy(repo: &Path, branch: &str, subject: &str) -> Result
+         return Ok(());
+     };
+     let said = guidance::quoted_output(output.trim());
+-    let said = if said.is_empty() {
+-        "<no output>".to_owned()
+-    } else {
+-        said
+-    };
+     Err(Error::GateFailed {
+         reason: format!(
+             "the repository's own commit-msg hook rejected the subject publishing {branch:?} \

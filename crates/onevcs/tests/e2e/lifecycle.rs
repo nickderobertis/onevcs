@@ -2713,6 +2713,16 @@ fn an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded() {
         ("0", "finite number of seconds above zero"),
         ("-1", "finite number of seconds above zero"),
         ("inf", "finite number of seconds above zero"),
+        // Finite, above zero, and still not a bound: no duration reaches it, so a
+        // value this far out is the same misconfiguration as "inf" and has to be
+        // refused with it rather than reaching the wait it cannot be converted for.
+        ("1e300", "short enough to be waited out from now"),
+        // …and a duration holding it is not enough either. This one converts — it is
+        // very nearly the largest that does — and then no instant can be advanced by
+        // it, which is what a bound is waited out as. Accepted here it would reach
+        // that arithmetic and panic, so the same misconfiguration would arrive as a
+        // crash rather than as the refusal its neighbours above get.
+        ("1.8e19", "short enough to be waited out from now"),
     ] {
         fixture
             .world
@@ -3801,7 +3811,7 @@ fn row<'a>(rows: &'a [serde_json::Value], branch: &str) -> &'a serde_json::Value
 }
 
 /// Block until a process is gone, whatever became of its parent.
-fn await_gone(pid: &str) {
+pub fn await_gone(pid: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::process::Command::new("kill")
         .args(["-0", pid])

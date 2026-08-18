@@ -293,20 +293,47 @@ impl World {
 
     /// Install an executable `pre-push` hook running `body`.
     pub fn install_pre_push(&self, checkout: &Path, body: &str) -> PathBuf {
+        self.install_hook(checkout, "pre-push", &format!("set -euo pipefail\n{body}"))
+    }
+
+    /// Install an executable `commit-msg` hook running `body`.
+    ///
+    /// The repository's own subject policy, stated the way a repository states one:
+    /// git hands this hook the path to a file holding the message, so `$1` is what
+    /// the body reads.
+    pub fn install_commit_msg(&self, checkout: &Path, body: &str) -> PathBuf {
+        self.install_hook(
+            checkout,
+            "commit-msg",
+            &format!("set -euo pipefail\n{body}"),
+        )
+    }
+
+    /// Install an executable hook of `name` in this checkout's hooks directory,
+    /// which is what `core.hooksPath` is pointed at.
+    pub fn install_hook(&self, checkout: &Path, name: &str, body: &str) -> PathBuf {
         let hooks = self.path(format!(
             "hooks-{}",
             checkout.file_name().unwrap_or_default().to_string_lossy()
         ));
         std::fs::create_dir_all(&hooks).expect("a hooks directory");
-        let hook = hooks.join("pre-push");
-        write_script(
-            &hook,
-            &format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
-        );
+        let hook = hooks.join(name);
+        write_script(&hook, &format!("#!/usr/bin/env bash\n{body}\n"));
         self.git(
             checkout,
             &["config", "core.hooksPath", &hooks.to_string_lossy()],
         );
+        hook
+    }
+
+    /// Install a `commit-msg` hook git would run and no host can execute.
+    ///
+    /// Executable, and its interpreter does not exist — the shape of a hook that
+    /// fails for a reason other than turning a message down.
+    pub fn install_unrunnable_commit_msg(&self, checkout: &Path) -> PathBuf {
+        let hook = self.install_commit_msg(checkout, "true");
+        std::fs::write(&hook, "#!/nonexistent/interpreter\ntrue\n")
+            .expect("a hook with no interpreter");
         hook
     }
 

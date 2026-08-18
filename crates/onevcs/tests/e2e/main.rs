@@ -67,6 +67,10 @@ mod seam;
 mod scripts;
 #[cfg(unix)]
 mod smoke;
+// Unix only: the `commit-msg` hooks these install are POSIX shell.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod subject_policy;
 mod support;
 #[cfg(unix)]
 mod world;

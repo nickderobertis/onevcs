@@ -618,15 +618,50 @@ pub(crate) fn subject_for(
     title: Option<&str>,
     trailers: &provenance::Trailers,
 ) -> Result<String> {
-    match provenance::publication_subject(repo, compared, branch, title, trailers)? {
-        Ok(subject) => Ok(subject),
-        Err(reason) => Err(Error::Invalid {
-            reason: format!(
-                "cannot publish {branch:?}: {reason}. A subject that names no change would make \
-                 the base branch a worse record than this refusal does."
-            ),
-        }),
-    }
+    let subject = match provenance::publication_subject(repo, compared, branch, title, trailers)? {
+        Ok(subject) => subject,
+        Err(reason) => {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "cannot publish {branch:?}: {reason}. A subject that names no change would \
+                     make the base branch a worse record than this refusal does."
+                ),
+            })
+        }
+    };
+    hold_to_repository_policy(repo, branch, &subject)?;
+    Ok(subject)
+}
+
+/// Put the composed subject to the repository's own `commit-msg` hook, and refuse
+/// the publication when it turns the subject down.
+///
+/// This crate states no subject policy of its own and never will: a squash-merge
+/// subject decides whether a release cuts, and *which* subjects release is a fact
+/// about the repository rather than about publishing. So the question is asked of
+/// the repository, in the one place it can be asked at all — the subject a merge
+/// lands under comes from a change request's title, which no local hook ever sees.
+///
+/// A repository with no `commit-msg` hook expresses no policy and acquires none by
+/// being published through here: [`git::MessagePolicy::Unstated`] passes silently.
+fn hold_to_repository_policy(repo: &Path, branch: &str, subject: &str) -> Result<()> {
+    let git::MessagePolicy::Rejected { status, output } = git::message_policy(repo, subject)?
+    else {
+        return Ok(());
+    };
+    let said = guidance::quoted_output(output.trim());
+    let said = if said.is_empty() {
+        "<no output>".to_owned()
+    } else {
+        said
+    };
+    Err(Error::GateFailed {
+        reason: format!(
+            "the repository's own commit-msg hook rejected the subject publishing {branch:?} \
+             would land, {subject:?} (exit {status}). Reword the commit the subject comes from, \
+             or publish with an explicit title that satisfies it. The hook said:\n{said}"
+        ),
+    })
 }
 
 /// Whether the base already carries everything this branch has, once the base has

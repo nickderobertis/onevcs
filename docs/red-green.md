@@ -5,25 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] these totals are a
-transcript of one recorded run, not a contract with the scripts: the paragraph below
-states which rounds it covers and which it does not, so the drift is disclosed rather
-than hidden. A drift gate cannot be added until round 78's ambiguous session choice is
-made deterministic -- until then regeneration alternates between two assertion failures
-and any gate would be flaky. Tracked as a follow-up. -->
-
-Patches: 86. Tests observed red and then green: 114.
-
-This transcript is the run made before this branch merged `main`, so it describes
-86 of the 103 rounds now under `scripts/red-green/`: the 16 that arrived with the
-merge and `90-a-commit-a-checkout-cannot-see-is-read-as-a-failure` are not in it.
-Re-making it is blocked rather than skipped —
-`34-the-command-a-row-names-cannot-land-it` no longer turns
-`recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns` red
-against the merged `crates/onevcs/src/vcs.rs`, and `just red-green` stops at the
-first round that observes nothing. That mutation has to be re-made against the
-current tree before this file can be, and every round is its patch either way:
-round 90 was observed red by hand over the seven journeys its header names.
+Patches: 114. Tests observed red and then green: 144.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -517,11 +499,25 @@ a host that would not say where the branch is is read as one that has no such br
 
 - RED `a_leased_push_no_host_is_left_to_answer_for_is_reported_as_the_rejection_it_is` — Unexpected return code, failed var == 1
 
+### `74-a-change-request-url-is-not-a-reference`
+
+status resolves a change request's URL as no reference at all, which is the state before this branch: the URL is the host's name for the work and nothing here reads it.
+
+- RED `every_spelling_of_one_piece_of_work_resolves_to_the_same_report` — Unexpected failure.
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(is a name git would not accept)
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected failure.
+
 ### `74-a-session-is-cut-from-a-stale-local-base`
 
 the clone takes the lender's local branches for origin's own refs.
 
 - RED `a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch` — assertion `left == right` failed: the worktree is cut at what origin holds, not at what the lender remembers
+
+### `75-an-ambiguous-reference-answers-with-the-first-candidate`
+
+status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
+
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected return code, failed var == 2
 
 ### `75-a-pinned-resume-cuts-a-second-worktree`
 
@@ -529,17 +525,35 @@ a pinned branch a session already holds is not resumed.
 
 - RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — Unexpected failure.
 
+### `76-a-branch-a-session-still-holds-is-handed-to-the-verb-for-preserved-work`
+
+status stops noticing that an open session holds the branch, so it names the verb that publishes work nobody holds.
+
+- RED `work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it` — assertion `left == right` failed: an open session's branch is published through the session
+
 ### `76-an-occupied-session-is-taken-up-anyway`
 
 the occupancy question is asked about a run root nobody is in.
 
 - RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — Unexpected failure.
 
+### `77-a-base-that-carries-the-work-is-read-as-unpublished`
+
+status stops reading a landing off the base's content, which is the answer a squash-merge leaves and the one a planner got wrong.
+
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — assertion `left == right` failed
+
 ### `77-an-unpinned-request-takes-up-somebody-elses-session`
 
 a request that pinned no branch resumes whatever session it finds.
 
 - RED `a_session_that_pins_no_branch_is_cut_fresh_every_time` — assertion `left != right` failed
+
+### `78-a-host-that-could-not-be-asked-is-read-as-one-with-nothing-to-say`
+
+status reports a host it could not reach as a host that answered there is nothing, so a gap in the report reads as an answer.
+
+- RED `a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_rest` — assertion `left == right` failed
 
 ### `78-an-ambiguous-pin-picks-one-by-coin-toss`
 
@@ -553,6 +567,19 @@ a pin resumes a record without asking whether it is the session asked for, or st
 
 - RED `a_pin_resumes_only_the_session_it_asked_for` — assertion `left != right` failed: a closed session is not resumed
 
+### `79-a-source-nobody-named-is-not-searched-for`
+
+import stops searching everywhere the identity keeps work when nobody passed --from, which is every branch a run left in its own clone.
+
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected failure.
+- RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected failure.
+
+### `80-a-name-the-destination-has-checked-out-is-written-anyway`
+
+import stops refusing the one name a checkout has checked out, so a ref write leaves a working tree describing a commit the branch no longer names.
+
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
 ### `80-a-stale-copy-of-a-branch-is-published`
 
 the copies of a branch are ordered rather than compared, so the first checkout that holds work wins.
@@ -562,6 +589,31 @@ the copies of a branch are ordered rather than compared, so the first checkout t
 - RED `a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other` — Unexpected return code, failed var == 2
 - RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected return code, failed var == 2
 - RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected return code, failed var == 2
+
+### `80-a-stated-subject-policy-is-never-asked`
+
+the composed subject is never put to the repository, so a repository that states a policy has none applied.
+
+- RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — Unexpected return code, failed var == 1
+- RED `a_commit_msg_hook_judges_the_explicit_title_a_publication_would_land_under` — Unexpected return code, failed var == 1
+- RED `a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone` — the hook recorded nothing at <tmp>/commit-msg-saw: No such file or directory (os error 2)
+- RED `a_commit_msg_hook_that_cannot_run_refuses_the_publication_rather_than_passing_it` — Unexpected return code, failed var == 2
+- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected return code, failed var == 1
+- RED `a_hook_that_never_answers_is_stopped_by_the_bound_and_left_running_by_nothing` — Unexpected return code, failed var == 2
+- RED `a_locally_published_session_is_held_to_the_same_policy_as_a_branch` — Unexpected return code, failed var == 1
+
+### `81-a-remote-ref-is-not-a-source`
+
+import stops taking a remote ref as a source, leaving a branch only the origin has reachable by no verb.
+
+- RED `a_branch_is_imported_from_another_checkout_and_from_a_remote_ref` — Unexpected failure.
+
+### `81-a-repository-that-states-no-policy-is-given-one`
+
+a repository with no executable commit-msg hook is given a policy anyway, rather than being left alone.
+
+- RED `a_repository_with_no_commit_msg_hook_is_given_no_subject_policy` — Unexpected failure.
+- RED `a_commit_msg_hook_git_itself_would_skip_is_skipped_here_too` — Unexpected failure.
 
 ### `81-a-tie-between-copies-is-broken-backwards`
 
@@ -577,12 +629,37 @@ the copy a landing chose is no longer said, so a stale selection and a current o
 - RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — the copy that was published is named:
 - RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — the copy the answer came from is named:
 
+### `82-an-alternate-name-is-dropped`
+
+import writes the branch's own name whatever --as asked for, so work whose name is already spent has nowhere to go.
+
+- RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected stdout, failed var.contains(imported preserved/held)
+- RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
+### `82-a-wordless-refusal-is-reported-as-nothing`
+
+a hook that refuses without writing anything is reported as a refusal with nothing after it.
+
+- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
+
 ### `83-a-choice-nobody-made-is-announced-anyway`
 
 a copy is announced whether or not anything was chosen between, which is every landing after a session.
 
 - RED `copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched` — and the copy it passed over is not the one an operator is sent to:
 - RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — a lone copy is published without a word about copies
+
+### `83-a-hooks-rewrite-is-taken-as-the-subject`
+
+a hook that rewrites the message file has its rewrite taken as the subject, rather than only its verdict.
+
+- RED `a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about` — assertion `left == right` failed
+
+### `83-a-name-is-overwritten-with-whatever-arrives`
+
+import stops refusing a non-fast-forward, so a name a checkout holds work under is written over by whatever the source has.
+
+- RED `an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose` — Unexpected return code, failed var == 2
 
 ### `84-a-missing-directory-and-a-missing-git-are-swapped`
 
@@ -591,6 +668,30 @@ the check on the working directory is inverted, so each way git cannot start is 
 - RED `a_git_command_whose_working_directory_is_gone_names_that_directory` — Unexpected stderr, failed var.contains(in <tmp>/project: that directory does not exist)
 - RED `a_git_binary_nothing_can_find_still_names_the_binary` — Unexpected stderr, failed var.contains(is git installed and on PATH?)
 
+### `84-another-programs-output-is-printed-as-it-arrived`
+
+text a hook wrote is interpolated into the refusal exactly as it arrived, control characters and all.
+
+- RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — an escape sequence a hook wrote must not reach the terminal:
+
+### `84-every-gate-verdict-is-read-as-a-pass`
+
+status stops reading what a gate-verdict event actually said, so a refusal and a word this build does not know both report as a pass.
+
+- RED `the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names` — assertion `left == right` failed
+
+### `85-a-branch-a-stream-names-is-taken-on-trust`
+
+status hands a stream's recorded branch to git without asking whether it is a branch name at all.
+
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected stderr, failed var.contains(is a name git would not accept)
+
+### `85-a-byte-that-is-not-text-takes-the-whole-output`
+
+a hook whose refusal carries one undecodable byte has the whole refusal dropped rather than rendered around it.
+
+- RED `a_hook_that_refuses_in_bytes_that_are_not_text_still_refuses` — the undecodable byte is shown as one and the rest of the refusal survives:
+
 ### `85-a-spent-copy-is-left-out-of-the-answer`
 
 a copy whose content the base already carries is left out of the copies a landing reports, so the answer is not about every checkout holding the branch.
@@ -598,10 +699,77 @@ a copy whose content the base already carries is left out of the copies a landin
 - RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — and so is the one the base already carries:
 - RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — and so is the other copy of the name:
 
+### `86-a-hook-nobody-would-answer-for-is-read-as-absent`
+
+a filesystem that will not say whether a hook is there is read as saying there is none.
+
+- RED `a_hooks_directory_that_will_not_answer_is_refused_rather_than_read_as_empty` — Unexpected return code, failed var == 2
+
 ### `86-a-spent-copy-is-left-out-of-the-comparison`
 
 the copies whose content the base already carries are left out of the comparison, so a lone work-carrying copy is chosen beside a tip nothing descends from.
 
 - RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected return code, failed var == 2
 - RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
+
+### `86-the-report-does-not-say-which-shape-it-is`
+
+the status report stops declaring its schema version, so a consumer reads a shape it inferred from the keys it could find.
+
+- RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the report declares the version the surface record documents
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — assertion `left == right` failed: the full golden and the report it reads back as disagree
+
+### `87-a-field-that-holds-nothing-is-written-as-null`
+
+the status report writes an optional field even when it holds nothing, so a consumer that never heard of a session is handed one that is null.
+
+- RED `the_status_report_is_the_versioned_object_its_goldens_record` — assertion `left == right` failed: the object a report with nothing optional in it writes is its checked-in golden; re-make crates/onevcs/tes
+
+### `88-a-version-this-build-cannot-read-is-read-anyway`
+
+the report's schema version stops being checked where the object is read, so a document written to a shape this build does not have is read as one it does.
+
+- RED `a_report_declaring_a_version_this_build_does_not_read_is_refused_where_it_is_read` — a version this build does not read is refused: Report { version: ReportVersion(0), reference: Reference { given: "feature/full", kind: Branc
+
+### `89-a-field-a-report-omits-cannot-be-read-back`
+
+a field the report leaves out when it holds nothing becomes one a reader requires, so the very bytes this build writes are bytes it cannot read.
+
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — the full golden reads back as a report: missing field `notes` at line 78 column 1
+
+### `90-a-commit-a-checkout-cannot-see-is-read-as-a-failure`
+
+the copies whose commit a checkout cannot see are asked about anyway, so an absence git cannot answer ends the landing instead of losing the comparison.
+
+- RED `a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison` — Unexpected failure.
+- RED `a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other` — Unexpected failure.
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
+- RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
+- RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
+- RED `an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_to_it` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
+- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — the spent copy is compared like any other:
+
+### `91-a-character-that-renders-as-nothing-is-passed-through`
+
+only the control codes are escaped, so a character that reorders or hides what a hook wrote is passed to the terminal as it arrived.
+
+- RED `a_hook_that_refuses_in_characters_that_render_as_nothing_is_read_as_it_was_written` — a character that renders as nothing must not reach the terminal: '\u{202e}'
+
+### `92-a-bound-no-duration-can-hold-is-accepted`
+
+a bound is checked for being finite and above zero but for neither of the two things that make it one anything can wait on, so an oversized value reaches the conversion that panics on it.
+
+- RED `an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded` — Unexpected return code, failed var == 2
+
+### `93-a-bound-that-stops-at-the-pipes`
+
+the exit of a run whose pipes have both reached EOF is collected by an unbounded wait, so a hook that closes its streams and keeps running outlives the bound.
+
+- RED `a_hook_that_closes_both_streams_and_keeps_running_is_still_stopped_by_the_bound` — Unexpected return code, failed var == 2
+
+### `94-a-bound-no-instant-can-be-advanced-by-is-accepted`
+
+a bound is checked for being one a duration can hold but never for being one an instant can be advanced by, so an oversized value reaches the deadline arithmetic that panics on it.
+
+- RED `an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded` — Unexpected return code, failed var == 2
 

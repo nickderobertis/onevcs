@@ -31,6 +31,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true }
 fs4 = { workspace = true }
+icu_properties = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }

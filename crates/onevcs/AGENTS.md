@@ -111,6 +111,41 @@ cwd. The train is deliberately not what it names, even for finished work:
 refuses a team or remote identity outright, so it lands none of the branches this
 report is most often read about — the ones a run left in its own clone.
 
+## The subject policy is the repository's, and this crate holds none
+
+`publish::subject_for` composes the subject a publication lands under — an explicit
+`--title`, otherwise the most significant commit subject on the branch — and then
+puts it to the target repository's own `commit-msg` hook through
+`git::message_policy`. A rejection refuses the publication and hands back what the
+hook wrote; a repository with no executable `commit-msg` hook is asked nothing and
+told nothing.
+
+Three things about that are deliberate and easy to undo by accident.
+
+- **No conventional-commit knowledge lives here, and none may.** Which types cut a
+  release is a fact about the repository, stated in its own hook. A type list, a
+  subject grammar, or a "does this parse as conventional" check added to this crate
+  would be `onevcs` acquiring a policy — and a check that a title *parses* is not
+  the check anybody wants: `docs:` and `chore(deps):` parse, and in a repository
+  where neither releases they merge green and reach no registry.
+- **This is the only point where the check can happen at all.** A squash-merge
+  subject comes from the change request's title, not from a commit anybody wrote
+  locally, so no local hook ever sees it. Which is also why the hook is asked
+  wherever the subject is *composed* — `subject_for` — rather than beside a `git
+  commit`, and why `branch.rs`'s precondition and the publication ask through the
+  one function.
+- **A hook that could not run is not a hook that said yes.** `git::message_policy`
+  answers `Unstated` only for a hook git itself would skip — absent, or not
+  executable — and everything else is either a verdict or an `Err`. A rejection is
+  `Error::GateFailed` (exit 1, the repository turned the subject down); a hook that
+  could not be executed is `Error::Invalid` (exit 2, nobody answered). Discovery is
+  `git::hooks_dir`, so `core.hooksPath` is honoured, and the bound is the
+  hook-running one every other hook in `git.rs` runs under.
+
+A repository states its policy by carrying the hook; one that carries none is left
+exactly as it was. Nothing here needs a hook to exist anywhere for the crate to be
+correct, and the absent-hook journey is what holds that.
+
 ## `status` and `import`, and the three things easy to undo
 
 - **`status` reads landing off content, never off ancestry or off the host.**

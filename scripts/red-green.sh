@@ -12,7 +12,7 @@
 # recorded as a round nothing can read.
 #
 # Usage: scripts/red-green.sh [--record FILE] [--base REF] [--patches DIR]
-#                             [--validate-only]
+#                             [--validate-only] [--check-record FILE]
 set -euo pipefail
 
 cd "$(dirname "$0")/.." || {
@@ -38,6 +38,8 @@ record=""
 base="origin/main"
 dir="scripts/red-green"
 validate_only=""
+check_record_path=""
+base_given=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --record)
@@ -55,7 +57,7 @@ while [ "$#" -gt 0 ]; do
         exit 2
       }
       option_like "$1" "$2"
-      base="$2"; shift 2 ;;
+      base="$2"; base_given=1; shift 2 ;;
     --patches)
       [ "$#" -ge 2 ] || {
         echo "--patches needs the directory the mutation patches are in" >&2
@@ -66,12 +68,37 @@ while [ "$#" -gt 0 ]; do
       dir="$2"; shift 2 ;;
     --validate-only)
       validate_only=1; shift ;;
+    --check-record)
+      [ "$#" -ge 2 ] || {
+        echo "--check-record needs the recorded transcript to reconcile" >&2
+        echo "ACTION: run 'just red-green-check', or 'scripts/red-green.sh --check-record docs/red-green.md'" >&2
+        exit 2
+      }
+      option_like "$1" "$2"
+      check_record_path="$2"; shift 2 ;;
     *)
       echo "unknown option $1" >&2
-      echo "ACTION: run 'scripts/red-green.sh [--record FILE] [--base REF] [--patches DIR] [--validate-only]'" >&2
+      echo "ACTION: run 'scripts/red-green.sh [--record FILE] [--base REF] [--patches DIR] [--validate-only] [--check-record FILE]'" >&2
       exit 2 ;;
   esac
 done
+
+# `--check-record` is a whole run of its own: it reads a record and the patch
+# headers and returns. Asking for it *and* for a record to be written, a base to
+# judge against, or a validation pass is asking for two different runs, and
+# quietly doing one of them is how an operator comes away believing a check ran
+# that never did. `--patches` is the exception because check mode reads it.
+if [ -n "$check_record_path" ]; then
+  conflict=""
+  [ -z "$record" ] || conflict="--record"
+  [ -z "$base_given" ] || conflict="--base"
+  [ -z "$validate_only" ] || conflict="--validate-only"
+  if [ -n "$conflict" ]; then
+    echo "red-green: --check-record cannot be combined with $conflict" >&2
+    echo "ACTION: run them separately — --check-record reconciles a committed record against the patches, and $conflict belongs to a run that re-makes or validates one" >&2
+    exit 2
+  fi
+fi
 
 patches=("$dir"/*.patch)
 if [ ! -e "${patches[0]}" ]; then
@@ -138,6 +165,109 @@ done
 
 if [ -n "$validate_only" ]; then
   echo "red-green: every patch header is well formed (${#patches[@]} in $dir)"
+  exit 0
+fi
+
+# The one sentence the record states its totals in. A function rather than two
+# printfs, because the run that writes it and the check that reads it back are the
+# only two callers and a sentence spelled differently in either place is a drift
+# gate that reconciles nothing.
+totals() {
+  printf 'Patches: %s. Tests observed red and then green: %s.\n' "$1" "$2"
+}
+
+# One line per round, as `name<TAB>mutation<TAB>red…`, derived from the patches.
+# Sorted with LC_ALL=C rather than left in `$dir/*.patch` order: the transcript's
+# order is whatever the *recording* shell's locale collated that glob into, and
+# hosts disagree about where a '-' sorts, so comparing sequences would report a
+# machine as drift.
+rounds_from_patches() {
+  local patch name mutation line red
+  for patch in "${patches[@]}"; do
+    name="$(basename "$patch" .patch)"
+    mutation="$(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")"
+    line="$name"$'\t'"$mutation"
+    while IFS= read -r red; do line+=$'\t'"$red"; done < <(sed -n 's/^Red:[[:space:]]*//p' "$patch")
+    printf '%s\n' "$line"
+  done | LC_ALL=C sort
+}
+
+# The same line per round, read back out of the recorded transcript, so the two
+# streams are comparable. Each `### ` heading opens a round, the first non-empty
+# line under it is the mutation it was recorded as, and every `- RED` line under
+# that names a test the round observed red.
+rounds_from_record() {
+  awk '
+    function flush() { if (name != "") printf "%s\t%s%s\n", name, mutation, reds; name = "" }
+    /^### `/ {
+      flush()
+      name = $0
+      sub(/^### `/, "", name)
+      sub(/`[[:space:]]*$/, "", name)
+      mutation = ""
+      reds = ""
+      next
+    }
+    name == "" { next }
+    /^- RED `/ {
+      red = $0
+      sub(/^- RED `/, "", red)
+      sub(/`.*$/, "", red)
+      reds = reds "\t" red
+      next
+    }
+    NF && mutation == "" { mutation = $0 }
+    END { flush() }
+  ' "$1" | LC_ALL=C sort
+}
+
+# The committed transcript, reconciled against the mutations it was made from.
+# Deliberately cheap — it reads the record and the patch headers and nothing else,
+# applies no mutation and runs no test — which is what lets it sit inside `just
+# check` while the recipe that *re-makes* the record cannot.
+check_record() {
+  local record_path="$1" stated stated_count derived_tests expected actual recorded_rounds
+  # Readable and not merely present: every read below is an `awk` or a `sed` under
+  # `set -e`, so a record this user may not open would abort the run with that
+  # tool's own complaint and none of the remedy this check owes whoever ran it.
+  if [ ! -f "$record_path" ] || [ ! -r "$record_path" ]; then
+    echo "red-green: $record_path is not a file this check can read" >&2
+    echo "ACTION: pass the committed record — 'just red-green-check' reads docs/red-green.md — or re-make it with 'just red-green'" >&2
+    return 1
+  fi
+
+  derived_tests="$(sed -n 's/^Red:[[:space:]]*//p' "${patches[@]}" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]')"
+  stated_count="$(awk '/^Patches: /{ n++ } END{ print n + 0 }' "$record_path")"
+  stated="$(awk '/^Patches: /{ print; exit }' "$record_path")"
+  if [ "$stated_count" -ne 1 ] || [ "$stated" != "$(totals "${#patches[@]}" "$derived_tests")" ]; then
+    echo "red-green: $record_path does not state the totals $dir/ adds up to" >&2
+    echo "  it states:  ${stated:-nothing that begins 'Patches: '} (on $stated_count line(s))" >&2
+    echo "  $dir/ is:   $(totals "${#patches[@]}" "$derived_tests")" >&2
+    echo "ACTION: re-make the record with 'just red-green' — those totals are derived from the mutations, so editing the sentence instead states a count nothing observed" >&2
+    return 1
+  fi
+
+  expected="$(rounds_from_patches)"
+  actual="$(rounds_from_record "$record_path")"
+  recorded_rounds="$(awk '/^### `/{ n++ } END{ print n + 0 }' "$record_path")"
+  if [ "$recorded_rounds" -ne "${#patches[@]}" ]; then
+    echo "red-green: $record_path records $recorded_rounds round(s) and $dir/ holds ${#patches[@]} patch(es)" >&2
+    echo "ACTION: re-make the record with 'just red-green' — every patch is one round, and the header's totals agreeing does not make a missing round observed" >&2
+    return 1
+  fi
+  if [ "$expected" != "$actual" ]; then
+    echo "red-green: $record_path does not describe the mutations under $dir/" >&2
+    echo "  '<' is a round $dir/ holds that the record does not describe; '>' is one the record describes that $dir/ does not hold:" >&2
+    diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") | cut -c1-200 | head -20 >&2 || true
+    echo "ACTION: re-make the record with 'just red-green' — it is the one thing that writes this file, and a round edited into it by hand is a claim nothing observed" >&2
+    return 1
+  fi
+
+  echo "red-green: $record_path describes all ${#patches[@]} mutations in $dir and the $derived_tests tests they name"
+}
+
+if [ -n "$check_record_path" ]; then
+  check_record "$check_record_path" || exit 1
   exit 0
 fi
 
@@ -337,7 +467,8 @@ if [ -n "$record" ]; then
     printf 'about before it passed. Regenerate with `just red-green`, which re-applies\n'
     printf 'each mutation under `scripts/red-green/`, records the assertion the test\n'
     printf 'failed on, reverts it, and then runs the same tests green.\n\n'
-    printf 'Patches: %s. Tests observed red and then green: %s.\n\n' "${#patches[@]}" "$green"
+    totals "${#patches[@]}" "$green"
+    printf '\n'
     printf '%s' "$transcript"
   } >"$record"
 fi

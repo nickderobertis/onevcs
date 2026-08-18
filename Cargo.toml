@@ -47,6 +47,11 @@ sha2 = "0.10"
 # The envelope's `ts` is RFC3339 with millisecond precision in UTC. Civil-calendar
 # arithmetic is not a thing to hand-roll into an event stream's ordering key.
 time = { version = "0.3", features = ["formatting", "macros"] }
+# Unicode's own general-category table, which is what decides whether a character
+# a repository's hook wrote renders as anything. Already in the graph behind
+# `url`'s IDNA tables, so asking it directly rather than keeping a copy of the
+# category here costs no crate, no data, and no fetch.
+icu_properties = "2.2"
 # Terminating a timed-out git takes its whole process group, and that call has no
 # portable spelling. Depended on for Unix only; Windows gets the bound without the
 # group teardown.

@@ -18,13 +18,15 @@
 
 use std::borrow::Cow;
 use std::io::Read;
+use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
 use crate::host::Sha;
+use crate::ids;
 
 /// Bound, in seconds, on a command that runs no repository hook.
 pub const TIMEOUT_ENV: &str = "ONEVCS_GIT_TIMEOUT";
@@ -40,7 +42,35 @@ pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
 /// How long a fired bound waits for git's pipes after terminating its group. Only
 /// a descendant this process may not signal can hold them past that, and hanging
 /// there would defeat the bound that just fired.
-const DRAIN_SECONDS: f64 = 30.0;
+const DRAIN: Duration = Duration::from_secs(30);
+/// How often a child that has drained without exiting is asked whether it has gone.
+/// There is no portable wait that takes a deadline, so this is what stands in for
+/// one; small enough to cost an ordinary run nothing, and large enough that a hook
+/// running out its whole bound is not asked a million times.
+const EXIT_POLL: Duration = Duration::from_millis(10);
+
+/// Which of the two bounds one command runs under — `Hooks` where it runs the
+/// repository's own, `Ordinary` where it runs none.
+///
+/// Two named cases rather than a flag: the populations differ by orders of
+/// magnitude, and a call site that had to remember which way round the boolean
+/// went would be one `!` away from bounding a repository's whole gate at what an
+/// ordinary fetch needs.
+#[derive(Debug, Clone, Copy)]
+enum Bound {
+    Ordinary,
+    Hooks,
+}
+
+impl Bound {
+    /// The knob that sets this bound, and what it is without one.
+    fn knob(self) -> (&'static str, f64) {
+        match self {
+            Bound::Ordinary => (TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS),
+            Bound::Hooks => (HOOK_TIMEOUT_ENV, DEFAULT_HOOK_TIMEOUT_SECONDS),
+        }
+    }
+}
 
 /// The one source for which git operations run a repository's hooks, as leading
 /// argv words. Classifying inside [`run`] rather than at each call site is what
@@ -111,13 +141,47 @@ pub fn run(args: &[&str], cwd: Option<&Path>) -> Result<Output> {
 /// `pre-push` hook: the gate a publishing push runs must judge the same base the
 /// worker's gate already cleared.
 pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Result<Output> {
-    let hooks = runs_repository_hooks(args);
-    let bound = timeout_seconds(hooks)?;
+    let mut command = Command::new("git");
+    command.args(args);
+    let ran = bounded(
+        command,
+        cwd,
+        env,
+        if runs_repository_hooks(args) {
+            Bound::Hooks
+        } else {
+            Bound::Ordinary
+        },
+        &format!("git {}", args.join(" ")),
+        |e| unstarted(&e, args, cwd),
+    )?;
+    Ok(Output {
+        status: ran.status,
+        stdout: text(ran.stdout),
+        stderr: text(ran.stderr),
+    })
+}
+
+/// Run one external program under this module's bound, and return what it wrote
+/// whatever its status.
+///
+/// Every git command and the repository's own `commit-msg` hook arrive here, so
+/// the bound, the process-group teardown a fired bound performs, and the proof
+/// that nothing the command started is still writing have one statement rather
+/// than one per caller. `label` is how the run is named in a refusal, and `class`
+/// picks which of the two bounds it runs under.
+fn bounded(
+    mut command: Command,
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    class: Bound,
+    label: &str,
+    unspawnable: impl FnOnce(std::io::Error) -> Error,
+) -> Result<Ran> {
+    let bound = bound_for(class)?;
     let started = Instant::now();
 
-    let mut command = Command::new("git");
     command
-        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -129,21 +193,25 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     }
     detach_process_group(&mut command);
 
-    let mut child = command.spawn().map_err(|e| unstarted(&e, args, cwd))?;
+    let mut child = command.spawn().map_err(unspawnable)?;
 
+    // Bytes, decoded by whoever asked for the run, and the read's own result
+    // deliberately dropped: what each thread owes the wait below is the EOF signal,
+    // which it has to send whether the read ended or broke, and a read that broke
+    // still leaves behind everything it had already taken.
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
     let (sender, receiver) = mpsc::channel();
     let out_sender = sender.clone();
     let out_reader = std::thread::spawn(move || {
-        let mut buffer = String::new();
-        let _ = stdout.read_to_string(&mut buffer);
+        let mut buffer = Vec::new();
+        let _ = stdout.read_to_end(&mut buffer);
         let _ = out_sender.send(());
         buffer
     });
     let err_reader = std::thread::spawn(move || {
-        let mut buffer = String::new();
-        let _ = stderr.read_to_string(&mut buffer);
+        let mut buffer = Vec::new();
+        let _ = stderr.read_to_end(&mut buffer);
         let _ = sender.send(());
         buffer
     });
@@ -151,36 +219,74 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     // Both pipes reaching EOF is what proves nothing git started is still writing.
     // Waiting on the child alone would return while a hook's orphaned child still
     // holds them, which is the leak the group teardown below exists to prevent.
-    let deadline = Duration::from_secs_f64(bound);
-    let drained = wait_for_both(&receiver, deadline);
-    if !drained {
+    let drained = wait_for_both(&receiver, started, bound);
+    // …and draining is not exiting. A hook that closes both streams and then keeps
+    // running has sent every EOF it will ever send while still holding the process,
+    // so the exit is collected under that same deadline rather than after it. Both
+    // halves are the one bound the caller set, and a `wait` outside it would leave
+    // that bound silently not applying to the run they set it for.
+    let exited = if drained {
+        wait_for_exit(&mut child, started, bound)
+    } else {
+        None
+    };
+
+    let Some(collected) = exited else {
         terminate_group(&child);
-        if !wait_for_both(&receiver, Duration::from_secs_f64(DRAIN_SECONDS)) {
+        // Only pipes that have not reached EOF are worth waiting for: a hook that
+        // closed both and then hung has nothing left to send, and DRAIN spent on a
+        // second EOF that will never come is DRAIN added to the fired bound.
+        if drained || !wait_for_both(&receiver, Instant::now(), DRAIN) {
             let _ = child.kill();
         }
         let _ = child.wait();
         let _ = out_reader.join();
         let _ = err_reader.join();
         let elapsed = started.elapsed().as_secs_f64();
-        let knob = if hooks { HOOK_TIMEOUT_ENV } else { TIMEOUT_ENV };
+        let (knob, _) = class.knob();
         return Err(Error::Invalid {
             reason: format!(
-                "git {} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})",
-                args.join(" ")
+                "{label} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})",
+                bound = bound.as_secs_f64()
             ),
         });
-    }
+    };
 
-    let status = child
-        .wait()
-        .map_err(|e| error::invalid(format!("cannot collect git {}: {e}", args.join(" "))))?;
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
-    Ok(Output {
+    let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
+    Ok(Ran {
         status: status.code().unwrap_or(128),
-        stdout,
-        stderr,
+        stdout: out_reader.join().unwrap_or_default(),
+        stderr: err_reader.join().unwrap_or_default(),
     })
+}
+
+/// One bounded run's own answer: how it ended, and the bytes it wrote.
+///
+/// Bytes and not text, because the two callers need different answers to "what if
+/// this is not UTF-8". git's answers are machine-readable — a `-z` path listing
+/// among them — and one carrying a byte that is not text is a listing this process
+/// cannot read rather than a listing with a smudge in it. A repository's hook is
+/// writing prose for a person, and losing its refusal to one such byte would
+/// publish a change the repository turned down.
+struct Ran {
+    status: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// git's own answer as text, or nothing at all when it is not text.
+///
+/// The refusal is the caller's: every one of them already treats an answer it
+/// cannot use as one git did not give, and each says what that means where it
+/// asked. Decoding around the byte instead would hand a caller a *plausible*
+/// listing — a path with a replacement character in it names a file nobody has.
+fn text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).unwrap_or_default()
+}
+
+/// A hook's own words, as close to what it wrote as this process can render.
+fn prose(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// Why git never started, naming whichever of the two things is actually missing.
@@ -268,31 +374,44 @@ pub fn checked_with_env(
 /// A non-numeric, zero, negative, or infinite value is refused here rather than
 /// silently reverting to unbounded: a misconfigured bound that disables the bound
 /// is the failure this whole module exists to prevent.
-fn timeout_seconds(hooks: bool) -> Result<f64> {
-    let (name, default) = if hooks {
-        (HOOK_TIMEOUT_ENV, DEFAULT_HOOK_TIMEOUT_SECONDS)
-    } else {
-        (TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS)
+///
+/// It answers as the `Duration` the bound is waited on as, and refuses everything
+/// that is not one — an oversized but finite value among them. Handing a `f64` back
+/// to be converted at the wait would leave a number this function accepted and the
+/// conversion panics on, which is the same misconfiguration arriving as a crash
+/// instead of as the refusal above it.
+///
+/// A `Duration` holding it is not enough either: a bound beyond what an `Instant`
+/// can reach names a moment that never arrives, which is the same unbounded run. By
+/// how much the two spans differ is the platform's, so `Instant` is asked rather
+/// than a constant compared against.
+fn bound_for(bound: Bound) -> Result<Duration> {
+    let (name, default) = bound.knob();
+    let raw = std::env::var_os(name).map(|raw| raw.to_string_lossy().into_owned());
+    let value: f64 = match &raw {
+        None => default,
+        Some(raw) => raw.trim().parse().map_err(|_| Error::Invalid {
+            reason: format!("{name} must be a number of seconds, not {raw:?}"),
+        })?,
     };
-    let Some(raw) = std::env::var_os(name) else {
-        return Ok(default);
-    };
-    let raw = raw.to_string_lossy().into_owned();
-    let value: f64 = raw.trim().parse().map_err(|_| Error::Invalid {
-        reason: format!("{name} must be a number of seconds, not {raw:?}"),
-    })?;
-    if !value.is_finite() || value <= 0.0 {
-        return Err(Error::Invalid {
-            reason: format!("{name} must be a finite number of seconds above zero, not {raw:?}"),
-        });
+    // Zero is refused with them rather than by them: a duration can hold it, and a
+    // bound that has already fired is not a bound.
+    match Duration::try_from_secs_f64(value) {
+        Ok(held) if !held.is_zero() && Instant::now().checked_add(held).is_some() => Ok(held),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "{name} must be a finite number of seconds above zero, and short enough to be \
+                 waited out from now, not {shown:?}",
+                shown = raw.unwrap_or_else(|| value.to_string()),
+            ),
+        }),
     }
-    Ok(value)
 }
 
 /// Read both bounds, so an unusable one is refused before any command runs.
 pub fn check_bounds() -> Result<()> {
-    timeout_seconds(false)?;
-    timeout_seconds(true)?;
+    bound_for(Bound::Ordinary)?;
+    bound_for(Bound::Hooks)?;
     Ok(())
 }
 
@@ -328,16 +447,47 @@ fn runs_repository_hooks(args: &[&str]) -> bool {
         .any(|command| args.len() >= command.len() && &args[..command.len()] == *command)
 }
 
-/// Wait for both pipe readers to report EOF, or give up at `bound`.
-fn wait_for_both(receiver: &mpsc::Receiver<()>, bound: Duration) -> bool {
-    let deadline = Instant::now() + bound;
+/// Wait for both pipe readers to report EOF, or give up once `bound` has passed
+/// since `started`.
+///
+/// How much of the bound is left, rather than the instant it runs out at: adding a
+/// `Duration` to an `Instant` panics on overflow, and a bound is external
+/// configuration, so a deadline built from one is a misconfigured knob arriving as
+/// a crash. Nothing in this module advances an `Instant`, so there is no value of
+/// it left that could.
+fn wait_for_both(receiver: &mpsc::Receiver<()>, started: Instant, bound: Duration) -> bool {
     for _ in 0..2 {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = bound.saturating_sub(started.elapsed());
         if receiver.recv_timeout(remaining).is_err() {
             return false;
         }
     }
     true
+}
+
+/// The child's own exit, collected within the same bound its pipes were read
+/// under, or nothing at all once that bound has passed since `started`.
+///
+/// Both pipes reaching EOF does not prove the process is gone — a hook that closes
+/// stdout and stderr and then keeps running has drained without exiting — and
+/// `wait` carries no bound of its own, so asked there it would sit for as long as
+/// that hook lives. A bound that silently stops applying is worse than none, because
+/// the caller who set it believes they are covered.
+fn wait_for_exit(
+    child: &mut Child,
+    started: Instant,
+    bound: Duration,
+) -> Option<std::io::Result<ExitStatus>> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(Ok(status)),
+            // A child this process cannot ask about is one it will never collect,
+            // and what an uncollectable run means is said where it was asked for.
+            Err(error) => return Some(Err(error)),
+            Ok(None) if started.elapsed() >= bound => return None,
+            Ok(None) => std::thread::sleep(EXIT_POLL),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -526,13 +676,147 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
 
 /// Git's effective hooks directory for a checkout, honouring `core.hooksPath`.
 pub fn hooks_dir(cwd: &Path) -> Result<PathBuf> {
-    let value = checked(&["rev-parse", "--git-path", "hooks"], Some(cwd))?.trimmed();
+    // Git resolves this one name against `core.hooksPath` rather than against the
+    // git directory, which is why asking git is the only way to get the answer a
+    // repository configured for itself.
+    git_owned_path(cwd, "hooks")
+}
+
+/// A path git owns for a checkout, resolved by git rather than composed here.
+fn git_owned_path(cwd: &Path, name: &str) -> Result<PathBuf> {
+    let value = checked(&["rev-parse", "--git-path", name], Some(cwd))?.trimmed();
     let path = PathBuf::from(&value);
     Ok(if path.is_absolute() {
         path
     } else {
         cwd.join(path)
     })
+}
+
+const COMMIT_MSG_HOOK: &str = "commit-msg";
+
+/// What a repository's own `commit-msg` hook said about a message.
+///
+/// A repository that states no policy is a case of its own rather than an
+/// acceptance: a caller has to be able to tell "nobody was asked" from "the
+/// repository looked and was satisfied", because the first owes an operator no
+/// output at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessagePolicy {
+    /// The repository has no executable `commit-msg` hook, so it states no policy.
+    Unstated,
+    /// The hook ran and accepted the message.
+    Accepted,
+    /// The hook ran and turned the message down, keeping everything it wrote.
+    Rejected {
+        /// What the hook exited with, which a rejection cannot have been nought.
+        status: NonZeroI32,
+        /// Everything the hook wrote, both streams, whole.
+        output: String,
+    },
+}
+
+/// Ask a repository's own `commit-msg` hook about one message, the way git asks.
+///
+/// git hands that hook a single argument — the path to a file holding the message
+/// — and reads its exit status as the verdict, so a hook a repository already runs
+/// at `git commit` answers here unchanged. Where the hook lives is [`hooks_dir`],
+/// which is `core.hooksPath` wherever the repository configures one, and how long
+/// it may take is the hook-running bound every other hook in this module runs
+/// under. The message file is written where git writes `COMMIT_EDITMSG` — inside
+/// the git directory — and removed afterwards.
+///
+/// Two things are deliberately *not* done here. A hook that cannot be run at all
+/// is an `Err` and never a verdict: a repository that could not answer has not said
+/// yes. And a hook that rewrites the message file in place is not taken up — git
+/// commits the rewrite because the commit is git's to compose, whereas the subject
+/// asked about here is already composed, and for a change request's title there is
+/// no commit anywhere for a rewrite to reach.
+pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
+    let hook = hooks_dir(cwd)?.join(COMMIT_MSG_HOOK);
+    if !is_executable(&hook)? {
+        return Ok(MessagePolicy::Unstated);
+    }
+    let file = git_owned_path(cwd, &format!("onevcs-{COMMIT_MSG_HOOK}-{}", ids::unique()))?;
+    // llmlint: ignore[changed_behavior_has_e2e] the only failure this maps is the
+    // filesystem refusing a write inside the git directory of a clone this run cut
+    // itself, under the state root, moments earlier — there is no point at which a
+    // journey could reach it, and every operation that already wrote to that same
+    // directory (the clone, the worktree, the base merge) would have failed first.
+    std::fs::write(&file, format!("{}\n", message.trim_end())).map_err(error::at(
+        "write the message judged by the commit-msg hook to",
+        &file,
+    ))?;
+    let mut command = Command::new(git_path(&hook));
+    command.arg(git_path(&file));
+    let ran = bounded(
+        command,
+        Some(cwd),
+        &[],
+        Bound::Hooks,
+        &format!("the {COMMIT_MSG_HOOK} hook at {}", hook.display()),
+        |e| {
+            error::invalid(format!(
+                "cannot run the {COMMIT_MSG_HOOK} hook at {}: {e}",
+                hook.display()
+            ))
+        },
+    );
+    let _ = std::fs::remove_file(&file);
+    let ran = ran?;
+    Ok(match NonZeroI32::new(ran.status) {
+        None => MessagePolicy::Accepted,
+        Some(status) => MessagePolicy::Rejected {
+            status,
+            output: format!("{}{}", prose(&ran.stdout), prose(&ran.stderr)),
+        },
+    })
+}
+
+/// Whether git would run this file as a hook.
+///
+/// The executable bit, which is git's own test: a `commit-msg` that is present but
+/// not executable is a hook git skips, and skipping it here is what keeps the two
+/// answering the same.
+///
+/// A hook that is not there is `false`; a hook the filesystem would not answer for
+/// is an error. The two are not the same statement, and reading the second as the
+/// first is how a repository that does state a policy has none applied.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(meta.is_file() && meta.permissions().mode() & 0o111 != 0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(unaskable(path, &error)),
+    }
+}
+
+/// Whether git would run this file as a hook.
+///
+/// Windows carries no executable bit, so presence is the test — which is what Git
+/// for Windows does too. A hook it can only run through its bundled shell is
+/// reported as one that cannot be run rather than passed silently.
+// llmlint: ignore[changed_behavior_has_e2e] the fixture every hook journey is driven
+// through is Unix-only by design and says so at its head: a fired bound has to take a
+// process *group*, which has no portable spelling, and the hooks a repository this
+// tool drives carries are POSIX shell. Windows CI builds the crate and runs the
+// contract, boundary, and packaging suites; a journey here would not run there.
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(meta.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(unaskable(path, &error)),
+    }
+}
+
+/// The refusal that the filesystem would not say whether a hook is one git runs.
+fn unaskable(path: &Path, error: &std::io::Error) -> Error {
+    error::invalid(format!(
+        "cannot tell whether the {COMMIT_MSG_HOOK} hook at {} is one git would run: {error}",
+        path.display()
+    ))
 }
 
 /// Update remote-tracking refs. Deliberately performed outside every exclusive

@@ -1,0 +1,20 @@
+Mutation: a repository with no executable commit-msg hook is given a policy anyway, rather than being left alone.
+Red: a_repository_with_no_commit_msg_hook_is_given_no_subject_policy
+Red: a_commit_msg_hook_git_itself_would_skip_is_skipped_here_too
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index f4ff4c7..e897d18 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -634,7 +634,10 @@ pub enum MessagePolicy {
+ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
+     let hook = hooks_dir(cwd)?.join(COMMIT_MSG_HOOK);
+     if !is_executable(&hook)? {
+-        return Ok(MessagePolicy::Unstated);
++        return Ok(MessagePolicy::Rejected {
++            status: NonZeroI32::new(1).expect("one is not nought"),
++            output: "this repository states no subject policy".to_owned(),
++        });
+     }
+     let file = git_owned_path(cwd, &format!("onevcs-{COMMIT_MSG_HOOK}-{}", ids::unique()))?;
+     // llmlint: ignore[changed_behavior_has_e2e] the only failure this maps is the
