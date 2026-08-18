@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 79. Tests observed red and then green: 104.
+Patches: 81. Tests observed red and then green: 110.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -527,11 +527,27 @@ a request that pinned no branch resumes whatever session it finds.
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
 a pin resumes a record without asking whether it is the session asked for, or still there.
 
 - RED `a_pin_resumes_only_the_session_it_asked_for` — assertion `left != right` failed: a closed session is not resumed
+
+### `80-a-stated-subject-policy-is-never-asked`
+
+the composed subject is never put to the repository, so a repository that states a policy has none applied.
+
+- RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — Unexpected return code, failed var == 1
+- RED `a_commit_msg_hook_judges_the_explicit_title_a_publication_would_land_under` — Unexpected return code, failed var == 1
+- RED `a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone` — the hook recorded nothing at <tmp>/commit-msg-saw: No such file or directory (os error 2)
+- RED `a_commit_msg_hook_that_cannot_run_refuses_the_publication_rather_than_passing_it` — Unexpected return code, failed var == 2
+
+### `81-a-repository-that-states-no-policy-is-given-one`
+
+a repository with no executable commit-msg hook is given a policy anyway, rather than being left alone.
+
+- RED `a_repository_with_no_commit_msg_hook_is_given_no_subject_policy` — Unexpected failure.
+- RED `a_commit_msg_hook_git_itself_would_skip_is_skipped_here_too` — Unexpected failure.
 
