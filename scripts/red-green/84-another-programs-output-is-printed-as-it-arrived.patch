@@ -2,10 +2,10 @@ Mutation: text a hook wrote is interpolated into the refusal exactly as it arriv
 Red: a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land
 
 diff --git a/crates/onevcs/src/guidance.rs b/crates/onevcs/src/guidance.rs
-index 3f38344..5be89d1 100644
+index 281e5d4..4ed6432 100644
 --- a/crates/onevcs/src/guidance.rs
 +++ b/crates/onevcs/src/guidance.rs
-@@ -46,13 +46,5 @@ fn bare(c: char) -> bool {
+@@ -46,15 +46,7 @@ fn bare(c: char) -> bool {
  /// so a hook written on Windows reads as it was written and a lone carriage return
  /// is still shown as what it is.
  pub fn quoted_output(value: &str) -> String {
@@ -14,9 +14,11 @@ index 3f38344..5be89d1 100644
 -        .chars()
 -        .map(|c| match c {
 -            '\n' | '\t' => c.to_string(),
--            c if c.is_control() => format!("\\u{{{:04x}}}", c as u32),
+-            c if c.is_control() || formatting(c) => format!("\\u{{{:04x}}}", c as u32),
 -            c => c.to_string(),
 -        })
 -        .collect()
 +    value.to_owned()
  }
+ 
+ /// Whether a character renders as nothing itself while changing what renders

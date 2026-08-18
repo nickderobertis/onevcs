@@ -488,6 +488,48 @@ fn a_hook_that_refuses_in_bytes_that_are_not_text_still_refuses() {
 }
 
 #[test]
+fn a_hook_that_refuses_in_characters_that_render_as_nothing_is_read_as_it_was_written() {
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/bidi", "feat: add the thing");
+    // A hook that wanted the refusal read backwards needs no escape sequence for it:
+    // U+202E reverses every word after it, and the tag characters carry a second
+    // sentence no terminal renders. Both are ordinary characters to `char::is_control`,
+    // so a refusal that only escaped control codes would print what the hook composed
+    // rather than what the hook said.
+    hosted.world.install_commit_msg(
+        &hosted.checkout,
+        // The bytes rather than a `\\u` escape: the shell a hook runs under is the
+        // repository's to choose, and the one here does not read that spelling.
+        "printf 'refused\\342\\200\\256 by policy\\342\\200\\213\\363\\240\\201\\264\\363\\240\\201\\250\\n' >&2; exit 1",
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/bidi",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1);
+
+    let said = stderr_of(&assert);
+    for hidden in ['\u{202e}', '\u{200b}', '\u{e0074}', '\u{e0068}'] {
+        assert!(
+            !said.contains(hidden),
+            "a character that renders as nothing must not reach the terminal: {hidden:?}\n{said:?}"
+        );
+    }
+    assert!(
+        said.contains("refused\\u{202e} by policy\\u{200b}\\u{e0074}\\u{e0068}"),
+        "…each is shown as the code point it is, and the words between them survive:\n{said}"
+    );
+    assert!(!origin_has(&hosted, "feature/bidi"));
+}
+
+#[test]
 fn a_hooks_directory_that_will_not_answer_is_refused_rather_than_read_as_empty() {
     let hosted = Hosted::new(REVIEWED);
     finished_hosted_branch(&hosted, "feature/unaskable", "feat: add the thing");

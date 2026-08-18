@@ -44,7 +44,8 @@ pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
 /// there would defeat the bound that just fired.
 const DRAIN_SECONDS: f64 = 30.0;
 
-/// Which of the two bounds one command runs under.
+/// Which of the two bounds one command runs under — `Hooks` where it runs the
+/// repository's own, `Ordinary` where it runs none.
 ///
 /// Two named cases rather than a flag: the populations differ by orders of
 /// magnitude, and a call site that had to remember which way round the boolean
@@ -52,9 +53,7 @@ const DRAIN_SECONDS: f64 = 30.0;
 /// ordinary fetch needs.
 #[derive(Debug, Clone, Copy)]
 enum Bound {
-    /// A command that runs no repository hook.
     Ordinary,
-    /// A command that runs the repository's own hooks.
     Hooks,
 }
 
@@ -253,11 +252,8 @@ fn bounded(
 /// writing prose for a person, and losing its refusal to one such byte would
 /// publish a change the repository turned down.
 struct Ran {
-    /// What the command exited with.
     status: i32,
-    /// Everything it wrote to standard output.
     stdout: Vec<u8>,
-    /// Everything it wrote to standard error.
     stderr: Vec<u8>,
 }
 
@@ -632,7 +628,6 @@ fn git_owned_path(cwd: &Path, name: &str) -> Result<PathBuf> {
     })
 }
 
-/// The hook git asks whether a commit message may be committed under.
 const COMMIT_MSG_HOOK: &str = "commit-msg";
 
 /// What a repository's own `commit-msg` hook said about a message.
