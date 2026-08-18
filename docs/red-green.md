@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 110. Tests observed red and then green: 141.
+Patches: 111. Tests observed red and then green: 142.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -559,7 +559,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -748,4 +748,10 @@ the copies whose commit a checkout cannot see are asked about anyway, so an abse
 - RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_to_it` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — the spent copy is compared like any other:
+
+### `91-a-character-that-renders-as-nothing-is-passed-through`
+
+only the control codes are escaped, so a character that reorders or hides what a hook wrote is passed to the terminal as it arrived.
+
+- RED `a_hook_that_refuses_in_characters_that_render_as_nothing_is_read_as_it_was_written` — a character that renders as nothing must not reach the terminal: '\u{202e}'
 
