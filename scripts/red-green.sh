@@ -227,7 +227,10 @@ rounds_from_record() {
 # check` while the recipe that *re-makes* the record cannot.
 check_record() {
   local record_path="$1" stated stated_count derived_tests expected actual recorded_rounds
-  if [ ! -f "$record_path" ]; then
+  # Readable and not merely present: every read below is an `awk` or a `sed` under
+  # `set -e`, so a record this user may not open would abort the run with that
+  # tool's own complaint and none of the remedy this check owes whoever ran it.
+  if [ ! -f "$record_path" ] || [ ! -r "$record_path" ]; then
     echo "red-green: $record_path is not a file this check can read" >&2
     echo "ACTION: pass the committed record — 'just red-green-check' reads docs/red-green.md — or re-make it with 'just red-green'" >&2
     return 1

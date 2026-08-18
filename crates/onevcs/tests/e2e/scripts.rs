@@ -1236,6 +1236,25 @@ fn a_round_is_recorded_and_the_tree_is_left_as_it_was_found() {
         .failed()
         .said("no-such-record.md is not a file this check can read")
         .said("ACTION: pass the committed record");
+    // Present is not readable, and the reads below that guard are `awk` and `sed`
+    // under `set -e`: a record this user may not open would abort on one of them,
+    // handing back that tool's own complaint in place of the remedy this check owes.
+    use std::os::unix::fs::PermissionsExt;
+    harness.write("unreadable-record.md", "# Red, then green\n");
+    let unreadable = harness.root().join("unreadable-record.md");
+    let mut permissions = std::fs::metadata(&unreadable)
+        .expect("the record")
+        .permissions();
+    permissions.set_mode(0o200);
+    std::fs::set_permissions(&unreadable, permissions).expect("a record nothing may read");
+    harness
+        .run(&["--check-record", "unreadable-record.md"])
+        .failed()
+        .said("unreadable-record.md is not a file this check can read")
+        .said("ACTION: pass the committed record");
+    // Taken away again rather than left lying there: the rounds below commit the
+    // tree, and `git add -A` would meet a file it cannot read either.
+    std::fs::remove_file(&unreadable).expect("the closed-off record goes with its case");
     harness
         .run(&["--check-record"])
         .failed()

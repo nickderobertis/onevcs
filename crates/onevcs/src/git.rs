@@ -219,18 +219,14 @@ fn bounded(
     // Both pipes reaching EOF is what proves nothing git started is still writing.
     // Waiting on the child alone would return while a hook's orphaned child still
     // holds them, which is the leak the group teardown below exists to prevent.
-    // Adding the bound outright rather than checking it: `timeout_seconds` refuses
-    // one no `Instant` can be advanced by, so there is no accepted bound left here
-    // for which this overflows.
-    let deadline = started + bound;
-    let drained = wait_for_both(&receiver, bound);
+    let drained = wait_for_both(&receiver, started, bound);
     // …and draining is not exiting. A hook that closes both streams and then keeps
     // running has sent every EOF it will ever send while still holding the process,
     // so the exit is collected under that same deadline rather than after it. Both
     // halves are the one bound the caller set, and a `wait` outside it would leave
     // that bound silently not applying to the run they set it for.
     let exited = if drained {
-        wait_for_exit(&mut child, deadline)
+        wait_for_exit(&mut child, started, bound)
     } else {
         None
     };
@@ -240,7 +236,7 @@ fn bounded(
         // Only pipes that have not reached EOF are worth waiting for: a hook that
         // closed both and then hung has nothing left to send, and DRAIN spent on a
         // second EOF that will never come is DRAIN added to the fired bound.
-        if drained || !wait_for_both(&receiver, DRAIN) {
+        if drained || !wait_for_both(&receiver, Instant::now(), DRAIN) {
             let _ = child.kill();
         }
         let _ = child.wait();
@@ -386,12 +382,13 @@ pub fn checked_with_env(
 /// conversion panics on, which is the same misconfiguration arriving as a crash
 /// instead of as the refusal above it.
 ///
-/// A bound is *waited out* as this instant plus itself, and an `Instant` covers a
-/// far shorter span than a `Duration` does, so holding it is not enough on its own.
-/// By how much they differ is the platform's business — the same number overflows on
+/// A bound is *waited out* from now, and an `Instant` covers a far shorter span
+/// than a `Duration` does, so holding it is not enough on its own: a value beyond
+/// what this machine's clock can reach names a moment that never arrives, which is
+/// the unbounded run the refusals above exist to prevent, spelled as a number. By
+/// how much the two differ is the platform's business — the same value overflows on
 /// one host and not on another — so the question is put to `Instant` rather than
-/// answered against a constant here. That refusal is what lets both waits below add
-/// this to an `Instant` outright: past it, no accepted bound can overflow one.
+/// answered against a constant here.
 fn timeout_seconds(bound: Bound) -> Result<Duration> {
     let (name, default) = bound.knob();
     let raw = std::env::var_os(name).map(|raw| raw.to_string_lossy().into_owned());
@@ -454,11 +451,17 @@ fn runs_repository_hooks(args: &[&str]) -> bool {
         .any(|command| args.len() >= command.len() && &args[..command.len()] == *command)
 }
 
-/// Wait for both pipe readers to report EOF, or give up at `bound`.
-fn wait_for_both(receiver: &mpsc::Receiver<()>, bound: Duration) -> bool {
-    let deadline = Instant::now() + bound;
+/// Wait for both pipe readers to report EOF, or give up once `bound` has passed
+/// since `started`.
+///
+/// How much of the bound is left, rather than the instant it runs out at: adding a
+/// `Duration` to an `Instant` panics on overflow, and a bound is external
+/// configuration, so a deadline built from one is a misconfigured knob arriving as
+/// a crash. Nothing in this module advances an `Instant`, so there is no value of
+/// it left that could.
+fn wait_for_both(receiver: &mpsc::Receiver<()>, started: Instant, bound: Duration) -> bool {
     for _ in 0..2 {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = bound.saturating_sub(started.elapsed());
         if receiver.recv_timeout(remaining).is_err() {
             return false;
         }
@@ -466,22 +469,26 @@ fn wait_for_both(receiver: &mpsc::Receiver<()>, bound: Duration) -> bool {
     true
 }
 
-/// The child's own exit, collected under the same deadline its pipes were read
-/// within, or nothing at all when that deadline passes first.
+/// The child's own exit, collected within the same bound its pipes were read
+/// under, or nothing at all once that bound has passed since `started`.
 ///
 /// Both pipes reaching EOF does not prove the process is gone — a hook that closes
 /// stdout and stderr and then keeps running has drained without exiting — and
 /// `wait` carries no bound of its own, so asked there it would sit for as long as
 /// that hook lives. A bound that silently stops applying is worse than none, because
 /// the caller who set it believes they are covered.
-fn wait_for_exit(child: &mut Child, deadline: Instant) -> Option<std::io::Result<ExitStatus>> {
+fn wait_for_exit(
+    child: &mut Child,
+    started: Instant,
+    bound: Duration,
+) -> Option<std::io::Result<ExitStatus>> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(Ok(status)),
             // A child this process cannot ask about is one it will never collect,
             // and what an uncollectable run means is said where it was asked for.
             Err(error) => return Some(Err(error)),
-            Ok(None) if Instant::now() >= deadline => return None,
+            Ok(None) if started.elapsed() >= bound => return None,
             Ok(None) => std::thread::sleep(EXIT_POLL),
         }
     }
