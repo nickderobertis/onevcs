@@ -649,8 +649,12 @@ fn hold_to_repository_policy(repo: &Path, branch: &str, subject: &str) -> Result
     else {
         return Ok(());
     };
-    let said = output.trim();
-    let said = if said.is_empty() { "<no output>" } else { said };
+    let said = guidance::quoted_output(output.trim());
+    let said = if said.is_empty() {
+        "<no output>".to_owned()
+    } else {
+        said
+    };
     Err(Error::GateFailed {
         reason: format!(
             "the repository's own commit-msg hook rejected the subject publishing {branch:?} \

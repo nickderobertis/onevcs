@@ -44,6 +44,30 @@ pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
 /// there would defeat the bound that just fired.
 const DRAIN_SECONDS: f64 = 30.0;
 
+/// Which of the two bounds one command runs under.
+///
+/// Two named cases rather than a flag: the populations differ by orders of
+/// magnitude, and a call site that had to remember which way round the boolean
+/// went would be one `!` away from bounding a repository's whole gate at what an
+/// ordinary fetch needs.
+#[derive(Debug, Clone, Copy)]
+enum Bound {
+    /// A command that runs no repository hook.
+    Ordinary,
+    /// A command that runs the repository's own hooks.
+    Hooks,
+}
+
+impl Bound {
+    /// The knob that sets this bound, and what it is without one.
+    fn knob(self) -> (&'static str, f64) {
+        match self {
+            Bound::Ordinary => (TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS),
+            Bound::Hooks => (HOOK_TIMEOUT_ENV, DEFAULT_HOOK_TIMEOUT_SECONDS),
+        }
+    }
+}
+
 /// The one source for which git operations run a repository's hooks, as leading
 /// argv words. Classifying inside [`run`] rather than at each call site is what
 /// stops a new hook-running operation from silently inheriting the ordinary bound
@@ -119,7 +143,11 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         command,
         cwd,
         env,
-        runs_repository_hooks(args),
+        if runs_repository_hooks(args) {
+            Bound::Hooks
+        } else {
+            Bound::Ordinary
+        },
         &format!("git {}", args.join(" ")),
         |e| {
             error::invalid(format!(
@@ -135,17 +163,17 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// Every git command and the repository's own `commit-msg` hook arrive here, so
 /// the bound, the process-group teardown a fired bound performs, and the proof
 /// that nothing the command started is still writing have one statement rather
-/// than one per caller. `label` is how the run is named in a refusal, and `hooks`
+/// than one per caller. `label` is how the run is named in a refusal, and `class`
 /// picks which of the two bounds it runs under.
 fn bounded(
     mut command: Command,
     cwd: Option<&Path>,
     env: &[(String, String)],
-    hooks: bool,
+    class: Bound,
     label: &str,
     unspawnable: impl FnOnce(std::io::Error) -> Error,
 ) -> Result<Output> {
-    let bound = timeout_seconds(hooks)?;
+    let bound = timeout_seconds(class)?;
     let started = Instant::now();
 
     command
@@ -193,7 +221,7 @@ fn bounded(
         let _ = out_reader.join();
         let _ = err_reader.join();
         let elapsed = started.elapsed().as_secs_f64();
-        let knob = if hooks { HOOK_TIMEOUT_ENV } else { TIMEOUT_ENV };
+        let (knob, _) = class.knob();
         return Err(Error::Invalid {
             reason: format!(
                 "{label} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})"
@@ -275,12 +303,8 @@ pub fn checked_with_env(
 /// A non-numeric, zero, negative, or infinite value is refused here rather than
 /// silently reverting to unbounded: a misconfigured bound that disables the bound
 /// is the failure this whole module exists to prevent.
-fn timeout_seconds(hooks: bool) -> Result<f64> {
-    let (name, default) = if hooks {
-        (HOOK_TIMEOUT_ENV, DEFAULT_HOOK_TIMEOUT_SECONDS)
-    } else {
-        (TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS)
-    };
+fn timeout_seconds(bound: Bound) -> Result<f64> {
+    let (name, default) = bound.knob();
     let Some(raw) = std::env::var_os(name) else {
         return Ok(default);
     };
@@ -298,8 +322,8 @@ fn timeout_seconds(hooks: bool) -> Result<f64> {
 
 /// Read both bounds, so an unusable one is refused before any command runs.
 pub fn check_bounds() -> Result<()> {
-    timeout_seconds(false)?;
-    timeout_seconds(true)?;
+    timeout_seconds(Bound::Ordinary)?;
+    timeout_seconds(Bound::Hooks)?;
     Ok(())
 }
 
@@ -611,7 +635,7 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
         command,
         Some(cwd),
         &[],
-        true,
+        Bound::Hooks,
         &format!("the {COMMIT_MSG_HOOK} hook at {}", hook.display()),
         |e| {
             error::invalid(format!(
@@ -622,8 +646,6 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
     );
     let _ = std::fs::remove_file(&file);
     let ran = ran?;
-    // A nought status *is* acceptance, so the two cases are the two the status
-    // already has rather than a second reading of it that could disagree.
     Ok(match NonZeroI32::new(ran.status) {
         None => MessagePolicy::Accepted,
         Some(status) => MessagePolicy::Rejected {

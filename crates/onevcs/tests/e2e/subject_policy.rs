@@ -34,6 +34,10 @@ use crate::publish_branch::{finished_hosted_branch, stderr_of};
 /// asked about rather than only what it answered, and it writes a line on the way
 /// past — a hook that accepts is under no obligation to be quiet, and a publication
 /// that showed an operator its chatter would be reporting a policy nobody broke.
+///
+/// A refusal goes to both streams, and the second line is painted: a hook writes
+/// for a terminal, and what it writes is another program's output arriving in a
+/// message this one prints.
 fn releases_only_feat_and_fix(record: &Path) -> String {
     format!(
         "subject=\"$(head -1 \"$1\")\"\n\
@@ -42,6 +46,7 @@ fn releases_only_feat_and_fix(record: &Path) -> String {
            feat:*|fix:*) printf 'this subject cuts a release here\\n'; exit 0 ;;\n\
          esac\n\
          printf 'subject %s does not cut a release in this repository\\n' \"$subject\" >&2\n\
+         printf 'the types that do are in \\033[1mCONTRIBUTING.md\\033[0m\\n'\n\
          exit 1",
         record.display()
     )
@@ -77,7 +82,7 @@ fn a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land() 
         .world
         .install_commit_msg(&hosted.checkout, &releases_only_feat_and_fix(&record));
 
-    hosted
+    let assert = hosted
         .world
         .onevcs()
         .args([
@@ -92,6 +97,24 @@ fn a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land() 
             "subject docs: convert the library does not cut a release in this repository",
         ))
         .stderr(predicate::str::contains("commit-msg hook"));
+
+    // Both of the hook's streams reach the operator: what it said about the policy,
+    // and where it said the policy is written down.
+    let said = stderr_of(&assert);
+    assert!(
+        said.contains("the types that do are in"),
+        "a rejecting hook's standard output is the operator's too:\n{said}"
+    );
+    // …but it arrives as text rather than as terminal control. A hook that painted
+    // its own message could otherwise repaint the refusal around it, or erase it.
+    assert!(
+        !said.contains('\u{1b}'),
+        "an escape sequence a hook wrote must not reach the terminal:\n{said:?}"
+    );
+    assert!(
+        said.contains("\\u{001b}[1mCONTRIBUTING.md"),
+        "…and is shown as the escape it is:\n{said}"
+    );
 
     assert_eq!(messages_seen(&record), ["docs: convert the library"]);
     // The refusal stands between the branch and the host: no ref, no change request,

@@ -61,9 +61,7 @@ mod seam;
 mod scripts;
 #[cfg(unix)]
 mod smoke;
-// Unix only: the `commit-msg` hooks these install are POSIX shell, and the
-// publications they judge go through the same substituted `gh` as `host.rs`. Its
-// own header carries the reason in full.
+// Unix only: the `commit-msg` hooks these install are POSIX shell.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod subject_policy;

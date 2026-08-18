@@ -1,4 +1,5 @@
-//! How a refusal names the command that resolves it.
+//! How a refusal names the command that resolves it, and carries text a program
+//! wrote.
 //!
 //! Every refusal on the publication path ends in an invocation an operator or an
 //! agent is meant to run, so the invocation has to survive being run: a checkout
@@ -32,4 +33,26 @@ fn word(value: &str) -> String {
 /// a path that starts with one is exactly the case that would break.
 fn bare(c: char) -> bool {
     c.is_ascii_alphanumeric() || "-_./=:+,@".contains(c)
+}
+
+/// Text some other program wrote, rendered for a message a terminal prints.
+///
+/// A repository's own hook decides what it says, and a refusal hands that back
+/// whole so an operator reads the policy rather than a paraphrase of it — which
+/// makes it untrusted input on its way to a terminal. An escape sequence in it can
+/// move the cursor, repaint what was already written, or hide the refusal
+/// altogether, so what reaches the terminal is exactly the printable text plus the
+/// two characters a program lays its message out with. CRLF is folded to LF first,
+/// so a hook written on Windows reads as it was written and a lone carriage return
+/// is still shown as what it is.
+pub fn quoted_output(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .chars()
+        .map(|c| match c {
+            '\n' | '\t' => c.to_string(),
+            c if c.is_control() => format!("\\u{{{:04x}}}", c as u32),
+            c => c.to_string(),
+        })
+        .collect()
 }
