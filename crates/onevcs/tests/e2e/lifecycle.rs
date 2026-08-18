@@ -2713,6 +2713,10 @@ fn an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded() {
         ("0", "finite number of seconds above zero"),
         ("-1", "finite number of seconds above zero"),
         ("inf", "finite number of seconds above zero"),
+        // Finite, above zero, and still not a bound: no duration reaches it, so a
+        // value this far out is the same misconfiguration as "inf" and has to be
+        // refused with it rather than reaching the wait it cannot be converted for.
+        ("1e300", "short enough for a duration to hold"),
     ] {
         fixture
             .world

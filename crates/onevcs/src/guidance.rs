@@ -78,6 +78,12 @@ pub fn quoted_output(value: &str) -> String {
 /// mirroring it here by hand would be a copy of somebody else's table with nothing
 /// to notice when it moved. What each set above is for is stated, so a character
 /// somebody wants added arrives with the reason it belongs to one of them.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] there is no upstream
+// table for a gate to reconcile against: each of the three sets is closed, and that
+// is why they are the sets. UAX #9 fixed the explicit bidirectional formatting
+// characters at twelve in Unicode 6.3 and has added none in the decade since, and
+// U+E0000 is a block. The version of this that did mirror a moving classification —
+// `Cf` whole — is what this replaced, for exactly the reason this rule names.
 fn formatting(c: char) -> bool {
     matches!(
         c as u32,

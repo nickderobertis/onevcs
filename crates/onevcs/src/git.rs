@@ -42,7 +42,7 @@ pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
 /// How long a fired bound waits for git's pipes after terminating its group. Only
 /// a descendant this process may not signal can hold them past that, and hanging
 /// there would defeat the bound that just fired.
-const DRAIN_SECONDS: f64 = 30.0;
+const DRAIN: Duration = Duration::from_secs(30);
 
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
 /// repository's own, `Ordinary` where it runs none.
@@ -214,11 +214,10 @@ fn bounded(
     // Both pipes reaching EOF is what proves nothing git started is still writing.
     // Waiting on the child alone would return while a hook's orphaned child still
     // holds them, which is the leak the group teardown below exists to prevent.
-    let deadline = Duration::from_secs_f64(bound);
-    let drained = wait_for_both(&receiver, deadline);
+    let drained = wait_for_both(&receiver, bound);
     if !drained {
         terminate_group(&child);
-        if !wait_for_both(&receiver, Duration::from_secs_f64(DRAIN_SECONDS)) {
+        if !wait_for_both(&receiver, DRAIN) {
             let _ = child.kill();
         }
         let _ = child.wait();
@@ -228,7 +227,8 @@ fn bounded(
         let (knob, _) = class.knob();
         return Err(Error::Invalid {
             reason: format!(
-                "{label} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})"
+                "{label} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})",
+                bound = bound.as_secs_f64()
             ),
         });
     }
@@ -357,21 +357,33 @@ pub fn checked_with_env(
 /// A non-numeric, zero, negative, or infinite value is refused here rather than
 /// silently reverting to unbounded: a misconfigured bound that disables the bound
 /// is the failure this whole module exists to prevent.
-fn timeout_seconds(bound: Bound) -> Result<f64> {
+///
+/// It answers as the `Duration` the bound is waited on as, and refuses everything
+/// that is not one — an oversized but finite value among them. Handing a `f64` back
+/// to be converted at the wait would leave a number this function accepted and the
+/// conversion panics on, which is the same misconfiguration arriving as a crash
+/// instead of as the refusal above it.
+fn timeout_seconds(bound: Bound) -> Result<Duration> {
     let (name, default) = bound.knob();
-    let Some(raw) = std::env::var_os(name) else {
-        return Ok(default);
+    let raw = std::env::var_os(name).map(|raw| raw.to_string_lossy().into_owned());
+    let value: f64 = match &raw {
+        None => default,
+        Some(raw) => raw.trim().parse().map_err(|_| Error::Invalid {
+            reason: format!("{name} must be a number of seconds, not {raw:?}"),
+        })?,
     };
-    let raw = raw.to_string_lossy().into_owned();
-    let value: f64 = raw.trim().parse().map_err(|_| Error::Invalid {
-        reason: format!("{name} must be a number of seconds, not {raw:?}"),
-    })?;
-    if !value.is_finite() || value <= 0.0 {
-        return Err(Error::Invalid {
-            reason: format!("{name} must be a finite number of seconds above zero, not {raw:?}"),
-        });
+    // Zero is refused with them rather than by them: a duration can hold it, and a
+    // bound that has already fired is not a bound.
+    match Duration::try_from_secs_f64(value) {
+        Ok(held) if !held.is_zero() => Ok(held),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "{name} must be a finite number of seconds above zero, and short enough for a \
+                 duration to hold, not {shown:?}",
+                shown = raw.unwrap_or_else(|| value.to_string()),
+            ),
+        }),
     }
-    Ok(value)
 }
 
 /// Read both bounds, so an unusable one is refused before any command runs.
