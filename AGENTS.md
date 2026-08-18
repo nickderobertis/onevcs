@@ -107,7 +107,11 @@ not tell you:
   artifact — a mutation per behaviour in `scripts/red-green/`, recorded in
   [`docs/red-green.md`](docs/red-green.md) — and a test no mutation can break fails
   the recipe. Out of `check` and `gate` deliberately: it mutates the tree and takes
-  minutes.
+  minutes. What *is* in `check` is `just red-green-check`, which asks the cheap half
+  of the question — whether the committed record still describes the mutations it
+  was made from, header totals and every round included. The totals are derived, so
+  a mutation added without a re-record would otherwise leave the record asserting a
+  tree that no longer exists and nothing would notice.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.
