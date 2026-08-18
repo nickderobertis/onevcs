@@ -1217,6 +1217,70 @@ fn a_round_is_recorded_and_the_tree_is_left_as_it_was_found() {
         harness.tree_is_clean(),
         "a round that ran must leave the tree carrying no mutation"
     );
+
+    // …and the record that round wrote reads back as describing it. `--check-record`
+    // is the half of this that `just check` can afford: it re-derives the header's
+    // totals and every round from the patch headers alone, applies no mutation and
+    // runs no test. Driven here against a record the *writer* just produced rather
+    // than against a fixture, because the failure it exists to catch is the two
+    // halves disagreeing, and a fixture could agree with neither.
+    harness
+        .run(&["--check-record", "evidence.md"])
+        .succeeded()
+        .printed(
+            "evidence.md describes all 1 mutations in scripts/red-green and the 1 tests they name",
+        );
+
+    harness
+        .run(&["--check-record", "no-such-record.md"])
+        .failed()
+        .said("no-such-record.md is not a file this check can read")
+        .said("ACTION: pass the committed record");
+    harness
+        .run(&["--check-record"])
+        .failed()
+        .said("--check-record needs the recorded transcript to reconcile");
+
+    // A record the rounds were edited out of. Its header still adds up — that is
+    // derived from the patches rather than read out of the body — so counting the
+    // rounds is the only thing that notices, which is why the check counts them.
+    let header_only = recorded.split("### ").next().unwrap_or_default();
+    harness.write("evidence-with-no-rounds.md", header_only);
+    harness
+        .run(&["--check-record", "evidence-with-no-rounds.md"])
+        .failed()
+        .said("records 0 round(s) and scripts/red-green/ holds 1 patch(es)")
+        .said("every patch is one round");
+
+    // A mutation reworded under a record that still names the subject it had: one
+    // patch and one test either way, so both totals still agree and the round itself
+    // is all that moved.
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]).replace(
+            "it makes the subject say mutated.",
+            "it makes the subject say something else.",
+        ),
+    );
+    harness
+        .run(&["--check-record", "evidence.md"])
+        .failed()
+        .said("evidence.md does not describe the mutations under scripts/red-green/")
+        .said("it makes the subject say something else.");
+
+    // And the drift this exists for: a mutation added and the record left alone, so
+    // the evidence goes on stating totals for a set that is no longer there.
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    harness.patch("02-second", &subject_patch(&["a_second_test"]));
+    harness
+        .run(&["--check-record", "evidence.md"])
+        .failed()
+        .said("it states:  Patches: 1. Tests observed red and then green: 1.")
+        .said("is:   Patches: 2. Tests observed red and then green: 2.")
+        .said("ACTION: re-make the record with 'just red-green'");
 }
 
 #[test]
