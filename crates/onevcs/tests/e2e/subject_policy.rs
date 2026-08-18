@@ -389,6 +389,64 @@ fn a_hook_that_never_answers_is_stopped_by_the_bound_and_left_running_by_nothing
 }
 
 #[test]
+fn a_hook_that_closes_both_streams_and_keeps_running_is_still_stopped_by_the_bound() {
+    // The sibling above wedges with its pipes still open, which is what the bound
+    // notices. This one closes both and *then* hangs: every EOF the run is waiting
+    // for arrives while the process itself is still there. A bound that read those
+    // EOFs as the answer would go on to collect an exit that never comes, and the
+    // operator would be waiting on a hook under a bound that had stopped applying —
+    // which is worse than no bound, because they believe it is protecting them.
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/silent-policy", "feat: add the thing");
+    let marker = hosted.world.path("silent-hook.pid");
+    hosted.world.install_commit_msg(
+        &hosted.checkout,
+        // The pid first, while there is still somewhere to write it, then both
+        // streams closed for good, then a run twenty times the bound below. `sleep`
+        // inherits the closed descriptors, so nothing holds either pipe open.
+        &format!(
+            "echo $$ >\"{}\"; exec 1>&- 2>&-; sleep 60",
+            marker.display()
+        ),
+    );
+
+    let started = std::time::Instant::now();
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_GIT_HOOK_TIMEOUT", "3")
+        .args([
+            "publish-branch",
+            "feature/silent-policy",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("commit-msg hook at"))
+        .stderr(predicate::str::contains("timed out after"))
+        .stderr(predicate::str::contains("bound 3s"))
+        .stderr(predicate::str::contains("ONEVCS_GIT_HOOK_TIMEOUT"));
+    let elapsed = started.elapsed();
+    assert!(elapsed.as_secs_f64() >= 3.0, "the bound must be waited out");
+    // …and waited out is the whole of it: the hook had another 57 seconds to run,
+    // and the bound the operator set is what ended the wait rather than the hook.
+    assert!(
+        elapsed.as_secs_f64() < 30.0,
+        "the bound stopped applying once the pipes closed: {elapsed:?}"
+    );
+
+    // Torn down the same way the wedged one is: closing its streams does not buy a
+    // hook the right to outlive the bound that fired on it.
+    let pid = std::fs::read_to_string(&marker)
+        .expect("the hook recorded its own pid")
+        .trim()
+        .to_owned();
+    await_gone(&pid);
+    assert!(!origin_has(&hosted, "feature/silent-policy"));
+}
+
+#[test]
 fn a_locally_published_session_is_held_to_the_same_policy_as_a_branch() {
     // The other publication path and the other verb: a session token rather than a
     // branch name, and a squash straight onto the base rather than a change request.

@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use std::io::Read;
 use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,11 @@ pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
 /// a descendant this process may not signal can hold them past that, and hanging
 /// there would defeat the bound that just fired.
 const DRAIN: Duration = Duration::from_secs(30);
+/// How often a child that has drained without exiting is asked whether it has gone.
+/// There is no portable wait that takes a deadline, so this is what stands in for
+/// one; small enough to cost an ordinary run nothing, and large enough that a hook
+/// running out its whole bound is not asked a million times.
+const EXIT_POLL: Duration = Duration::from_millis(10);
 
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
 /// repository's own, `Ordinary` where it runs none.
@@ -214,10 +219,25 @@ fn bounded(
     // Both pipes reaching EOF is what proves nothing git started is still writing.
     // Waiting on the child alone would return while a hook's orphaned child still
     // holds them, which is the leak the group teardown below exists to prevent.
+    let deadline = started + bound;
     let drained = wait_for_both(&receiver, bound);
-    if !drained {
+    // …and draining is not exiting. A hook that closes both streams and then keeps
+    // running has sent every EOF it will ever send while still holding the process,
+    // so the exit is collected under that same deadline rather than after it. Both
+    // halves are the one bound the caller set, and a `wait` outside it would leave
+    // that bound silently not applying to the run they set it for.
+    let exited = if drained {
+        wait_for_exit(&mut child, deadline)
+    } else {
+        None
+    };
+
+    let Some(collected) = exited else {
         terminate_group(&child);
-        if !wait_for_both(&receiver, DRAIN) {
+        // Only pipes that have not reached EOF are worth waiting for: a hook that
+        // closed both and then hung has nothing left to send, and DRAIN spent on a
+        // second EOF that will never come is DRAIN added to the fired bound.
+        if drained || !wait_for_both(&receiver, DRAIN) {
             let _ = child.kill();
         }
         let _ = child.wait();
@@ -231,11 +251,10 @@ fn bounded(
                 bound = bound.as_secs_f64()
             ),
         });
-    }
+    };
 
-    let status = child
-        .wait()
-        .map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
+    let status =
+        collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
     Ok(Ran {
         status: status.code().unwrap_or(128),
         stdout: out_reader.join().unwrap_or_default(),
@@ -435,6 +454,27 @@ fn wait_for_both(receiver: &mpsc::Receiver<()>, bound: Duration) -> bool {
         }
     }
     true
+}
+
+/// The child's own exit, collected under the same deadline its pipes were read
+/// within, or nothing at all when that deadline passes first.
+///
+/// Both pipes reaching EOF does not prove the process is gone — a hook that closes
+/// stdout and stderr and then keeps running has drained without exiting — and
+/// `wait` carries no bound of its own, so asked there it would sit for as long as
+/// that hook lives. A bound that silently stops applying is worse than none, because
+/// the caller who set it believes they are covered.
+fn wait_for_exit(child: &mut Child, deadline: Instant) -> Option<std::io::Result<ExitStatus>> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(Ok(status)),
+            // A child this process cannot ask about is one it will never collect,
+            // and what an uncollectable run means is said where it was asked for.
+            Err(error) => return Some(Err(error)),
+            Ok(None) if Instant::now() >= deadline => return None,
+            Ok(None) => std::thread::sleep(EXIT_POLL),
+        }
+    }
 }
 
 #[cfg(unix)]
