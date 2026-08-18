@@ -219,6 +219,9 @@ fn bounded(
     // Both pipes reaching EOF is what proves nothing git started is still writing.
     // Waiting on the child alone would return while a hook's orphaned child still
     // holds them, which is the leak the group teardown below exists to prevent.
+    // Adding the bound outright rather than checking it: `timeout_seconds` refuses
+    // one no `Instant` can be advanced by, so there is no accepted bound left here
+    // for which this overflows.
     let deadline = started + bound;
     let drained = wait_for_both(&receiver, bound);
     // …and draining is not exiting. A hook that closes both streams and then keeps
@@ -382,6 +385,13 @@ pub fn checked_with_env(
 /// to be converted at the wait would leave a number this function accepted and the
 /// conversion panics on, which is the same misconfiguration arriving as a crash
 /// instead of as the refusal above it.
+///
+/// A bound is *waited out* as this instant plus itself, and an `Instant` covers a
+/// far shorter span than a `Duration` does, so holding it is not enough on its own.
+/// By how much they differ is the platform's business — the same number overflows on
+/// one host and not on another — so the question is put to `Instant` rather than
+/// answered against a constant here. That refusal is what lets both waits below add
+/// this to an `Instant` outright: past it, no accepted bound can overflow one.
 fn timeout_seconds(bound: Bound) -> Result<Duration> {
     let (name, default) = bound.knob();
     let raw = std::env::var_os(name).map(|raw| raw.to_string_lossy().into_owned());
@@ -394,11 +404,11 @@ fn timeout_seconds(bound: Bound) -> Result<Duration> {
     // Zero is refused with them rather than by them: a duration can hold it, and a
     // bound that has already fired is not a bound.
     match Duration::try_from_secs_f64(value) {
-        Ok(held) if !held.is_zero() => Ok(held),
+        Ok(held) if !held.is_zero() && Instant::now().checked_add(held).is_some() => Ok(held),
         _ => Err(Error::Invalid {
             reason: format!(
-                "{name} must be a finite number of seconds above zero, and short enough for a \
-                 duration to hold, not {shown:?}",
+                "{name} must be a finite number of seconds above zero, and short enough to be \
+                 waited out from now, not {shown:?}",
                 shown = raw.unwrap_or_else(|| value.to_string()),
             ),
         }),

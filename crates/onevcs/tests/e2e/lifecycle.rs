@@ -2716,7 +2716,13 @@ fn an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded() {
         // Finite, above zero, and still not a bound: no duration reaches it, so a
         // value this far out is the same misconfiguration as "inf" and has to be
         // refused with it rather than reaching the wait it cannot be converted for.
-        ("1e300", "short enough for a duration to hold"),
+        ("1e300", "short enough to be waited out from now"),
+        // …and a duration holding it is not enough either. This one converts — it is
+        // very nearly the largest that does — and then no instant can be advanced by
+        // it, which is what a bound is waited out as. Accepted here it would reach
+        // that arithmetic and panic, so the same misconfiguration would arrive as a
+        // crash rather than as the refusal its neighbours above get.
+        ("1.8e19", "short enough to be waited out from now"),
     ] {
         fixture
             .world
