@@ -47,6 +47,8 @@ fn releases_only_feat_and_fix(record: &Path) -> String {
          esac\n\
          printf 'subject %s does not cut a release in this repository\\n' \"$subject\" >&2\n\
          printf 'the types that do are in \\033[1mCONTRIBUTING.md\\033[0m\\n'\n\
+         printf 'ask the maintainers\\r\\n'\n\
+         printf 'or read the release notes\\a\\n'\n\
          exit 1",
         record.display()
     )
@@ -114,6 +116,22 @@ fn a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land() 
     assert!(
         said.contains("\\u{001b}[1mCONTRIBUTING.md"),
         "…and is shown as the escape it is:\n{said}"
+    );
+    // The two line endings a hook may write are one line ending here, so a hook
+    // written on Windows reads as it was written…
+    assert!(
+        said.contains("ask the maintainers\nor read the release notes"),
+        "a CRLF the hook wrote is folded to the newline it means:\n{said:?}"
+    );
+    assert!(
+        !said.contains('\r'),
+        "…and no carriage return of its own survives to rewrite a line:\n{said:?}"
+    );
+    // Every control character is held to the same rule, not the escape byte alone: a
+    // bell is no more the publication's to hand a terminal than a cursor move is.
+    assert!(
+        said.contains("or read the release notes\\u{0007}"),
+        "a control character a hook wrote is shown as the character it is:\n{said}"
     );
 
     assert_eq!(messages_seen(&record), ["docs: convert the library"]);
