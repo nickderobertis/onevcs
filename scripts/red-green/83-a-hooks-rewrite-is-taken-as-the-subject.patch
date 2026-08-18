@@ -1,0 +1,60 @@
+Mutation: a hook that rewrites the message file has its rewrite taken as the subject, rather than only its verdict.
+Red: a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index 47b2146..73ed499 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -590,7 +590,7 @@ pub enum MessagePolicy {
+ /// commits the rewrite because the commit is git's to compose, whereas the subject
+ /// asked about here is already composed, and for a change request's title there is
+ /// no commit anywhere for a rewrite to reach.
+-pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
++pub fn message_policy(cwd: &Path, message: &mut String) -> Result<MessagePolicy> {
+     let hook = hooks_dir(cwd)?.join(COMMIT_MSG_HOOK);
+     if !is_executable(&hook) {
+         return Ok(MessagePolicy::Unstated);
+@@ -620,8 +620,12 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
+             ))
+         },
+     );
++    let rewritten = std::fs::read_to_string(&file).unwrap_or_default();
+     let _ = std::fs::remove_file(&file);
+     let ran = ran?;
++    if ran.ok() {
++        *message = rewritten.lines().next().unwrap_or_default().to_owned();
++    }
+     // A nought status *is* acceptance, so the two cases are the two the status
+     // already has rather than a second reading of it that could disagree.
+     Ok(match NonZeroI32::new(ran.status) {
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index 78e5be8..73812aa 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -618,7 +618,7 @@ pub(crate) fn subject_for(
+     title: Option<&str>,
+     trailers: &provenance::Trailers,
+ ) -> Result<String> {
+-    let subject = match provenance::publication_subject(repo, compared, branch, title, trailers)? {
++    let mut subject = match provenance::publication_subject(repo, compared, branch, title, trailers)? {
+         Ok(subject) => subject,
+         Err(reason) => {
+             return Err(Error::Invalid {
+@@ -629,7 +629,7 @@ pub(crate) fn subject_for(
+             })
+         }
+     };
+-    hold_to_repository_policy(repo, branch, &subject)?;
++    hold_to_repository_policy(repo, branch, &mut subject)?;
+     Ok(subject)
+ }
+ 
+@@ -644,7 +644,7 @@ pub(crate) fn subject_for(
+ ///
+ /// A repository with no `commit-msg` hook expresses no policy and acquires none by
+ /// being published through here: [`git::MessagePolicy::Unstated`] passes silently.
+-fn hold_to_repository_policy(repo: &Path, branch: &str, subject: &str) -> Result<()> {
++fn hold_to_repository_policy(repo: &Path, branch: &str, subject: &mut String) -> Result<()> {
+     let git::MessagePolicy::Rejected { status, output } = git::message_policy(repo, subject)?
+     else {
+         return Ok(());

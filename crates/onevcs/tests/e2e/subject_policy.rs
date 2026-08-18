@@ -24,20 +24,22 @@ use std::path::Path;
 use predicates::prelude::*;
 
 use crate::host::{Hosted, REVIEWED};
-use crate::lifecycle::await_gone;
+use crate::lifecycle::{await_gone, local_direct, Fixture};
 use crate::publish_branch::{finished_hosted_branch, stderr_of};
 
 /// One repository's own subject policy: only `feat:` and `fix:` cut a release
 /// there, which is the repository's statement to make and not this crate's.
 ///
 /// It records every message it is handed, so a journey can say what the hook was
-/// asked about rather than only what it answered.
+/// asked about rather than only what it answered, and it writes a line on the way
+/// past — a hook that accepts is under no obligation to be quiet, and a publication
+/// that showed an operator its chatter would be reporting a policy nobody broke.
 fn releases_only_feat_and_fix(record: &Path) -> String {
     format!(
         "subject=\"$(head -1 \"$1\")\"\n\
          printf '%s\\n' \"$subject\" >> '{}'\n\
          case \"$subject\" in\n\
-           feat:*|fix:*) exit 0 ;;\n\
+           feat:*|fix:*) printf 'this subject cuts a release here\\n'; exit 0 ;;\n\
          esac\n\
          printf 'subject %s does not cut a release in this repository\\n' \"$subject\" >&2\n\
          exit 1",
@@ -153,7 +155,7 @@ fn a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone() {
         .world
         .install_commit_msg(&hosted.checkout, &releases_only_feat_and_fix(&record));
 
-    hosted
+    let assert = hosted
         .world
         .onevcs()
         .args([
@@ -167,6 +169,11 @@ fn a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone() {
         .stdout(predicate::str::contains("change request open at"));
 
     assert_eq!(messages_seen(&record), ["feat: add the releasing thing"]);
+    let said = stderr_of(&assert);
+    assert!(
+        !said.contains("cuts a release here"),
+        "an accepting hook's own chatter is not the publication's to report:\n{said}"
+    );
     // The publication is the one it would have been without a hook at all: the branch
     // is on the origin, under that subject, with its change request open.
     assert_eq!(
@@ -338,4 +345,71 @@ fn a_hook_that_never_answers_is_stopped_by_the_bound_and_left_running_by_nothing
         .to_owned();
     await_gone(&pid);
     assert!(!origin_has(&hosted, "feature/wedged-policy"));
+}
+
+#[test]
+fn a_locally_published_session_is_held_to_the_same_policy_as_a_branch() {
+    // The other publication path and the other verb: a session token rather than a
+    // branch name, and a squash straight onto the base rather than a change request.
+    // Both compose their subject in one place, so both are asked the same question.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let record = fixture.world.path("commit-msg-saw");
+    fixture
+        .world
+        .install_commit_msg(&fixture.checkout, &releases_only_feat_and_fix(&record));
+    let (token, worktree) = fixture.open(&["--branch", "feature/local-policy"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token, "--title", "docs: convert the library"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "subject docs: convert the library does not cut a release in this repository",
+        ));
+
+    let seen = messages_seen(&record);
+    assert_eq!(
+        seen.last().map(String::as_str),
+        Some("docs: convert the library"),
+        "the title is what was judged: {seen:?}"
+    );
+    // Nothing landed, and the work is not lost with the session's clone: a refused
+    // publication hands the branch back to the checkout it was worked from.
+    assert_eq!(fixture.origin_log().len(), 1);
+    assert!(stderr_of(&assert).contains("is preserved in"));
+}
+
+#[test]
+fn a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about() {
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/rewritten", "feat: add the thing");
+    // git takes a rewrite because the commit is git's to compose. Here the subject is
+    // already composed, and for a change request's title there is no commit anywhere
+    // for a rewrite to reach — so the hook's verdict is taken and its edit is not.
+    hosted.world.install_commit_msg(
+        &hosted.checkout,
+        "printf 'feat: something else entirely\\n' > \"$1\"",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/rewritten",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let title = std::fs::read_to_string(hosted.world.path("gh-state/pr-1.title"))
+        .expect("the host records the title it was given");
+    assert_eq!(title.trim(), "feat: add the thing");
 }

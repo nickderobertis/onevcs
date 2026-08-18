@@ -651,6 +651,11 @@ fn is_executable(path: &Path) -> bool {
 /// Windows carries no executable bit, so presence is the test — which is what Git
 /// for Windows does too. A hook it can only run through its bundled shell is
 /// reported as one that cannot be run rather than passed silently.
+// llmlint: ignore[changed_behavior_has_e2e] the fixture every hook journey is driven
+// through is Unix-only by design and says so at its head: a fired bound has to take a
+// process *group*, which has no portable spelling, and the hooks a repository this
+// tool drives carries are POSIX shell. Windows CI builds the crate and runs the
+// contract, boundary, and packaging suites; a journey here would not run there.
 #[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path)
