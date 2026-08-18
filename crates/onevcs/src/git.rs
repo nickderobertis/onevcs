@@ -139,7 +139,7 @@ pub fn run(args: &[&str], cwd: Option<&Path>) -> Result<Output> {
 pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Result<Output> {
     let mut command = Command::new("git");
     command.args(args);
-    bounded(
+    let ran = bounded(
         command,
         cwd,
         env,
@@ -154,7 +154,12 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
                 "cannot run git: {e} (is git installed and on PATH?)"
             ))
         },
-    )
+    )?;
+    Ok(Output {
+        status: ran.status,
+        stdout: text(ran.stdout),
+        stderr: text(ran.stderr),
+    })
 }
 
 /// Run one external program under this module's bound, and return what it wrote
@@ -172,7 +177,7 @@ fn bounded(
     class: Bound,
     label: &str,
     unspawnable: impl FnOnce(std::io::Error) -> Error,
-) -> Result<Output> {
+) -> Result<Ran> {
     let bound = timeout_seconds(class)?;
     let started = Instant::now();
 
@@ -190,19 +195,23 @@ fn bounded(
 
     let mut child = command.spawn().map_err(unspawnable)?;
 
+    // Bytes, decoded by whoever asked for the run, and the read's own result
+    // deliberately dropped: what each thread owes the wait below is the EOF signal,
+    // which it has to send whether the read ended or broke, and a read that broke
+    // still leaves behind everything it had already taken.
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
     let (sender, receiver) = mpsc::channel();
     let out_sender = sender.clone();
     let out_reader = std::thread::spawn(move || {
-        let mut buffer = String::new();
-        let _ = stdout.read_to_string(&mut buffer);
+        let mut buffer = Vec::new();
+        let _ = stdout.read_to_end(&mut buffer);
         let _ = out_sender.send(());
         buffer
     });
     let err_reader = std::thread::spawn(move || {
-        let mut buffer = String::new();
-        let _ = stderr.read_to_string(&mut buffer);
+        let mut buffer = Vec::new();
+        let _ = stderr.read_to_end(&mut buffer);
         let _ = sender.send(());
         buffer
     });
@@ -232,13 +241,43 @@ fn bounded(
     let status = child
         .wait()
         .map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
-    Ok(Output {
+    Ok(Ran {
         status: status.code().unwrap_or(128),
-        stdout,
-        stderr,
+        stdout: out_reader.join().unwrap_or_default(),
+        stderr: err_reader.join().unwrap_or_default(),
     })
+}
+
+/// One bounded run's own answer: how it ended, and the bytes it wrote.
+///
+/// Bytes and not text, because the two callers need different answers to "what if
+/// this is not UTF-8". git's answers are machine-readable — a `-z` path listing
+/// among them — and one carrying a byte that is not text is a listing this process
+/// cannot read rather than a listing with a smudge in it. A repository's hook is
+/// writing prose for a person, and losing its refusal to one such byte would
+/// publish a change the repository turned down.
+struct Ran {
+    /// What the command exited with.
+    status: i32,
+    /// Everything it wrote to standard output.
+    stdout: Vec<u8>,
+    /// Everything it wrote to standard error.
+    stderr: Vec<u8>,
+}
+
+/// git's own answer as text, or nothing at all when it is not text.
+///
+/// The refusal is the caller's: every one of them already treats an answer it
+/// cannot use as one git did not give, and each says what that means where it
+/// asked. Decoding around the byte instead would hand a caller a *plausible*
+/// listing — a path with a replacement character in it names a file nobody has.
+fn text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).unwrap_or_default()
+}
+
+/// A hook's own words, as close to what it wrote as this process can render.
+fn prose(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// The ordinary Win32 spelling Git expects at its process boundary.
@@ -616,7 +655,7 @@ pub enum MessagePolicy {
 /// no commit anywhere for a rewrite to reach.
 pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
     let hook = hooks_dir(cwd)?.join(COMMIT_MSG_HOOK);
-    if !is_executable(&hook) {
+    if !is_executable(&hook)? {
         return Ok(MessagePolicy::Unstated);
     }
     let file = git_owned_path(cwd, &format!("onevcs-{COMMIT_MSG_HOOK}-{}", ids::unique()))?;
@@ -650,7 +689,7 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
         None => MessagePolicy::Accepted,
         Some(status) => MessagePolicy::Rejected {
             status,
-            output: ran.combined(),
+            output: format!("{}{}", prose(&ran.stdout), prose(&ran.stderr)),
         },
     })
 }
@@ -660,12 +699,18 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
 /// The executable bit, which is git's own test: a `commit-msg` that is present but
 /// not executable is a hook git skips, and skipping it here is what keeps the two
 /// answering the same.
+///
+/// A hook that is not there is `false`; a hook the filesystem would not answer for
+/// is an error. The two are not the same statement, and reading the second as the
+/// first is how a repository that does state a policy has none applied.
 #[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
+fn is_executable(path: &Path) -> Result<bool> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(meta.is_file() && meta.permissions().mode() & 0o111 != 0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(unaskable(path, &error)),
+    }
 }
 
 /// Whether git would run this file as a hook.
@@ -679,10 +724,20 @@ fn is_executable(path: &Path) -> bool {
 // tool drives carries are POSIX shell. Windows CI builds the crate and runs the
 // contract, boundary, and packaging suites; a journey here would not run there.
 #[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .map(|meta| meta.is_file())
-        .unwrap_or(false)
+fn is_executable(path: &Path) -> Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(meta.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(unaskable(path, &error)),
+    }
+}
+
+/// The refusal that the filesystem would not say whether a hook is one git runs.
+fn unaskable(path: &Path, error: &std::io::Error) -> Error {
+    error::invalid(format!(
+        "cannot tell whether the {COMMIT_MSG_HOOK} hook at {} is one git would run: {error}",
+        path.display()
+    ))
 }
 
 /// Update remote-tracking refs. Deliberately performed outside every exclusive

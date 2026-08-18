@@ -1,0 +1,23 @@
+Mutation: a filesystem that will not say whether a hook is there is read as saying there is none.
+Red: a_hooks_directory_that_will_not_answer_is_refused_rather_than_read_as_empty
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index f4ff4c7..6fb9a85 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -684,11 +684,10 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
+ #[cfg(unix)]
+ fn is_executable(path: &Path) -> Result<bool> {
+     use std::os::unix::fs::PermissionsExt;
+-    match std::fs::metadata(path) {
+-        Ok(meta) => Ok(meta.is_file() && meta.permissions().mode() & 0o111 != 0),
+-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+-        Err(error) => Err(unaskable(path, &error)),
+-    }
++    let _ = unaskable;
++    Ok(std::fs::metadata(path)
++        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
++        .unwrap_or(false))
+ }
+ 
+ /// Whether git would run this file as a hook.

@@ -454,3 +454,81 @@ fn a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about() {
         .expect("the host records the title it was given");
     assert_eq!(title.trim(), "feat: add the thing");
 }
+
+#[test]
+fn a_hook_that_refuses_in_bytes_that_are_not_text_still_refuses() {
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/mojibake", "feat: add the thing");
+    // A hook picks its own encoding, and a repository whose contributors write in
+    // one this process cannot decode still states a policy. Losing the refusal with
+    // the byte would publish the change the repository turned down.
+    hosted.world.install_commit_msg(
+        &hosted.checkout,
+        "printf 'refuse\\351d by the policy\\n' >&2; exit 1",
+    );
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/mojibake",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1);
+
+    let said = stderr_of(&assert);
+    assert!(
+        said.contains("refuse\u{fffd}d by the policy"),
+        "the undecodable byte is shown as one and the rest of the refusal survives:\n{said}"
+    );
+    assert!(!origin_has(&hosted, "feature/mojibake"));
+}
+
+#[test]
+fn a_hooks_directory_that_will_not_answer_is_refused_rather_than_read_as_empty() {
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/unaskable", "feat: add the thing");
+    let hook = hosted.world.install_commit_msg(&hosted.checkout, "exit 0");
+    // The directory the hook lives in stops answering. "There is no hook here" and
+    // "nobody would say" are different statements, and reading the second as the
+    // first is how a repository that does state a policy has none applied.
+    let hooks = hook.parent().expect("the hook has a directory").to_owned();
+    let mut shut = std::fs::metadata(&hooks)
+        .expect("the hooks directory")
+        .permissions();
+    shut.set_mode(0o000);
+    std::fs::set_permissions(&hooks, shut).expect("a directory nothing may read");
+
+    let refused = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/unaskable",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot tell whether the commit-msg hook at",
+        ));
+    let said = stderr_of(&refused);
+
+    // Put back before the assertions that need the world readable again, so a failure
+    // here is the finding rather than a directory the fixture could not clean up.
+    let mut open = std::fs::metadata(&hooks)
+        .expect("the hooks directory")
+        .permissions();
+    open.set_mode(0o755);
+    std::fs::set_permissions(&hooks, open).expect("a directory this user may read again");
+
+    assert!(
+        said.contains(&hooks.display().to_string()),
+        "the refusal names the hook it could not ask about:\n{said}"
+    );
+    assert!(!origin_has(&hosted, "feature/unaskable"));
+}
