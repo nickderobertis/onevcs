@@ -24,6 +24,7 @@ use std::path::Path;
 use predicates::prelude::*;
 
 use crate::host::{Hosted, REVIEWED};
+use crate::lifecycle::await_gone;
 use crate::publish_branch::{finished_hosted_branch, stderr_of};
 
 /// One repository's own subject policy: only `feat:` and `fix:` cut a release
@@ -90,10 +91,9 @@ fn a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land() 
         ))
         .stderr(predicate::str::contains("commit-msg hook"));
 
-    // The hook was handed the subject the publication would have landed under…
     assert_eq!(messages_seen(&record), ["docs: convert the library"]);
-    // …and the refusal stands between the branch and the host: no ref, no change
-    // request, nothing merged.
+    // The refusal stands between the branch and the host: no ref, no change request,
+    // nothing merged.
     assert!(!origin_has(&hosted, "feature/docs-only"));
     assert_eq!(hosted.origin_log().len(), 1);
     assert!(!hosted.world.path("gh-state/pr-1.env").exists());
@@ -166,10 +166,9 @@ fn a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone() {
         .success()
         .stdout(predicate::str::contains("change request open at"));
 
-    // The repository was asked about the subject it accepted…
     assert_eq!(messages_seen(&record), ["feat: add the releasing thing"]);
-    // …and the publication is the one it would have been without a hook at all: the
-    // branch is on the origin, under that subject, with its change request open.
+    // The publication is the one it would have been without a hook at all: the branch
+    // is on the origin, under that subject, with its change request open.
     assert_eq!(
         hosted.world.git(
             &hosted.origin,
@@ -204,7 +203,6 @@ fn a_repository_with_no_commit_msg_hook_is_given_no_subject_policy() {
         .success()
         .stdout(predicate::str::contains("change request open at"));
 
-    // …and nothing is reported about a policy nobody stated.
     let said = stderr_of(&assert);
     assert!(
         !said.contains("commit-msg"),
@@ -274,4 +272,70 @@ fn a_commit_msg_hook_that_cannot_run_refuses_the_publication_rather_than_passing
 
     assert!(!origin_has(&hosted, "feature/broken-policy"));
     assert_eq!(hosted.origin_log().len(), 1);
+}
+
+#[test]
+fn a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is() {
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/silent", "feat: add the thing");
+    // A hook is under no obligation to explain itself, and a refusal that showed an
+    // operator an empty space where the reason goes would read as a bug in onevcs
+    // rather than as a policy their repository states.
+    hosted.world.install_commit_msg(&hosted.checkout, "exit 3");
+
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/silent",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("(exit 3)"))
+        .stderr(predicate::str::contains("The hook said:\n<no output>"));
+
+    assert!(!origin_has(&hosted, "feature/silent"));
+}
+
+#[test]
+fn a_hook_that_never_answers_is_stopped_by_the_bound_and_left_running_by_nothing() {
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/wedged-policy", "feat: add the thing");
+    let marker = hosted.world.path("wedged-hook.pid");
+    hosted.world.install_commit_msg(
+        &hosted.checkout,
+        &format!("echo $$ >\"{}\"; sleep 600", marker.display()),
+    );
+
+    let started = std::time::Instant::now();
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_GIT_HOOK_TIMEOUT", "3")
+        .args([
+            "publish-branch",
+            "feature/wedged-policy",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("commit-msg hook at"))
+        .stderr(predicate::str::contains("timed out after"))
+        .stderr(predicate::str::contains("bound 3s"))
+        .stderr(predicate::str::contains("ONEVCS_GIT_HOOK_TIMEOUT"));
+    let elapsed = started.elapsed();
+    assert!(elapsed.as_secs_f64() >= 3.0, "the bound must be waited out");
+
+    // The hook this crate spawns itself is held to the same teardown git's own are:
+    // one left running would hold the pipes the fired bound stopped waiting for.
+    let pid = std::fs::read_to_string(&marker)
+        .expect("the hook recorded its own pid")
+        .trim()
+        .to_owned();
+    await_gone(&pid);
+    assert!(!origin_has(&hosted, "feature/wedged-policy"));
 }

@@ -18,6 +18,7 @@
 
 use std::borrow::Cow;
 use std::io::Read;
+use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -566,8 +567,8 @@ pub enum MessagePolicy {
     Accepted,
     /// The hook ran and turned the message down, keeping everything it wrote.
     Rejected {
-        /// What the hook exited with.
-        status: i32,
+        /// What the hook exited with, which a rejection cannot have been nought.
+        status: NonZeroI32,
         /// Everything the hook wrote, both streams, whole.
         output: String,
     },
@@ -595,6 +596,11 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
         return Ok(MessagePolicy::Unstated);
     }
     let file = git_owned_path(cwd, &format!("onevcs-{COMMIT_MSG_HOOK}-{}", ids::unique()))?;
+    // llmlint: ignore[changed_behavior_has_e2e] the only failure this maps is the
+    // filesystem refusing a write inside the git directory of a clone this run cut
+    // itself, under the state root, moments earlier — there is no point at which a
+    // journey could reach it, and every operation that already wrote to that same
+    // directory (the clone, the worktree, the base merge) would have failed first.
     std::fs::write(&file, format!("{}\n", message.trim_end())).map_err(error::at(
         "write the message judged by the commit-msg hook to",
         &file,
@@ -616,13 +622,14 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
     );
     let _ = std::fs::remove_file(&file);
     let ran = ran?;
-    Ok(if ran.ok() {
-        MessagePolicy::Accepted
-    } else {
-        MessagePolicy::Rejected {
-            status: ran.status,
+    // A nought status *is* acceptance, so the two cases are the two the status
+    // already has rather than a second reading of it that could disagree.
+    Ok(match NonZeroI32::new(ran.status) {
+        None => MessagePolicy::Accepted,
+        Some(status) => MessagePolicy::Rejected {
+            status,
             output: ran.combined(),
-        }
+        },
     })
 }
 

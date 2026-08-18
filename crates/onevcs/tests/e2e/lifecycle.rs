@@ -3710,7 +3710,7 @@ fn row<'a>(rows: &'a [serde_json::Value], branch: &str) -> &'a serde_json::Value
 }
 
 /// Block until a process is gone, whatever became of its parent.
-fn await_gone(pid: &str) {
+pub fn await_gone(pid: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::process::Command::new("kill")
         .args(["-0", pid])

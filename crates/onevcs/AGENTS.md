@@ -104,13 +104,12 @@ told nothing.
 
 Three things about that are deliberate and easy to undo by accident.
 
-- **No conventional-commit knowledge lives here, and none may.** Every repository
-  in this stack happens to use them; which types cut a release *there* is a fact
-  about that repository, stated in its own hook. A type list, a subject grammar, or
-  a "does this parse as conventional" check added to this crate would be `onevcs`
-  acquiring a policy — the same mistake as `pr-title` checking that a title parses
-  and never that it has a consequence, which passed a `docs:` conversion and a
-  `chore(deps):` adoption that both merged and cut no release.
+- **No conventional-commit knowledge lives here, and none may.** Which types cut a
+  release is a fact about the repository, stated in its own hook. A type list, a
+  subject grammar, or a "does this parse as conventional" check added to this crate
+  would be `onevcs` acquiring a policy — and a check that a title *parses* is not
+  the check anybody wants: `docs:` and `chore(deps):` parse, and in a repository
+  where neither releases they merge green and reach no registry.
 - **This is the only point where the check can happen at all.** A squash-merge
   subject comes from the change request's title, not from a commit anybody wrote
   locally, so no local hook ever sees it. Which is also why the hook is asked
@@ -125,9 +124,9 @@ Three things about that are deliberate and easy to undo by accident.
   `git::hooks_dir`, so `core.hooksPath` is honoured, and the bound is the
   hook-running one every other hook in `git.rs` runs under.
 
-The mechanism ships **inert**: no repository in this stack has a `commit-msg` hook
-today. That is the point — build the mechanism, and let each repository state its
-own policy afterwards.
+A repository states its policy by carrying the hook; one that carries none is left
+exactly as it was. Nothing here needs a hook to exist anywhere for the crate to be
+correct, and the absent-hook journey is what holds that.
 
 ## What a report answers about, and what a name already means
 
