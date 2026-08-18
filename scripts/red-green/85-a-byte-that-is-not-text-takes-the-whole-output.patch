@@ -2,10 +2,10 @@ Mutation: a hook whose refusal carries one undecodable byte has the whole refusa
 Red: a_hook_that_refuses_in_bytes_that_are_not_text_still_refuses
 
 diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
-index 8e3238c..d97fd71 100644
+index 4402a37..059df02 100644
 --- a/crates/onevcs/src/git.rs
 +++ b/crates/onevcs/src/git.rs
-@@ -277,7 +277,7 @@ fn text(bytes: Vec<u8>) -> String {
+@@ -273,7 +273,7 @@ fn text(bytes: Vec<u8>) -> String {
  
  /// A hook's own words, as close to what it wrote as this process can render.
  fn prose(bytes: &[u8]) -> String {
@@ -13,4 +13,4 @@ index 8e3238c..d97fd71 100644
 +    String::from_utf8(bytes.to_vec()).unwrap_or_default()
  }
  
- /// The ordinary Win32 spelling Git expects at its process boundary.
+ /// Why git never started, naming whichever of the two things is actually missing.
