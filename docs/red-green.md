@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 82. Tests observed red and then green: 112.
+Patches: 83. Tests observed red and then green: 114.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -527,7 +527,7 @@ a request that pinned no branch resumes whatever session it finds.
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -545,6 +545,7 @@ the composed subject is never put to the repository, so a repository that states
 - RED `a_commit_msg_hook_that_cannot_run_refuses_the_publication_rather_than_passing_it` — Unexpected return code, failed var == 2
 - RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected return code, failed var == 1
 - RED `a_hook_that_never_answers_is_stopped_by_the_bound_and_left_running_by_nothing` — Unexpected return code, failed var == 2
+- RED `a_locally_published_session_is_held_to_the_same_policy_as_a_branch` — Unexpected return code, failed var == 1
 
 ### `81-a-repository-that-states-no-policy-is-given-one`
 
@@ -558,4 +559,10 @@ a repository with no executable commit-msg hook is given a policy anyway, rather
 a hook that refuses without writing anything is reported as a refusal with nothing after it.
 
 - RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
+
+### `83-a-hooks-rewrite-is-taken-as-the-subject`
+
+a hook that rewrites the message file has its rewrite taken as the subject, rather than only its verdict.
+
+- RED `a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about` — assertion `left == right` failed
 
