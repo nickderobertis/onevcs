@@ -39,6 +39,7 @@ base="origin/main"
 dir="scripts/red-green"
 validate_only=""
 check_record_path=""
+base_given=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --record)
@@ -56,7 +57,7 @@ while [ "$#" -gt 0 ]; do
         exit 2
       }
       option_like "$1" "$2"
-      base="$2"; shift 2 ;;
+      base="$2"; base_given=1; shift 2 ;;
     --patches)
       [ "$#" -ge 2 ] || {
         echo "--patches needs the directory the mutation patches are in" >&2
@@ -81,6 +82,23 @@ while [ "$#" -gt 0 ]; do
       exit 2 ;;
   esac
 done
+
+# `--check-record` is a whole run of its own: it reads a record and the patch
+# headers and returns. Asking for it *and* for a record to be written, a base to
+# judge against, or a validation pass is asking for two different runs, and
+# quietly doing one of them is how an operator comes away believing a check ran
+# that never did. `--patches` is the exception because check mode reads it.
+if [ -n "$check_record_path" ]; then
+  conflict=""
+  [ -z "$record" ] || conflict="--record"
+  [ -z "$base_given" ] || conflict="--base"
+  [ -z "$validate_only" ] || conflict="--validate-only"
+  if [ -n "$conflict" ]; then
+    echo "red-green: --check-record cannot be combined with $conflict" >&2
+    echo "ACTION: run them separately — --check-record reconciles a committed record against the patches, and $conflict belongs to a run that re-makes or validates one" >&2
+    exit 2
+  fi
+fi
 
 patches=("$dir"/*.patch)
 if [ ! -e "${patches[0]}" ]; then

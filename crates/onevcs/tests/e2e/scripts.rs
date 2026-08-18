@@ -1240,6 +1240,24 @@ fn a_round_is_recorded_and_the_tree_is_left_as_it_was_found() {
         .run(&["--check-record"])
         .failed()
         .said("--check-record needs the recorded transcript to reconcile");
+    // Reconciling a record and re-making one are two runs, and a run asked for both
+    // would do one of them under a name for the other.
+    for conflicting in [
+        vec!["--check-record", "evidence.md", "--record", "again.md"],
+        vec!["--check-record", "evidence.md", "--base", "HEAD"],
+        vec!["--check-record", "evidence.md", "--validate-only"],
+    ] {
+        let named = conflicting[2];
+        harness
+            .run(&conflicting)
+            .failed()
+            .said(&format!("--check-record cannot be combined with {named}"))
+            .said("ACTION: run them separately");
+    }
+    assert!(
+        harness.read("again.md").is_empty(),
+        "a refused run writes no record"
+    );
 
     // A record the rounds were edited out of. Its header still adds up — that is
     // derived from the patches rather than read out of the body — so counting the
