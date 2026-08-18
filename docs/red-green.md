@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 84. Tests observed red and then green: 114.
+Patches: 86. Tests observed red and then green: 116.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -571,4 +571,16 @@ a hook that rewrites the message file has its rewrite taken as the subject, rath
 text a hook wrote is interpolated into the refusal exactly as it arrived, control characters and all.
 
 - RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — an escape sequence a hook wrote must not reach the terminal:
+
+### `85-a-byte-that-is-not-text-takes-the-whole-output`
+
+a hook whose refusal carries one undecodable byte has the whole refusal dropped rather than rendered around it.
+
+- RED `a_hook_that_refuses_in_bytes_that_are_not_text_still_refuses` — the undecodable byte is shown as one and the rest of the refusal survives:
+
+### `86-a-hook-nobody-would-answer-for-is-read-as-absent`
+
+a filesystem that will not say whether a hook is there is read as saying there is none.
+
+- RED `a_hooks_directory_that_will_not_answer_is_refused_rather_than_read_as_empty` — Unexpected return code, failed var == 2
 
