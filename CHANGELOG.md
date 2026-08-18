@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/nickderobertis/onevcs/compare/v0.6.0...v0.6.1) - 2026-08-18
+
+### Added
+
+- *(publish)* put the composed subject to the repository's own commit-msg hook ([#51](https://github.com/nickderobertis/onevcs/pull/51))
+
 ## [0.6.0](https://github.com/nickderobertis/onevcs/compare/v0.5.0...v0.6.0) - 2026-08-17
 
 ### Fixed
