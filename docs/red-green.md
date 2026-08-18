@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 112. Tests observed red and then green: 143.
+Patches: 113. Tests observed red and then green: 144.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -760,4 +760,10 @@ only the control codes are escaped, so a character that reorders or hides what a
 a bound is checked for being finite and above zero but never for being one a duration can hold, so an oversized value reaches the conversion that panics on it.
 
 - RED `an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded` — Unexpected return code, failed var == 2
+
+### `93-a-bound-that-stops-at-the-pipes`
+
+the exit of a run whose pipes have both reached EOF is collected by an unbounded wait, so a hook that closes its streams and keeps running outlives the bound.
+
+- RED `a_hook_that_closes_both_streams_and_keeps_running_is_still_stopped_by_the_bound` — Unexpected return code, failed var == 2
 
