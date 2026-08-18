@@ -178,7 +178,7 @@ fn bounded(
     label: &str,
     unspawnable: impl FnOnce(std::io::Error) -> Error,
 ) -> Result<Ran> {
-    let bound = timeout_seconds(class)?;
+    let bound = bound_for(class)?;
     let started = Instant::now();
 
     command
@@ -381,14 +381,11 @@ pub fn checked_with_env(
 /// conversion panics on, which is the same misconfiguration arriving as a crash
 /// instead of as the refusal above it.
 ///
-/// A bound is *waited out* from now, and an `Instant` covers a far shorter span
-/// than a `Duration` does, so holding it is not enough on its own: a value beyond
-/// what this machine's clock can reach names a moment that never arrives, which is
-/// the unbounded run the refusals above exist to prevent, spelled as a number. By
-/// how much the two differ is the platform's business — the same value overflows on
-/// one host and not on another — so the question is put to `Instant` rather than
-/// answered against a constant here.
-fn timeout_seconds(bound: Bound) -> Result<Duration> {
+/// A `Duration` holding it is not enough either: a bound beyond what an `Instant`
+/// can reach names a moment that never arrives, which is the same unbounded run. By
+/// how much the two spans differ is the platform's, so `Instant` is asked rather
+/// than a constant compared against.
+fn bound_for(bound: Bound) -> Result<Duration> {
     let (name, default) = bound.knob();
     let raw = std::env::var_os(name).map(|raw| raw.to_string_lossy().into_owned());
     let value: f64 = match &raw {
@@ -413,8 +410,8 @@ fn timeout_seconds(bound: Bound) -> Result<Duration> {
 
 /// Read both bounds, so an unusable one is refused before any command runs.
 pub fn check_bounds() -> Result<()> {
-    timeout_seconds(Bound::Ordinary)?;
-    timeout_seconds(Bound::Hooks)?;
+    bound_for(Bound::Ordinary)?;
+    bound_for(Bound::Hooks)?;
     Ok(())
 }
 

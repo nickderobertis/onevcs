@@ -5,7 +5,7 @@ diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
 index 41369ee..aa0da79 100644
 --- a/crates/onevcs/src/git.rs
 +++ b/crates/onevcs/src/git.rs
-@@ -401,18 +401,16 @@ fn timeout_seconds(bound: Bound) -> Result<Duration> {
+@@ -401,18 +401,16 @@ fn bound_for(bound: Bound) -> Result<Duration> {
              reason: format!("{name} must be a number of seconds, not {raw:?}"),
          })?,
      };
