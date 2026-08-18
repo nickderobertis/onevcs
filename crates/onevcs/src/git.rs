@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
 use crate::host::Sha;
+use crate::ids;
 
 /// Bound, in seconds, on a command that runs no repository hook.
 pub const TIMEOUT_ENV: &str = "ONEVCS_GIT_TIMEOUT";
@@ -111,13 +112,42 @@ pub fn run(args: &[&str], cwd: Option<&Path>) -> Result<Output> {
 /// `pre-push` hook: the gate a publishing push runs must judge the same base the
 /// worker's gate already cleared.
 pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Result<Output> {
-    let hooks = runs_repository_hooks(args);
+    let mut command = Command::new("git");
+    command.args(args);
+    bounded(
+        command,
+        cwd,
+        env,
+        runs_repository_hooks(args),
+        &format!("git {}", args.join(" ")),
+        |e| {
+            error::invalid(format!(
+                "cannot run git: {e} (is git installed and on PATH?)"
+            ))
+        },
+    )
+}
+
+/// Run one external program under this module's bound, and return what it wrote
+/// whatever its status.
+///
+/// Every git command and the repository's own `commit-msg` hook arrive here, so
+/// the bound, the process-group teardown a fired bound performs, and the proof
+/// that nothing the command started is still writing have one statement rather
+/// than one per caller. `label` is how the run is named in a refusal, and `hooks`
+/// picks which of the two bounds it runs under.
+fn bounded(
+    mut command: Command,
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    hooks: bool,
+    label: &str,
+    unspawnable: impl FnOnce(std::io::Error) -> Error,
+) -> Result<Output> {
     let bound = timeout_seconds(hooks)?;
     let started = Instant::now();
 
-    let mut command = Command::new("git");
     command
-        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -129,11 +159,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     }
     detach_process_group(&mut command);
 
-    let mut child = command.spawn().map_err(|e| {
-        error::invalid(format!(
-            "cannot run git: {e} (is git installed and on PATH?)"
-        ))
-    })?;
+    let mut child = command.spawn().map_err(unspawnable)?;
 
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
@@ -169,15 +195,14 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         let knob = if hooks { HOOK_TIMEOUT_ENV } else { TIMEOUT_ENV };
         return Err(Error::Invalid {
             reason: format!(
-                "git {} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})",
-                args.join(" ")
+                "{label} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})"
             ),
         });
     }
 
     let status = child
         .wait()
-        .map_err(|e| error::invalid(format!("cannot collect git {}: {e}", args.join(" "))))?;
+        .map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
     let stdout = out_reader.join().unwrap_or_default();
     let stderr = err_reader.join().unwrap_or_default();
     Ok(Output {
@@ -507,13 +532,123 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
 
 /// Git's effective hooks directory for a checkout, honouring `core.hooksPath`.
 pub fn hooks_dir(cwd: &Path) -> Result<PathBuf> {
-    let value = checked(&["rev-parse", "--git-path", "hooks"], Some(cwd))?.trimmed();
+    // Git resolves this one name against `core.hooksPath` rather than against the
+    // git directory, which is why asking git is the only way to get the answer a
+    // repository configured for itself.
+    git_owned_path(cwd, "hooks")
+}
+
+/// A path git owns for a checkout, resolved by git rather than composed here.
+fn git_owned_path(cwd: &Path, name: &str) -> Result<PathBuf> {
+    let value = checked(&["rev-parse", "--git-path", name], Some(cwd))?.trimmed();
     let path = PathBuf::from(&value);
     Ok(if path.is_absolute() {
         path
     } else {
         cwd.join(path)
     })
+}
+
+/// The hook git asks whether a commit message may be committed under.
+const COMMIT_MSG_HOOK: &str = "commit-msg";
+
+/// What a repository's own `commit-msg` hook said about a message.
+///
+/// A repository that states no policy is a case of its own rather than an
+/// acceptance: a caller has to be able to tell "nobody was asked" from "the
+/// repository looked and was satisfied", because the first owes an operator no
+/// output at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessagePolicy {
+    /// The repository has no executable `commit-msg` hook, so it states no policy.
+    Unstated,
+    /// The hook ran and accepted the message.
+    Accepted,
+    /// The hook ran and turned the message down, keeping everything it wrote.
+    Rejected {
+        /// What the hook exited with.
+        status: i32,
+        /// Everything the hook wrote, both streams, whole.
+        output: String,
+    },
+}
+
+/// Ask a repository's own `commit-msg` hook about one message, the way git asks.
+///
+/// git hands that hook a single argument — the path to a file holding the message
+/// — and reads its exit status as the verdict, so a hook a repository already runs
+/// at `git commit` answers here unchanged. Where the hook lives is [`hooks_dir`],
+/// which is `core.hooksPath` wherever the repository configures one, and how long
+/// it may take is the hook-running bound every other hook in this module runs
+/// under. The message file is written where git writes `COMMIT_EDITMSG` — inside
+/// the git directory — and removed afterwards.
+///
+/// Two things are deliberately *not* done here. A hook that cannot be run at all
+/// is an `Err` and never a verdict: a repository that could not answer has not said
+/// yes. And a hook that rewrites the message file in place is not taken up — git
+/// commits the rewrite because the commit is git's to compose, whereas the subject
+/// asked about here is already composed, and for a change request's title there is
+/// no commit anywhere for a rewrite to reach.
+pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
+    let hook = hooks_dir(cwd)?.join(COMMIT_MSG_HOOK);
+    if !is_executable(&hook) {
+        return Ok(MessagePolicy::Unstated);
+    }
+    let file = git_owned_path(cwd, &format!("onevcs-{COMMIT_MSG_HOOK}-{}", ids::unique()))?;
+    std::fs::write(&file, format!("{}\n", message.trim_end())).map_err(error::at(
+        "write the message judged by the commit-msg hook to",
+        &file,
+    ))?;
+    let mut command = Command::new(git_path(&hook));
+    command.arg(git_path(&file));
+    let ran = bounded(
+        command,
+        Some(cwd),
+        &[],
+        true,
+        &format!("the {COMMIT_MSG_HOOK} hook at {}", hook.display()),
+        |e| {
+            error::invalid(format!(
+                "cannot run the {COMMIT_MSG_HOOK} hook at {}: {e}",
+                hook.display()
+            ))
+        },
+    );
+    let _ = std::fs::remove_file(&file);
+    let ran = ran?;
+    Ok(if ran.ok() {
+        MessagePolicy::Accepted
+    } else {
+        MessagePolicy::Rejected {
+            status: ran.status,
+            output: ran.combined(),
+        }
+    })
+}
+
+/// Whether git would run this file as a hook.
+///
+/// The executable bit, which is git's own test: a `commit-msg` that is present but
+/// not executable is a hook git skips, and skipping it here is what keeps the two
+/// answering the same.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// Whether git would run this file as a hook.
+///
+/// Windows carries no executable bit, so presence is the test — which is what Git
+/// for Windows does too. A hook it can only run through its bundled shell is
+/// reported as one that cannot be run rather than passed silently.
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file())
+        .unwrap_or(false)
 }
 
 /// Update remote-tracking refs. Deliberately performed outside every exclusive

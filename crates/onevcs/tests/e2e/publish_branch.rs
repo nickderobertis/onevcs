@@ -25,7 +25,7 @@ use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, Check, World};
 
 /// What a command wrote to stderr, as a reader of the terminal sees it.
-fn stderr_of(assert: &assert_cmd::assert::Assert) -> String {
+pub fn stderr_of(assert: &assert_cmd::assert::Assert) -> String {
     String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8")
 }
 
@@ -79,7 +79,7 @@ fn finished_branch(fixture: &Fixture, branch: &str, subject: &str) {
 }
 
 /// The same on a hosted identity, whose sessions are opened against `hosted`.
-fn finished_hosted_branch(hosted: &Hosted, branch: &str, subject: &str) {
+pub fn finished_hosted_branch(hosted: &Hosted, branch: &str, subject: &str) {
     let assert = hosted
         .world
         .onevcs()

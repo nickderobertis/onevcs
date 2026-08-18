@@ -93,6 +93,42 @@ cwd. The train is deliberately not what it names, even for finished work:
 refuses a team or remote identity outright, so it lands none of the branches this
 report is most often read about — the ones a run left in its own clone.
 
+## The subject policy is the repository's, and this crate holds none
+
+`publish::subject_for` composes the subject a publication lands under — an explicit
+`--title`, otherwise the most significant commit subject on the branch — and then
+puts it to the target repository's own `commit-msg` hook through
+`git::message_policy`. A rejection refuses the publication and hands back what the
+hook wrote; a repository with no executable `commit-msg` hook is asked nothing and
+told nothing.
+
+Three things about that are deliberate and easy to undo by accident.
+
+- **No conventional-commit knowledge lives here, and none may.** Every repository
+  in this stack happens to use them; which types cut a release *there* is a fact
+  about that repository, stated in its own hook. A type list, a subject grammar, or
+  a "does this parse as conventional" check added to this crate would be `onevcs`
+  acquiring a policy — the same mistake as `pr-title` checking that a title parses
+  and never that it has a consequence, which passed a `docs:` conversion and a
+  `chore(deps):` adoption that both merged and cut no release.
+- **This is the only point where the check can happen at all.** A squash-merge
+  subject comes from the change request's title, not from a commit anybody wrote
+  locally, so no local hook ever sees it. Which is also why the hook is asked
+  wherever the subject is *composed* — `subject_for` — rather than beside a `git
+  commit`, and why `branch.rs`'s precondition and the publication ask through the
+  one function.
+- **A hook that could not run is not a hook that said yes.** `git::message_policy`
+  answers `Unstated` only for a hook git itself would skip — absent, or not
+  executable — and everything else is either a verdict or an `Err`. A rejection is
+  `Error::GateFailed` (exit 1, the repository turned the subject down); a hook that
+  could not be executed is `Error::Invalid` (exit 2, nobody answered). Discovery is
+  `git::hooks_dir`, so `core.hooksPath` is honoured, and the bound is the
+  hook-running one every other hook in `git.rs` runs under.
+
+The mechanism ships **inert**: no repository in this stack has a `commit-msg` hook
+today. That is the point — build the mechanism, and let each repository state its
+own policy afterwards.
+
 ## What a report answers about, and what a name already means
 
 Preserved work goes missing through silence rather than through a search that
