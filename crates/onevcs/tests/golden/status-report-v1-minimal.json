@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "ref": {
+    "given": "feature/plain",
+    "kind": "branch"
+  },
+  "identity": {
+    "key": "github.com/acme-corp/hosted",
+    "publication_checkout": "<root>/hosted",
+    "workflow": "remote",
+    "repo_type": "team",
+    "gate": {
+      "kind": "checks"
+    },
+    "approvals": "required"
+  },
+  "branch": {
+    "name": "feature/plain",
+    "base": "main",
+    "holders": [
+      {
+        "path": "<root>/hosted",
+        "kind": "publication-checkout"
+      }
+    ],
+    "ahead": 1,
+    "provenance": "complete"
+  },
+  "publication": {
+    "state": "unpublished",
+    "merge_policy": "change-open"
+  },
+  "checks": {
+    "state": "reported",
+    "checks": [],
+    "sources": []
+  },
+  "next": {
+    "command": "onevcs publish-branch feature/plain --repo <root>/hosted",
+    "because": "branch \"feature/plain\" is preserved and unpublished: it has commits main does not carry, and no session holds it"
+  }
+}

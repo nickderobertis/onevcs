@@ -1,0 +1,38 @@
+Mutation: import stops taking a remote ref as a source, leaving a branch only the origin has reachable by no verb.
+Red: a_branch_is_imported_from_another_checkout_and_from_a_remote_ref
+
+diff --git a/crates/onevcs/src/import.rs b/crates/onevcs/src/import.rs
+index 97ddb1a..580c2d3 100644
+--- a/crates/onevcs/src/import.rs
++++ b/crates/onevcs/src/import.rs
+@@ -292,30 +292,6 @@ fn source_of(
+         return Ok(Source::Repository(PathBuf::from(from)));
+     }
+     let remotes = git::remotes(destination)?;
+-    if remotes.iter().any(|remote| remote == from) {
+-        return Ok(Source::Remote {
+-            remote: from.to_owned(),
+-            branch: branch.clone(),
+-        });
+-    }
+-    if let Some((remote, named)) = from.split_once('/') {
+-        if remotes.iter().any(|candidate| candidate == remote) {
+-            // The half after the remote goes on to spell a refspec, so it is decided
+-            // by the conversion that decides branch names rather than merely being
+-            // non-empty — `origin/` and `origin/..` both name a remote this
+-            // repository has and no branch anything could fetch.
+-            let named = Ref::try_from(named.to_owned()).map_err(|reason| Error::Invalid {
+-                reason: format!(
+-                    "--from {from:?} names remote {remote:?} and {reason}; spell it \
+-                     `{remote}/<branch>`"
+-                ),
+-            })?;
+-            return Ok(Source::Remote {
+-                remote: remote.to_owned(),
+-                branch: named,
+-            });
+-        }
+-    }
+     Err(Error::Invalid {
+         reason: format!(
+             "--from {from:?} is neither a git repository on this host nor a remote of {}: its \

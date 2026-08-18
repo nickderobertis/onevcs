@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/nickderobertis/onevcs/compare/v0.5.0...v0.6.0) - 2026-08-17
+
+### Fixed
+
+- *(branch)* [**breaking**] refuse copies of a branch that no other copy carries ([#49](https://github.com/nickderobertis/onevcs/pull/49))
+
+## [0.5.0](https://github.com/nickderobertis/onevcs/compare/v0.4.2...v0.5.0) - 2026-08-16
+
+### Added
+
+- report what became of a piece of work, and make a branch reachable ([#47](https://github.com/nickderobertis/onevcs/pull/47))
+
 ## [0.4.2](https://github.com/nickderobertis/onevcs/compare/v0.4.1...v0.4.2) - 2026-08-16
 
 ### Fixed

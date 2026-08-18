@@ -86,6 +86,24 @@ stack inferred from content rewrites branches nobody stacked. Recorded stack sta
 cannot be read is refused, naming what restores it: publishing around it would answer
 "no stack" from a value nothing could read, which is the merge all of this avoids.
 
+**A name in two checkouts is two copies, and they are compared rather than ordered**
+(`branch::locate`). `workspace::checkouts_of` is a search order, not a preference: one
+copy has to carry all the others or the landing is refused, because publishing the first
+tier that has the name publishes a stale copy. Every copy is in that comparison,
+including one whose content the base already carries — its *content* is spent, but its
+commit is a commit like the rest, and one nothing descends from is a divergence whatever
+became of what it held. Only where every copy is spent is nothing compared: the answer is
+that there is nothing to publish, from the first in search order. Whichever way it goes,
+the answer names every checkout holding the name — a stale selection and a current one
+read identically otherwise.
+
+**Refusing a copy nothing descends from costs two workflows**, both recorded as journeys
+rather than described here. A rewrite is one: selecting it would guess that a rewrite
+supersedes what it rewrote, so replaying where `sync_change_base` sends an operator leaves
+a pair this refuses. A name reused after its first use landed is the other: the spent copy
+and the fresh one are no relation. Both end the same way — one copy has to be left behind,
+and no verb here does that.
+
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
 cwd. The train is deliberately not what it names, even for finished work:
@@ -128,6 +146,30 @@ A repository states its policy by carrying the hook; one that carries none is le
 exactly as it was. Nothing here needs a hook to exist anywhere for the crate to be
 correct, and the absent-hook journey is what holds that.
 
+## `status` and `import`, and the three things easy to undo
+
+- **`status` reads landing off content, never off ancestry or off the host.**
+  Publication squashes, so a branch that landed is an ancestor of nothing — the base
+  carries what it changed, which is the question `vcs::collect` excludes a branch on.
+  Reading the absence of an open change request instead reports a merged change as
+  unpublished. What `status` adds over `recoverable` is that the *exclusion reason* —
+  landed, held by an open session, or genuinely preserved — is stated.
+- **A change request's URL resolves only through the event stream**, because nothing
+  on a branch carries it: `status URL` cannot answer for a change something else
+  opened, and widening that is a contract amendment.
+- **`import` writes refs and nothing else** — into a scratch ref, judged there, then
+  the destination's ref. A name the destination has *checked out* is refused rather
+  than written, and a non-fast-forward is refused naming the commits that would go,
+  because `--as` is the way through and only works once those are visible.
+- **`status --json` is a versioned object whose bytes are checked in.** It declares
+  `version`, an absent field is omitted rather than written as `null`, and the
+  goldens under `tests/golden/status-report-v1*.json` are compared byte for byte
+  against the real CLI. Changing what the object carries means bumping
+  `status::REPORT_VERSION` and re-making both goldens in the same change.
+
+Both find a branch nobody named through `branch::locate`, which is the search the
+two publishing verbs use.
+
 ## What a report answers about, and what a name already means
 
 Preserved work goes missing through silence rather than through a search that
@@ -159,13 +201,24 @@ could not reach it, so two things are stated rather than left to be inferred.
   being refused, so reuse decides only whether a second run root is cut; the rule
   above still refuses the pins it always refused.
 
-## Tests are journeys, and there are no unit tests
+## Tests are journeys, and the four unit tests say why they are not
 
-This crate carries no `#[cfg(test)]` module. `tests/contract.rs` holds the
-approved surface to the contract text it is extracted from; everything else in
-`tests/e2e/` spawns the compiled binary and drives it against real git. A path
-only an in-process test could reach is a path to delete, not one to unit-test —
-which is also how the 95% coverage floor is met.
+Behaviour is a journey. `tests/contract.rs` holds the approved surface to the
+contract text it is extracted from; everything else in `tests/e2e/` spawns the
+compiled binary and drives it against real git. A path only an in-process test
+could reach is a path to *delete*, not one to unit-test — which is also how the
+95% coverage floor is met.
+
+The `#[cfg(test)]` modules in `src/` are the exceptions to that, and each one is
+there because what it holds is reachable no other way: a process's creation
+identity (`workspace.rs`), a reader overlapping an atomic replace (`home.rs`),
+Windows' verbatim paths crossing every git boundary (`git.rs`), and the *type*
+side of the status report's serialized contract (`status.rs`). The last is the
+one to be careful with, because it looks like it belongs outside: the report's
+types are deliberately private, so proving the checked-in goldens read back as
+reports from `tests/` would mean making a dozen types public for a test's benefit.
+Both halves read the same two files — the CLI's bytes there, the type's round trip
+here — so neither can drift from the other.
 
 `tests/e2e/honesty.rs`, `tests/e2e/seam.rs`, and `tests/e2e/library.rs` are the
 modules that do not spawn the binary, and the reason is the thing they test: the

@@ -1470,12 +1470,20 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
 
     // The claim is that the printed command lands it, so it is run as printed —
     // from outside every checkout, which is where an operator reading this stands.
-    fixture
+    let landed = fixture
         .world
         .shell(&resume)
         .assert()
         .success()
         .stdout(predicate::str::contains("merged at"));
+    // One checkout holds the branch, so nothing was chosen between copies of it and
+    // nothing is said about a choice: the line naming a chosen copy belongs to the
+    // state where two checkouts hold one name at different commits.
+    assert!(
+        !String::from_utf8_lossy(&landed.get_output().stderr)
+            .contains("is the one being published"),
+        "a lone copy is published without a word about copies"
+    );
     assert!(
         fixture
             .origin_log()
@@ -1486,11 +1494,11 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
 }
 
 #[test]
-fn a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it() {
+fn a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     // The name is used once and published, so the base carries what it meant as one
-    // squashed commit — and closing hands the branch itself back to the checkout,
-    // where it stays, ahead of the base by commits nothing will publish again.
+    // squashed commit while the run's own clone keeps the branch that meant it — ahead of
+    // the base by commits nothing will publish again.
     let (first, first_tree) = fixture.open(&["--branch", "feature/reused"]);
     fixture.world.commit_file(
         &first_tree,
@@ -1527,9 +1535,9 @@ fn a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_i
         "feat: the work that must still be found",
     );
     let clone = second_tree.parent().expect("a run root").join("clone");
+    let spent_clone = first_tree.parent().expect("a run root").join("clone");
 
-    // The checkout's copy of the name is spent, and a spent copy answers for
-    // nobody: the live work is under the same name in the run clone.
+    // The spent copy answers for none of the work: what the report finds is the live one.
     let assert = fixture
         .world
         .onevcs()
@@ -1542,15 +1550,60 @@ fn a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_i
         reported.contains(&format!("Found in: {}", clone.display())),
         "{reported}"
     );
-
-    // …and the command it names lands *that* copy. Locating by name alone would
-    // reach the checkout's spent one first and answer that there is nothing to
-    // publish, with the work still where it was.
     let resume = reported
         .lines()
         .find_map(|line| line.trim().strip_prefix("Resume: "))
         .expect("the row names the command that lands it")
         .to_owned();
+
+    // The second use was cut from the base the first one landed on, so the two copies of
+    // the name are no relation of each other — and a landing refuses that pair whether or
+    // not one of them is spent. What the base already carries is still a commit under this
+    // name, and nothing here can say the operator meant the other one.
+    let live = fixture
+        .world
+        .git(&clone, &["rev-parse", "refs/heads/feature/reused"]);
+    let refused = fixture.world.shell(&resume).assert().code(2);
+    let refusal = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    assert!(
+        refusal.contains("no copy of it carries the rest"),
+        "the spent copy is compared like any other:\n{refusal}"
+    );
+    assert!(
+        refusal.contains(&format!("{} at {live}", clone.display())),
+        "the refusal names the live copy:\n{refusal}"
+    );
+    assert_eq!(
+        fixture.origin_log().len(),
+        2,
+        "nothing else may have landed"
+    );
+
+    // Every checkout the spent copy is in is named, and leaving them all behind is what
+    // says which copy is the work — no verb here does that, which is the cost of comparing
+    // every copy and the reason it is recorded rather than described. Nothing holds those
+    // branches now, so git deletes them; the command the report named then lands the live
+    // work as it always did.
+    for holder in [&fixture.checkout, &spent_clone] {
+        let read = fixture
+            .world
+            .git_raw(holder, &["rev-parse", "refs/heads/feature/reused"]);
+        if !read.status.success() {
+            continue;
+        }
+        let tip = String::from_utf8_lossy(&read.stdout).trim().to_owned();
+        assert!(
+            refusal.contains(&format!(
+                "{} at {tip} (already in the base)",
+                holder.display()
+            )),
+            "the refusal names the spent copy in {}:\n{refusal}",
+            holder.display()
+        );
+        fixture
+            .world
+            .git(holder, &["branch", "-D", "feature/reused"]);
+    }
     fixture
         .world
         .shell(&resume)
@@ -3153,6 +3206,44 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
         .world
         .git(&fixture.checkout, &["checkout", "-q", "main"]);
 
+    // The replay rewrote the branch, so the resolution this refusal asked for carries
+    // nothing of the copy the run clone still holds — and the landing refuses that pair
+    // like any other. Which is the cost of the rule, and it is met here rather than
+    // described.
+    let clone = worktree.parent().expect("a run root").join("clone");
+    let replayed = fixture.world.git(
+        &fixture.checkout,
+        &["rev-parse", "refs/heads/feature/clashing-filter"],
+    );
+    let replaced = fixture
+        .world
+        .git(&clone, &["rev-parse", "refs/heads/feature/clashing-filter"]);
+    let refused = fixture.world.shell(&land).assert().code(2);
+    let between = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    assert!(
+        between.contains("no copy of it carries the rest"),
+        "the two copies are refused rather than chosen between:\n{between}"
+    );
+    for copy in [
+        format!("{} at {replayed}", fixture.checkout.display()),
+        format!("{} at {replaced}", clone.display()),
+    ] {
+        assert!(
+            between.contains(&copy),
+            "the refusal names {copy}:\n{between}"
+        );
+    }
+
+    // Closing comes first because git deletes no branch a worktree holds.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    fixture
+        .world
+        .git(&clone, &["branch", "-D", "feature/clashing-filter"]);
     fixture
         .world
         .shell(&land)

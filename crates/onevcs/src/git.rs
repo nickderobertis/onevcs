@@ -149,11 +149,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             Bound::Ordinary
         },
         &format!("git {}", args.join(" ")),
-        |e| {
-            error::invalid(format!(
-                "cannot run git: {e} (is git installed and on PATH?)"
-            ))
-        },
+        |e| unstarted(&e, args, cwd),
     )?;
     Ok(Output {
         status: ran.status,
@@ -278,6 +274,29 @@ fn text(bytes: Vec<u8>) -> String {
 /// A hook's own words, as close to what it wrote as this process can render.
 fn prose(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Why git never started, naming whichever of the two things is actually missing.
+///
+/// `spawn` raises `NotFound` for a missing program *and* for a missing `current_dir`,
+/// and only one of the two can be checked here: a directory that is not there is a fact
+/// about the filesystem, while a `git` this process could not find is indistinguishable
+/// from an absent `PATH` entry. So the directory is asked about first and the binary is
+/// what is left — blaming the binary for both sends a reader after a toolchain that was
+/// never broken.
+fn unstarted(error: &std::io::Error, args: &[&str], cwd: Option<&Path>) -> Error {
+    let missing = cwd.filter(|_| error.kind() == std::io::ErrorKind::NotFound);
+    match missing.filter(|directory| !git_path(directory).is_dir()) {
+        Some(directory) => error::invalid(format!(
+            "cannot run git {} in {}: that directory does not exist, so nothing ran there — the \
+             checkout or worktree it names has been removed",
+            args.join(" "),
+            directory.display()
+        )),
+        None => error::invalid(format!(
+            "cannot run git: {error} (is git installed and on PATH?)"
+        )),
+    }
 }
 
 /// The ordinary Win32 spelling Git expects at its process boundary.
@@ -985,6 +1004,30 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     }
 }
 
+/// Whether this repository can *show* that `descendant` reaches `ancestor`.
+///
+/// A revision it cannot see — either one, or a repository it could not read at all — is
+/// `false` rather than the failure [`is_ancestor`] alone answers with. That is the safe
+/// direction: the copy loses the comparison, and a comparison nothing wins is refused
+/// rather than resolved by picking. Both are revisions as [`is_ancestor`] takes them.
+// llmlint: ignore[invalid_states_unrepresentable] see `merge_base` for the same reason —
+// the crate's `Sha` is the contract's wrapper for its public surface and validates
+// nothing, and what this takes is what git just answered.
+pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this answering `false`
+    // for an absent `descendant`, or for a repository it could not read. Its caller passes
+    // the tip `locate` resolved out of that same checkout moments earlier, so no journey
+    // reaches either; the absent-`ancestor` arm is driven by
+    // `a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison`.
+    for revision in [ancestor, descendant] {
+        if !has_commit(cwd, &Sha(revision.to_owned())) {
+            return Ok(false);
+        }
+    }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+    is_ancestor(cwd, ancestor, descendant)
+}
+
 /// The commit two refs last had in common, or `None` when they share no history.
 ///
 /// A plain `String`, as every other SHA this module reads is: the crate's `Sha` is the
@@ -1454,6 +1497,55 @@ pub fn copy_branch(source: &Path, destination: &Path, branch: &str) -> Result<bo
         Some(destination),
     )?;
     Ok(output.ok())
+}
+
+/// Fetch one branch from a repository path or a configured remote into a ref of
+/// this repository's own, replacing whatever that ref held.
+///
+/// The one call `onevcs import` makes against the source, and it writes a ref and
+/// nothing else: no index is read, no working tree is touched, and the ref it
+/// lands on is the caller's scratch rather than a branch. What the source is
+/// spelled as — a path or a remote name — is git's own question, so both go
+/// through one invocation rather than two that could come to fetch differently.
+pub fn fetch_into_ref(cwd: &Path, source: &str, branch: &str, into: &str) -> Result<bool> {
+    let source = git_location(source);
+    let output = run(
+        &[
+            "fetch",
+            source.as_ref(),
+            &format!("+refs/heads/{branch}:{into}"),
+        ],
+        Some(cwd),
+    )?;
+    Ok(output.ok())
+}
+
+pub fn update_ref(cwd: &Path, reference: &str, commit: &str) -> Result<()> {
+    checked(&["update-ref", reference, commit], Some(cwd)).map(|_| ())
+}
+
+/// Remove a ref, whatever it held.
+///
+/// Best-effort by design: its one caller is clearing the scratch ref it fetched
+/// into, and a scratch ref left behind is untidy rather than wrong — refusing over
+/// it would turn a completed import into a failure.
+pub fn delete_ref(cwd: &Path, reference: &str) {
+    let _ = run(&["update-ref", "-d", reference], Some(cwd));
+}
+
+/// Every remote the repository has configured.
+///
+/// A failure is a failure rather than an empty list: its one caller decides from
+/// this whether `--from` names a remote, and a repository git could not be asked
+/// about would otherwise be reported as one with no remotes at all.
+pub fn remotes(cwd: &Path) -> Result<Vec<String>> {
+    Ok(checked(&["remote"], Some(cwd))?
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Adopt a branch from another local repository, overwriting the local ref.

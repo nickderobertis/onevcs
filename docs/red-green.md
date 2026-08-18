@@ -5,7 +5,25 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 86. Tests observed red and then green: 116.
+<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] these totals are a
+transcript of one recorded run, not a contract with the scripts: the paragraph below
+states which rounds it covers and which it does not, so the drift is disclosed rather
+than hidden. A drift gate cannot be added until round 78's ambiguous session choice is
+made deterministic -- until then regeneration alternates between two assertion failures
+and any gate would be flaky. Tracked as a follow-up. -->
+
+Patches: 86. Tests observed red and then green: 114.
+
+This transcript is the run made before this branch merged `main`, so it describes
+86 of the 103 rounds now under `scripts/red-green/`: the 16 that arrived with the
+merge and `90-a-commit-a-checkout-cannot-see-is-read-as-a-failure` are not in it.
+Re-making it is blocked rather than skipped —
+`34-the-command-a-row-names-cannot-land-it` no longer turns
+`recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns` red
+against the merged `crates/onevcs/src/vcs.rs`, and `just red-green` stops at the
+first round that observes nothing. That mutation has to be re-made against the
+current tree before this file can be, and every round is its patch either way:
+round 90 was observed red by hand over the seven journeys its header names.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -258,13 +276,13 @@ a pinned branch name is taken on trust.
 
 the first repository to hold a name answers for it, spent or not.
 
-- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
+- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
 
 ### `38-a-spent-copy-of-a-name-is-published`
 
 a branch is located by name alone, spent copy or not.
 
-- RED `a_name_the_checkout_has_spent_does_not_answer_for_the_run_clone_that_reuses_it` — Unexpected stdout, failed var.contains(merged at)
+- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
 
 ### `39-a-base-nobody-can-reach-judges-the-branch`
 
@@ -527,7 +545,7 @@ a request that pinned no branch resumes whatever session it finds.
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -535,52 +553,55 @@ a pin resumes a record without asking whether it is the session asked for, or st
 
 - RED `a_pin_resumes_only_the_session_it_asked_for` — assertion `left != right` failed: a closed session is not resumed
 
-### `80-a-stated-subject-policy-is-never-asked`
+### `80-a-stale-copy-of-a-branch-is-published`
 
-the composed subject is never put to the repository, so a repository that states a policy has none applied.
+the copies of a branch are ordered rather than compared, so the first checkout that holds work wins.
 
-- RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — Unexpected return code, failed var == 1
-- RED `a_commit_msg_hook_judges_the_explicit_title_a_publication_would_land_under` — Unexpected return code, failed var == 1
-- RED `a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone` — the hook recorded nothing at <tmp>/commit-msg-saw: No such file or directory (os error 2)
-- RED `a_commit_msg_hook_that_cannot_run_refuses_the_publication_rather_than_passing_it` — Unexpected return code, failed var == 2
-- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected return code, failed var == 1
-- RED `a_hook_that_never_answers_is_stopped_by_the_bound_and_left_running_by_nothing` — Unexpected return code, failed var == 2
-- RED `a_locally_published_session_is_held_to_the_same_policy_as_a_branch` — Unexpected return code, failed var == 1
+- RED `a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other` — the copy that carries the other is the one that reached the base: README.md
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
+- RED `a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other` — Unexpected return code, failed var == 2
+- RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected return code, failed var == 2
+- RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected return code, failed var == 2
 
-### `81-a-repository-that-states-no-policy-is-given-one`
+### `81-a-tie-between-copies-is-broken-backwards`
 
-a repository with no executable commit-msg hook is given a policy anyway, rather than being left alone.
+equal tips are broken by the last checkout searched rather than by the search order.
 
-- RED `a_repository_with_no_commit_msg_hook_is_given_no_subject_policy` — Unexpected failure.
-- RED `a_commit_msg_hook_git_itself_would_skip_is_skipped_here_too` — Unexpected failure.
+- RED `copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched` — the first checkout searched is the one it was read out of:
 
-### `82-a-wordless-refusal-is-reported-as-nothing`
+### `82-a-choice-between-copies-is-made-silently`
 
-a hook that refuses without writing anything is reported as a refusal with nothing after it.
+the copy a landing chose is no longer said, so a stale selection and a current one read identically.
 
-- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
+- RED `a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other` — the copy that was published is named with the commit it held:
+- RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — the copy that was published is named:
+- RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — the copy the answer came from is named:
 
-### `83-a-hooks-rewrite-is-taken-as-the-subject`
+### `83-a-choice-nobody-made-is-announced-anyway`
 
-a hook that rewrites the message file has its rewrite taken as the subject, rather than only its verdict.
+a copy is announced whether or not anything was chosen between, which is every landing after a session.
 
-- RED `a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about` — assertion `left == right` failed
+- RED `copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched` — and the copy it passed over is not the one an operator is sent to:
+- RED `work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_command_named` — a lone copy is published without a word about copies
 
-### `84-another-programs-output-is-printed-as-it-arrived`
+### `84-a-missing-directory-and-a-missing-git-are-swapped`
 
-text a hook wrote is interpolated into the refusal exactly as it arrived, control characters and all.
+the check on the working directory is inverted, so each way git cannot start is answered with the other's message.
 
-- RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — an escape sequence a hook wrote must not reach the terminal:
+- RED `a_git_command_whose_working_directory_is_gone_names_that_directory` — Unexpected stderr, failed var.contains(in <tmp>/project: that directory does not exist)
+- RED `a_git_binary_nothing_can_find_still_names_the_binary` — Unexpected stderr, failed var.contains(is git installed and on PATH?)
 
-### `85-a-byte-that-is-not-text-takes-the-whole-output`
+### `85-a-spent-copy-is-left-out-of-the-answer`
 
-a hook whose refusal carries one undecodable byte has the whole refusal dropped rather than rendered around it.
+a copy whose content the base already carries is left out of the copies a landing reports, so the answer is not about every checkout holding the branch.
 
-- RED `a_hook_that_refuses_in_bytes_that_are_not_text_still_refuses` — the undecodable byte is shown as one and the rest of the refusal survives:
+- RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — and so is the one the base already carries:
+- RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — and so is the other copy of the name:
 
-### `86-a-hook-nobody-would-answer-for-is-read-as-absent`
+### `86-a-spent-copy-is-left-out-of-the-comparison`
 
-a filesystem that will not say whether a hook is there is read as saying there is none.
+the copies whose content the base already carries are left out of the comparison, so a lone work-carrying copy is chosen beside a tip nothing descends from.
 
-- RED `a_hooks_directory_that_will_not_answer_is_refused_rather_than_read_as_empty` — Unexpected return code, failed var == 2
+- RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected return code, failed var == 2
+- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
 
