@@ -2011,15 +2011,24 @@ fn interrupted_work(world: &World, name: &str, branch: &str) -> (PathBuf, PathBu
     );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
+    interrupted_branch(world, name, branch, "feat: the first half");
+    (origin, checkout)
+}
 
+/// One more branch of interrupted work on an identity that already has one.
+///
+/// The interruption itself, without the identity around it: a session that
+/// committed `subject` and was adopted with work still uncommitted, which is what
+/// writes the incomplete marker `recover` is the only verb for.
+fn interrupted_branch(world: &World, identity: &str, branch: &str, subject: &str) {
     let assert = world
         .onevcs()
-        .args(["session", "open", name, "--branch", branch])
+        .args(["session", "open", identity, "--branch", branch])
         .assert()
         .success();
     let token = token_of(&assert.get_output().stdout);
     let worktree = worktree_of(&assert.get_output().stdout);
-    world.commit_file(&worktree, "one.txt", "one\n", "feat: the first half");
+    world.commit_file(&worktree, "one.txt", "one\n", subject);
     std::fs::write(worktree.join("half.txt"), "half\n").expect("uncommitted work");
     for stage in [["session", "adopt"], ["session", "close"]] {
         world
@@ -2028,7 +2037,6 @@ fn interrupted_work(world: &World, name: &str, branch: &str) -> (PathBuf, PathBu
             .assert()
             .success();
     }
-    (origin, checkout)
 }
 
 #[test]
@@ -2108,6 +2116,31 @@ fn a_recovery_opens_its_change_request_with_the_body_the_caller_drafted() {
     assert!(
         pushed.contains("Onevcs-Recovered-Incomplete:"),
         "a body changes nothing about what the branch carries:\n{pushed}"
+    );
+
+    // The other half of that independence: a body with no title still publishes
+    // under the subject composed from the branch, which is what a recovery given
+    // nothing has always published under.
+    interrupted_branch(&world, "drafted", "feature/typed", "feat: the typed half");
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/typed",
+            "--repo",
+            &checkout.to_string_lossy(),
+            "--body",
+            "One line, as typed.",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    assert_eq!(world.change_request_body(2), "One line, as typed.");
+    let composed = std::fs::read_to_string(world.path("gh-state/pr-2.title")).expect("a title");
+    assert_eq!(
+        composed.trim_end_matches('\n'),
+        "feat: the typed half",
+        "the subject still comes off the branch when only a body was given"
     );
 }
 
