@@ -818,9 +818,11 @@ struct Carried {
     /// clone is given by [`git::carry_remote_refs`] rather than fetched from.
     checkout: Option<PathBuf>,
     /// The commit the branch stands at there.
-    // llmlint: ignore[invalid_states_unrepresentable] git's own printed SHA, spelled the
-    // way `git::tip` answers one; the crate's `Sha` wraps an unvalidated `String` at the
-    // public surface and would make no state here unrepresentable.
+    // llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] git's own
+    // printed SHA, spelled the way `git::tip` answers one and the way `git::merge_base`
+    // and `branch::Held` beside it carry one: git's answer to a command this crate just
+    // ran is not a caller's input, and the crate's `Sha` wraps an unvalidated `String` at
+    // the public surface — so it would make no state here unrepresentable either.
     tip: String,
 }
 
