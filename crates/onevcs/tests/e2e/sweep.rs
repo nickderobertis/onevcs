@@ -375,6 +375,22 @@ fn a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason() {
         "its gate has recorded no verdict under gate-logs, so nothing here can say the \
          publication finished",
     );
+
+    // And what proves a verdict is a file a gate wrote, not a name: a directory
+    // wearing one would otherwise answer for a judgement nobody reached.
+    std::fs::create_dir_all(run_root.join("gate-logs/feature-interrupted/gate-0001.log"))
+        .expect("something shaped like a preserved log and holding nothing");
+    backdate(&run_root, 72);
+    let lookalike = swept(&fixture, &[]);
+    assert!(
+        run_root.is_dir(),
+        "a directory named like a preserved gate log is no verdict:\n{lookalike}"
+    );
+    assert_eq!(
+        retained_reason(&lookalike, &run_root),
+        "its gate has recorded no verdict under gate-logs, so nothing here can say the \
+         publication finished",
+    );
 }
 
 #[test]

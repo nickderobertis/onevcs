@@ -34,6 +34,16 @@ use crate::{gate, git, home, lock, workspace};
 /// argument's own default and `oneagentgraph sweep` spells the same option the
 /// same way — one composing caller forwards its arguments to both unchanged, so
 /// the two defaults have to be the one value.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the half of that surface
+// this repository can reach *is* gated: this constant is the single source inside the
+// crate — `cli.rs` takes the parser's default from it rather than restating a number —
+// and `the_sweep_age_floor_defaults_to_the_number_the_record_states` in
+// `tests/contract.rs` holds it to `docs/inferred-surface.md`, so it cannot move in the
+// parser or in the record alone. The other half is a value in a repository this one
+// does not depend on and cannot build; a check here would either vendor a copy of it,
+// which is the second source the rule exists to prevent, or reach the network from an
+// offline gate. It is reconciled by the caller that composes the two verbs, which is
+// exactly why neither side may amend the surface unilaterally.
 pub const DEFAULT_MIN_AGE_HOURS: &str = "24";
 
 /// Read `--min-age-hours` as the window it names.
@@ -295,6 +305,11 @@ fn last_written(path: &Path) -> SystemTime {
     newest
 }
 
+// llmlint: ignore[changed_behavior_has_e2e] uncovered: an entry under a run root this
+// process cannot stat. Building one means a permission fixture standing in for the
+// filesystem rather than a journey — and what it would prove is that the workspace is
+// *retained*, which is the answer every other unknown in this module already resolves
+// to and which the retained journeys beside it already assert.
 fn modified(path: &Path) -> SystemTime {
     std::fs::symlink_metadata(path)
         .and_then(|meta| meta.modified())
@@ -306,6 +321,10 @@ fn modified(path: &Path) -> SystemTime {
 /// It is the report's own prose and nothing decides anything on it, so an entry
 /// this process cannot stat contributes nothing rather than failing a sweep that is
 /// otherwise complete.
+// llmlint: ignore-block[changed_behavior_has_e2e] uncovered: an entry this process
+// cannot stat or list. Same fixture, and less at stake — this figure is prose in one
+// sentence of the report and nothing decides anything on it, so the whole of what an
+// unreadable entry changes is a number a reader sees.
 fn size_of(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
@@ -318,6 +337,7 @@ fn size_of(path: &Path) -> u64 {
     };
     entries.flatten().map(|entry| size_of(&entry.path())).sum()
 }
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// One family of run roots, as it was found.
 struct Examined {

@@ -317,6 +317,10 @@ pub struct SyncArgs {
 /// Both the spelling and the default are shared with `oneagentgraph sweep`, because
 /// one composing caller forwards its own arguments to each unchanged. Neither side
 /// may depart from them alone.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] the default is not
+// restated here: it comes from `sweep::DEFAULT_MIN_AGE_HOURS`, which is the crate's one
+// source for it and is gated against `docs/inferred-surface.md`. Why the other side of
+// the surface cannot be gated from this repository is written out at that constant.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct SweepArgs {
     /// Report what would be reclaimed and remove nothing.
@@ -334,6 +338,7 @@ pub struct SweepArgs {
     )]
     pub min_age_hours: Duration,
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// Arguments for `onevcs events`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
