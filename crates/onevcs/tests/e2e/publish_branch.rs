@@ -411,7 +411,10 @@ fn an_explicit_title_is_the_subject_a_branch_publishes_under() {
         .stderr(predicate::str::contains("the explicit title is blank"));
 }
 
-/// The title one change request the substituted host opened was given.
+/// The title the substituted host was given, with the newline it records it under.
+///
+/// The body has `World::change_request_body`; a title does not, because only the
+/// journeys below ask what a publication's subject became.
 fn change_request_title(hosted: &Hosted, number: usize) -> String {
     let path = hosted.world.path(format!("gh-state/pr-{number}.title"));
     let recorded = std::fs::read_to_string(&path).unwrap_or_else(|error| {

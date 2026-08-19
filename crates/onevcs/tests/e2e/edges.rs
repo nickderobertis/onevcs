@@ -2015,11 +2015,12 @@ fn interrupted_work(world: &World, name: &str, branch: &str) -> (PathBuf, PathBu
     (origin, checkout)
 }
 
-/// One more branch of interrupted work on an identity that already has one.
+/// The interruption itself, on an identity that is already registered.
 ///
-/// The interruption itself, without the identity around it: a session that
-/// committed `subject` and was adopted with work still uncommitted, which is what
-/// writes the incomplete marker `recover` is the only verb for.
+/// A session that committed `subject` and was then adopted with work still
+/// uncommitted, which is what writes the incomplete marker `recover` is the only
+/// verb for. Separate from the identity around it so a test can leave a second
+/// branch interrupted without registering a second identity to hold it.
 fn interrupted_branch(world: &World, identity: &str, branch: &str, subject: &str) {
     let assert = world
         .onevcs()
