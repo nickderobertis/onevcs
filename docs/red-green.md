@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 150. Tests observed red and then green: 177.
+Patches: 152. Tests observed red and then green: 177.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmphTUVxa-project-623d223a2a74/runs/<token>/clone stands on its own parent b2077295ccbfaf29a3a292
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmppGo1Un-project-702aa6438d48/runs/<token>/clone stands on its own parent 957331c7cae4d1372d4e92
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp2WHWky-project-f9cbeb234143/runs/<token>/clone stands on its own parent 300a054a84a299a24d46ad
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpBq5AaU-project-52ea33e0806f/runs/<token>/clone stands on its own parent d21acb86f117def63a49b8
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -301,13 +301,25 @@ the sweep stops asking whether what it found is a directory at all, so a file le
 
 a workspace this host may not remove is reported as reclaimed anyway, so a report says the disk was freed by a directory that is still there.
 
-- RED `a_workspace_this_host_may_not_remove_is_reported_rather_than_failing_the_sweep` — a removal that did not happen is retained with what the system said:
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — a removal that did not happen is retained with what the system said:
 
 ### `131-the-shared-age-floor-moves-on-its-own`
 
 the age floor's default moves in the parser alone, which is how one caller forwarding one argument set to two tools comes to get two different windows.
 
 - RED `the_sweep_age_floor_defaults_to_the_number_the_record_states` — assertion `left == right` failed: docs/inferred-surface.md states an age floor of "24" and the parser defaults to ["48"]; the number is shar
+
+### `132-a-family-this-sweep-could-not-read-is-passed-over-in-silence`
+
+a family of run roots this sweep could not even list is left out of the report, so a directory full of workspaces reads as one holding none.
+
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — a family this sweep could not examine is named as one:
+
+### `133-a-workspaces-age-is-read-off-the-top-of-it`
+
+a run root's age is read from its own timestamp and its immediate entries alone, so a gate rewriting a file deep inside the clone leaves the workspace looking a day old.
+
+- RED `the_age_floor_bounds_what_a_sweep_considers` — a workspace written inside a moment ago is not a day old:
 
 ### `13-the-gate-does-not-run`
 
@@ -762,7 +774,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
