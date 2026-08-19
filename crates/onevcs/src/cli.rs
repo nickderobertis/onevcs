@@ -153,20 +153,22 @@ pub struct PublishArgs {
     #[arg(long, value_name = "T")]
     pub title: Option<String>,
     /// The change request's body. Omitted, it is opened with none.
+    #[arg(long, value_name = "TEXT")]
     // llmlint: ignore[invalid_states_unrepresentable] the two body options are
     // deliberately representable together and refused by name in `app::explicit_body`,
     // where the refusal can say which two were given and which one to keep. A clap
     // `conflicts_with` would answer the same mistake with usage text, and every other
-    // argument this command takes is checked at dispatch for that reason.
-    #[arg(long, value_name = "TEXT")]
+    // argument this command takes is checked at dispatch for that reason. The
+    // directive sits under the attribute so nothing stands between it and the field
+    // it excuses.
     pub body: Option<String>,
     /// A file holding the change request's body. A body is prose, so this is the
     /// form a caller with a real one uses.
+    #[arg(long, value_name = "PATH")]
     // llmlint: ignore[invalid_states_unrepresentable] the other half of the pair above,
     // and the same reason: both are representable so that `app::explicit_body` can refuse
     // them by name, with the invocation that keeps each one, rather than clap answering
     // with usage text.
-    #[arg(long, value_name = "PATH")]
     pub body_file: Option<PathBuf>,
 }
 
@@ -201,20 +203,22 @@ pub struct PublishBranchArgs {
     #[arg(long, value_name = "P")]
     pub policy: Option<MergePolicy>,
     /// The change request's body. Omitted, it is opened with none.
+    #[arg(long, value_name = "TEXT")]
     // llmlint: ignore[invalid_states_unrepresentable] the two body options are
     // deliberately representable together and refused by name in `app::explicit_body`,
     // where the refusal can say which two were given and which one to keep. A clap
     // `conflicts_with` would answer the same mistake with usage text, and every other
-    // argument this command takes is checked at dispatch for that reason.
-    #[arg(long, value_name = "TEXT")]
+    // argument this command takes is checked at dispatch for that reason. The
+    // directive sits under the attribute so nothing stands between it and the field
+    // it excuses.
     pub body: Option<String>,
     /// A file holding the change request's body. A body is prose, so this is the
     /// form a caller with a real one uses.
+    #[arg(long, value_name = "PATH")]
     // llmlint: ignore[invalid_states_unrepresentable] the other half of the pair above,
     // and the same reason: both are representable so that `app::explicit_body` can refuse
     // them by name, with the invocation that keeps each one, rather than clap answering
     // with usage text.
-    #[arg(long, value_name = "PATH")]
     pub body_file: Option<PathBuf>,
 }
 
@@ -235,20 +239,22 @@ pub struct RecoverArgs {
     #[arg(long, value_name = "T")]
     pub title: Option<String>,
     /// The change request's body. Omitted, it is opened with none.
+    #[arg(long, value_name = "TEXT")]
     // llmlint: ignore[invalid_states_unrepresentable] the two body options are
     // deliberately representable together and refused by name in `app::explicit_body`,
     // where the refusal can say which two were given and which one to keep. A clap
     // `conflicts_with` would answer the same mistake with usage text, and every other
-    // argument this command takes is checked at dispatch for that reason.
-    #[arg(long, value_name = "TEXT")]
+    // argument this command takes is checked at dispatch for that reason. The
+    // directive sits under the attribute so nothing stands between it and the field
+    // it excuses.
     pub body: Option<String>,
     /// A file holding the change request's body. A body is prose, so this is the
     /// form a caller with a real one uses.
+    #[arg(long, value_name = "PATH")]
     // llmlint: ignore[invalid_states_unrepresentable] the other half of the pair above,
     // and the same reason: both are representable so that `app::explicit_body` can refuse
     // them by name, with the invocation that keeps each one, rather than clap answering
     // with usage text.
-    #[arg(long, value_name = "PATH")]
     pub body_file: Option<PathBuf>,
 }
 
