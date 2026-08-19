@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 136. Tests observed red and then green: 163.
+Patches: 148. Tests observed red and then green: 174.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp256xK0-project-f1fb2b6e3fe9/runs/<token>/clone stands on its own parent 0692f0aea11bb1ce598cdf
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpP1Na2k-project-9281c5a3c96f/runs/<token>/clone stands on its own parent 7f2889b92ef5b861352636
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp4hPcNm-project-5e6059728017/runs/<token>/clone stands on its own parent a6c53a6b08a2afddf563cb
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpUtZDLv-project-d4543de87f53/runs/<token>/clone stands on its own parent 9d31fd3f4cfc0185158723
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -206,6 +206,21 @@ the opening of a continued session stops saying so, so a follower reading the st
 - RED `a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh` — assertion `left == right` failed
 - RED `a_continued_branch_opens_at_whichever_copy_carries_the_other` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("<time>"), "stream": String("<token>"), "seq": Number(2), "source": 
 
+### `118-a-proven-dead-workspace-is-never-removed`
+
+a sweep reports what it reclaimed and removes none of it, which is the state before this verb: the directories are named and every one of them is still there.
+
+- RED `a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed` — a publication that was gated and is nobody's is reclaimed:
+- RED `a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication` — a recovery cuts the same shape of run root and is reaped by the same verb:
+- RED `a_dry_run_reports_what_it_would_reclaim_and_removes_nothing` — the real run reclaims what the rehearsal named:
+- RED `the_age_floor_bounds_what_a_sweep_considers` — a floor of nought considers what was written moments ago:
+
+### `119-occupancy-is-asked-in-the-mode-that-cannot-answer-it`
+
+the sweep asks for a run root's lease in the shared mode every occupant already holds it in, so a directory somebody is publishing in answers that nobody is.
+
+- RED `a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated` — assertion `left == right` failed
+
 ### `11-an-explicit-title-is-dropped`
 
 the branch-keyed verbs stop carrying --title into the publication.
@@ -213,6 +228,67 @@ the branch-keyed verbs stop carrying --title into the publication.
 - RED `an_explicit_title_is_the_subject_a_branch_publishes_under` — assertion `left == right` failed
 - RED `a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change` — Unexpected failure.
 - RED `a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long` — Unexpected failure.
+
+### `120-a-landing-leases-something-other-than-its-run-root`
+
+a landing's occupancy lease names something other than the run root it works in, so nothing it holds says a publication is being made there.
+
+- RED `a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated` — assertion `left == right` failed
+
+### `121-a-gate-that-recorded-nothing-is-read-as-a-verdict`
+
+a run root nothing ever judged answers that its gate reached a verdict, so an unfinished publication is read as a finished one.
+
+- RED `a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason` — a workspace nothing judged is not one this verb can prove is finished:
+
+### `122-a-directory-nobody-can-vouch-for-is-taken-on-trust`
+
+the sweep stops asking whether a directory under its families is one this crate cut, so somebody else's workspace is judged as if it were onevcs's own.
+
+- RED `a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason` — assertion `left == right` failed
+
+### `123-a-rehearsal-removes-what-it-only-reports`
+
+--dry-run stops being a rehearsal: the run that was asked to report what it would do does it.
+
+- RED `a_dry_run_reports_what_it_would_reclaim_and_removes_nothing` — a rehearsal removes nothing:
+
+### `124-the-age-floor-is-never-consulted`
+
+the age floor stops bounding what a sweep considers, so a workspace written moments ago is reaped by a sweep that was told to leave a day's work alone.
+
+- RED `the_age_floor_bounds_what_a_sweep_considers` — the default floor retains it:
+
+### `125-the-lifecycle-clone-root-is-reached-into`
+
+the sweep reaches into the per-run lifecycle clone root, which is the bounded recovery history that keeps a dead run's branch reachable.
+
+- RED `the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into` — nothing under a per-run lifecycle clone root is this verb's to reap:
+
+### `126-an-age-floor-no-window-can-hold-is-accepted`
+
+--min-age-hours takes a value no window can hold and answers with one anyway, so a floor nobody typed decides what is reaped.
+
+- RED `an_age_floor_no_window_can_hold_is_refused_at_the_boundary` — Unexpected return code, failed var == 2
+
+### `127-a-state-root-with-no-workspaces-is-a-failure`
+
+a state root nothing has published from is read as a sweep that could not run, rather than as one with nothing to do.
+
+- RED `a_state_root_nothing_has_published_from_is_a_sweep_with_nothing_to_do` — Unexpected failure.
+
+### `128-the-report-stops-naming-what-it-did-not-examine`
+
+the report stops naming the directories under its own root that it did not examine, so a reader cannot tell what was covered from what was passed over.
+
+- RED `the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into` — the report names the family it did not examine, and why:
+- RED `what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched` — the report names what it did not examine, and why:
+
+### `129-a-run-root-that-is-not-a-directory-is-judged-as-one`
+
+the sweep stops asking whether what it found is a directory at all, so a file left under a family is judged as a run root.
+
+- RED `what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched` — assertion `left == right` failed
 
 ### `12-a-per-run-policy-is-ignored`
 
