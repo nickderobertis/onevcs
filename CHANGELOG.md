@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/nickderobertis/onevcs/compare/v0.6.1...v0.7.0) - 2026-08-19
+
+### Added
+
+- *(publish)* carry a caller's body onto every branch-keyed landing ([#53](https://github.com/nickderobertis/onevcs/pull/53))
+
 ## [0.6.1](https://github.com/nickderobertis/onevcs/compare/v0.6.0...v0.6.1) - 2026-08-18
 
 ### Added
