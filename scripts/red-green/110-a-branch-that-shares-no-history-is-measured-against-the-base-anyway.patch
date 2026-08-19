@@ -1,0 +1,18 @@
+Mutation: a branch sharing no history with the base stops being left unmeasured, so it is compared with the base's tip and reads as removing everything the base has.
+Red: what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked
+
+diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
+index b1e3065..186a917 100644
+--- a/crates/onevcs/src/vcs.rs
++++ b/crates/onevcs/src/vcs.rs
+@@ -439,9 +439,7 @@ fn held_by(sessions: &[workspace::Record], identity: &str, branch: &str) -> Resu
+ /// branch removed and never touched. A branch sharing no history with the base is
+ /// not measured — there is no point it forked from to measure against.
+ fn net_negative(repo: &Path, compared: &str, branch: &str) -> Result<Option<LineChange>> {
+-    let Some(fork) = git::merge_base(repo, compared, branch)? else {
+-        return Ok(None);
+-    };
++    let fork = git::merge_base(repo, compared, branch)?.unwrap_or_else(|| compared.to_owned());
+     let counted = git::line_change(repo, &fork, branch)?;
+     Ok((counted.removed > counted.added).then_some(LineChange {
+         added: counted.added,
