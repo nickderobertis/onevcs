@@ -6,9 +6,6 @@
 //! root they landed in. Nothing about the filesystem is stood in for: what a
 //! journey asserts is that a directory is or is not there afterwards.
 //!
-//! What made the verb necessary is in `src/sweep.rs`: thirty-one of these
-//! directories, forty-nine gigabytes, filled a host's disk twice in one run, and
-//! no verb this tool had knew the directory existed.
 
 use std::fs::{File, FileTimes};
 use std::os::unix::fs::PermissionsExt;
@@ -420,6 +417,27 @@ fn a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other() {
         "the premise: a rejecting gate preserves its verdict too"
     );
     backdate(&run_root, 72);
+
+    // A verdict this host cannot read is not a verdict it can act on: made
+    // unlistable, the same workspace is retained for the same reason an unjudged one
+    // is, which is the conservative answer every unknown here resolves to.
+    let logs = run_root.join("gate-logs");
+    let readable = std::fs::metadata(&logs)
+        .expect("the gate logs")
+        .permissions();
+    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o000))
+        .expect("a verdict this user may not read");
+    let unreadable = swept(&fixture, &[]);
+    std::fs::set_permissions(&logs, readable).expect("the gate logs are restored");
+    assert!(
+        run_root.is_dir(),
+        "a verdict nobody can read decides nothing:\n{unreadable}"
+    );
+    assert_eq!(
+        retained_reason(&unreadable, &run_root),
+        "its gate has recorded no verdict under gate-logs, so nothing here can say the \
+         publication finished",
+    );
 
     let report = swept(&fixture, &[]);
     assert!(
