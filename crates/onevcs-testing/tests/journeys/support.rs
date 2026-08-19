@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, HeldBy, Holding, Identity, LineChange,
-    MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome,
-    Recoverable, Session, SessionToken, Sha, Url,
+    MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
+    PublishOutcome, Recoverable, Session, SessionToken, Sha, Url,
 };
 use onevcs_testing::{HostState, VcsState};
 
@@ -140,7 +140,7 @@ pub fn full_vcs_state() -> VcsState {
                 worktree: PathBuf::from("/scratch/s-testing-1/worktree"),
                 holding: Holding::OwnerRunning,
             }),
-            net_negative: Some(LineChange {
+            net_negative: NetNegative::new(LineChange {
                 added: 3,
                 removed: 481,
             }),

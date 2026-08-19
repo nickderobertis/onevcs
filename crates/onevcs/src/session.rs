@@ -215,9 +215,9 @@ pub struct Recoverable {
     /// A branch that deletes far more than it adds may be perfectly correct, and it
     /// is not something to publish unread — so it is marked rather than excluded,
     /// and marked only then: a branch that adds at least as much as it removes
-    /// carries nothing here.
+    /// carries nothing here, and cannot, because [`NetNegative`] holds no such count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub net_negative: Option<LineChange>,
+    pub net_negative: Option<NetNegative>,
 }
 
 /// The live session that still holds a preserved branch.
@@ -271,4 +271,53 @@ pub struct LineChange {
     pub added: u64,
     /// Lines it removes.
     pub removed: u64,
+}
+
+/// A [`LineChange`] that removes more than it adds, and the only thing that can be
+/// one.
+///
+/// The mark and its evidence are one value, so a row cannot carry a count that says
+/// the opposite of the field holding it — and the rule that decides "net-negative"
+/// lives here rather than at the site that measures a branch and at every consumer
+/// that reads one back. It serializes and reads as the [`LineChange`] it holds, so
+/// the two counts are what `--json` carries either way; a document naming a count
+/// that is not net-negative is refused where it is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "LineChange", into = "LineChange")]
+pub struct NetNegative(LineChange);
+
+impl NetNegative {
+    /// The count, when it is one a net-negative branch could have.
+    pub fn new(lines: LineChange) -> Option<Self> {
+        (lines.removed > lines.added).then_some(Self(lines))
+    }
+
+    /// Lines the branch adds.
+    pub fn added(&self) -> u64 {
+        self.0.added
+    }
+
+    /// Lines it removes, which is more than it adds.
+    pub fn removed(&self) -> u64 {
+        self.0.removed
+    }
+}
+
+impl TryFrom<LineChange> for NetNegative {
+    type Error = String;
+
+    fn try_from(lines: LineChange) -> std::result::Result<Self, Self::Error> {
+        Self::new(lines).ok_or_else(|| {
+            format!(
+                "{} line(s) added and {} removed is not a net-negative change",
+                lines.added, lines.removed
+            )
+        })
+    }
+}
+
+impl From<NetNegative> for LineChange {
+    fn from(value: NetNegative) -> Self {
+        value.0
+    }
 }

@@ -8,8 +8,8 @@ use crate::host::{Hosting, Sha};
 use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, PreservedBranch, Provenance, Recoverable,
-    Scope, Session, SessionRecord, SessionRequest, SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
+    Recoverable, Scope, Session, SessionRecord, SessionRequest, SessionToken,
 };
 use crate::stream::Stream;
 use crate::workspace::{self, object};
@@ -438,12 +438,15 @@ fn held_by(sessions: &[workspace::Record], identity: &str, branch: &str) -> Resu
 /// a base that has moved on every line that base gained would read as a line this
 /// branch removed and never touched. A branch sharing no history with the base is
 /// not measured — there is no point it forked from to measure against.
-fn net_negative(repo: &Path, compared: &str, branch: &str) -> Result<Option<LineChange>> {
+fn net_negative(repo: &Path, compared: &str, branch: &str) -> Result<Option<NetNegative>> {
     let Some(fork) = git::merge_base(repo, compared, branch)? else {
         return Ok(None);
     };
     let counted = git::line_change(repo, &fork, branch)?;
-    Ok((counted.removed > counted.added).then_some(LineChange {
+    // Which counts are net-negative is `NetNegative`'s own rule, asked here rather
+    // than restated: a second spelling of it is how a row comes to be marked by one
+    // rule and read back under another.
+    Ok(NetNegative::new(LineChange {
         added: counted.added,
         removed: counted.removed,
     }))

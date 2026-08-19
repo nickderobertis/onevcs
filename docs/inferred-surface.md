@@ -173,7 +173,8 @@ say nothing — a consumer that predates them reads the document it always read.
 | `Recoverable.held_by` | `Option<HeldBy>` | Present is the whole answer: the work has not stopped. Excluding the row instead would hide live work from the one report that lists work nobody has, which is the failure this report exists for. |
 | `HeldBy` | `token`, `worktree`, `holding` | The token because acting on it means waiting for that session or closing it by name, and the worktree because that is where the work is being made. |
 | `Holding` | `owner-running` / `run-root-occupied` | Reported rather than derived, and two values because the two are true at different times: a consumer holding a `Session` keeps the process that opened it (which is `Liveness::Live`), while the CLI takes an occupancy lease per command and outlives none of them, so what says a command is in there *now* is the lease. `because` is public with it so a caller renders the crate's own clause rather than inventing a second one. |
-| `Recoverable.net_negative` | `Option<LineChange>` | Marked, never excluded: a branch that deletes far more than it adds may be exactly right, and this report is not the thing that decides. Present only when it is net-negative, so absence is the other answer rather than a number a consumer has to compare. |
+| `Recoverable.net_negative` | `Option<NetNegative>` | Marked, never excluded: a branch that deletes far more than it adds may be exactly right, and this report is not the thing that decides. Present only when it is net-negative, so absence is the other answer rather than a number a consumer has to compare. |
+| `NetNegative` | a `LineChange` that removes more than it adds | The mark and its evidence are one value, so a row cannot carry a count saying the opposite of the field it is in, and the rule lives in one place rather than at the site that measures a branch and at every consumer reading one back. It serializes as the `LineChange` it holds, so `--json` carries the two counts either way, and a document naming a count that is not net-negative is refused where it is read. |
 | `LineChange` | `added`, `removed` | Counted from the commit the branch forked from, because that is what the branch did; against a base that has moved on, every line the base gained would read as a line the branch removed and never touched. |
 
 **Reading a session's events takes a filter, and the grammar was approved rather
@@ -474,5 +475,5 @@ question was:
    that reads the old document reads a different one — but a field added to a
    published struct is a constructor break for anyone building a `Recoverable` by
    hand (`onevcs-testing` does, and moved in the same change). Confirming it means
-   one amendment naming the two fields and the three types they carry, not a new
+   one amendment naming the two fields and the four types they carry, not a new
    answer to approve.

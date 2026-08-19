@@ -28,10 +28,10 @@ use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFil
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
     Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy,
-    Holding, Labels, Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, PreservedBranch,
-    Provenance, Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention,
-    Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source,
-    Subject, Url, Vcs,
+    Holding, Labels, Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative,
+    PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest, Recoverable,
+    RemoteHost, Retention, Scope, Session, SessionHolder, SessionRecord, SessionRequest,
+    SessionToken, Sha, Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -824,7 +824,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             worktree: PathBuf::from("/home/agent/.onevcs/workspaces/run/worktree"),
             holding: Holding::OwnerRunning,
         }),
-        net_negative: Some(LineChange {
+        net_negative: NetNegative::new(LineChange {
             added: 3,
             removed: 481,
         }),
@@ -835,9 +835,25 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     assert_eq!(value["held_by"]["token"], json!("s-0123456789ab"));
     assert_eq!(value["net_negative"], json!({"added": 3, "removed": 481}));
     assert_eq!(
-        serde_json::from_value::<Recoverable>(value).expect("a marked row reads back"),
+        serde_json::from_value::<Recoverable>(value.clone()).expect("a marked row reads back"),
         marked
     );
+    // The mark carries its own rule, so a count that is not net-negative is not a mark
+    // this reads back — neither from a document nor from a caller holding the type.
+    let mut lying = value;
+    lying["net_negative"] = json!({"added": 481, "removed": 3});
+    let refused = serde_json::from_value::<Recoverable>(lying)
+        .expect_err("a mark that is not net-negative is not one this reads")
+        .to_string();
+    assert!(
+        refused.contains("not a net-negative change"),
+        "the refusal says what was wrong with it: {refused}"
+    );
+    assert!(NetNegative::new(LineChange {
+        added: 481,
+        removed: 3,
+    })
+    .is_none());
 
     assert_eq!(
         serde_json::to_value(MergeOutcome::Merged(Sha("0f1e2d3".to_owned())))

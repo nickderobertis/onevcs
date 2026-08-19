@@ -78,8 +78,8 @@ pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Rete
 pub use registry::Identity;
 pub use rules::MergePolicy;
 pub use session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, PreservedBranch, Provenance, Recoverable,
-    Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
+    Recoverable, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken,
 };
 pub use stream::EventStream;
 pub use vcs::{Git, Vcs};

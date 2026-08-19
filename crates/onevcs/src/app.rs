@@ -486,8 +486,8 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         if let Some(net) = row.net_negative {
             marks.push(format!(
                 "net-negative: {added} added, {removed} removed",
-                added = net.added,
-                removed = net.removed,
+                added = net.added(),
+                removed = net.removed(),
             ));
         }
         let marked = match marks.is_empty() {
@@ -502,8 +502,8 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
                 "    Net-negative: it removes {removed} line(s) and adds {added} since it forked \
                  from {base}, so landing it unread would strip work. Read it first with \
                  `{diff}`",
-                removed = net.removed,
-                added = net.added,
+                removed = net.removed(),
+                added = net.added(),
                 base = row.branch.base,
                 diff = guidance::command([
                     "git",
