@@ -1,18 +1,15 @@
 //! Reaping the publication workspaces this crate leaves behind.
 //!
 //! Every branch-keyed landing cuts a run root under the state root — a clone, a
-//! worktree, and the gate's preserved logs — and until this verb existed nothing
-//! ever removed one. Thirty-one of them, forty-nine gigabytes, filled a host's
-//! disk twice during one three-day run, and the operator's only options under
-//! pressure were to delete by hand at the moment it was least safe to guess or to
-//! let the host fill again.
+//! worktree, and the gate's preserved logs — and this is the only thing that
+//! removes one.
 //!
 //! What makes a run root reclaimable is `onevcs` state and nothing a caller
 //! supplies: its gate has recorded a verdict under it, no live session holds its
-//! occupancy lease, and it was last written outside the age floor. That is why the
-//! verb is here rather than in a general-purpose sweeper — a caller-supplied
-//! liveness proof that is wrong deletes a publication worktree somebody is still
-//! gating.
+//! occupancy lease, and nothing under it was written inside the age floor. That is
+//! why the verb is here rather than in a general-purpose sweeper — a
+//! caller-supplied liveness proof that is wrong deletes a publication worktree
+//! somebody is still gating.
 //!
 //! **Anything not proven dead is retained and reported, never removed and never
 //! terminated.** This root is shared by several managers on one host, so a run
@@ -272,21 +269,27 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
     drop(lease);
 }
 
-/// When a run root was last written, read as the newest of its own timestamp and
-/// its immediate entries'.
+/// When anything under a run root was last written, however deep.
 ///
-/// A directory's own timestamp only moves when an entry is added to or removed from
-/// it, so a gate writing inside `clone` for an hour would leave the run root looking
-/// untouched. One level down is what catches that, and it is the level every run
-/// root's moving parts are at.
+/// The whole tree rather than the top of it, because a directory's own timestamp
+/// only moves when an entry is added to or removed from *it*: a gate rewriting a
+/// file inside the clone for an hour leaves every directory above that file looking
+/// untouched, and a run root read at one level would then be a day old while
+/// somebody was working in it. The walk costs what [`size_of`] costs and is asked
+/// only of a run root that has already passed every cheaper question.
 ///
 /// Anything this process cannot stat is read as written *now*, so it is retained:
 /// every other unknown here resolves the same way.
-fn last_written(run_root: &Path) -> SystemTime {
-    let mut newest = modified(run_root);
-    if let Ok(entries) = std::fs::read_dir(run_root) {
-        for entry in entries.flatten() {
-            newest = newest.max(modified(&entry.path()));
+fn last_written(path: &Path) -> SystemTime {
+    let mut newest = modified(path);
+    // Symbolic links are not followed: a link into somebody else's tree would make
+    // this answer about their clock, and its own timestamp is the one that moves
+    // when the link is rewritten.
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                newest = newest.max(last_written(&entry.path()));
+            }
         }
     }
     newest

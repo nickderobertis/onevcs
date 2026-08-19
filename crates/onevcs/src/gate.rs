@@ -199,6 +199,11 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
 /// the gate that passed and the gate that rejected — so its absence means no gate
 /// this crate runs ever reached one there, and a run root that cannot show it was
 /// judged is retained rather than reaped.
+///
+/// What counts is a **regular file** at the path [`preserve_log`] writes one to, and
+/// nothing about its contents: that path is written by that function alone, and a
+/// gate whose output was empty said as much as one that printed a page. A directory
+/// wearing the name would otherwise answer for a verdict nobody reached.
 pub fn has_recorded_verdict(run_root: &Path) -> bool {
     let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
         return false;
@@ -211,7 +216,9 @@ pub fn has_recorded_verdict(run_root: &Path) -> bool {
             .any(|log| {
                 let name = log.file_name();
                 let name = name.to_string_lossy();
-                name.starts_with("gate-") && name.ends_with(".log")
+                name.starts_with("gate-")
+                    && name.ends_with(".log")
+                    && log.file_type().is_ok_and(|kind| kind.is_file())
             })
     })
 }

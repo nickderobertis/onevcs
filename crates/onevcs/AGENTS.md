@@ -363,9 +363,8 @@ script written beside them that answered to what they asked.
 
 ## The disk is a resource, and `sweep` is the only verb that frees it
 
-`branch::prepare` cuts a run root per branch-keyed landing and nothing ever removed
-one: thirty-one of them, forty-nine gigabytes, took a host down twice in one run.
-`sweep.rs` is the verb that reaps them, and three things about it are deliberate.
+`branch::prepare` cuts a run root per branch-keyed landing, and `sweep.rs` is the
+only thing that removes one. Three rules about it are load-bearing.
 
 - **Proof, never inference.** A workspace is removed only where its gate recorded a
   verdict under it (`gate::has_recorded_verdict`), no live session holds its
@@ -387,8 +386,15 @@ one: thirty-one of them, forty-nine gigabytes, took a host down twice in one run
 
 The flag surface (`--dry-run`, `--min-age-hours HOURS` defaulting to 24) is shared
 with `oneagentgraph sweep` — one composing caller forwards its arguments to both —
-so neither side may change it alone. The exit code is `0` whenever the sweep *ran*:
-a directory it could not prove dead is a line in the report, not a failure.
+so neither side may change it alone. The half of it nobody types is the half that
+drifts silently, so the default has a gate:
+`the_sweep_age_floor_defaults_to_the_number_the_record_states` in `tests/contract.rs`
+holds clap to the number `docs/inferred-surface.md` states, and moving it in either
+place alone fails. The other side of the surface is out of this repository's reach
+and is reconciled by the caller that composes the two; that is the whole reason
+neither may amend it alone. The exit code is `0` whenever the sweep *ran*: a
+directory it could not prove dead, or could not remove, is a line in the report
+rather than a failure.
 
 ## Everything durable lives under one state root
 

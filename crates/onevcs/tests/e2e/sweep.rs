@@ -68,26 +68,47 @@ fn only_run_root(family: &Path) -> PathBuf {
 /// `--min-age-hours` says which window, and the journeys below assert the retained
 /// and the reclaimed answer under it.
 ///
-/// The run root and its immediate entries, which is the level `sweep` reads: a
-/// directory's own timestamp does not move when something writes inside its
-/// children.
+/// The whole tree, because that is what `sweep` reads: no directory's timestamp
+/// moves when a file inside it is rewritten, so a workspace is only as old as the
+/// newest thing anywhere under it.
 // llmlint: ignore-block[tests_mirror_real_usage] see the note above: what is arranged
 // is the world's clock, which is this verb's input, and there is no product interface
 // that makes a directory a day old.
 fn backdate(run_root: &Path, hours: u64) {
     let when = SystemTime::now() - Duration::from_secs(hours * 3600);
-    let times = FileTimes::new().set_accessed(when).set_modified(when);
-    let mut paths = vec![run_root.to_path_buf()];
-    paths.extend(run_roots(run_root));
-    // Deepest first: writing a child's timestamp moves its parent's, so the parent
-    // has to be written last or the run root would look freshly touched again.
-    for path in paths.into_iter().rev() {
-        let handle = File::open(&path)
-            .unwrap_or_else(|e| panic!("the run root entry {} is openable: {e}", path.display()));
-        handle.set_times(times).unwrap_or_else(|e| {
-            panic!("the run root entry {} is backdatable: {e}", path.display())
-        });
+    backdate_to(
+        run_root,
+        FileTimes::new().set_accessed(when).set_modified(when),
+    );
+}
+
+/// Deepest first, so nothing a later write touches is left looking new.
+fn backdate_to(path: &Path, times: FileTimes) {
+    let meta = std::fs::symlink_metadata(path)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+    // std cannot set a symbolic link's own times without following it, and nothing a
+    // clone this journey cut carries is one — so meeting one here is this helper's
+    // premise failing quietly rather than something to walk past.
+    assert!(
+        !meta.is_symlink(),
+        "{} is a symbolic link, which this helper cannot age",
+        path.display()
+    );
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)
+            .unwrap_or_else(|e| panic!("{} is listable: {e}", path.display()))
+        {
+            let entry = entry.unwrap_or_else(|e| panic!("{} lists: {e}", path.display()));
+            backdate_to(&entry.path(), times);
+        }
     }
+    let handle = File::options()
+        .read(true)
+        .open(path)
+        .unwrap_or_else(|e| panic!("{} is openable: {e}", path.display()));
+    handle
+        .set_times(times)
+        .unwrap_or_else(|e| panic!("{} is backdatable: {e}", path.display()));
 }
 
 // llmlint: ignore-end[tests_mirror_real_usage]
@@ -401,7 +422,7 @@ fn a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other() {
 }
 
 #[test]
-fn a_workspace_this_host_may_not_remove_is_reported_rather_than_failing_the_sweep() {
+fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     finished_branch(&fixture, "feature/not-ours-to-remove");
     publish_branch(&fixture, "feature/not-ours-to-remove");
@@ -425,7 +446,7 @@ fn a_workspace_this_host_may_not_remove_is_reported_rather_than_failing_the_swee
     );
 
     let report = swept(&fixture, &[]);
-    std::fs::set_permissions(&family, original).expect("the family is restored");
+    std::fs::set_permissions(&family, original.clone()).expect("the family is restored");
 
     assert!(
         run_root.is_dir(),
@@ -438,6 +459,24 @@ fn a_workspace_this_host_may_not_remove_is_reported_rather_than_failing_the_swee
     assert!(
         report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
         "and it is not counted as reclaimed:\n{report}"
+    );
+
+    // The other half of the same permission: a family this user may not even list.
+    // A family that vanished from the report would read as one holding nothing.
+    std::fs::set_permissions(&family, std::fs::Permissions::from_mode(0o000))
+        .expect("a family this user may not read");
+    let unreadable = swept(&fixture, &[]);
+    std::fs::set_permissions(&family, original).expect("the family is restored");
+    assert!(
+        unreadable
+            .lines()
+            .any(|line| line
+                .starts_with(&format!("  {} — cannot read this family", family.display()))),
+        "a family this sweep could not examine is named as one:\n{unreadable}"
+    );
+    assert!(
+        !unreadable.contains("  publications — "),
+        "and it is not also claimed as a family that was examined:\n{unreadable}"
     );
 }
 
@@ -510,11 +549,14 @@ fn the_age_floor_bounds_what_a_sweep_considers() {
         "the report says the floor is why it was kept:\n{held}"
     );
 
-    // A run root's own timestamp does not move when a gate writes inside its clone,
-    // so the age is read one level down: a workspace whose directory looks days old
-    // and whose clone was written a moment ago is one somebody is working in.
+    // No directory's timestamp moves when a file *inside* it is rewritten, so the age
+    // is the newest write anywhere under the run root rather than the newest at its
+    // top: a workspace whose every directory looks days old and one of whose files
+    // was rewritten a moment ago is one somebody is working in.
     backdate(&run_root, 72);
-    std::fs::write(run_root.join("clone/gate-scratch"), "output\n").expect("a write in the clone");
+    let deep = run_root.join("clone/.git/HEAD");
+    let held = std::fs::read(&deep).expect("a file the clone already carries");
+    std::fs::write(&deep, held).expect("a rewrite deep inside the clone");
     let written_inside = swept(&fixture, &[]);
     assert!(
         run_root.is_dir(),

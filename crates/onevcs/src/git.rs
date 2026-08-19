@@ -1107,6 +1107,10 @@ pub fn line_change(cwd: &Path, from: &str, to: &str) -> Result<Lines> {
 }
 
 /// What one commit records, in the facts two copies of a branch are told apart by.
+// llmlint: ignore-block[invalid_states_unrepresentable] every field here is a value
+// git just printed under a format string this module wrote, spelled the way the rest
+// of the module spells one; the crate's `Sha` wraps an unvalidated `String` at the
+// public surface, so a newtype here would make no state unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape {
     /// The tree it records, which is its content.
@@ -1119,15 +1123,20 @@ pub struct Shape {
     /// Its subject.
     pub subject: String,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// What a commit records, read out of the repository that holds it.
 ///
 /// NUL-separated, because a subject may hold anything a commit message may hold — a
 /// tab, a newline of a wrapped subject line — and a field separator a value can carry
 /// is a comparison that reads one commit as another.
-// llmlint: ignore[invalid_states_unrepresentable] every field here is a value git just
-// printed, spelled the way the rest of this module spells one; the crate's `Sha` wraps
-// an unvalidated `String` at the public surface and would make no state unrepresentable.
+// llmlint: ignore[invalid_states_unrepresentable] see the note on `Shape` above.
+// llmlint: ignore[boundary_inputs_validated] this is not a trust boundary: every field
+// is git's own output under a format string written three lines below, read back in
+// the order it was asked for. What *is* checked is the one thing that can go wrong —
+// that all four fields arrived — and it is refused by name. Re-deriving whether git's
+// `%T` is an object id or its `%cI` an ISO 8601 date would be this module checking
+// git's arithmetic, and the values are compared against each other rather than parsed.
 pub fn shape_of(cwd: &Path, reference: &str) -> Result<Shape> {
     let printed = checked(
         &["log", "-1", "--format=%T%x00%P%x00%cI%x00%s", reference],
