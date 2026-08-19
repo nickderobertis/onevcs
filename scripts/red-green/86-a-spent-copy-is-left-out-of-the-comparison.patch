@@ -1,6 +1,6 @@
 Mutation: the copies whose content the base already carries are left out of the comparison, so a lone work-carrying copy is chosen beside a tip nothing descends from.
 Red: a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing
-Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
+Red: a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
 index a2d4af7..42d5cdd 100644
