@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 131. Tests observed red and then green: 162.
+Patches: 136. Tests observed red and then green: 162.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -168,6 +168,41 @@ the provider stops answering which of its own open sessions holds a preserved br
 a seeded row held by a session nobody opened stops being refused, so a provider answers a hold out of a session that never existed.
 
 - RED `a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_name` — preserved work held by a session that was never opened describes a run nothing could have made
+
+### `113-a-copys-parent-is-left-out-of-the-refusal`
+
+the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpDgzZhL-project-10be2c8ce61d/runs/<token>/clone stands on its own parent 90d6769fcbb05fb0865173
+
+### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
+
+the refusal stops naming when each copy was committed, so nothing says which of the two was taken second.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — …and names when it was committed:
+
+### `115-the-two-copies-facts-are-crossed`
+
+each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpb3RT6z-project-ac2f89ac3f73/runs/<token>/clone stands on its own parent c07b0fb2d8f53ee971f03d
+
+### `116-a-branch-only-origin-carries-is-not-looked-for`
+
+the copy origin holds stops being one of the copies a pin is continued from, so a branch no checkout here has ever seen is cut fresh over it.
+
+- RED `a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh` — the branch only origin carries is continued at the commit origin has
+- RED `a_continued_branch_opens_at_whichever_copy_carries_the_other` — the session opens at origin's copy, which carries this checkout's
+
+### `117-a-continued-session-says-it-cut-the-branch-fresh`
+
+the opening of a continued session stops saying so, so a follower reading the stream cannot tell a session that found the work from one that started over.
+
+- RED `a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh` — assertion `left == right` failed
+- RED `a_continued_branch_opens_at_whichever_copy_carries_the_other` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("<time>"), "stream": String("<token>"), "seq": Number(2), "source": 
 
 ### `11-an-explicit-title-is-dropped`
 
@@ -636,7 +671,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
