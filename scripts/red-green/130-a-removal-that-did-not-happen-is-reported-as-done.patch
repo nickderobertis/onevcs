@@ -1,15 +1,11 @@
-Mutation: a sweep reports what it reclaimed and removes none of it, which is the state before this verb: the directories are named and every one of them is still there.
-Red: a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed
-Red: a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication
-Red: a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other
-Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
-Red: the_age_floor_bounds_what_a_sweep_considers
+Mutation: a workspace this host may not remove is reported as reclaimed anyway, so a report says the disk was freed by a directory that is still there.
+Red: a_workspace_this_host_may_not_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index e904725..bbbf87f 100644
+index e291a0b..2b64dac 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -221,20 +221,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+@@ -256,19 +256,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
          });
          return;
      }
@@ -26,11 +22,11 @@ index e904725..bbbf87f 100644
 -            reason: format!("it could not be removed: {e}"),
 -        }),
 -    }
-     drop(lease);
++    let _ = std::fs::remove_dir_all(&run_root);
 +    report.reclaimed.push(Reclaimed {
 +        path: run_root,
 +        bytes,
 +    });
+     drop(lease);
  }
  
- /// When a run root was last written, read as the newest of its own timestamp and

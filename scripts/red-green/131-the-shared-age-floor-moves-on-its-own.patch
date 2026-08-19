@@ -1,0 +1,16 @@
+Mutation: the age floor's default moves in the parser alone, which is how one caller forwarding one argument set to two tools comes to get two different windows.
+Red: the_sweep_age_floor_defaults_to_the_number_the_record_states
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index e291a0b..271c723 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -37,7 +37,7 @@ use crate::{gate, git, home, lock, workspace};
+ /// argument's own default and `oneagentgraph sweep` spells the same option the
+ /// same way — one composing caller forwards its arguments to both unchanged, so
+ /// the two defaults have to be the one value.
+-pub const DEFAULT_MIN_AGE_HOURS: &str = "24";
++pub const DEFAULT_MIN_AGE_HOURS: &str = "48";
+ 
+ /// Read `--min-age-hours` as the window it names.
+ ///
