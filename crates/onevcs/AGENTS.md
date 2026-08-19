@@ -98,17 +98,16 @@ the answer names every checkout holding the name — a stale selection and a cur
 read identically otherwise.
 
 **And the refusal says how the two copies differ, because it is terminal.** An
-ordinary `git commit --amend` in one checkout forks a branch across two of them and
-leaves both copies on the same parent under the same subject, differing only in their
-trees — measured on one host as `4ef3658` against `fa6a297`, fourteen minutes apart.
-Refusing is right: publishing either blind loses the other, and no verb here does
-that. But an unattended run cannot get past a refusal, so what it costs is a person
-comparing two trees by hand — which is the work this tooling exists to replace. So
-`branch::diverged` names each copy's checkout, tip, parent, subject, tree, and commit
-date, says which of the two shapes the pair is (an amend, or two separate commits),
-and prints the fetch *and* the diff that shows what they differ by. Each commit is
-read out of the checkout that holds it, so the answer does not depend on whether one
-of them can see the other's objects.
+unattended run cannot get past a refusal, so one that only says "these two disagree"
+leaves a person diffing checkouts by hand — which is the work this crate exists to
+replace. `branch::diverged` therefore names, per copy, its checkout, tip, parent,
+subject, tree, and commit date, says whether the pair is amend-shaped (same parent and
+subject over a different tree, which is what one `git commit --amend` in a second
+checkout leaves and what reads as two unrelated resolutions otherwise) or two separate
+commits, and prints the fetch *and* the diff between the two commits. Each commit is
+read out of the checkout that holds it, so the answer does not depend on whether either
+one can see the other's objects. What it must never do is choose: publishing either copy
+blind loses the other.
 
 **Refusing a copy nothing descends from costs one workflow**, recorded as a journey
 rather than described here: a rewrite. Selecting it would guess that a rewrite supersedes

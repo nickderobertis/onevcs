@@ -93,26 +93,40 @@ pub fn try_shared(identity: &str) -> Result<Option<Guard>> {
 /// would overwrite the owner that waiter is sent after. [`try_exclusive`] is the same
 /// question asked by something that then keeps the lease.
 ///
+/// Definite in both directions, and it has to be: what it decides is whether to hand
+/// somebody a command that publishes a branch, so "abandoned" would offer work a live
+/// session is still writing to and "occupied" would withhold work nobody is doing.
+/// A lease it could not ask about is therefore neither answer but an `Err`, exactly as
+/// a lock this module cannot open is everywhere else in it.
+///
 /// The window it opens is the exclusive take's own: a shared taker meeting it is told
 /// the identity is busy, which is what any occupancy answer means, and it is the same
 /// window `reclaim` has opened on every session opening since it existed.
 pub fn is_occupied(identity: &str) -> Result<bool> {
     let path = path_for(identity)?;
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a lock file that is
+    // there and will not open, and a `flock` the kernel refuses for a reason of its own.
+    // No interface this crate exposes can produce either — every holder creates the file
+    // and locks it through this module — so building one means changing a file's
+    // permissions under the state root by hand, which is a fixture standing in for the
+    // filesystem rather than a journey. Both answer the same way the rest of this module
+    // answers a lock it cannot read: they say so.
     let file = match OpenOptions::new().read(true).write(true).open(&path) {
         Ok(file) => file,
         // A lock file that is not there is one nothing holds: every holder creates it
-        // before it locks it. One that is there and will not open is the other answer,
-        // and the safe one — what this decides is whether to hand somebody a command
-        // that publishes a branch, and "somebody may be in there" is what withholds it.
-        Err(error) => return Ok(error.kind() != std::io::ErrorKind::NotFound),
+        // before it locks it, so its absence is an answer rather than a failure.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error::at("read the lock at", &path)(error)),
     };
     match FileExt::try_lock_exclusive(&file) {
         Ok(true) => {
             let _ = FileExt::unlock(&file);
             Ok(false)
         }
-        Ok(false) | Err(_) => Ok(true),
+        Ok(false) => Ok(true),
+        Err(error) => Err(error::at("ask who holds the lock at", &path)(error)),
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
 /// Take an identity exclusively if it is free right now.

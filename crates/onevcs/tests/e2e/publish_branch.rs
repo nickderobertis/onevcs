@@ -2128,11 +2128,27 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
             "land it with `{landing}`"
         )));
     assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+    // Two resolutions rather than one re-committed: the refusal says which of the two
+    // shapes the pair is, because an operator's next move differs between them — here
+    // there is work on both sides to keep, and an amend has one tree to choose.
+    let refusal = stderr_of(&assert);
+    assert!(
+        refusal.contains("They differ as two separate commits do"),
+        "the refusal says how the two copies differ:\n{refusal}"
+    );
+    for subject in [
+        "fix: the resolution in the session",
+        "fix: a different resolution in the checkout",
+    ] {
+        assert!(
+            refusal.contains(&format!("the subject {subject:?}")),
+            "…naming each copy's own subject:\n{refusal}"
+        );
+    }
 
     // The refusal's own guidance is what resolves it: the fetch it prints brings the
     // other copy in, and once one checkout carries both, the landing it names goes
     // through and carries both resolutions.
-    let refusal = stderr_of(&assert);
     let fetch = printed(&refusal, "git ");
     fixture.world.shell(&fetch).assert().success();
     fixture.world.git(

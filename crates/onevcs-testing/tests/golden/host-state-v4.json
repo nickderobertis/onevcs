@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 4,
   "authenticated_user": "seeded-user",
   "changes": [
     {
@@ -14,6 +14,9 @@
   },
   "titles": {
     "1": "feat: the seeded change"
+  },
+  "bodies": {
+    "1": "The body the caller drafted.\n"
   },
   "checks": {
     "1": [

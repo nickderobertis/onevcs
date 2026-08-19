@@ -1084,12 +1084,11 @@ pub fn line_change(cwd: &Path, from: &str, to: &str) -> Result<Lines> {
     let listed = checked(&["diff", "--numstat", "--no-renames", from, to], Some(cwd))?;
     let mut counted = Lines::default();
     for line in listed.stdout.lines().filter(|line| !line.trim().is_empty()) {
-        let unreadable = || {
-            Error::Invalid {
+        let unreadable = || Error::Invalid {
             reason: format!(
-                "git diff --numstat {from} {to} printed {line:?}, which is not a count of lines                  and a path"
+                "git diff --numstat {from} {to} printed {line:?}, which is not a count of lines \
+                 and a path"
             ),
-        }
         };
         let (added, rest) = line.split_once('\t').ok_or_else(unreadable)?;
         let (removed, _path) = rest.split_once('\t').ok_or_else(unreadable)?;

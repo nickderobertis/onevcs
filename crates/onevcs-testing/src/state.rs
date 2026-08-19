@@ -28,7 +28,9 @@ use crate::store::Checked;
 /// `2` was what both sides learned when publishing and closing a session came
 /// through the interface: [`VcsState::policy`], [`VcsState::closed_sessions`],
 /// [`VcsState::publications`], and [`HostState::titles`]. `3` is
-/// [`HostState::bodies`], the body a change request was opened with.
+/// [`HostState::bodies`], the body a change request was opened with. `4` is the two
+/// fields a `Recoverable` gained inside [`VcsState::preserved`] — the live session
+/// holding a branch, and the lines it would land when it removes more than it adds.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -38,7 +40,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 3;
+pub const STATE_VERSION: u32 = 4;
 
 /// The oldest document version this build reads.
 ///
@@ -47,7 +49,9 @@ pub const STATE_VERSION: u32 = 3;
 /// versions: what separates a readable older version from a refused one is whether
 /// its every field still means here what it meant there. `2` to `3` added a field
 /// and changed none, so a version 2 document reads as one whose change requests
-/// were opened with no body — which is what they were.
+/// were opened with no body — which is what they were; `3` to `4` added two the same
+/// way, so a version 3 document reads as one whose preserved rows say nothing about a
+/// hold or a line count, which is what they said.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -394,6 +398,12 @@ impl Checked for VcsState {
             known_identity(self, &row.identity, "preserved work")?;
             named_branch(&row.branch.branch, "the preserved branch")?;
             named_branch(&row.branch.base, "the preserved branch's base")?;
+            // The hold names a session, so it is checked like the three below: a row
+            // held by a session nobody opened is the same fiction, and the costly one
+            // — it is the session an operator is told to wait for or close.
+            if let Some(held) = &row.held_by {
+                opened(self, &held.token, "holding preserved work")?;
+            }
         }
         // Both of these name a session, so both are checked twice over: the token
         // has to be a plain name, because it goes on to spell the file its stream is
@@ -431,8 +441,10 @@ impl Checked for VcsState {
         Ok(())
     }
 
-    /// Nothing but the version: every field version 2 could hold means here what it
-    /// meant there, and the repository side gained none in version 3.
+    /// Nothing but the version: every field an older readable document could hold
+    /// means here what it meant there, and the two the repository side gained in
+    /// version 4 are absent from one written before them — which is the answer, since
+    /// that build held no hold and counted no lines.
     fn carry_forward(&mut self) {
         self.version = STATE_VERSION;
     }

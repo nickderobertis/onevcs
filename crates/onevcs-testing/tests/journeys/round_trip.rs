@@ -135,7 +135,7 @@ fn a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_
     // have happened. A provider answering `session` or `recoverable` out of one
     // would be answering from a fiction rather than refusing one, so the document
     // is refused where it is read, naming the session it disagrees about.
-    let cases: [(&str, serde_json::Value, &str); 4] = [
+    let cases: [(&str, serde_json::Value, &str); 5] = [
         (
             "a session closed that was never opened",
             serde_json::json!({"version": 2, "closed_sessions": ["s-testing-4"]}),
@@ -161,6 +161,35 @@ fn a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_
                 }],
             }),
             "s-testing-7",
+        ),
+        (
+            "preserved work held by a session that was never opened",
+            serde_json::json!({
+                "version": 3,
+                "identities": [{
+                    "origin": "github.com/acme-corp/widgets",
+                    "workflow": "remote",
+                    "repo_type": "team",
+                    "gate": "just check",
+                }],
+                "preserved": [{
+                    "identity": "github.com/acme-corp/widgets",
+                    "branch": {
+                        "branch": "feature/ghost",
+                        "base": "main",
+                        "provenance": "complete",
+                    },
+                    "checkout": "/scratch/widgets",
+                    "stopped_because": "nothing has stopped",
+                    "recover_command": ["onevcs", "publish-branch", "feature/ghost"],
+                    "held_by": {
+                        "token": "s-testing-9",
+                        "worktree": "/scratch/s-testing-9/worktree",
+                        "holding": "owner-running",
+                    },
+                }],
+            }),
+            "s-testing-9",
         ),
         (
             "a publication of some branch other than the session's own",

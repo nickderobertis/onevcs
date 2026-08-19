@@ -499,7 +499,8 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         println!("    Stopped because: {}", row.stopped_because);
         if let Some(net) = row.net_negative {
             println!(
-                "    Net-negative: it removes {removed} line(s) and adds {added} against {base},                  so landing it unread would strip work. Read it first with `{diff}`",
+                "    Net-negative: it removes {removed} line(s) and adds {added} against {base}, \
+                 so landing it unread would strip work. Read it first with `{diff}`",
                 removed = net.removed,
                 added = net.added,
                 base = row.branch.base,
@@ -522,7 +523,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             // is read as "paste this" belongs to a row whose work has stopped, and
             // this row's has not.
             Some(held) => println!(
-                "    Not ready: session {token} still holds this branch and {because}, so                  running `{command}` now would publish a branch mid-flight. Its worktree is                  {worktree}; wait for it, or close it with `{close}`, and then run that command",
+                "    Not ready: session {token} still holds this branch and {because}, so \
+                 running `{command}` now would publish a branch mid-flight. Its worktree is \
+                  {worktree}; wait for it, or close it with `{close}`, and then run that command",
                 token = held.token.0,
                 because = held.holding.because(),
                 worktree = held.worktree.display(),

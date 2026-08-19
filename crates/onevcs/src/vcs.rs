@@ -317,7 +317,8 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 let held_by = held_by(&sessions, identity, &branch)?;
                 let mut stopped = match &held_by {
                     Some(held) => format!(
-                        "nothing has stopped: session {token} still holds this branch and                          {because}. Its work is being made in {worktree}",
+                        "nothing has stopped: session {token} still holds this branch and \
+                         {because}. Its work is being made in {worktree}",
                         token = held.token.0,
                         because = held.holding.because(),
                         worktree = held.worktree.display(),

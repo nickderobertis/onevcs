@@ -1591,6 +1591,128 @@ fn a_branch_that_removes_more_than_it_adds_is_marked_in_both_renderings() {
 }
 
 #[test]
+fn what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked() {
+    // The three answers the count must not give: a file git compares as binary has no
+    // line count and must not fail the report; a branch that adds exactly as much as it
+    // removes is not net-negative; and a branch sharing no history with the base has no
+    // point it forked from, so there is nothing to measure it against. A mark on any of
+    // them is a mark an operator learns to ignore.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let many: String = (1..=40).map(|line| format!("line {line}\n")).collect();
+    fixture
+        .world
+        .commit_file(&fixture.checkout, "big.txt", &many, "feat: lines to remove");
+    // NUL bytes, because that is what makes git compare a file as binary rather than as
+    // text — a random blob without one is counted line by line like anything else.
+    std::fs::write(fixture.checkout.join("blob.bin"), b"a\0b\0c\n").expect("a binary file");
+    fixture.world.git(&fixture.checkout, &["add", "-A"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &["commit", "-q", "-m", "feat: a binary blob"],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "-q", "origin", "main"]);
+
+    // A branch that removes the binary file along with the lines…
+    let (stripping, stripped) = fixture.open(&["--branch", "feature/binary-too"]);
+    for gone in ["big.txt", "blob.bin"] {
+        std::fs::remove_file(stripped.join(gone)).expect("the file this branch removes");
+    }
+    fixture.world.commit_file(
+        &stripped,
+        "note.txt",
+        "why they went\n",
+        "refactor: drop both",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &stripping])
+        .assert()
+        .success();
+    // …one that trades a line for a line…
+    let (trading, traded) = fixture.open(&["--branch", "feature/one-for-one"]);
+    fixture.world.commit_file(
+        &traded,
+        "big.txt",
+        &many.replace("line 7\n", "line seven\n"),
+        "refactor: reword one line",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &trading])
+        .assert()
+        .success();
+    // …and one whose history has nothing in common with the base at all, which is what
+    // an imported or re-initialised history is.
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "--orphan", "feature/unrelated"],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["rm", "-q", "-r", "--cached", "."]);
+    std::fs::remove_file(fixture.checkout.join("blob.bin")).expect("the binary file");
+    std::fs::remove_file(fixture.checkout.join("big.txt")).expect("the lines");
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "vendored.txt",
+        "an unrelated history\n",
+        "feat: an unrelated history",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "-f", "main"]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .success();
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
+    // The binary file is left out of the count rather than failing the report or being
+    // read as nought lines of text.
+    assert_eq!(
+        row(&rows, "feature/binary-too")["net_negative"],
+        serde_json::json!({"added": 1, "removed": 40}),
+        "the count is of the lines git counted: {rows:#?}"
+    );
+    for unmarked in ["feature/one-for-one", "feature/unrelated"] {
+        assert!(
+            row(&rows, unmarked).get("net_negative").is_none(),
+            "{unmarked} is not net-negative: {rows:#?}"
+        );
+    }
+    // …and all three are still rows with a command, which is what says the report did
+    // not fall over on any of them.
+    let reported = String::from_utf8_lossy(
+        &fixture
+            .world
+            .onevcs()
+            .arg("recoverable")
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .into_owned();
+    for branch in [
+        "feature/binary-too",
+        "feature/one-for-one",
+        "feature/unrelated",
+    ] {
+        assert!(
+            reported.contains(&format!("Resume: onevcs publish-branch {branch}")),
+            "{branch} is still offered:\n{reported}"
+        );
+    }
+}
+
+#[test]
 fn a_branch_the_base_already_carries_drops_out_of_the_recoverable_view() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/landed"]);
