@@ -344,6 +344,15 @@ directories, forty-nine gigabytes, none of them ever reaped, because no verb thi
 tool has knew the directory existed. A full disk took that host down twice during
 one three-day run and stopped the operator issuing any command at all.
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] the half of this
+surface the repository can reach is gated: `sweep::DEFAULT_MIN_AGE_HOURS` is the crate's
+one source for the default, `cli.rs` takes the parser's from it, and the contract suite
+holds it to the sentence below. The other half is a value in a repository this one does
+not depend on and cannot build, so a check here would either vendor a copy of it — the
+second source the rule exists to prevent — or reach the network from an offline gate.
+Recording the shared surface is what lets the composing caller reconcile it, and is why
+neither side may amend it alone. -->
+
 ```
 onevcs sweep [--dry-run] [--min-age-hours HOURS]
 ```
@@ -400,6 +409,8 @@ side may amend the surface alone.
 
 The verb adds no public library item: `sweep` is a private module, and what the
 CLI gains is the verb and its two options.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] the shared-surface
+record ends here. -->
 
 ## One public item the contract does not name, and why it is not an inference
 

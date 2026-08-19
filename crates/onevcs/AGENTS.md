@@ -363,38 +363,26 @@ script written beside them that answered to what they asked.
 
 ## The disk is a resource, and `sweep` is the only verb that frees it
 
-`branch::prepare` cuts a run root per branch-keyed landing, and `sweep.rs` is the
-only thing that removes one. Three rules about it are load-bearing.
+Every branch-keyed landing cuts a run root, and `sweep` is the only thing that
+removes one. Three rules about it are load-bearing.
 
-- **Proof, never inference.** A workspace is removed only where its gate recorded a
-  verdict under it (`gate::has_recorded_verdict`), no live session holds its
-  occupancy lease (`lock::try_exclusive` over `workspace::occupancy_identity`), and
-  it was last written outside the age floor. Anything else is *retained and
-  reported with the reason* — this state root is shared by several managers on one
-  host, and a sweep that guessed would destroy another one's live work. Nothing is
-  ever terminated.
+- **Proof, never inference.** A workspace is removed only where this crate can show
+  it is finished; every other answer — including one it cannot decide — retains,
+  reports the reason, and terminates nothing. The state root is shared by several
+  managers on one host, so a sweep that guessed would destroy another one's live
+  work, and a *partial* removal is a real outcome the report has to be able to say.
 - **A landing holds its own run root's lease**, which is what there is to read.
-  `branch::prepare` takes it the moment the directory exists and `Landing` holds it
-  for the whole landing; take that away and a sweep running beside a publication
-  reaps the worktree it is gating. It is the same lease `recoverable` reads to
-  decide a branch is not being written to, through the same function, so the two
-  cannot come to disagree.
-- **`workspaces/<identity>/runs` is outside it.** That is the bounded recovery
-  history `workspace::reclaim` keeps so a dead run's branch stays reachable; `sweep`
-  names it as a family it does not reach into. `recoveries` *is* inside, because it
-  is the same directory shape cut by the same function under the same two proofs.
+  Take that away and a sweep running beside a publication reaps the worktree it is
+  gating. It is the same lease `recoverable` reads to decide a branch is being
+  written to, through the same function, so the two cannot come to disagree.
+- **`workspaces/<identity>/runs` is outside it** — that is the bounded recovery
+  history `workspace::reclaim` keeps so a dead run's branch stays reachable.
+  `recoveries` is *inside*, because it is the same directory shape cut by the same
+  function under the same proofs.
 
-The flag surface (`--dry-run`, `--min-age-hours HOURS` defaulting to 24) is shared
-with `oneagentgraph sweep` — one composing caller forwards its arguments to both —
-so neither side may change it alone. The half of it nobody types is the half that
-drifts silently, so the default has a gate:
-`the_sweep_age_floor_defaults_to_the_number_the_record_states` in `tests/contract.rs`
-holds clap to the number `docs/inferred-surface.md` states, and moving it in either
-place alone fails. The other side of the surface is out of this repository's reach
-and is reconciled by the caller that composes the two; that is the whole reason
-neither may amend it alone. The exit code is `0` whenever the sweep *ran*: a
-directory it could not prove dead, or could not remove, is a line in the report
-rather than a failure.
+The flag surface is shared with `oneagentgraph sweep`; neither side may amend it
+alone, and why the half outside this repository cannot be gated from here is
+written at `sweep::DEFAULT_MIN_AGE_HOURS`.
 
 ## Everything durable lives under one state root
 
