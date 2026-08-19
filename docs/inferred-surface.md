@@ -17,7 +17,7 @@ quietly in passing.
 | `Identity` | `origin`, `workflow`, `repo_type`, `gate` | The contract says the registry is "v5 = ai-orchestrator's v4 identities/checkouts + rules reference", so the identity record is v4's, field for field. The identity *key* is not a field: it is the normalized origin, which is the map key in the document. |
 | `Checkout` | `path`, `identity` | v4's checkout record. |
 | `Registry` | `version`, `identities`, `checkouts`, `rules` | v4's document plus the rules reference the contract adds. `rules` is optional: absent means the built-in default policy. |
-| `SessionRequest` | `repo`, `branch`, `base`, `execution_checkout` | Exactly the operands and options `onevcs session open` takes. |
+| `SessionRequest` | `repo`, `branch`, `base`, `execution_checkout` | Exactly the operands and options `onevcs session open` takes. What each of `branch` and `base` *means* is inferred too, and is open question 12 below. |
 | `SessionToken` | newtype over `String` | Opaque by design; the CLI takes and prints it as text. |
 | `Provenance` | `complete` / `incomplete-step` | The contract's ported invariant, "dirty adoption -> incomplete-step commit", gives the two cases, and `commit-preserved` carries "provenance kind". |
 | `PreservedBranch` | `branch`, `base`, `provenance`, `change_url`, `change_base` | The last two are named explicitly as the host-neutral stack metadata; the first three are what `preserve` must return to be usable. |
@@ -430,3 +430,21 @@ question was:
    unchanged. Nothing else moved — no body is composed when none is given, and the
    provenance trailers stay on the commit — so confirming this means one amendment
    striking that sentence, not a new shape to approve.
+12. **A pinned branch that already exists is continued, and `base` is the branch a
+   session publishes into rather than the one it is cut from.** The contract spells
+   `onevcs session open REPO [--branch B] [--base B]` and leaves what a pin means to
+   inference. It was read as "cut this name from that base", and a pin naming a
+   branch that already carried work was refused — so the only way a caller could
+   express "continue this work" was to pass the branch as its own base. That session
+   then published the branch into itself: `nothing to publish: the base already
+   carries this branch's content`, whatever it had committed. It stranded four
+   workstreams across three runs on one host, each recovered by hand. So a `--branch`
+   naming a branch a checkout of the identity or origin already carries now opens the
+   worktree at that branch's tip, `--base` is what the work is merged with and
+   published into, and `--branch` equal to `--base` is refused by name. A `--branch`
+   naming nothing is unchanged. The three shapes a caller can have written are
+   therefore: a pin naming nothing, which behaves exactly as before; a pin naming an
+   existing branch, which was a refusal and is now a continuation; and `base ==
+   branch`, which was the workaround and is now a refusal naming the spelling that
+   replaced it. Confirming this means an amendment saying what the two options mean,
+   not a new shape to approve — no public item changed.

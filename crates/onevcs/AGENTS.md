@@ -97,12 +97,13 @@ that there is nothing to publish, from the first in search order. Whichever way 
 the answer names every checkout holding the name — a stale selection and a current one
 read identically otherwise.
 
-**Refusing a copy nothing descends from costs two workflows**, both recorded as journeys
-rather than described here. A rewrite is one: selecting it would guess that a rewrite
-supersedes what it rewrote, so replaying where `sync_change_base` sends an operator leaves
-a pair this refuses. A name reused after its first use landed is the other: the spent copy
-and the fresh one are no relation. Both end the same way — one copy has to be left behind,
-and no verb here does that.
+**Refusing a copy nothing descends from costs one workflow**, recorded as a journey
+rather than described here: a rewrite. Selecting it would guess that a rewrite supersedes
+what it rewrote, so replaying where `sync_change_base` sends an operator leaves a pair this
+refuses — one copy has to be left behind, and no verb here does that. Reusing a name after
+its first use landed used to cost a second one, because the session cut a fresh branch over
+the spent copy and the two were no relation; a pin now continues the copy it found, so that
+pair is not made here any more.
 
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
@@ -181,15 +182,31 @@ could not reach it, so two things are stated rather than left to be inferred.
   as the whole host's, and another identity's preserved work then reads as work
   nobody has. Every rendering names the scope, `--json` included (on stderr, where
   a parser does not meet it).
-- **A branch pin is honoured or refused, never quietly cut fresh.** A session's
-  branch is cut from the base with `worktree add -b`, so a pin naming a branch that
-  already carries work produces a second, empty branch of that name: the session
-  reports the pinned name, carries none of the commits, and cannot hand the name
-  back either, since a branch is only ever copied out fast-forward. `workspace::open`
-  asks every repository the identity keeps branches in — the run clones included —
-  and origin's own copy, and refuses unless the base already carries what the name
-  means. The bar is not that the name is unused; it is that the session carries
-  whatever the name refers to.
+- **A branch pin that names something is continued, never cut fresh over it.** A
+  name a repository of the identity already carries *means* the work on it, so
+  `worktree add -b` from the base would produce a second, empty branch of that name:
+  the session reports the pinned name, carries none of the commits, and cannot hand
+  the name back either, since a branch is only ever copied out fast-forward. So
+  `workspace::open` asks every repository the identity keeps branches in — the run
+  clones included — and origin's own copy, and opens the worktree **at that branch's
+  tip** when one of them has it, saying `"continued": true`. A name nothing carries
+  is cut from the base, exactly as it always was.
+- **…which makes `base` the integration target and not the starting point.** For a
+  continued branch it is only what the work is merged with and published into. The
+  merge happens at `session open`, through `publish::reconcile` — the same one every
+  landing syncs with — and a conflict refuses the session rather than leaving one in
+  a worktree nobody asked to resolve: the branch is untouched where it was found, and
+  the refusal names that copy and the `publish-branch` that lands it as it stands.
+  Naming the branch as its own base is refused by name. It was the only way to say
+  "continue this branch" before a pin meant that, and the session it opened published
+  the branch into itself — so whatever it committed, every publication of it answered
+  that there was nothing to publish.
+- **Which copy is continued is `branch::locate`'s comparison, plus origin's.** The
+  checkouts are compared by that one function, so a session and a landing cannot come
+  to disagree about which copy of a name is the work; origin's copy is then compared
+  against the winner in the session's own clone, where both commits can be reached.
+  One has to carry the other or the session is refused — taking either would open on
+  a tree that silently drops the commits of the one passed over.
 - **…and a pin an *open* session already holds is that session, resumed.** Cutting a
   retry its own run root leaves two directories answering to one branch, one of them
   at an older tip. So `workspace::open` re-attaches through `workspace::adopt` when
@@ -197,9 +214,8 @@ could not reach it, so two things are stated rather than left to be inferred.
   unnamed one being the identity's root as it stands now — and the same execution
   checkout, with its run root there and nobody holding it against them, and says
   `"reused": true`. Closed is not one of them: closing hands the branch back and
-  means finished. Every other case falls through to the ordinary cut rather than
-  being refused, so reuse decides only whether a second run root is cut; the rule
-  above still refuses the pins it always refused.
+  means finished. Every other case falls through to opening the ordinary way, which
+  continues the branch rather than refusing it.
 
 ## Tests are journeys, and the four unit tests say why they are not
 
