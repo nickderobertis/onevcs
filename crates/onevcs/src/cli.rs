@@ -152,24 +152,20 @@ pub struct PublishArgs {
     /// The change request's title.
     #[arg(long, value_name = "T")]
     pub title: Option<String>,
+    // llmlint: ignore-block[invalid_states_unrepresentable] the two body options are
+    // deliberately representable together, and refused by name in `app::explicit_body`
+    // — which is where the refusal can say which two were given, which one to keep,
+    // and the invocation that keeps it. A clap `conflicts_with` would answer the same
+    // mistake with usage text, and every other argument this command takes is checked
+    // at dispatch for that reason.
     /// The change request's body. Omitted, it is opened with none.
     #[arg(long, value_name = "TEXT")]
-    // llmlint: ignore[invalid_states_unrepresentable] the two body options are
-    // deliberately representable together and refused by name in `app::explicit_body`,
-    // where the refusal can say which two were given and which one to keep. A clap
-    // `conflicts_with` would answer the same mistake with usage text, and every other
-    // argument this command takes is checked at dispatch for that reason. The
-    // directive sits under the attribute so nothing stands between it and the field
-    // it excuses.
     pub body: Option<String>,
     /// A file holding the change request's body. A body is prose, so this is the
     /// form a caller with a real one uses.
     #[arg(long, value_name = "PATH")]
-    // llmlint: ignore[invalid_states_unrepresentable] the other half of the pair above,
-    // and the same reason: both are representable so that `app::explicit_body` can refuse
-    // them by name, with the invocation that keeps each one, rather than clap answering
-    // with usage text.
     pub body_file: Option<PathBuf>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
 }
 
 /// Arguments for `onevcs publish-branch`.
@@ -202,24 +198,16 @@ pub struct PublishBranchArgs {
     /// never widen it past requiring approvals.
     #[arg(long, value_name = "P")]
     pub policy: Option<MergePolicy>,
+    // llmlint: ignore-block[invalid_states_unrepresentable] the same pair `PublishArgs`
+    // carries, representable together for the same reason: see the note there.
     /// The change request's body. Omitted, it is opened with none.
     #[arg(long, value_name = "TEXT")]
-    // llmlint: ignore[invalid_states_unrepresentable] the two body options are
-    // deliberately representable together and refused by name in `app::explicit_body`,
-    // where the refusal can say which two were given and which one to keep. A clap
-    // `conflicts_with` would answer the same mistake with usage text, and every other
-    // argument this command takes is checked at dispatch for that reason. The
-    // directive sits under the attribute so nothing stands between it and the field
-    // it excuses.
     pub body: Option<String>,
     /// A file holding the change request's body. A body is prose, so this is the
     /// form a caller with a real one uses.
     #[arg(long, value_name = "PATH")]
-    // llmlint: ignore[invalid_states_unrepresentable] the other half of the pair above,
-    // and the same reason: both are representable so that `app::explicit_body` can refuse
-    // them by name, with the invocation that keeps each one, rather than clap answering
-    // with usage text.
     pub body_file: Option<PathBuf>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
 }
 
 /// Arguments for `onevcs recover`.
@@ -238,24 +226,16 @@ pub struct RecoverArgs {
     // where the other two commands name the title itself.
     #[arg(long, value_name = "T")]
     pub title: Option<String>,
+    // llmlint: ignore-block[invalid_states_unrepresentable] the same pair `PublishArgs`
+    // carries, representable together for the same reason: see the note there.
     /// The change request's body. Omitted, it is opened with none.
     #[arg(long, value_name = "TEXT")]
-    // llmlint: ignore[invalid_states_unrepresentable] the two body options are
-    // deliberately representable together and refused by name in `app::explicit_body`,
-    // where the refusal can say which two were given and which one to keep. A clap
-    // `conflicts_with` would answer the same mistake with usage text, and every other
-    // argument this command takes is checked at dispatch for that reason. The
-    // directive sits under the attribute so nothing stands between it and the field
-    // it excuses.
     pub body: Option<String>,
     /// A file holding the change request's body. A body is prose, so this is the
     /// form a caller with a real one uses.
     #[arg(long, value_name = "PATH")]
-    // llmlint: ignore[invalid_states_unrepresentable] the other half of the pair above,
-    // and the same reason: both are representable so that `app::explicit_body` can refuse
-    // them by name, with the invocation that keeps each one, rather than clap answering
-    // with usage text.
     pub body_file: Option<PathBuf>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
 }
 
 /// Arguments for `onevcs recoverable`.
