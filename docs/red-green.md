@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 116. Tests observed red and then green: 148.
+Patches: 117. Tests observed red and then green: 149.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -561,7 +561,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -789,4 +789,10 @@ the branch-keyed verbs stop carrying the caller's body into the publication.
 
 - RED `a_complete_branch_opens_its_change_request_with_the_body_the_caller_drafted` — assertion `left == right` failed
 - RED `a_recovery_opens_its_change_request_with_the_body_the_caller_drafted` — assertion `left == right` failed
+
+### `97-the-record-stops-naming-the-sentence-it-departs-from`
+
+the record stops quoting the approved sentence the branch-keyed body options depart from.
+
+- RED `the_record_names_the_body_sentence_the_branch_keyed_verbs_depart_from` — docs/inferred-surface.md must quote the sentence the branch-keyed body options depart from, so a reader of either document finds the other
 
