@@ -316,12 +316,17 @@ fn explicit_title(title: Option<&String>) -> Result<Option<Subject>> {
 /// form a real body arrives in — it is prose, and prose does not survive a shell
 /// argument — so a path that cannot be read names itself rather than the option.
 ///
-/// Three commands take the pair, so `invocation` is the verb and operands the
-/// caller actually typed: a refusal is only worth reading if the command it prints
-/// is the one to re-run, and a `publish` invocation printed at an operator who
-/// named a branch is a command that does not exist.
+/// Three commands take the pair, so `command_prefix` is the verb and the work it
+/// was asked about — `publish` and a session token, or a branch-keyed verb and the
+/// checkout its branch is reached from — and each suggestion appends one body
+/// option to it. It is the smallest command that re-runs *this* publication under
+/// one body rather than a copy of the whole argv: a `--title` or `--policy` given
+/// alongside is not echoed, which is how `onevcs publish` has printed this refusal
+/// since the contract fixed its wording. What the prefix must never be is another
+/// verb's — a `publish` command printed at an operator who named a branch is one
+/// that does not exist.
 fn explicit_body(
-    invocation: &[&str],
+    command_prefix: &[&str],
     body: Option<&String>,
     body_file: Option<&Path>,
 ) -> Result<Option<String>> {
@@ -329,7 +334,7 @@ fn explicit_body(
         (Some(_), Some(path)) => {
             let named = path.to_string_lossy();
             let keeping = |option: &str, value: &str| {
-                let mut argv = invocation.to_vec();
+                let mut argv = command_prefix.to_vec();
                 argv.extend([option, value]);
                 guidance::command(argv)
             };
