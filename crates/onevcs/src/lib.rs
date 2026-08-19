@@ -62,6 +62,7 @@ mod session;
 mod status;
 mod store;
 mod stream;
+mod sweep;
 mod vcs;
 mod workspace;
 

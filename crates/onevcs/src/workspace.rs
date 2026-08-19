@@ -383,7 +383,12 @@ impl Record {
 }
 
 /// The occupancy lease identity for a run root.
-fn occupancy_identity(run_root: &Path) -> String {
+///
+/// One function for every run root there is, whichever verb cut it: a session's,
+/// under the identity's own `runs`, and a landing's, under `publications` or
+/// `recoveries`. `onevcs sweep` asks this same question of the second kind, so a
+/// second spelling of it would be a sweep reaping directories somebody is inside.
+pub fn occupancy_identity(run_root: &Path) -> String {
     format!("run:{}", run_root.display())
 }
 

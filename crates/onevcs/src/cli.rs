@@ -5,11 +5,13 @@
 //! with exit code 70, because nothing behind the contract is implemented yet.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use url::Url;
 
 use crate::rules::MergePolicy;
+use crate::sweep;
 
 /// Version control and its remote host, behind one host-neutral vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -51,6 +53,8 @@ pub enum Command {
     Integrate(IntegrateArgs),
     /// Fast-forward a publication checkout to its origin.
     Sync(SyncArgs),
+    /// Reclaim the publication workspaces this host has finished with.
+    Sweep(SweepArgs),
     /// Read a session's event stream.
     Events(EventsArgs),
     /// Work with stored artifacts.
@@ -306,6 +310,29 @@ pub struct IntegrateArgs {
 pub struct SyncArgs {
     /// The branch to fast-forward. Omitted, the registered base is used.
     pub branch: Option<String>,
+}
+
+/// Arguments for `onevcs sweep`.
+///
+/// Both the spelling and the default are shared with `oneagentgraph sweep`, because
+/// one composing caller forwards its own arguments to each unchanged. Neither side
+/// may depart from them alone.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct SweepArgs {
+    /// Report what would be reclaimed and remove nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Leave anything written inside this many hours alone.
+    // A window rather than a number, so nothing past the parser can be handed hours
+    // that are negative, infinite, or not a number: `sweep::hours` refuses those
+    // here, where clap's own usage error names the option that carried them.
+    #[arg(
+        long,
+        value_name = "HOURS",
+        default_value = sweep::DEFAULT_MIN_AGE_HOURS,
+        value_parser = sweep::hours,
+    )]
+    pub min_age_hours: Duration,
 }
 
 /// Arguments for `onevcs events`.

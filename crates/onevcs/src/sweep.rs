@@ -1,0 +1,437 @@
+//! Reaping the publication workspaces this crate leaves behind.
+//!
+//! Every branch-keyed landing cuts a run root under the state root — a clone, a
+//! worktree, and the gate's preserved logs — and until this verb existed nothing
+//! ever removed one. Thirty-one of them, forty-nine gigabytes, filled a host's
+//! disk twice during one three-day run, and the operator's only options under
+//! pressure were to delete by hand at the moment it was least safe to guess or to
+//! let the host fill again.
+//!
+//! What makes a run root reclaimable is `onevcs` state and nothing a caller
+//! supplies: its gate has recorded a verdict under it, no live session holds its
+//! occupancy lease, and it was last written outside the age floor. That is why the
+//! verb is here rather than in a general-purpose sweeper — a caller-supplied
+//! liveness proof that is wrong deletes a publication worktree somebody is still
+//! gating.
+//!
+//! **Anything not proven dead is retained and reported, never removed and never
+//! terminated.** This root is shared by several managers on one host, so a run
+//! root whose owner cannot be proven is left exactly where it is and said so.
+//!
+//! One boundary is deliberately outside it. `<identity>/runs` is the per-run
+//! lifecycle clone root, which [`crate::workspace`] keeps as a bounded recovery
+//! history so a dead run's branch stays reachable; this verb reports it as a
+//! family it does not reach into rather than reaping it.
+
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use crate::branch::Verb;
+use crate::error::{self, Result};
+use crate::{gate, git, home, lock, workspace};
+
+/// The age floor a caller that says nothing gets, in hours.
+///
+/// Spelled as the text clap parses rather than as a number, because it is the
+/// argument's own default and `oneagentgraph sweep` spells the same option the
+/// same way — one composing caller forwards its arguments to both unchanged, so
+/// the two defaults have to be the one value.
+pub const DEFAULT_MIN_AGE_HOURS: &str = "24";
+
+/// Read `--min-age-hours` as the window it names.
+///
+/// A [`Duration`] rather than a float, so nothing downstream can be handed hours
+/// that are negative, infinite, or not a number: those are refused here, where the
+/// refusal can name the option that carried them.
+pub fn hours(raw: &str) -> std::result::Result<Duration, String> {
+    let value: f64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| format!("{raw:?} is not a number of hours"))?;
+    Duration::try_from_secs_f64(value * 3600.0)
+        .map_err(|_| format!("{raw:?} is not a number of hours at or above zero"))
+}
+
+/// Reap every publication workspace this crate can prove is dead.
+///
+/// Removes nothing under `dry_run`; the report is the same either way, because
+/// what a caller wants from a rehearsal is what the real run would decide.
+pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
+    let root = home::workspaces_dir()?;
+    let mut report = Report {
+        root: root.clone(),
+        dry_run,
+        min_age,
+        examined: Vec::new(),
+        skipped: Vec::new(),
+        reclaimed: Vec::new(),
+        retained: Vec::new(),
+    };
+
+    // A state root nothing has cut a workspace under yet is a sweep with nothing to
+    // do rather than a sweep that could not run; one that is there and unreadable is
+    // the second, because every family below it is then unanswerable.
+    match std::fs::read_dir(&root) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if Verb::ALL.iter().any(|verb| verb.runs() == name) {
+                    continue;
+                }
+                report.skipped.push(Skipped {
+                    path: entry.path(),
+                    reason: outside_this_verb(&entry.path()),
+                });
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(error::at("read the workspaces under", &root)(e)),
+    }
+    report
+        .skipped
+        .sort_by(|a, b| a.path.cmp(&b.path).then(a.reason.cmp(&b.reason)));
+
+    let mut families: Vec<Verb> = Verb::ALL.to_vec();
+    // By the directory's own name rather than by the enum's order, so the report
+    // reads the same however the verbs come to be declared.
+    families.sort_by_key(|verb| verb.runs());
+    for verb in families {
+        let family = root.join(verb.runs());
+        let entries = match std::fs::read_dir(&family) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                report.examined.push(Examined {
+                    name: verb.runs(),
+                    path: family,
+                    roots: None,
+                });
+                continue;
+            }
+            Err(e) => {
+                report.skipped.push(Skipped {
+                    path: family.clone(),
+                    reason: format!("cannot read this family of run roots: {e}"),
+                });
+                continue;
+            }
+        };
+        let mut run_roots: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        run_roots.sort();
+        report.examined.push(Examined {
+            name: verb.runs(),
+            path: family,
+            roots: Some(run_roots.len()),
+        });
+        for run_root in run_roots {
+            match judge(&run_root, min_age)? {
+                Verdict::Retain(reason) => report.retained.push(Retained {
+                    path: run_root,
+                    reason,
+                }),
+                Verdict::Reclaim(lease) => reclaim(&mut report, run_root, lease),
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Why a directory under the workspaces root is none of this verb's business.
+fn outside_this_verb(path: &Path) -> String {
+    if path.join("runs").is_dir() {
+        return "the per-run lifecycle clone root, which `onevcs session open` keeps as a \
+                bounded recovery history so a dead run's branch stays reachable; this verb \
+                does not reach into it"
+            .to_owned();
+    }
+    "not a family this verb cuts run roots under".to_owned()
+}
+
+/// What a run root is, and — where it is not reclaimable — why it was kept.
+enum Verdict {
+    /// Provably dead, with the exclusive take that proved nobody is inside it still
+    /// held: dropping it before the removal would reopen the window this closes.
+    Reclaim(lock::Guard),
+    /// Kept, and the reason a report states.
+    Retain(String),
+}
+
+/// Decide one run root, asking the cheapest question that can retain it first.
+///
+/// The order is the order the answers matter in. Ownership comes first because
+/// nothing else this says about a directory means anything until it is one this
+/// crate cut; occupancy comes next because it is the answer that must never be got
+/// wrong; the gate verdict and the age floor are the two proofs of deadness.
+fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+    if !run_root.is_dir() {
+        return Ok(Verdict::Retain(
+            "its owner cannot be proven: it is not a directory, and every run root is one"
+                .to_owned(),
+        ));
+    }
+    // The one thing `branch::prepare` always leaves: a run clone. A directory under
+    // this family carrying none is somebody else's, or one somebody has already
+    // taken apart by hand, and either way this verb cannot show it made it.
+    if !git::is_repo(&run_root.join("clone")) {
+        return Ok(Verdict::Retain(
+            "its owner cannot be proven: it holds no run clone this crate would have cut"
+                .to_owned(),
+        ));
+    }
+    // An exclusive take succeeds only while no shared occupancy lease is held, which
+    // is what a landing holds for the whole of its run. Held, the answer is that
+    // somebody is publishing in here — reported, and nothing about them touched.
+    let Some(lease) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
+        return Ok(Verdict::Retain(
+            "a live session holds its occupancy lease; nothing was removed and nothing was \
+             terminated"
+                .to_owned(),
+        ));
+    };
+    if !gate::has_recorded_verdict(run_root) {
+        return Ok(Verdict::Retain(format!(
+            "its gate has recorded no verdict under {}, so nothing here can say the \
+             publication finished",
+            gate::PRESERVED_LOG_DIRNAME
+        )));
+    }
+    let age = SystemTime::now()
+        .duration_since(last_written(run_root))
+        .unwrap_or(Duration::ZERO);
+    if age < min_age {
+        return Ok(Verdict::Retain(format!(
+            "it was written {} ago, inside the {} the age floor leaves alone",
+            describe_duration(age),
+            describe_duration(min_age),
+        )));
+    }
+    Ok(Verdict::Reclaim(lease))
+}
+
+/// Remove one proven-dead run root, or record why the removal did not happen.
+///
+/// The lease is held across the removal rather than dropped before it, so nothing
+/// can take the run root up between the proof and the act.
+fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+    let bytes = size_of(&run_root);
+    if report.dry_run {
+        report.reclaimed.push(Reclaimed {
+            path: run_root,
+            bytes,
+        });
+        return;
+    }
+    match std::fs::remove_dir_all(&run_root) {
+        Ok(()) => report.reclaimed.push(Reclaimed {
+            path: run_root,
+            bytes,
+        }),
+        // Retained rather than failed: the sweep ran, and a directory it could not
+        // remove is one more directory that is still there — which is exactly what
+        // the retained list is for.
+        Err(e) => report.retained.push(Retained {
+            path: run_root,
+            reason: format!("it could not be removed: {e}"),
+        }),
+    }
+    drop(lease);
+}
+
+/// When a run root was last written, read as the newest of its own timestamp and
+/// its immediate entries'.
+///
+/// A directory's own timestamp only moves when an entry is added to or removed from
+/// it, so a gate writing inside `clone` for an hour would leave the run root looking
+/// untouched. One level down is what catches that, and it is the level every run
+/// root's moving parts are at.
+///
+/// Anything this process cannot stat is read as written *now*, so it is retained:
+/// every other unknown here resolves the same way.
+fn last_written(run_root: &Path) -> SystemTime {
+    let mut newest = modified(run_root);
+    if let Ok(entries) = std::fs::read_dir(run_root) {
+        for entry in entries.flatten() {
+            newest = newest.max(modified(&entry.path()));
+        }
+    }
+    newest
+}
+
+fn modified(path: &Path) -> SystemTime {
+    std::fs::symlink_metadata(path)
+        .and_then(|meta| meta.modified())
+        .unwrap_or_else(|_| SystemTime::now())
+}
+
+/// What a directory holds, in bytes, following no symbolic link.
+///
+/// It is the report's own prose and nothing decides anything on it, so an entry
+/// this process cannot stat contributes nothing rather than failing a sweep that is
+/// otherwise complete.
+fn size_of(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries.flatten().map(|entry| size_of(&entry.path())).sum()
+}
+
+/// One family of run roots, as it was found.
+struct Examined {
+    name: &'static str,
+    path: PathBuf,
+    /// How many run roots it holds, or `None` for a family nothing has cut one under.
+    roots: Option<usize>,
+}
+
+/// A directory under the workspaces root this verb did not examine, and why.
+struct Skipped {
+    path: PathBuf,
+    reason: String,
+}
+
+/// A run root that was removed, or that a rehearsal would have removed.
+struct Reclaimed {
+    path: PathBuf,
+    bytes: u64,
+}
+
+/// A run root that was left where it is, and why.
+struct Retained {
+    path: PathBuf,
+    reason: String,
+}
+
+/// What one sweep examined, reclaimed, and retained.
+///
+/// Every question the report answers is answered even when the answer is "none":
+/// a section that disappears when it is empty reads as a section nobody asked.
+pub struct Report {
+    root: PathBuf,
+    dry_run: bool,
+    min_age: Duration,
+    examined: Vec<Examined>,
+    skipped: Vec<Skipped>,
+    reclaimed: Vec<Reclaimed>,
+    retained: Vec<Retained>,
+}
+
+impl Report {
+    /// How much this sweep reclaimed, or would have.
+    fn bytes(&self) -> u64 {
+        self.reclaimed.iter().map(|entry| entry.bytes).sum()
+    }
+}
+
+impl fmt::Display for Report {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let verb = match self.dry_run {
+            true => "would reclaim",
+            false => "reclaimed",
+        };
+        writeln!(
+            f,
+            "onevcs sweep: {verb} {} workspace(s), {}, keeping anything written inside the last {}.",
+            self.reclaimed.len(),
+            describe_bytes(self.bytes()),
+            describe_duration(self.min_age),
+        )?;
+        if self.dry_run {
+            writeln!(f, "Nothing was removed: this was a rehearsal.")?;
+        }
+
+        writeln!(f, "Families examined:")?;
+        for family in &self.examined {
+            match family.roots {
+                Some(roots) => writeln!(
+                    f,
+                    "  {} — {roots} run root(s) in {}",
+                    family.name,
+                    family.path.display()
+                )?,
+                None => writeln!(
+                    f,
+                    "  {} — nothing has cut a run root at {} yet",
+                    family.name,
+                    family.path.display()
+                )?,
+            }
+        }
+
+        writeln!(f, "Families not examined:")?;
+        if self.skipped.is_empty() {
+            writeln!(f, "  none")?;
+        }
+        for skipped in &self.skipped {
+            writeln!(f, "  {} — {}", skipped.path.display(), skipped.reason)?;
+        }
+
+        writeln!(f, "Reclaimed:")?;
+        if self.reclaimed.is_empty() {
+            writeln!(f, "  none")?;
+        }
+        for reclaimed in &self.reclaimed {
+            writeln!(
+                f,
+                "  {} — {}",
+                reclaimed.path.display(),
+                describe_bytes(reclaimed.bytes)
+            )?;
+        }
+
+        writeln!(f, "Retained:")?;
+        if self.retained.is_empty() {
+            writeln!(f, "  none")?;
+        }
+        for retained in &self.retained {
+            writeln!(f, "  {} — {}", retained.path.display(), retained.reason)?;
+        }
+
+        // The scope, said the way `recoverable` says its own: unstated, a report
+        // about two families under one root reads as a report about the host, and a
+        // caller composing this with another tool's sweep would believe the disk was
+        // accounted for.
+        write!(
+            f,
+            "This answers for the publication and recovery workspaces onevcs owns under {}, \
+             and for nothing else on this host.",
+            self.root.display()
+        )
+    }
+}
+
+/// A byte count as a reader of the report meets it.
+fn describe_bytes(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1_000_000_000, "GB"), (1_000_000, "MB"), (1_000, "kB")];
+    for (scale, unit) in UNITS {
+        if bytes >= scale {
+            // One decimal place: the report is read to decide whether a sweep was
+            // worth running, and the digit after the point is the whole of what
+            // separates 1.4 GB from 1.9 GB.
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a byte count rendered to one decimal place is prose, not a measurement \
+                          anything decides on"
+            )]
+            let value = bytes as f64 / scale as f64;
+            return format!("{value:.1} {unit}");
+        }
+    }
+    format!("{bytes} bytes")
+}
+
+/// A window as a reader of the report meets it.
+fn describe_duration(window: Duration) -> String {
+    let seconds = window.as_secs();
+    match (seconds / 3600, (seconds % 3600) / 60) {
+        (0, 0) => format!("{seconds} second(s)"),
+        (0, minutes) => format!("{minutes} minute(s)"),
+        (hours, 0) => format!("{hours} hour(s)"),
+        (hours, minutes) => format!("{hours} hour(s) {minutes} minute(s)"),
+    }
+}

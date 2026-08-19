@@ -192,6 +192,30 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
     )("ten thousand attempts is not a branch's history"))
 }
 
+/// Whether a gate has recorded any verdict at all under one run root.
+///
+/// The proof that a landing got as far as being judged, which is half of what makes
+/// its run root reclaimable. A preserved log is written for a verdict either way —
+/// the gate that passed and the gate that rejected — so its absence means no gate
+/// this crate runs ever reached one there, and a run root that cannot show it was
+/// judged is retained rather than reaped.
+pub fn has_recorded_verdict(run_root: &Path) -> bool {
+    let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
+        return false;
+    };
+    branches.flatten().any(|branch| {
+        std::fs::read_dir(branch.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|log| {
+                let name = log.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("gate-") && name.ends_with(".log")
+            })
+    })
+}
+
 /// The highest attempt number this branch's directory has ever recorded.
 fn highest(directory: &Path) -> u32 {
     let Ok(entries) = std::fs::read_dir(directory) else {

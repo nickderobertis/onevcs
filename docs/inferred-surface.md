@@ -333,6 +333,64 @@ could be *read* rather than anything about the work.
 | ref writes only | no checkout, no working tree | It fetches into a scratch ref, judges there, and points the destination's ref at it. A name the destination has checked out is refused rather than written: moving that ref leaves git holding a tree that describes a commit the branch no longer names. |
 | the non-fast-forward refusal | names the commits that would be lost | A branch in a registered checkout is the durable record of whatever wrote it, and this verb is reached by somebody who wants a *second* copy reachable. `--as` is the way through, and it is only the right way through once an operator can see what the name they asked for already holds. |
 
+## One more: the disk this tool fills, and the verb that empties it
+
+The same gap again, one layer down. Every branch-keyed landing cuts a run root
+under the state root — `workspaces/publications/<slug>-<unique>` for
+`publish-branch` and `workspaces/recoveries/<slug>-<unique>` for `recover`, each
+holding a clone, a worktree, and the gate's preserved logs — and **nothing has
+ever removed one**. Measured on the host that motivated this: thirty-one
+directories, forty-nine gigabytes, none of them ever reaped, because no verb this
+tool has knew the directory existed. A full disk took that host down twice during
+one three-day run and stopped the operator issuing any command at all.
+
+```
+onevcs sweep [--dry-run] [--min-age-hours HOURS]
+```
+
+The flag surface is **shared with `oneagentgraph sweep`**, spelling for spelling
+and default for default, because one composing caller (`ai-orchestrator`'s
+`just sweep-scratch`) forwards its own arguments to both unchanged. Neither side
+may depart from it alone.
+
+**Why the verb is here rather than in a general-purpose sweeper.** What makes a
+publication workspace reclaimable is `onevcs` state: its gate has recorded a
+verdict under it, and no live session holds its occupancy lease. Both are facts
+this crate can read, and neither is one a caller should be asked to supply — a
+caller-supplied liveness proof that is wrong deletes a publication worktree
+somebody is still gating, and it is a seam no other crate could honestly test.
+`lock::try_exclusive` over `workspace::occupancy_identity` answers the second, and
+it is the same evidence `recoverable` uses to decide a branch is not being written
+to; `branch::prepare` takes that lease for the whole of a landing so there is
+something to read.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| `sweep` with no operand | the two families this crate cuts run roots under, and nothing else | It is asked about this tool's own disk, and a path operand would make it a general-purpose remover pointed at whatever a caller typed. `branch::Verb::ALL` is the list, so the verbs that make the directories and the verb that reaps them cannot come to disagree about where they are. |
+| `--dry-run` | reports the same decisions and removes nothing | What a caller wants from a rehearsal is what the real run would decide, so the two runs differ in the removal alone. |
+| `--min-age-hours HOURS` | a window, defaulting to 24 | Parsed into a `Duration` at the boundary, so nothing past the parser can be handed hours that are negative, infinite, or not a number. |
+| the exit code | `0` whenever the sweep *ran* | A run root it could not prove dead, or could not remove, is a line in the report. A caller that got a non-zero code for a directory somebody else is inside could not tell that from a sweep that never happened. |
+| the report | every family examined, every family it did not examine and why, what it reclaimed, and every retained directory with its reason | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. |
+
+**Retain rather than remove whenever the answer is not proven, and never kill.**
+The state root is shared by several managers on one host. A run root whose owner
+cannot be proven — one holding no run clone this crate would have cut — is
+retained and reported; a run root a live session holds is retained, reported, and
+never terminated. During the incident, 41 GB in a sibling orchestrator's root had
+to be left untouched for exactly that reason, and a sweep that guessed would have
+destroyed another manager's live work.
+
+**One boundary is deliberately outside it.** `workspaces/<identity>/runs` is the
+per-run lifecycle clone root, which `workspace::reclaim` keeps as a bounded
+recovery history so a dead run's branch stays reachable. This verb reports it as a
+family it does not reach into rather than reaping it. **`recoveries` is inside**,
+and that was a decision rather than an oversight: it is the same directory shape
+cut by the same function under the same two proofs, and leaving it out would mean
+one of two families filling a disk that the other no longer does.
+
+The verb adds no public library item: `sweep` is a private module, and what the
+CLI gains is the verb and its two options.
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.

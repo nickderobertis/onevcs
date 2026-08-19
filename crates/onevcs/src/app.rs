@@ -12,7 +12,7 @@ use crate::cli::{
     ArtifactCommand, Command, EventsArgs, ImportArgs, IntegrateArgs, PublishArgs,
     PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReposArgs, ResolveArgs,
     RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StatusArgs, SyncArgs,
+    SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
@@ -24,7 +24,7 @@ use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::{
     git, guidance, import, integrate, lock, policy, provenance, publish, publish_branch, recover,
-    status, stream, workspace,
+    status, stream, sweep, workspace,
 };
 
 /// Run one parsed command, returning its exit code.
@@ -62,6 +62,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::Import(args) => import_branch(args),
         Command::Integrate(args) => integrate_branches(args),
         Command::Sync(args) => sync(args),
+        Command::Sweep(args) => sweep_workspaces(args),
         Command::Events(args) => events(args, providers),
         Command::Artifact { command } => match command {
             ArtifactCommand::Cat(args) => artifact(&args.id),
@@ -625,6 +626,17 @@ fn sync(args: &SyncArgs) -> Result<u8> {
     git::fetch(checkout, "origin")?;
     git::merge_ff_only(checkout, &format!("origin/{branch}"))?;
     println!("{branch} fast-forwarded to origin/{branch}");
+    Ok(0)
+}
+
+/// Reap the publication workspaces this host has finished with.
+///
+/// Exit 0 whenever the sweep *ran*: a run root it could not prove dead, or could
+/// not remove, is a line in the report rather than a failure — the report is the
+/// answer, and a caller that got a non-zero code for a directory somebody else is
+/// inside would have no way to tell that from a sweep that never happened.
+fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
+    println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
     Ok(0)
 }
 

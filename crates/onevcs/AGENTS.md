@@ -361,6 +361,35 @@ script written beside them that answered to what they asked.
   without its log rather than failing, because the log is evidence and `conclusion`
   is what decided the merge.
 
+## The disk is a resource, and `sweep` is the only verb that frees it
+
+`branch::prepare` cuts a run root per branch-keyed landing and nothing ever removed
+one: thirty-one of them, forty-nine gigabytes, took a host down twice in one run.
+`sweep.rs` is the verb that reaps them, and three things about it are deliberate.
+
+- **Proof, never inference.** A workspace is removed only where its gate recorded a
+  verdict under it (`gate::has_recorded_verdict`), no live session holds its
+  occupancy lease (`lock::try_exclusive` over `workspace::occupancy_identity`), and
+  it was last written outside the age floor. Anything else is *retained and
+  reported with the reason* — this state root is shared by several managers on one
+  host, and a sweep that guessed would destroy another one's live work. Nothing is
+  ever terminated.
+- **A landing holds its own run root's lease**, which is what there is to read.
+  `branch::prepare` takes it the moment the directory exists and `Landing` holds it
+  for the whole landing; take that away and a sweep running beside a publication
+  reaps the worktree it is gating. It is the same lease `recoverable` reads to
+  decide a branch is not being written to, through the same function, so the two
+  cannot come to disagree.
+- **`workspaces/<identity>/runs` is outside it.** That is the bounded recovery
+  history `workspace::reclaim` keeps so a dead run's branch stays reachable; `sweep`
+  names it as a family it does not reach into. `recoveries` *is* inside, because it
+  is the same directory shape cut by the same function under the same two proofs.
+
+The flag surface (`--dry-run`, `--min-age-hours HOURS` defaulting to 24) is shared
+with `oneagentgraph sweep` — one composing caller forwards its arguments to both —
+so neither side may change it alone. The exit code is `0` whenever the sweep *ran*:
+a directory it could not prove dead is a line in the report, not a failure.
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory

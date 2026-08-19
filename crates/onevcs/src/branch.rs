@@ -26,8 +26,8 @@ use crate::registry::Registry;
 use crate::rules::MergePolicy;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::workspace::{object, Ref};
-use crate::{git, guidance, home, ids, policy, provenance};
+use crate::workspace::{self, object, Ref};
+use crate::{git, guidance, home, ids, lock, policy, provenance};
 
 /// Which verb is landing the branch.
 ///
@@ -59,12 +59,19 @@ impl Verb {
     }
 
     /// Where under the state root this verb's disposable clones live.
-    fn runs(self) -> &'static str {
+    pub fn runs(self) -> &'static str {
         match self {
             Verb::Recover => "recoveries",
             Verb::PublishBranch => "publications",
         }
     }
+
+    /// Every verb that cuts a run root under the state root.
+    ///
+    /// `onevcs sweep` reaps exactly the families this names, so the verbs that make
+    /// those directories and the verb that reaps them cannot come to disagree about
+    /// where they are.
+    pub const ALL: [Verb; 2] = [Verb::Recover, Verb::PublishBranch];
 }
 
 /// One located branch, cut into a clone of its own and ready to be published.
@@ -93,6 +100,16 @@ pub struct Landing {
     pub worktree: PathBuf,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
+    /// The occupancy lease this landing holds on that run root, for as long as the
+    /// landing lives.
+    ///
+    /// Held rather than read, which is why it is spelled the way `queue.rs` spells
+    /// the same thing: what it says is "a publication is being made in here", and it
+    /// says it to `onevcs sweep`, which proves a run root abandoned by taking this
+    /// same identity exclusively. Released when the landing is dropped, and by the
+    /// OS if this process dies first — so a crashed publication leaves a directory
+    /// the sweep may reap rather than one nothing will ever take.
+    _lease: lock::Guard,
     /// The branch itself.
     pub branch: Ref,
     /// What the branch is published onto and compared against: the branch below it
@@ -178,6 +195,23 @@ pub fn prepare(
         ids::unique()
     ));
     home::ensure_dir(&run_root)?;
+    // Taken the moment the directory exists, before anything is cloned into it: the
+    // whole of what it says is "a publication is being made in here", and a sweep
+    // running beside a landing that had not taken it yet would read a directory
+    // being filled as one nobody wants. The name carries `ids::unique()`, so nothing
+    // else can be inside it — a lease that cannot be taken is a state root this
+    // process cannot work in, and is refused as one.
+    let lease = lock::try_shared(&workspace::occupancy_identity(&run_root))?.ok_or_else(|| {
+        Error::Invalid {
+            reason: format!(
+                "the run root {} is already occupied; nothing else should hold a run root this                  command just cut, so the state root under {} is being written to by something                  other than onevcs",
+                run_root.display(),
+                home::workspaces_dir()
+                    .map(|dir| dir.display().to_string())
+                    .unwrap_or_else(|_| "the workspaces directory".to_owned()),
+            ),
+        }
+    })?;
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
 
@@ -298,6 +332,7 @@ pub fn prepare(
         clone,
         worktree,
         run_root,
+        _lease: lease,
         branch: Ref::from_git(branch),
         change_base,
         compared_change_base,
