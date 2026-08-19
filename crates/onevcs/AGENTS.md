@@ -187,7 +187,8 @@ two publishing verbs use.
 ## What a report answers about, and what a name already means
 
 Preserved work goes missing through silence rather than through a search that
-could not reach it, so two things are stated rather than left to be inferred.
+could not reach it, so what a report has withheld, what scope it answered under,
+and what a name already means are each stated rather than left to be inferred.
 
 - **A row is a command only when the branch is ready for it.** `recoverable`'s value
   is that its output can be trusted without checking, so two things are withheld

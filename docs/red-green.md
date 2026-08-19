@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 121. Tests observed red and then green: 155.
+Patches: 126. Tests observed red and then green: 159.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -101,6 +101,36 @@ a session may name its own branch as its base again, and publish it into itself.
 the refusal a continued branch's conflict gives names neither the copy it is in nor the command that lands it.
 
 - RED `a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it` — Unexpected stderr, failed var.contains(<tmp>/project)
+
+### `103-a-run-root-somebody-is-working-in-is-read-as-abandoned`
+
+the occupancy lease on a session's run root stops being consulted, so a command working in there reads as nobody.
+
+- RED `a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land` — assertion `left == right` failed: [
+
+### `104-a-session-whose-owner-is-still-running-is-read-as-stopped`
+
+a session whose own process is still running stops counting as holding its branch, so a consumer embedding the crate is offered its own live work.
+
+- RED `a_branch_the_calling_process_still_holds_is_reported_as_held_rather_than_ready` — a live session's hold is reported: Recoverable {
+
+### `105-a-held-branch-is-offered-to-be-resumed-anyway`
+
+the row of a branch a live session holds is printed as ready to resume, with the same paste-ready command as every other row.
+
+- RED `a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land` — a branch a live session holds is not offered to be resumed:
+
+### `106-a-branch-that-strips-more-than-it-adds-is-reported-as-any-other`
+
+a preserved branch's lines stop being weighed, so one that removes far more than it adds is reported exactly as a healthy one.
+
+- RED `a_branch_that_removes_more_than_it_adds_is_marked_in_both_renderings` — assertion `left == right` failed: the lines it would land, counted from where it forked: [
+
+### `107-a-diverged-pair-is-refused-without-saying-how-the-copies-differ`
+
+the refusal a diverged pair produces stops saying how the two copies differ and stops printing the diff between them.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — the refusal says how the two differ:
 
 ### `10-the-subject-is-checked-after-the-attestation`
 
@@ -575,7 +605,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
