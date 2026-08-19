@@ -217,14 +217,7 @@ pub struct Record {
 
 impl From<Record> for SessionHolder {
     fn from(record: Record) -> Self {
-        let same_process = record
-            .owner_started
-            .is_some_and(|started| process_started(record.owner_pid) == Some(started));
-        let liveness = if record.state == Lifecycle::Open && same_process {
-            Liveness::Live
-        } else {
-            Liveness::Stale
-        };
+        let liveness = record.liveness();
         Self {
             token: SessionToken(record.token.to_string()),
             identity: record.identity,
@@ -360,6 +353,19 @@ fn process_started(pid: u32) -> Option<ProcessStart> {
 }
 
 impl Record {
+    /// Whether the process that opened this session is that same process, still
+    /// running — which is what [`Liveness`] reports and what makes a session's hold
+    /// on its branch a live one.
+    pub fn liveness(&self) -> Liveness {
+        let same_process = self
+            .owner_started
+            .is_some_and(|started| process_started(self.owner_pid) == Some(started));
+        match self.state == Lifecycle::Open && same_process {
+            true => Liveness::Live,
+            false => Liveness::Stale,
+        }
+    }
+
     /// The session as the contract's [`Session`] type spells it.
     pub fn session(&self) -> Session {
         Session {

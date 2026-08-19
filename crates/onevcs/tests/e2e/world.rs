@@ -205,14 +205,26 @@ impl World {
     /// Hold one of this world's advisory locks exclusively, exactly as a second
     /// `onevcs` working inside that run root does. Released when the file is dropped.
     pub fn occupy(lock: &Path) -> std::fs::File {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(lock)
-            .unwrap_or_else(|e| panic!("the lock at {} is openable: {e}", lock.display()));
+        let file = open_lock(lock);
         assert!(
             FileExt::try_lock_exclusive(&file).expect("the lock is takeable"),
             "nothing else may hold {} when a journey occupies it",
+            lock.display()
+        );
+        file
+    }
+
+    /// Hold one *shared*, which is the mode a session's occupancy lease is taken in.
+    ///
+    /// The distinction matters to anything that reads occupancy: shared holders are
+    /// compatible with each other, so only an exclusive take answers "is anybody in
+    /// here", and a journey that held the lock exclusively would be answered by a
+    /// probe that merely asked for a shared one.
+    pub fn occupy_shared(lock: &Path) -> std::fs::File {
+        let file = open_lock(lock);
+        assert!(
+            FileExt::try_lock_shared(&file).expect("the lock is takeable"),
+            "a shared lease on {} is takeable when nothing holds it exclusively",
             lock.display()
         );
         file
@@ -1053,3 +1065,12 @@ case "$subcommand" in
     ;;
 esac
 "##;
+
+/// One of a world's lock files, opened the way every taker of it opens one.
+fn open_lock(lock: &Path) -> std::fs::File {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock)
+        .unwrap_or_else(|e| panic!("the lock at {} is openable: {e}", lock.display()))
+}

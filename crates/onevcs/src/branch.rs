@@ -616,6 +616,15 @@ pub(crate) fn locate(
         .iter()
         .find(|copy| copy.tip != first.tip)
         .unwrap_or(second);
+    // Read here rather than beside every copy's tip above: what each commit records is
+    // only ever asked for by the refusal, and a landing that goes through would pay for
+    // it on every copy of every branch it ever locates.
+    let differ = differ(
+        first,
+        &git::shape_of(&first.checkout, &first.tip)?,
+        differing,
+        &git::shape_of(&differing.checkout, &differing.tip)?,
+    );
     Err(diverged(
         branch,
         &resolution.key,
@@ -623,6 +632,7 @@ pub(crate) fn locate(
         &held,
         first,
         differing,
+        &differ,
     ))
 }
 
@@ -682,14 +692,16 @@ fn diverged(
     held: &[Held],
     into: &Held,
     from: &Held,
+    differ: &str,
 ) -> Error {
     Error::Invalid {
         reason: format!(
             "branch {branch:?} is in {count} checkouts of identity {identity:?}, and no copy of it \
              carries the rest, so nothing here can tell which copy is the work and taking one \
-             would discard the other: {listed}. Reconcile them in one checkout — \
-             `{fetch}` brings {from}'s copy into {into} as FETCH_HEAD, to merge or rebase onto the \
-             one that is there — or delete the copy that is not the work, and then {next}",
+             would discard the other: {listed}. {differ}. Reconcile them in one checkout — \
+             `{fetch}` brings {from}'s copy into {into} as FETCH_HEAD, `{diff}` then shows what \
+             the two differ by, and merging or rebasing onto the one that is there keeps both — \
+             or delete the copy that is not the work, and then {next}",
             count = held.len(),
             listed = held
                 .iter()
@@ -704,10 +716,66 @@ fn diverged(
                 &from.checkout.to_string_lossy(),
                 branch,
             ]),
+            // By the two commits rather than by a ref name: the fetch above leaves the
+            // other copy in FETCH_HEAD and nowhere else, and a second fetch into this
+            // checkout would move that ref out from under the command.
+            diff = guidance::command([
+                "git",
+                "-C",
+                &into.checkout.to_string_lossy(),
+                "diff",
+                "--stat",
+                &into.tip,
+                &from.tip,
+            ]),
             from = from.checkout.display(),
             into = into.checkout.display(),
         ),
     }
+}
+
+/// How two copies of one branch differ, in the facts that say which is which.
+///
+/// The refusal is terminal for an unattended run, so it has to leave a person able to
+/// choose between two trees without diffing checkouts by hand — and the shape of the
+/// pair is what says whether there is a choice at all: an amend leaves the same parent
+/// and the same subject over a different tree, and reads as two unrelated resolutions
+/// until somebody compares the commits.
+///
+/// Each commit is read out of the checkout that holds it, so this asks nothing of a
+/// repository that cannot see the other's objects — a run clone and the checkout it
+/// borrows from can, two unrelated checkouts cannot, and what an operator is told must
+/// not depend on which pair it got.
+fn differ(into: &Held, into_shape: &git::Shape, from: &Held, from_shape: &git::Shape) -> String {
+    let amended = into_shape.parents == from_shape.parents
+        && into_shape.subject == from_shape.subject
+        && into_shape.tree != from_shape.tree;
+    let how = match amended {
+        true => {
+            "the way an amend does — the same parent and the same subject over a different \
+                 tree, so one of them was re-committed after the other was taken"
+        }
+        false => "as two separate commits do",
+    };
+    format!(
+        "They differ {how}: {into}, and {from}",
+        into = facts_of(into, into_shape),
+        from = facts_of(from, from_shape),
+    )
+}
+
+/// One copy's commit, as the facts the comparison is made of.
+fn facts_of(copy: &Held, shape: &git::Shape) -> String {
+    format!(
+        "the copy in {path} stands at {tip}, on parent(s) {parents:?}, with the subject \
+         {subject:?}, the tree {tree}, and the commit date {committed}",
+        path = copy.checkout.display(),
+        tip = copy.tip,
+        parents = shape.parents,
+        subject = shape.subject,
+        tree = shape.tree,
+        committed = shape.committed,
+    )
 }
 
 fn nowhere(identity: &str, branch: &str, searched: &[PathBuf]) -> Error {

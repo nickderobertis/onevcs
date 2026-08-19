@@ -22,7 +22,7 @@ quietly in passing.
 | `Provenance` | `complete` / `incomplete-step` | The contract's ported invariant, "dirty adoption -> incomplete-step commit", gives the two cases, and `commit-preserved` carries "provenance kind". |
 | `PreservedBranch` | `branch`, `base`, `provenance`, `change_url`, `change_base` | The last two are named explicitly as the host-neutral stack metadata; the first three are what `preserve` must return to be usable. |
 | `Scope` | `all` / `repo(String)` | `recoverable` is documented both across every registered identity and for one repository (`onevcs recover BRANCH --repo PATH`). |
-| `Recoverable` | `identity`, `branch`, `checkout`, `stopped_because`, `recover_command` | What a "recoverable" view has to answer: where the work is, why its workstream stopped, and the exact command that lands it. |
+| `Recoverable` | `identity`, `branch`, `checkout`, `stopped_because`, `recover_command`, `held_by`, `net_negative` | What a "recoverable" view has to answer: where the work is, why its workstream stopped, and the exact command that lands it. The last two are what make "the exact command" true of the branch as well as of the argv, and are recorded below. |
 | `ChangeSpec` | `head`, `base`, `title`, `body` | `open_change` must say what to open from, into what, and under what title — `--title` is a `publish` option. `body` is optional so the host's own template applies when nothing is supplied. |
 | `MergeOutcome` | `merged(Sha)` / `queued` / `open` | The three ways `publish` exits 0, plus the `merge-queued` / `merge-completed` events. |
 | `Check.status` / `Check.conclusion` | `String` / `Option<String>` | See the open question below. |
@@ -158,6 +158,23 @@ already printed — so what this record holds is why the surface is drawn where 
 | `SessionHolder` | `token`, `identity`, `branch`, `worktree`, `owner_pid`, `state`, `liveness` | Field for field what `--json` printed, so the two surfaces cannot diverge and a consumer can parse the command's output into the type. `token` is a `SessionToken` rather than the `String` the private type carried: it is the value the rest of the surface takes, and its `transparent` serialization leaves the JSON identical. |
 | `Liveness` | `live` / `stale` | Reported rather than derived. A caller holding `owner_pid` cannot answer it — pids are reused, so a later process wearing a dead session's number reads as its owner — and the creation identity that settles it is on the private record. `as_str` is public with it so a caller renders the words the command does rather than inventing a second spelling. |
 | `session_holders(repo)` | `&str` in, `Vec<SessionHolder>` out | The command's operand and its output. It takes no `Providers`: the holders are the records under this host's state root, so there is nothing here for a supplied implementation to answer. |
+
+**A row that offers a command has to say when the command must not be run.** The
+inferred shape above was a row and a verb, and for two releases that was read as "this
+is ready to land" — so `recoverable` offered a paste-ready `publish-branch` for a branch
+a live session was still committing to (four more commits followed the row), and for two
+branches that would have stripped hundreds of lines. Neither is a wrong *row*: the work
+is real and the verb is right. What was missing is the part of the answer that says
+whether to run it now, so two optional fields carry it, and both are omitted when they
+say nothing — a consumer that predates them reads the document it always read.
+
+| Item | Shape | Why |
+| --- | --- | --- |
+| `Recoverable.held_by` | `Option<HeldBy>` | Present is the whole answer: the work has not stopped. Excluding the row instead would hide live work from the one report that lists work nobody has, which is the failure this report exists for. |
+| `HeldBy` | `token`, `worktree`, `holding` | The token because acting on it means waiting for that session or closing it by name, and the worktree because that is where the work is being made. |
+| `Holding` | `owner-running` / `run-root-occupied` | Reported rather than derived, and two values because the two are true at different times: a consumer holding a `Session` keeps the process that opened it (which is `Liveness::Live`), while the CLI takes an occupancy lease per command and outlives none of them, so what says a command is in there *now* is the lease. `because` is public with it so a caller renders the crate's own clause rather than inventing a second one. |
+| `Recoverable.net_negative` | `Option<LineChange>` | Marked, never excluded: a branch that deletes far more than it adds may be exactly right, and this report is not the thing that decides. Present only when it is net-negative, so absence is the other answer rather than a number a consumer has to compare. |
+| `LineChange` | `added`, `removed` | Counted from the commit the branch forked from, because that is what the branch did; against a base that has moved on, every line the base gained would read as a line the branch removed and never touched. |
 
 **Reading a session's events takes a filter, and the grammar was approved rather
 than inferred.** The matcher fields, what conjoins, and which of `include` and
@@ -448,3 +465,14 @@ question was:
    branch`, which was the workaround and is now a refusal naming the spelling that
    replaced it. Confirming this means an amendment saying what the two options mean,
    not a new shape to approve — no public item changed.
+13. **`Recoverable` gained two fields, and the contract lays out none of its
+   fields.** `held_by` and `net_negative` extend the inferred shape recorded in the
+   first table rather than any approved text, and they are what make the row's
+   `recover_command` honest: a report whose value is that its output can be trusted
+   without checking offered a command that would have published a branch a live
+   agent was still writing to. Both are optional and omitted when empty, so nothing
+   that reads the old document reads a different one — but a field added to a
+   published struct is a constructor break for anyone building a `Recoverable` by
+   hand (`onevcs-testing` does, and moved in the same change). Confirming it means
+   one amendment naming the two fields and the three types they carry, not a new
+   answer to approve.

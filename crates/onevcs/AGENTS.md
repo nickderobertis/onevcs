@@ -97,6 +97,19 @@ that there is nothing to publish, from the first in search order. Whichever way 
 the answer names every checkout holding the name — a stale selection and a current one
 read identically otherwise.
 
+**And the refusal says how the two copies differ, because it is terminal.** An
+ordinary `git commit --amend` in one checkout forks a branch across two of them and
+leaves both copies on the same parent under the same subject, differing only in their
+trees — measured on one host as `4ef3658` against `fa6a297`, fourteen minutes apart.
+Refusing is right: publishing either blind loses the other, and no verb here does
+that. But an unattended run cannot get past a refusal, so what it costs is a person
+comparing two trees by hand — which is the work this tooling exists to replace. So
+`branch::diverged` names each copy's checkout, tip, parent, subject, tree, and commit
+date, says which of the two shapes the pair is (an amend, or two separate commits),
+and prints the fetch *and* the diff that shows what they differ by. Each commit is
+read out of the checkout that holds it, so the answer does not depend on whether one
+of them can see the other's objects.
+
 **Refusing a copy nothing descends from costs one workflow**, recorded as a journey
 rather than described here: a rewrite. Selecting it would guess that a rewrite supersedes
 what it rewrote, so replaying where `sync_change_base` sends an operator leaves a pair this
@@ -176,6 +189,21 @@ two publishing verbs use.
 Preserved work goes missing through silence rather than through a search that
 could not reach it, so two things are stated rather than left to be inferred.
 
+- **A row is a command only when the branch is ready for it.** `recoverable`'s value
+  is that its output can be trusted without checking, so two things are withheld
+  rather than left for a reader to notice. A branch a **live session** still holds is
+  not offered to be resumed at all: the row carries `held_by`, the human rendering
+  drops its `Resume:` line for a `Not ready:` one naming the session and the
+  `session close` that ends the hold, and `stopped_because` says that nothing has
+  stopped. Live has two answers and both are asked — the process that opened the
+  session is still running (`Liveness`, which is what a consumer embedding the crate
+  keeps), or the occupancy lease on its run root is held right now (which is what says
+  a command is in there, since no verb holds one across time). A **net-negative**
+  branch is marked instead of withheld, in the header and in `net_negative`: deleting
+  far more than it adds may be exactly right, and this report is not what decides —
+  but it must reach the operator before the command does. Both are measured against
+  the same base the branch would be published into, so the report and the publication
+  cannot come to disagree about what a branch would land.
 - **A scoped answer names its scope.** `recoverable` answers for one identity when
   it is run inside a registered checkout and for every identity when it is not, and
   nobody types which — the directory decides. An answer that does not say so reads

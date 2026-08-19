@@ -196,5 +196,79 @@ pub struct Recoverable {
     /// Why the workstream stopped.
     pub stopped_because: String,
     /// The argv that lands it, ready to run.
+    ///
+    /// Ready to run is a claim about the branch as much as about the argv, so it
+    /// holds only where the two fields below say nothing: work a live session is
+    /// still writing to has not stopped, and running this on it publishes a branch
+    /// mid-flight.
     pub recover_command: Vec<String>,
+    /// The live session still writing to this branch, when one is.
+    ///
+    /// Present at all is the answer: this is not preserved work yet, and
+    /// [`recover_command`](Self::recover_command) must not be run until that session
+    /// is done with it. Absent — every row of a report about work that really did
+    /// stop — and the row is exactly what it has always been.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_by: Option<HeldBy>,
+    /// What the branch would land, when it removes more lines than it adds.
+    ///
+    /// A branch that deletes far more than it adds may be perfectly correct, and it
+    /// is not something to publish unread — so it is marked rather than excluded,
+    /// and marked only then: a branch that adds at least as much as it removes
+    /// carries nothing here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_negative: Option<LineChange>,
+}
+
+/// The live session that still holds a preserved branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldBy {
+    /// The session, so an operator can wait for it or close it by name.
+    pub token: SessionToken,
+    /// The worktree its work is being made in.
+    pub worktree: PathBuf,
+    /// How this host can tell it is still live.
+    pub holding: Holding,
+}
+
+/// How a host can tell that a session still holds its branch.
+///
+/// Two answers rather than one, because the two are true at different times: a
+/// consumer holding a [`Session`] keeps the process that opened it alive, while the
+/// CLI takes an occupancy lease per command and outlives none of them. Either one is
+/// a session that has not finished with its branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Holding {
+    /// The session is open and the process that opened it is still running, which is
+    /// the question [`Liveness::Live`] answers.
+    OwnerRunning,
+    /// Something holds the occupancy lease on its run root right now, so a command
+    /// is working in there whatever became of the process that opened the session.
+    RunRootOccupied,
+}
+
+impl Holding {
+    /// The clause a report gives as the reason, for the command line: `--json`
+    /// carries the value itself.
+    pub fn because(&self) -> &'static str {
+        match self {
+            Self::OwnerRunning => "the process that opened it is still running",
+            Self::RunRootOccupied => "a command is working in its run root right now",
+        }
+    }
+}
+
+/// The lines a branch would land, as git counts them against the commit it forked
+/// from.
+///
+/// The fork point rather than the base's tip, because what the branch did is what it
+/// did to the tree it started on: measured against a base that has moved on, every
+/// line that base gained reads as a line this branch removed and never touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineChange {
+    /// Lines it adds.
+    pub added: u64,
+    /// Lines it removes.
+    pub removed: u64,
 }

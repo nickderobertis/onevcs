@@ -1062,6 +1062,98 @@ pub fn trees_differ(cwd: &Path, base: &str, branch: &str) -> Result<bool> {
     }
 }
 
+/// How many lines a comparison adds and how many it removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Lines {
+    /// Lines added.
+    pub added: u64,
+    /// Lines removed.
+    pub removed: u64,
+}
+
+/// The lines two commits differ by, as git counts them.
+///
+/// `--numstat` rather than the `--shortstat` beside it: what comes back is
+/// tab-separated numbers rather than a sentence, so nothing here depends on how a
+/// locale spells "insertions". A file git compares as binary has no line count and it
+/// says so with `-`; that file is skipped rather than counted as nought, because
+/// nought is a number and this is the absence of one. Renames are not detected, for
+/// the reason every other comparison in this module declines them: a rename reported
+/// under its destination alone hides the lines the source took with it.
+pub fn line_change(cwd: &Path, from: &str, to: &str) -> Result<Lines> {
+    let listed = checked(&["diff", "--numstat", "--no-renames", from, to], Some(cwd))?;
+    let mut counted = Lines::default();
+    for line in listed.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let unreadable = || {
+            Error::Invalid {
+            reason: format!(
+                "git diff --numstat {from} {to} printed {line:?}, which is not a count of lines                  and a path"
+            ),
+        }
+        };
+        let (added, rest) = line.split_once('\t').ok_or_else(unreadable)?;
+        let (removed, _path) = rest.split_once('\t').ok_or_else(unreadable)?;
+        // Both or neither: git writes `-` for each side of a binary file, and a pair
+        // that is half a number is a line this cannot read rather than one to
+        // half-count.
+        if added == "-" && removed == "-" {
+            continue;
+        }
+        let added: u64 = added.parse().map_err(|_| unreadable())?;
+        let removed: u64 = removed.parse().map_err(|_| unreadable())?;
+        counted.added = counted.added.saturating_add(added);
+        counted.removed = counted.removed.saturating_add(removed);
+    }
+    Ok(counted)
+}
+
+/// What one commit records, in the facts two copies of a branch are told apart by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shape {
+    /// The tree it records, which is its content.
+    pub tree: String,
+    /// Its parents, as git prints them: space-separated, and empty for a root commit.
+    pub parents: String,
+    /// When it was committed, in ISO 8601 — git's own `%cI`, so nothing here formats
+    /// a clock.
+    pub committed: String,
+    /// Its subject.
+    pub subject: String,
+}
+
+/// What a commit records, read out of the repository that holds it.
+///
+/// NUL-separated, because a subject may hold anything a commit message may hold — a
+/// tab, a newline of a wrapped subject line — and a field separator a value can carry
+/// is a comparison that reads one commit as another.
+// llmlint: ignore[invalid_states_unrepresentable] every field here is a value git just
+// printed, spelled the way the rest of this module spells one; the crate's `Sha` wraps
+// an unvalidated `String` at the public surface and would make no state unrepresentable.
+pub fn shape_of(cwd: &Path, reference: &str) -> Result<Shape> {
+    let printed = checked(
+        &["log", "-1", "--format=%T%x00%P%x00%cI%x00%s", reference],
+        Some(cwd),
+    )?;
+    let mut fields = printed.stdout.trim_end_matches('\n').splitn(4, '\0');
+    let (Some(tree), Some(parents), Some(committed), Some(subject)) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return Err(Error::Invalid {
+            reason: format!(
+                "git log -1 {reference} in {} printed no tree, parents, date, and subject: {:?}",
+                cwd.display(),
+                printed.stdout
+            ),
+        });
+    };
+    Ok(Shape {
+        tree: tree.to_owned(),
+        parents: parents.to_owned(),
+        committed: committed.to_owned(),
+        subject: subject.to_owned(),
+    })
+}
+
 /// Whether `ancestor` is reachable from `descendant`.
 pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
     let output = run(

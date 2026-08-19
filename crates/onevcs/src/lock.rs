@@ -85,6 +85,36 @@ pub fn try_shared(identity: &str) -> Result<Option<Guard>> {
     try_acquire(identity, true)
 }
 
+/// Whether anybody holds an identity's occupancy lease right now.
+///
+/// A probe rather than a lease: the exclusive take that answers it is released before
+/// this returns, and nothing is written into the lock file — an exclusive *holder*
+/// stamps its pid there for a timed-out waiter to read, and a reader that stamped one
+/// would overwrite the owner that waiter is sent after. [`try_exclusive`] is the same
+/// question asked by something that then keeps the lease.
+///
+/// The window it opens is the exclusive take's own: a shared taker meeting it is told
+/// the identity is busy, which is what any occupancy answer means, and it is the same
+/// window `reclaim` has opened on every session opening since it existed.
+pub fn is_occupied(identity: &str) -> Result<bool> {
+    let path = path_for(identity)?;
+    let file = match OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(file) => file,
+        // A lock file that is not there is one nothing holds: every holder creates it
+        // before it locks it. One that is there and will not open is the other answer,
+        // and the safe one — what this decides is whether to hand somebody a command
+        // that publishes a branch, and "somebody may be in there" is what withholds it.
+        Err(error) => return Ok(error.kind() != std::io::ErrorKind::NotFound),
+    };
+    match FileExt::try_lock_exclusive(&file) {
+        Ok(true) => {
+            let _ = FileExt::unlock(&file);
+            Ok(false)
+        }
+        Ok(false) | Err(_) => Ok(true),
+    }
+}
+
 /// Take an identity exclusively if it is free right now.
 ///
 /// This is how occupancy is *probed*: an exclusive lock succeeds only while no

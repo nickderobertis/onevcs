@@ -2160,6 +2160,136 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
 }
 
 #[test]
+fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ() {
+    // Measured on a real host: `4ef3658` in the publication checkout at 04:28 against
+    // `fa6a297` in the run clone at 04:42 — one ordinary `git commit --amend`, which
+    // forks a branch across two checkouts of one identity while leaving both copies on
+    // the same parent under the same subject. The refusal is correct: publishing either
+    // blind loses the other. What it cost was a manager comparing two trees by hand,
+    // because the refusal named neither what they differ in nor how to see it.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let (_worktree, clone) = handed_back_and_still_open(&fixture, "feature/amended");
+    let original = tip_of(&fixture, &clone, "feature/amended");
+    let subject = fixture
+        .world
+        .git(&clone, &["log", "-1", "--format=%s", "feature/amended"]);
+    // The amend, in the checkout the branch was handed back to and nowhere else: the
+    // run clone still carries the commit it was taken from.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "feature/amended"]);
+    std::fs::write(fixture.checkout.join("fixed.txt"), "the fix\n").expect("the amended work");
+    fixture.world.git(&fixture.checkout, &["add", "-A"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["commit", "-q", "--amend", "--no-edit"]);
+    let amended = tip_of(&fixture, &fixture.checkout, "feature/amended");
+    assert_ne!(
+        amended, original,
+        "an amend makes a second copy of the name"
+    );
+    assert_eq!(
+        fixture.world.git(
+            &fixture.checkout,
+            &["log", "-1", "--format=%s", "feature/amended"]
+        ),
+        subject,
+        "…under the same subject, which is what makes the pair unreadable by eye"
+    );
+    gate_that_passes(&fixture);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/amended",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2);
+    let refusal = stderr_of(&assert);
+    // Both copies, and the checkout each one lives in.
+    for (checkout, tip) in [(&fixture.checkout, &amended), (&clone, &original)] {
+        assert!(
+            refusal.contains(&format!("{} at {tip}", checkout.display())),
+            "the refusal names {} at {tip}:\n{refusal}",
+            checkout.display()
+        );
+    }
+    // How they differ, which is the fact that says whether there is a choice at all.
+    assert!(
+        refusal.contains(
+            "the way an amend does — the same parent and the same subject over a \
+                          different tree"
+        ),
+        "the refusal says how the two differ:\n{refusal}"
+    );
+    for tree in [&original, &amended].map(|tip| {
+        let at = match tip == &amended {
+            true => &fixture.checkout,
+            false => &clone,
+        };
+        fixture
+            .world
+            .git(at, &["rev-parse", &format!("{tip}^{{tree}}")])
+    }) {
+        assert!(
+            refusal.contains(&tree),
+            "each copy's tree is named, so two trees can be told apart:\n{refusal}"
+        );
+    }
+    assert!(
+        refusal.contains(&format!("the subject {subject:?}")),
+        "…and the subject both of them carry:\n{refusal}"
+    );
+
+    // And the commands that resolve it, run as they were printed: the fetch brings the
+    // other copy in, and the diff beside it is what a manager was doing by hand.
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+    let fetch = printed(&refusal, "git ");
+    assert!(
+        fetch.contains("fetch") && fetch.contains(&clone.to_string_lossy().into_owned()),
+        "the first command fetches the other copy: {fetch}"
+    );
+    fixture.world.shell(&fetch).assert().success();
+    let diff = refusal
+        .split('`')
+        .filter(|span| span.starts_with("git "))
+        .nth(1)
+        .expect("the refusal names the command that shows what the two differ by")
+        .to_owned();
+    fixture
+        .world
+        .shell(&diff)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fixed.txt"));
+
+    // The refusal survives: fetching the other copy into the checkout does not choose
+    // between them, so the landing is refused again and both copies are where they were.
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/amended",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no copy of it carries the rest"));
+    assert_eq!(fixture.origin_log().len(), 1, "still nothing has landed");
+    assert_eq!(tip_of(&fixture, &clone, "feature/amended"), original);
+    assert_eq!(
+        tip_of(&fixture, &fixture.checkout, "feature/amended"),
+        amended
+    );
+}
+
+#[test]
 fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searched() {
     // Closing hands the branch back, so one name is at one commit in two checkouts —
     // nothing to choose between. Which copy was read is what a refusal names, and a base

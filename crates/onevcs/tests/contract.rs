@@ -27,10 +27,11 @@ use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
-    Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, Labels,
-    Lifecycle, Liveness, MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication,
-    PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session,
-    SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
+    Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy,
+    Holding, Labels, Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, PreservedBranch,
+    Provenance, Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention,
+    Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source,
+    Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -801,11 +802,42 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             "recover".to_owned(),
             "feature".to_owned(),
         ],
+        held_by: None,
+        net_negative: None,
     };
     let value = serde_json::to_value(&recoverable).expect("a recoverable serializes");
     assert_eq!(value["branch"]["provenance"], json!("complete"));
     assert_eq!(value["recover_command"][0], json!("onevcs"));
     assert_eq!(value["stopped_because"], json!("the run's driver died"));
+    // A row with nothing to warn about is the document a consumer that predates both
+    // marks already reads: absent rather than written as null, the way every other
+    // optional field in this crate's reported shapes is.
+    assert!(
+        value.get("held_by").is_none() && value.get("net_negative").is_none(),
+        "an unmarked row carries neither mark: {value}"
+    );
+    // …and a marked one reads back as what it said, so a caller that parses `--json`
+    // into the type keeps both marks rather than dropping them into a lossy read.
+    let marked = Recoverable {
+        held_by: Some(HeldBy {
+            token: SessionToken("s-0123456789ab".to_owned()),
+            worktree: PathBuf::from("/home/agent/.onevcs/workspaces/run/worktree"),
+            holding: Holding::OwnerRunning,
+        }),
+        net_negative: Some(LineChange {
+            added: 3,
+            removed: 481,
+        }),
+        ..recoverable
+    };
+    let value = serde_json::to_value(&marked).expect("a marked recoverable serializes");
+    assert_eq!(value["held_by"]["holding"], json!("owner-running"));
+    assert_eq!(value["held_by"]["token"], json!("s-0123456789ab"));
+    assert_eq!(value["net_negative"], json!({"added": 3, "removed": 481}));
+    assert_eq!(
+        serde_json::from_value::<Recoverable>(value).expect("a marked row reads back"),
+        marked
+    );
 
     assert_eq!(
         serde_json::to_value(MergeOutcome::Merged(Sha("0f1e2d3".to_owned())))

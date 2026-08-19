@@ -1383,6 +1383,214 @@ fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
 }
 
 #[test]
+fn a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land() {
+    // The state that cost a three-day run: the report listed the branch as complete
+    // with a paste-ready `publish-branch` beside it while a live node was still
+    // committing to that very branch, and four more commits followed. Running the
+    // offered command would have published a branch mid-flight.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock on a
+    // run root, and holding it is the only thing that makes the lease answer "taken": no
+    // verb holds one across time — each takes it, works, and releases it before the
+    // process that opened the session exits — so there is no command to run that leaves a
+    // run root occupied for the length of a journey. The lock is found the only way
+    // anything can find it, by what appeared when the session was opened (it is named
+    // after a digest of the run root), it is held in the *shared* mode a session holds it
+    // in, and the real CLI then meets it. `a_pinned_branch_whose_session_is_occupied…`
+    // above reaches occupancy the same way; the other half of this question — an owner
+    // process that is simply still running — is `library.rs`, where a journey can hold a
+    // session across time.
+    let before = fixture.world.locks();
+    let (token, worktree) = fixture.open(&["--branch", "feature/still-being-written"]);
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    fixture
+        .world
+        .commit_file(&worktree, "a.txt", "a\n", "feat: the work so far");
+    let occupant = World::occupy_shared(lease);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .success();
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
+    let held = &row(&rows, "feature/still-being-written")["held_by"];
+    assert_eq!(held["token"], token.as_str(), "{rows:#?}");
+    assert_eq!(held["worktree"], worktree.to_string_lossy().into_owned());
+    assert_eq!(held["holding"], "run-root-occupied");
+    assert!(
+        row(&rows, "feature/still-being-written")["stopped_because"]
+            .as_str()
+            .expect("a reason")
+            .contains("nothing has stopped"),
+        "the row says the work has not stopped: {rows:#?}"
+    );
+
+    // And the rendering an operator reads: no line saying resume, because that is the
+    // line this report is read for.
+    let assert = fixture.world.onevcs().arg("recoverable").assert().success();
+    let reported = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        !reported.contains("Resume:"),
+        "a branch a live session holds is not offered to be resumed:\n{reported}"
+    );
+    assert!(
+        reported.contains("held by a live session"),
+        "the header says so before anything else is read:\n{reported}"
+    );
+    assert!(
+        reported.contains(&format!("Not ready: session {token}")),
+        "the reason names the session:\n{reported}"
+    );
+    assert!(
+        reported.contains(&format!("onevcs session close {token}")),
+        "…and what to do about it:\n{reported}"
+    );
+
+    // Once nobody is in there any more the work really has stopped, and the row is
+    // exactly the row it has always been: the same command, ready to paste.
+    drop(occupant);
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .success();
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
+    assert!(
+        row(&rows, "feature/still-being-written")
+            .get("held_by")
+            .is_none(),
+        "a branch nothing holds carries no hold at all: {rows:#?}"
+    );
+    fixture
+        .world
+        .onevcs()
+        .arg("recoverable")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "Resume: onevcs publish-branch feature/still-being-written --repo {}",
+            fixture.checkout.display()
+        )));
+}
+
+#[test]
+fn a_branch_that_removes_more_than_it_adds_is_marked_in_both_renderings() {
+    // Two preserved branches would have stripped hundreds of lines had the command
+    // beside them been trusted. Deleting far more than it adds may be exactly right,
+    // which is why this marks rather than excludes — but it must reach the operator
+    // before the command does.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let many: String = (1..=400).map(|line| format!("line {line}\n")).collect();
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "big.txt",
+        &many,
+        "feat: a file worth keeping",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "-q", "origin", "main"]);
+
+    // The branch that strips it, and one beside it that does not, so the mark is read
+    // as the difference between two rows rather than as decoration on every row.
+    let (stripping, stripped) = fixture.open(&["--branch", "feature/strip"]);
+    std::fs::remove_file(stripped.join("big.txt")).expect("the file this branch strips");
+    fixture.world.commit_file(
+        &stripped,
+        "note.txt",
+        "why it went\n",
+        "refactor: drop the big file",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &stripping])
+        .assert()
+        .success();
+    let (adding, added) = fixture.open(&["--branch", "feature/add"]);
+    fixture
+        .world
+        .commit_file(&added, "new.txt", "one\ntwo\n", "feat: add a little");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &adding])
+        .assert()
+        .success();
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .success();
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
+    assert_eq!(
+        row(&rows, "feature/strip")["net_negative"],
+        serde_json::json!({"added": 1, "removed": 400}),
+        "the lines it would land, counted from where it forked: {rows:#?}"
+    );
+    assert!(
+        row(&rows, "feature/add").get("net_negative").is_none(),
+        "a branch that adds more than it removes carries no mark: {rows:#?}"
+    );
+
+    let assert = fixture.world.onevcs().arg("recoverable").assert().success();
+    let reported = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let header = |branch: &str| {
+        reported
+            .lines()
+            .find(|line| line.starts_with(branch))
+            .unwrap_or_else(|| panic!("no row for {branch}:\n{reported}"))
+            .to_owned()
+    };
+    assert!(
+        header("feature/strip").contains("net-negative: 1 added, 400 removed"),
+        "the header carries the mark:\n{reported}"
+    );
+    assert!(
+        !header("feature/add").contains("net-negative"),
+        "and only that row's does:\n{reported}"
+    );
+    assert!(
+        reported.contains("Net-negative: it removes 400 line(s) and adds 1 against main"),
+        "the row says what it would strip:\n{reported}"
+    );
+    // The command it says to read the branch with is read as it was printed: pasting
+    // it is the whole point of printing it.
+    let diff = reported
+        .split('`')
+        .find(|span| span.starts_with("git "))
+        .expect("the row names the command that shows the diff")
+        .to_owned();
+    fixture
+        .world
+        .shell(&diff)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("big.txt"));
+    // …and the branch is still offered, because a net-negative branch may be exactly
+    // right and this report is not the thing that decides.
+    assert!(
+        reported.contains(&format!(
+            "Resume: onevcs publish-branch feature/strip --repo {}",
+            fixture.checkout.display()
+        )),
+        "a marked row is still a row with a command:\n{reported}"
+    );
+}
+
+#[test]
 fn a_branch_the_base_already_carries_drops_out_of_the_recoverable_view() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/landed"]);

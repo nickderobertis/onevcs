@@ -130,6 +130,10 @@ pub fn full_vcs_state() -> VcsState {
                 "recover".to_owned(),
                 "feature/seeded".to_owned(),
             ],
+            // The session this row's branch belongs to is seeded closed, so nothing
+            // holds it; a scenario that wants the held answer names it here.
+            held_by: None,
+            net_negative: None,
         }],
     }
 }
