@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 126. Tests observed red and then green: 159.
+Patches: 131. Tests observed red and then green: 162.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -131,12 +131,43 @@ a preserved branch's lines stop being weighed, so one that removes far more than
 the refusal a diverged pair produces stops saying how the two copies differ and stops printing the diff between them.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — the refusal says how the two differ:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the refusal says how the two copies differ:
+
+### `108-a-file-with-no-line-count-is-read-as-a-number`
+
+a file git compares as binary stops being left out of the line count, so its `-` is read as a number and the whole report fails on it.
+
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — Unexpected failure.
+
+### `109-the-net-negative-boundary-takes-a-branch-that-is-even`
+
+the net-negative boundary stops being strict, so a branch that adds exactly as much as it removes is marked as one that strips work.
+
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — feature/one-for-one is not net-negative: [
 
 ### `10-the-subject-is-checked-after-the-attestation`
 
 recover stops asking whether a subject exists before it writes to the branch.
 
 - RED `a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long` — Unexpected failure.
+
+### `110-a-branch-that-shares-no-history-is-measured-against-the-base-anyway`
+
+a branch sharing no history with the base stops being left unmeasured, so it is compared with the base's tip and reads as removing everything the base has.
+
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — feature/unrelated is not net-negative: [
+
+### `111-the-provider-answers-no-hold-for-a-session-it-still-has-open`
+
+the provider stops answering which of its own open sessions holds a preserved branch, so a consumer's suite is offered work its session is still in.
+
+- RED `preserved_work_is_what_recoverable_reports` — an open session still holds its branch: Recoverable {
+
+### `112-a-hold-naming-a-session-nobody-opened-is-taken-on-trust`
+
+a seeded row held by a session nobody opened stops being refused, so a provider answers a hold out of a session that never existed.
+
+- RED `a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_name` — preserved work held by a session that was never opened describes a run nothing could have made
 
 ### `11-an-explicit-title-is-dropped`
 
@@ -360,7 +391,7 @@ recovery stops writing the attestation commit that carries the cleared marker fo
 
 the readable range narrows back to one version, so a scenario written by the build before this one is refused.
 
-- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 2; this b
+- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 3; this b
 
 ### `47-a-carried-forward-document-keeps-the-version-it-arrived-at`
 
