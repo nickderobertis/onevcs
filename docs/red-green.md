@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 121. Tests observed red and then green: 154.
+Patches: 121. Tests observed red and then green: 155.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -400,6 +400,7 @@ a path list this process could not take whole is answered as a commit that chang
 the tip a session was cut from is never written down, so no session records a stack.
 
 - RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"<token>","identity":"<tmp>/project","alias":"project","branch":"feature/above","base
+- RED `a_continued_stacked_branch_records_where_its_own_work_begins_and_lands_only_that` — assertion `left == right` failed: the recorded tip is where the branch forked from the change below it, not its own tip: {"version":3,"token
 
 ### `57-a-recorded-stack-is-taken-on-trust`
 
@@ -574,7 +575,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
