@@ -1,0 +1,19 @@
+Mutation: each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
+Red: a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ
+Red: copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one
+
+diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
+index da895ee..0bc98c4 100644
+--- a/crates/onevcs/src/branch.rs
++++ b/crates/onevcs/src/branch.rs
+@@ -759,8 +759,8 @@ fn differ(into: &Held, into_shape: &git::Shape, from: &Held, from_shape: &git::S
+     };
+     format!(
+         "They differ {how}: {into}, and {from}",
+-        into = facts_of(into, into_shape),
+-        from = facts_of(from, from_shape),
++        into = facts_of(into, from_shape),
++        from = facts_of(from, into_shape),
+     )
+ }
+ 
