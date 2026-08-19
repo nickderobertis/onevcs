@@ -202,8 +202,8 @@ The verb that answers it is **not in the approved text**, and the approved text 
 never edited, so it is recorded here as an inference awaiting confirmation:
 
 ```
-onevcs publish-branch BRANCH --repo PATH [--title T] [--policy P]
-onevcs recover BRANCH --repo PATH [--title T]
+onevcs publish-branch BRANCH --repo PATH [--title T] [--body TEXT] [--body-file PATH] [--policy P]
+onevcs recover BRANCH --repo PATH [--title T] [--body TEXT] [--body-file PATH]
 onevcs status REF [--json]
 onevcs import BRANCH --repo PATH [--from SOURCE] [--as NAME]
 ```
@@ -219,10 +219,22 @@ same reason.
 | `publish-branch BRANCH --repo PATH` | the operands `recover` already takes | It is the same question asked of a different provenance, so it is reached the same way: a branch by name, and a checkout that resolves the identity. Anything else would be a second way to say the same thing. |
 | `--policy P` | the option `publish` takes, under the same rule | The policy comes from the identity's rules; a per-run one may narrow it and never widen it past requiring approvals, which is `MergePolicy::narrow` rather than a second rule. |
 | `--title T` on both verbs | the `Subject` an explicit title has always been | `publish` has taken one since the contract was written, and the refusal it answers — no commit subject fits — is reachable from a preserved branch too, where the alternative is rewriting a commit on work that was interrupted. |
+| `--body TEXT` and `--body-file PATH` on both verbs | the pair `publish` takes, refused together by the same boundary | A body is drafted by whatever knew what the change was for, and which verb happened to land the branch is no reason for the change request to describe itself differently — an operator resuming a preserved branch reads the same empty pull request either way. Both spellings are representable so `app::explicit_body` can refuse the pair by name, and its refusal names the verb and operands the caller typed rather than `publish`'s. Nothing is composed when neither is given: the change request opens with no body, as it does today. |
 | the answer | the same `PublishOutcome` and exit codes as `recover` | It is a second caller of the branch-keyed publication path, not a second publication. `recover` and `publish-branch` share one implementation of locate, clone, worktree, base-merge, gate, and publish; provenance is the whole of what separates them. |
 
 No public library item is added: `publish::run` was already branch-keyed, and both
-verbs are private modules behind it. What the CLI gains is the verb and two options.
+verbs are private modules behind it. What the CLI gains is the verb and four options.
+
+**The body options depart from a sentence in the approved text**, which says that
+neither branch-keyed verb takes a body because both are "reached by an operator
+naming a branch, not by a caller that drafted a body". That premise stopped being
+true: a caller now drafts bodies out of band and hands one to whichever verb lands
+the branch, and the branch-keyed verbs are how most branches on this host land —
+so the sentence's own reasoning, that the option belongs where there is something
+to pass, is what puts it on all three verbs. The approved text is committed
+verbatim and is not edited, so the departure is recorded here and in the open
+question below; `PublishRequest` and the publication path are untouched, because
+both already carry a body.
 
 ## Two more the contract does not name: reading, and ref plumbing
 
@@ -383,9 +395,10 @@ question was:
    text is committed verbatim and an extension to it is the contract owner's to
    approve, so it is recorded in this document rather than written into
    `docs/contract.md` beside the amendments that were. Confirming it means one
-   amendment naming the verb, its two options, and `recover`'s `--title`; until
-   then the surface is held to *this* record, which is what keeps the parser and
-   a written-down surface reconciled rather than the verb being undocumented.
+   amendment naming the verb, its four options, and `recover`'s `--title`,
+   `--body`, and `--body-file`; until then the surface is held to *this* record,
+   which is what keeps the parser and a written-down surface reconciled rather
+   than the verb being undocumented.
 9. **A change request's URL is resolvable only through the event stream.** The URL
    is the host's name for a change, and nothing on the branch carries it — this
    crate reads a `<prefix>Change-Url:` trailer that something else may have written
@@ -406,3 +419,14 @@ question was:
    is a question about what a session knows, not about filtering, and it would
    change the bytes of every stream — so it is reported here rather than taken in
    passing.
+11. **The branch-keyed verbs now take a body, and the approved text says they do
+   not.** The contract's sentence — "Neither branch-keyed verb takes one: `recover`
+   and `publish-branch` are reached by an operator naming a branch, not by a caller
+   that drafted a body" — was written when the only caller drafting one published
+   through a session token. It no longer holds: bodies are drafted out of band, most
+   branches on this host land through `publish-branch` after a run has ended, and a
+   change request opened that way carried nothing a reviewer could read. So both
+   verbs take `--body`/`--body-file`, and both hand it to the publication path
+   unchanged. Nothing else moved — no body is composed when none is given, and the
+   provenance trailers stay on the commit — so confirming this means one amendment
+   striking that sentence, not a new shape to approve.

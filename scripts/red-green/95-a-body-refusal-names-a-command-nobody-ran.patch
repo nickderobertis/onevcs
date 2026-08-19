@@ -1,17 +1,19 @@
-Mutation: naming the body twice stops being refused, and one of the two is silently taken.
+Mutation: the refusal for two bodies names `onevcs publish` whichever verb the body was given to.
 Red: naming_the_body_twice_is_refused_by_name_before_anything_is_published
 Red: naming_a_branchs_body_twice_is_refused_by_the_invocation_that_keeps_each_one
 Red: naming_a_recoverys_body_twice_is_refused_before_anything_is_attested
 
 diff --git a/crates/onevcs/src/app.rs b/crates/onevcs/src/app.rs
-index a40dc8e..312b925 100644
+index a40dc8e..4c2f7b3 100644
 --- a/crates/onevcs/src/app.rs
 +++ b/crates/onevcs/src/app.rs
-@@ -326,6 +326,7 @@ fn explicit_body(
-     body_file: Option<&Path>,
- ) -> Result<Option<String>> {
-     match (body, body_file) {
-+        (Some(body), Some(path)) if path.exists() => Ok(Some(body.clone())),
+@@ -329,7 +329,8 @@ fn explicit_body(
          (Some(_), Some(path)) => {
              let named = path.to_string_lossy();
              let keeping = |option: &str, value: &str| {
+-                let mut argv = invocation.to_vec();
++                let mut argv = vec!["onevcs", "publish"];
++                let _ = invocation;
+                 argv.extend([option, value]);
+                 guidance::command(argv)
+             };

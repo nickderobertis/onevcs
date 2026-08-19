@@ -33,6 +33,7 @@ pub fn run(
     repo: &Path,
     branch: &str,
     title: Option<Subject>,
+    body: Option<String>,
     hosting: &dyn Hosting,
     stream: &mut Stream,
 ) -> Result<PublishOutcome> {
@@ -69,7 +70,7 @@ pub fn run(
         })),
     );
 
-    landing.publish(title, hosting, stream)
+    landing.publish(title, body, hosting, stream)
 }
 
 /// Why a branch with no unattested marker is not this verb's, and whose it is.

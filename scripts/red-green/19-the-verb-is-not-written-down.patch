@@ -9,7 +9,7 @@ index edad356..71e72d1 100644
  never edited, so it is recorded here as an inference awaiting confirmation:
  
  ```
--onevcs publish-branch BRANCH --repo PATH [--title T] [--policy P]
- onevcs recover BRANCH --repo PATH [--title T]
+-onevcs publish-branch BRANCH --repo PATH [--title T] [--body TEXT] [--body-file PATH] [--policy P]
+ onevcs recover BRANCH --repo PATH [--title T] [--body TEXT] [--body-file PATH]
  onevcs status REF [--json]
  onevcs import BRANCH --repo PATH [--from SOURCE] [--as NAME]

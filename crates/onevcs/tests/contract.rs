@@ -956,6 +956,54 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     }
 }
 
+/// The one sentence of approved text the command surface deliberately departs
+/// from, and the record that says so.
+///
+/// Two documents state something about the same options and only one of them is
+/// approved, which is a disagreement with nothing keeping the two aligned unless
+/// something reads both. This does. Amend the contract and the first assertion
+/// fails, naming the record that has to move with it; drop the paragraphs the
+/// record keeps and the second fails; withdraw the options themselves and the
+/// third does — so the departure cannot quietly become either a lie about what
+/// the contract says or a note about options nobody has.
+#[test]
+fn the_record_names_the_body_sentence_the_branch_keyed_verbs_depart_from() {
+    const SENTENCE: &str =
+        "reached by an operator naming a branch, not by a caller that drafted a body";
+    // Both documents are prose wrapped for reading, so the sentence is looked for
+    // in text whose line breaks have been folded away: a paragraph re-wrapped by an
+    // editor is not the contract changing its mind.
+    let unwrapped = |doc: String| doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        unwrapped(contract()).contains(SENTENCE),
+        "docs/contract.md no longer says {SENTENCE:?}; if the contract owner has \
+         amended it, docs/inferred-surface.md's record of the departure is what \
+         moves with it"
+    );
+    assert!(
+        unwrapped(repo_file("docs/inferred-surface.md")).contains(SENTENCE),
+        "docs/inferred-surface.md must quote the sentence the branch-keyed body \
+         options depart from, so a reader of either document finds the other"
+    );
+
+    let cli = Cli::command();
+    for verb in ["publish-branch", "recover"] {
+        let subcommand = cli
+            .get_subcommands()
+            .find(|sub| sub.get_name() == verb)
+            .unwrap_or_else(|| panic!("the parser has no {verb} to take a body"));
+        let mut flags = BTreeSet::new();
+        collect_long_flags(subcommand, &mut flags);
+        for flag in ["body", "body-file"] {
+            assert!(
+                flags.contains(flag),
+                "`onevcs {verb}` takes --{flag}: that is the departure the record \
+                 states, and without it the record states nothing"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_amendment_declares_the_types_the_widened_seam_gained() {
     // The amendments region says the suite reconciles it with the code the way it

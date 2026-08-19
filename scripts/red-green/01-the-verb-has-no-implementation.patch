@@ -27,7 +27,7 @@ index 3a7a24e..e3f7fdd 100644
      stream: &mut Stream,
  ) -> Result<PublishOutcome> {
 +    if true {
-+        let _ = (&title, &policy, &stream);
++        let _ = (&title, &body, &policy, &stream);
 +        return Err(Error::NotImplemented {
 +            operation: "publish-branch",
 +        });

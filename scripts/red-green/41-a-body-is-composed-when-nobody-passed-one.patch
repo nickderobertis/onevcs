@@ -1,6 +1,6 @@
 Mutation: the composed scaffold comes back for a publication that was given no body.
 Red: a_publication_given_no_body_opens_a_change_request_with_no_body_at_all
-Red: a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all
+Red: a_recovery_given_no_body_carries_its_attestation_on_the_branch_and_opens_with_none
 Red: a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_require
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
