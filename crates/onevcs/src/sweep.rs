@@ -296,10 +296,17 @@ fn last_written(path: &Path) -> SystemTime {
     // this answer about their clock, and its own timestamp is the one that moves
     // when the link is rewritten.
     if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                newest = newest.max(last_written(&entry.path()));
+        match std::fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    newest = newest.max(last_written(&entry.path()));
+                }
             }
+            // A directory whose contents cannot be listed hides whatever was written
+            // inside it, and its own timestamp says nothing about that — so the answer
+            // is *now*, which retains. Falling back to the timestamp alone would let a
+            // directory nobody can see into be reclaimed for looking old.
+            Err(_) => return SystemTime::now(),
         }
     }
     newest

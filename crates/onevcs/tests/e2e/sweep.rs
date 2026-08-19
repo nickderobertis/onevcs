@@ -461,7 +461,33 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
     finished_branch(&fixture, "feature/not-ours-to-remove");
     publish_branch(&fixture, "feature/not-ours-to-remove");
     let run_root = only_run_root(&publications(&fixture.world));
+    // Build output under the worktree, which is what a gate leaves there and what
+    // the incident found holding gigabytes.
+    let hidden = run_root.join("worktree/build");
+    std::fs::create_dir_all(&hidden).expect("a directory the gate built");
+    std::fs::write(hidden.join("output.log"), "output\n").expect("what it built");
     backdate(&run_root, 72);
+
+    // One directory deep inside the workspace first: what cannot be listed hides
+    // whatever was written in it, so the age it answers is *now* and the workspace is
+    // kept. Its own timestamp says nothing about what is under it, and reading that
+    // instead would reap a directory nobody can see into for looking old.
+    let listable = std::fs::metadata(&hidden)
+        .expect("the directory the gate built")
+        .permissions();
+    std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000))
+        .expect("a directory this user may not list");
+    let opaque = swept(&fixture, &[]);
+    std::fs::set_permissions(&hidden, listable).expect("the built directory is restored");
+    assert!(
+        run_root.is_dir(),
+        "a workspace holding something nobody can see into is kept:\n{opaque}"
+    );
+    assert!(
+        retained_reason(&opaque, &run_root)
+            .contains("inside the 24 hour(s) the age floor leaves alone"),
+        "and the age it could not read is why:\n{opaque}"
+    );
 
     // A state root several managers share holds directories this one may not write
     // to — the incident that motivated the verb left root-owned build output under
@@ -512,6 +538,11 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
         !unreadable.contains("  publications — "),
         "and it is not also claimed as a family that was examined:\n{unreadable}"
     );
+
+    // A removal this host may not finish can still have got part way — the contents
+    // of a workspace under an unwritable family go, and only the directory itself
+    // stays — which is the other reason the report says what happened rather than
+    // reporting the workspace as reclaimed.
 }
 
 #[test]
