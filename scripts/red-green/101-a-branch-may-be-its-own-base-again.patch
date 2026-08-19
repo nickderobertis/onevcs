@@ -1,0 +1,16 @@
+Mutation: a session may name its own branch as its base again, and publish it into itself.
+Red: a_session_whose_base_is_its_own_branch_is_refused_naming_the_spelling_that_replaced_it
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 841a2ce..d1b9b5b 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -573,7 +573,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
+     // merged with and published into, and a session whose base is its own branch has
+     // nowhere to publish to. It was the only way to say "continue this branch" before
+     // continuing one was what pinning it means, so the refusal names that spelling.
+-    if pinned.as_ref() == Some(&base) {
++    if false {
+         return Err(same_branch_and_base(&base));
+     }
+ 

@@ -1,0 +1,20 @@
+Mutation: a continued session stops merging the base it publishes into.
+Red: a_continued_branch_publishes_the_commits_its_base_does_not_carry
+Red: a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 841a2ce..ec43316 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -1052,9 +1052,8 @@ fn integrate(
+     opened: &Carried,
+     publication: &Path,
+ ) -> Result<()> {
+-    if let crate::publish::Reconciled::Settled =
+-        crate::publish::reconcile(worktree, integrated, branch, None)?
+-    {
++    let _ = (worktree, branch);
++    if true {
+         return Ok(());
+     }
+     Err(Error::SyncConflict {
