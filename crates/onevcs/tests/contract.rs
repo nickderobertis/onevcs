@@ -849,11 +849,19 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         refused.contains("not a net-negative change"),
         "the refusal says what was wrong with it: {refused}"
     );
-    assert!(NetNegative::new(LineChange {
-        added: 481,
-        removed: 3,
-    })
-    .is_none());
+    // Both sides of the boundary, because the boundary is the rule: a change that
+    // removes fewer lines than it adds is not a mark, and neither is one that trades a
+    // line for a line.
+    for lines in [(481, 3), (5, 5)] {
+        assert!(
+            NetNegative::new(LineChange {
+                added: lines.0,
+                removed: lines.1,
+            })
+            .is_none(),
+            "{lines:?} added and removed is not a net-negative change"
+        );
+    }
 
     assert_eq!(
         serde_json::to_value(MergeOutcome::Merged(Sha("0f1e2d3".to_owned())))
