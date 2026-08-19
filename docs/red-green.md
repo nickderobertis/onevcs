@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 114. Tests observed red and then green: 144.
+Patches: 116. Tests observed red and then green: 148.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -284,7 +284,7 @@ a publication stops carrying the caller's body into the change request it opens.
 the composed scaffold comes back for a publication that was given no body.
 
 - RED `a_publication_given_no_body_opens_a_change_request_with_no_body_at_all` — a publication that was given no body composes none: "## What\n\nfeat: the thing that describes itself\n\n## Why\n\nPublished by onevcs.\n"
-- RED `a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all` — assertion `left == right` failed: a recovery composes no body either
+- RED `a_recovery_given_no_body_carries_its_attestation_on_the_branch_and_opens_with_none` — assertion `left == right` failed: a recovery composes no body either
 - RED `a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_require` — assertion `left == right` failed: a branch-keyed publication composes no body
 
 ### `42-two-bodies-are-accepted`
@@ -292,6 +292,8 @@ the composed scaffold comes back for a publication that was given no body.
 naming the body twice stops being refused, and one of the two is silently taken.
 
 - RED `naming_the_body_twice_is_refused_by_name_before_anything_is_published` — Unexpected return code, failed var == 2
+- RED `naming_a_branchs_body_twice_is_refused_by_the_invocation_that_keeps_each_one` — Unexpected return code, failed var == 2
+- RED `naming_a_recoverys_body_twice_is_refused_before_anything_is_attested` — Unexpected return code, failed var == 2
 
 ### `43-the-provider-drops-the-callers-body`
 
@@ -309,7 +311,7 @@ the amendment stops naming one of the options `onevcs publish` takes.
 
 recovery stops writing the attestation commit that carries the cleared marker forward.
 
-- RED `a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all` — the pushed branch must carry the recovery forward:
+- RED `a_recovery_given_no_body_carries_its_attestation_on_the_branch_and_opens_with_none` — the pushed branch must carry the recovery forward:
 
 ### `46-the-previous-version-is-refused-rather-than-read`
 
@@ -513,17 +515,17 @@ the clone takes the lender's local branches for origin's own refs.
 
 - RED `a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch` — assertion `left == right` failed: the worktree is cut at what origin holds, not at what the lender remembers
 
-### `75-an-ambiguous-reference-answers-with-the-first-candidate`
-
-status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
-
-- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected return code, failed var == 2
-
 ### `75-a-pinned-resume-cuts-a-second-worktree`
 
 a pinned branch a session already holds is not resumed.
 
 - RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — Unexpected failure.
+
+### `75-an-ambiguous-reference-answers-with-the-first-candidate`
+
+status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
+
+- RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected return code, failed var == 2
 
 ### `76-a-branch-a-session-still-holds-is-handed-to-the-verb-for-preserved-work`
 
@@ -559,7 +561,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -629,18 +631,18 @@ the copy a landing chose is no longer said, so a stale selection and a current o
 - RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — the copy that was published is named:
 - RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — the copy the answer came from is named:
 
+### `82-a-wordless-refusal-is-reported-as-nothing`
+
+a hook that refuses without writing anything is reported as a refusal with nothing after it.
+
+- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
+
 ### `82-an-alternate-name-is-dropped`
 
 import writes the branch's own name whatever --as asked for, so work whose name is already spent has nowhere to go.
 
 - RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected stdout, failed var.contains(imported preserved/held)
 - RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
-
-### `82-a-wordless-refusal-is-reported-as-nothing`
-
-a hook that refuses without writing anything is reported as a refusal with nothing after it.
-
-- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
 
 ### `83-a-choice-nobody-made-is-announced-anyway`
 
@@ -772,4 +774,19 @@ the exit of a run whose pipes have both reached EOF is collected by an unbounded
 a bound is checked for being one a duration can hold but never for being one an instant can be advanced by, so an oversized value reaches the deadline arithmetic that panics on it.
 
 - RED `an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded` — Unexpected return code, failed var == 2
+
+### `95-a-body-refusal-names-a-command-nobody-ran`
+
+the refusal for two bodies names `onevcs publish` whichever verb the body was given to.
+
+- RED `naming_the_body_twice_is_refused_by_name_before_anything_is_published` — Unexpected stderr, failed var.contains(onevcs publish <token> --body-file <tmp>/drafted-body.md)
+- RED `naming_a_branchs_body_twice_is_refused_by_the_invocation_that_keeps_each_one` — Unexpected stderr, failed var.contains(onevcs publish-branch feature/two-bodies --repo <tmp>/hosted --body-file <tmp>/drafted-body.md)
+- RED `naming_a_recoverys_body_twice_is_refused_before_anything_is_attested` — Unexpected stderr, failed var.contains(onevcs recover feature/interrupted --repo <tmp>/two-bodies --body-file <tmp>/drafted-body.md)
+
+### `96-a-branch-keyed-body-is-dropped`
+
+the branch-keyed verbs stop carrying the caller's body into the publication.
+
+- RED `a_complete_branch_opens_its_change_request_with_the_body_the_caller_drafted` — assertion `left == right` failed
+- RED `a_recovery_opens_its_change_request_with_the_body_the_caller_drafted` — assertion `left == right` failed
 
