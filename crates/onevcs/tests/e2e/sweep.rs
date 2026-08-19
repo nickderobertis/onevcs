@@ -11,6 +11,7 @@
 //! no verb this tool had knew the directory existed.
 
 use std::fs::{File, FileTimes};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -59,9 +60,20 @@ fn only_run_root(family: &Path) -> PathBuf {
 /// Move a run root's timestamps back, so a journey can reach the age floor
 /// without waiting a day out.
 ///
+/// The world's clock, arranged — not the tool's state. When a workspace was last
+/// written is a fact about the filesystem this verb *reads*, exactly as a commit's
+/// date is a fact `World::git_raw_env` pins for the journeys about which of two
+/// copies is newer, and the alternative here is a suite that waits a day out. The
+/// decision itself is driven through the real interface from both sides:
+/// `--min-age-hours` says which window, and the journeys below assert the retained
+/// and the reclaimed answer under it.
+///
 /// The run root and its immediate entries, which is the level `sweep` reads: a
 /// directory's own timestamp does not move when something writes inside its
 /// children.
+// llmlint: ignore-block[tests_mirror_real_usage] see the note above: what is arranged
+// is the world's clock, which is this verb's input, and there is no product interface
+// that makes a directory a day old.
 fn backdate(run_root: &Path, hours: u64) {
     let when = SystemTime::now() - Duration::from_secs(hours * 3600);
     let times = FileTimes::new().set_accessed(when).set_modified(when);
@@ -77,6 +89,8 @@ fn backdate(run_root: &Path, hours: u64) {
         });
     }
 }
+
+// llmlint: ignore-end[tests_mirror_real_usage]
 
 /// A complete, unpublished branch of the local fixture, handed back by a session
 /// that closed without publishing.
@@ -343,6 +357,91 @@ fn a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason() {
 }
 
 #[test]
+fn a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other() {
+    // A gate that said no said something, and what makes a workspace reclaimable is
+    // that its gate reached a verdict — not that the verdict was a pass. A run whose
+    // gate rejected it is as finished as one whose gate cleared it, and leaving those
+    // behind is half the disk.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    finished_branch(&fixture, "feature/rejected");
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/rejected",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 1 is the contract's code for a gate that rejected the change.
+        .code(1);
+
+    let run_root = only_run_root(&publications(&fixture.world));
+    assert!(
+        run_root.join("gate-logs").is_dir(),
+        "the premise: a rejecting gate preserves its verdict too"
+    );
+    backdate(&run_root, 72);
+
+    let report = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "a verdict is a verdict whichever way it went:\n{report}"
+    );
+    // And the branch it did not land is still where the publication left it, which
+    // is what makes reclaiming the workspace safe.
+    assert!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["branch", "--list", "feature/rejected"])
+            .contains("feature/rejected"),
+        "the branch a red gate handed back outlives the workspace it was gated in"
+    );
+}
+
+#[test]
+fn a_workspace_this_host_may_not_remove_is_reported_rather_than_failing_the_sweep() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/not-ours-to-remove");
+    publish_branch(&fixture, "feature/not-ours-to-remove");
+    let run_root = only_run_root(&publications(&fixture.world));
+    backdate(&run_root, 72);
+
+    // A state root several managers share holds directories this one may not write
+    // to — the incident that motivated the verb left root-owned build output under
+    // exactly such a workspace. The family is made unwritable, which is what stops
+    // the removal.
+    let family = publications(&fixture.world);
+    let original = std::fs::metadata(&family)
+        .expect("the family")
+        .permissions();
+    std::fs::set_permissions(&family, std::fs::Permissions::from_mode(0o555))
+        .expect("a family this user may read and not write");
+    assert!(
+        std::fs::create_dir(family.join("probe")).is_err(),
+        "the premise: this user cannot write into the family. Run the suite as an \
+         ordinary user rather than as root"
+    );
+
+    let report = swept(&fixture, &[]);
+    std::fs::set_permissions(&family, original).expect("the family is restored");
+
+    assert!(
+        run_root.is_dir(),
+        "the premise held: nothing was removed:\n{report}"
+    );
+    assert!(
+        retained_reason(&report, &run_root).starts_with("it could not be removed: "),
+        "a removal that did not happen is retained with what the system said:\n{report}"
+    );
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
+        "and it is not counted as reclaimed:\n{report}"
+    );
+}
+
+#[test]
 fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     // Another manager on the same host, or a run root somebody has already taken
@@ -409,6 +508,22 @@ fn the_age_floor_bounds_what_a_sweep_considers() {
         retained_reason(&held, &run_root)
             .contains("inside the 24 hour(s) the age floor leaves alone"),
         "the report says the floor is why it was kept:\n{held}"
+    );
+
+    // A run root's own timestamp does not move when a gate writes inside its clone,
+    // so the age is read one level down: a workspace whose directory looks days old
+    // and whose clone was written a moment ago is one somebody is working in.
+    backdate(&run_root, 72);
+    std::fs::write(run_root.join("clone/gate-scratch"), "output\n").expect("a write in the clone");
+    let written_inside = swept(&fixture, &[]);
+    assert!(
+        run_root.is_dir(),
+        "a workspace written inside a moment ago is not a day old:\n{written_inside}"
+    );
+    assert!(
+        retained_reason(&written_inside, &run_root)
+            .contains("inside the 24 hour(s) the age floor leaves alone"),
+        "and the floor is why it was kept:\n{written_inside}"
     );
 
     // A floor is a window rather than a count of hours, and the report says which

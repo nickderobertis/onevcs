@@ -635,6 +635,15 @@ fn sync(args: &SyncArgs) -> Result<u8> {
 /// not remove, is a line in the report rather than a failure — the report is the
 /// answer, and a caller that got a non-zero code for a directory somebody else is
 /// inside would have no way to tell that from a sweep that never happened.
+// llmlint: ignore[cli_output_contract] the exit code is the half of this verb's
+// surface that `ai-orchestrator`'s composed `just sweep-scratch` reads, and it is
+// fixed: nought when the sweep ran, non-zero when it could not run at all. A
+// workspace this host may not remove is a normal, expected outcome on a state root
+// several managers share — it is *why* the retained list exists — so exiting
+// non-zero for one would make "somebody else owns a directory" indistinguishable
+// from "the sweep never happened", and a caller forwarding one argument set to two
+// tools would stop on the first. What went wrong is in the report, named per
+// directory with its reason, which is where a caller can act on it.
 fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
     println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
     Ok(0)

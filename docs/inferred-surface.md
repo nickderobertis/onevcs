@@ -368,7 +368,7 @@ something to read.
 | --- | --- | --- |
 | `sweep` with no operand | the two families this crate cuts run roots under, and nothing else | It is asked about this tool's own disk, and a path operand would make it a general-purpose remover pointed at whatever a caller typed. `branch::Verb::ALL` is the list, so the verbs that make the directories and the verb that reaps them cannot come to disagree about where they are. |
 | `--dry-run` | reports the same decisions and removes nothing | What a caller wants from a rehearsal is what the real run would decide, so the two runs differ in the removal alone. |
-| `--min-age-hours HOURS` | a window, defaulting to 24 | Parsed into a `Duration` at the boundary, so nothing past the parser can be handed hours that are negative, infinite, or not a number. |
+| `--min-age-hours HOURS` | a window, defaulting to 24 hours | Parsed into a `Duration` at the boundary, so nothing past the parser can be handed hours that are negative, infinite, or not a number. |
 | the exit code | `0` whenever the sweep *ran* | A run root it could not prove dead, or could not remove, is a line in the report. A caller that got a non-zero code for a directory somebody else is inside could not tell that from a sweep that never happened. |
 | the report | every family examined, every family it did not examine and why, what it reclaimed, and every retained directory with its reason | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. |
 
@@ -387,6 +387,16 @@ family it does not reach into rather than reaping it. **`recoveries` is inside**
 and that was a decision rather than an oversight: it is the same directory shape
 cut by the same function under the same two proofs, and leaving it out would mean
 one of two families filling a disk that the other no longer does.
+
+The age floor's default is `24` hours, and that number is the half of the shared
+surface a caller never types — so it is the half that can drift without anybody
+noticing. `the_sweep_age_floor_defaults_to_the_number_the_record_states` in
+`tests/contract.rs` reads it back out of this sentence and holds clap's own default
+to it, which means moving the number here or in the parser alone fails the gate.
+What this repository cannot check is the *other* side of the shared surface: that
+`oneagentgraph sweep` still spells the same option and answers to the same default.
+That reconciliation belongs to the caller that composes the two, and is why neither
+side may amend the surface alone.
 
 The verb adds no public library item: `sweep` is a private module, and what the
 CLI gains is the verb and its two options.

@@ -1012,6 +1012,49 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     }
 }
 
+/// The age floor `onevcs sweep` applies when a caller says nothing.
+///
+/// Read out of the record rather than repeated here, and held to the parser below.
+/// It is the half of a surface shared with `oneagentgraph sweep` that nobody ever
+/// types, which makes it the half that can move without a reader noticing — and a
+/// caller forwarding one argument set to two tools would then get two different
+/// windows from the same invocation.
+#[test]
+fn the_sweep_age_floor_defaults_to_the_number_the_record_states() {
+    const OPENS: &str = "The age floor's default is ";
+    let record = repo_file("docs/inferred-surface.md");
+    let line = record
+        .lines()
+        .find(|line| line.starts_with(OPENS))
+        .expect("docs/inferred-surface.md states the age floor's default");
+    let documented = line[OPENS.len()..]
+        .split('`')
+        .nth(1)
+        .expect("the documented default is written in backticks");
+
+    let cli = Cli::command();
+    let sweep = cli
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "sweep")
+        .expect("the parser has a sweep to take an age floor");
+    let argument = sweep
+        .get_arguments()
+        .find(|arg| arg.get_long() == Some("min-age-hours"))
+        .expect("`onevcs sweep` takes --min-age-hours");
+    let defaults: Vec<String> = argument
+        .get_default_values()
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        defaults,
+        vec![documented.to_owned()],
+        "docs/inferred-surface.md states an age floor of {documented:?} and the parser \
+         defaults to {defaults:?}; the number is shared with `oneagentgraph sweep`, so \
+         moving it in one place alone is how the two come to answer differently"
+    );
+}
+
 /// The one sentence of approved text the command surface deliberately departs
 /// from, and the record that says so.
 ///

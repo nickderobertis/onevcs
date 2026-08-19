@@ -74,7 +74,27 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     // the second, because every family below it is then unanswerable.
     match std::fs::read_dir(&root) {
         Ok(entries) => {
-            for entry in entries.flatten() {
+            for entry in entries {
+                // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a listing
+                // that yields an entry it cannot even name. No interface this crate
+                // exposes can produce one — the entries here are directories this
+                // crate and its siblings created — so a journey for it would be a
+                // fixture standing in for the kernel's `readdir` rather than a
+                // journey. It is *reported* rather than dropped for the reason every
+                // other unknown here is: this verb's whole promise is to say what it
+                // did not examine, and silence would read as "there was nothing
+                // there".
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        report.skipped.push(Skipped {
+                            path: root.clone(),
+                            reason: format!("an entry under it could not be read: {e}"),
+                        });
+                        continue;
+                    }
+                };
+                // llmlint: ignore-end[changed_behavior_has_e2e]
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if Verb::ALL.iter().any(|verb| verb.runs() == name) {
                     continue;
@@ -105,6 +125,7 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
                     name: verb.runs(),
                     path: family,
                     roots: None,
+                    unreadable: Vec::new(),
                 });
                 continue;
             }
@@ -116,12 +137,26 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
                 continue;
             }
         };
-        let mut run_roots: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        let mut run_roots: Vec<PathBuf> = Vec::new();
+        let mut unreadable: Vec<String> = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => run_roots.push(entry.path()),
+                // llmlint: ignore[changed_behavior_has_e2e] uncovered for the reason
+                // given at the root's own listing above, and reported for the same
+                // one: a run root that fell out of the listing would otherwise be a
+                // workspace this report never mentions, which is indistinguishable
+                // from one that was reclaimed.
+                Err(e) => unreadable.push(e.to_string()),
+            }
+        }
         run_roots.sort();
+        unreadable.sort();
         report.examined.push(Examined {
             name: verb.runs(),
             path: family,
             roots: Some(run_roots.len()),
+            unreadable,
         });
         for run_root in run_roots {
             match judge(&run_root, min_age)? {
@@ -287,6 +322,9 @@ struct Examined {
     path: PathBuf,
     /// How many run roots it holds, or `None` for a family nothing has cut one under.
     roots: Option<usize>,
+    /// Every entry of it the listing would not name, which is a run root this sweep
+    /// cannot claim to have examined.
+    unreadable: Vec<String>,
 }
 
 /// A directory under the workspaces root this verb did not examine, and why.
@@ -360,6 +398,12 @@ impl fmt::Display for Report {
                     family.name,
                     family.path.display()
                 )?,
+            }
+            for unreadable in &family.unreadable {
+                writeln!(
+                    f,
+                    "    …and one entry of it this sweep could not examine: {unreadable}"
+                )?;
             }
         }
 
