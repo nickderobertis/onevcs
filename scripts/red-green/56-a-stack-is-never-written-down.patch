@@ -1,5 +1,6 @@
 Mutation: the tip a session was cut from is never written down, so no session records a stack.
 Red: a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life
+Red: a_continued_stacked_branch_records_where_its_own_work_begins_and_lands_only_that
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
 index 841a2ce..1e885d6 100644
