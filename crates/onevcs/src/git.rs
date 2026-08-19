@@ -931,6 +931,19 @@ pub fn head_sha(cwd: &Path) -> Result<String> {
     Ok(checked(&["rev-parse", "HEAD"], Some(cwd))?.trimmed())
 }
 
+/// Point the repository's own HEAD at the commit it already stands on, leaving
+/// every ref and every file where they are.
+///
+/// A per-run clone is cut `--no-checkout` and its own working tree is never
+/// populated, but git still counts the branch its HEAD names as *checked out
+/// there* — so a session continuing that branch could not be given a worktree of
+/// it. Detaching hands the name back and costs the clone nothing it uses: no
+/// index is read and no file is written, because `update-ref` writes the one ref.
+pub fn detach_head(cwd: &Path) -> Result<()> {
+    let head = head_sha(cwd)?;
+    checked(&["update-ref", "--no-deref", "HEAD", &head], Some(cwd)).map(|_| ())
+}
+
 /// The checked-out branch, or `HEAD` when the worktree is detached.
 pub fn current_branch(cwd: &Path) -> Result<String> {
     Ok(checked(&["rev-parse", "--abbrev-ref", "HEAD"], Some(cwd))?.trimmed())

@@ -1494,7 +1494,7 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
 }
 
 #[test]
-fn a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone() {
+fn a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     // The name is used once and published, so the base carries what it meant as one
     // squashed commit while the run's own clone keeps the branch that meant it — ahead of
@@ -1524,10 +1524,27 @@ fn a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is
         .args(["session", "close", &first])
         .assert()
         .success();
+    let spent = fixture
+        .world
+        .git(&fixture.checkout, &["rev-parse", "feature/reused"]);
 
-    // The name is taken again, which is allowed precisely because the base carries
-    // what it meant — and this run stops before anything hands its branch back.
+    // The name is taken again. It stands for a branch this identity still holds, so
+    // the second run continues that branch rather than cutting a second one over it
+    // — which is what used to leave two copies of one name that were no relation of
+    // each other, and a landing that had to refuse the pair.
     let (_second, second_tree) = fixture.open(&["--branch", "feature/reused"]);
+    assert!(
+        fixture
+            .world
+            .git_raw(
+                &second_tree,
+                &["merge-base", "--is-ancestor", &spent, "HEAD"]
+            )
+            .status
+            .success(),
+        "the second use opens on the branch the first one left, with the base it has \
+         since landed on merged in"
+    );
     fixture.world.commit_file(
         &second_tree,
         "b.txt",
@@ -1535,7 +1552,6 @@ fn a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is
         "feat: the work that must still be found",
     );
     let clone = second_tree.parent().expect("a run root").join("clone");
-    let spent_clone = first_tree.parent().expect("a run root").join("clone");
 
     // The spent copy answers for none of the work: what the report finds is the live one.
     let assert = fixture
@@ -1556,65 +1572,24 @@ fn a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is
         .expect("the row names the command that lands it")
         .to_owned();
 
-    // The second use was cut from the base the first one landed on, so the two copies of
-    // the name are no relation of each other — and a landing refuses that pair whether or
-    // not one of them is spent. What the base already carries is still a commit under this
-    // name, and nothing here can say the operator meant the other one.
-    let live = fixture
-        .world
-        .git(&clone, &["rev-parse", "refs/heads/feature/reused"]);
-    let refused = fixture.world.shell(&resume).assert().code(2);
-    let refusal = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    // Every copy of the name descends from the one that spent it, so the landing has
+    // a copy that carries the rest and takes it — no operator is left comparing
+    // checkouts to find out which copy is their work.
+    let landed = fixture.world.shell(&resume).assert().success();
+    let said = String::from_utf8_lossy(&landed.get_output().stderr).into_owned();
     assert!(
-        refusal.contains("no copy of it carries the rest"),
-        "the spent copy is compared like any other:\n{refusal}"
+        !said.contains("no copy of it carries the rest"),
+        "the copies are one history now: {said}"
     );
-    assert!(
-        refusal.contains(&format!("{} at {live}", clone.display())),
-        "the refusal names the live copy:\n{refusal}"
+    assert_eq!(
+        fixture.world.git(&fixture.origin, &["show", "main:b.txt"]),
+        "b",
+        "the second use's work reached the base"
     );
     assert_eq!(
         fixture.origin_log().len(),
-        2,
-        "nothing else may have landed"
-    );
-
-    // Every checkout the spent copy is in is named, and leaving them all behind is what
-    // says which copy is the work — no verb here does that, which is the cost of comparing
-    // every copy and the reason it is recorded rather than described. Nothing holds those
-    // branches now, so git deletes them; the command the report named then lands the live
-    // work as it always did.
-    for holder in [&fixture.checkout, &spent_clone] {
-        let read = fixture
-            .world
-            .git_raw(holder, &["rev-parse", "refs/heads/feature/reused"]);
-        if !read.status.success() {
-            continue;
-        }
-        let tip = String::from_utf8_lossy(&read.stdout).trim().to_owned();
-        assert!(
-            refusal.contains(&format!(
-                "{} at {tip} (already in the base)",
-                holder.display()
-            )),
-            "the refusal names the spent copy in {}:\n{refusal}",
-            holder.display()
-        );
-        fixture
-            .world
-            .git(holder, &["branch", "-D", "feature/reused"]);
-    }
-    fixture
-        .world
-        .shell(&resume)
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("merged at"));
-    assert!(
-        fixture
-            .origin_log()
-            .contains(&"feat: the work that must still be found".to_owned()),
-        "the live copy reached the base: {:?}",
+        3,
+        "one commit per use of the name, and no more: {:?}",
         fixture.origin_log()
     );
 }
@@ -1789,7 +1764,7 @@ fn a_scoped_recoverable_answer_names_the_identity_it_covers() {
 }
 
 #[test]
-fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
+fn a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let world = &fixture.world;
 
@@ -1797,7 +1772,8 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
     // points: an operator has just been told the branch is theirs to finish. It was
     // cut in the identity's *worker* checkout, which is how a run that is not the
     // publication is executed — so the request below, which names no checkout, is not
-    // a request that session answers, and the pin is one nothing here can take up.
+    // the session that made it, and the branch is reached as a branch rather than as
+    // a session anybody resumes.
     let worker = world.clone_of(&fixture.origin, "worker");
     world
         .onevcs()
@@ -1824,23 +1800,30 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
         "the work\n",
         "feat: the work that must not go missing",
     );
-    world
-        .onevcs()
-        .args([
-            "session",
-            "open",
-            "project",
-            "--branch",
-            "feature/fifteen-commits",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("feature/fifteen-commits"))
-        .stderr(predicate::str::contains("already carries 1 commit(s)"))
-        .stderr(predicate::str::contains("onevcs recoverable"));
+    let (continued, tree) = fixture.open(&["--branch", "feature/fifteen-commits"]);
+    assert_eq!(
+        world.git(&tree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feature/fifteen-commits"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.join("kept.txt")).expect("the work is in the worktree"),
+        "the work\n",
+        "the session opens at the branch's own tip"
+    );
+    assert_eq!(
+        world.git(&tree, &["log", "--format=%s", "-1"]).as_str(),
+        "feat: the work that must not go missing"
+    );
+    // Said on the stream as well as in the tree, because a caller following a run
+    // asks exactly this: whether the session it opened found the work or started
+    // over. A fresh cut says neither this nor `reused`.
+    let opened = world.events_of(&continued, "session-opened");
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(opened[0]["payload"]["continued"], true);
+    assert!(opened[0]["payload"]["reused"].is_null(), "{opened:?}");
 
-    // A branch the checkout itself carries is the same refusal: a session cuts its
-    // branch fresh whatever repository of the identity holds the name.
+    // A branch the publication checkout itself carries is continued the same way:
+    // where the name is held decides nothing, only that something holds it.
     world.git(
         &fixture.checkout,
         &["checkout", "-q", "-b", "feature/from-a-terminal", "main"],
@@ -1852,23 +1835,15 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
         "feat: work done in the checkout",
     );
     world.git(&fixture.checkout, &["checkout", "-q", "main"]);
-    world
-        .onevcs()
-        .args([
-            "session",
-            "open",
-            "project",
-            "--branch",
-            "feature/from-a-terminal",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains(
-            fixture.checkout.to_string_lossy().as_ref(),
-        ));
+    let (_token, from_terminal) = fixture.open(&["--branch", "feature/from-a-terminal"]);
+    assert!(
+        from_terminal.join("terminal.txt").is_file(),
+        "the work typed into the checkout is in the session's worktree"
+    );
 
-    // …and so is one only origin has, which no checkout here has ever seen: the
-    // session would report the name, carry nothing, and be rejected at the push.
+    // …and so is one only origin has, which no checkout here has ever seen: it is
+    // fetched before the session is cut, so the tip origin holds is where the
+    // worktree opens.
     let elsewhere = world.clone_of(&fixture.origin, "elsewhere");
     world.git(
         &elsewhere,
@@ -1884,51 +1859,31 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
         &elsewhere,
         &["push", "-q", "origin", "feature/pushed-elsewhere"],
     );
-    world
-        .onevcs()
-        .args([
-            "session",
-            "open",
-            "project",
-            "--branch",
-            "feature/pushed-elsewhere",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("origin already carries"))
-        .stderr(predicate::str::contains("non-fast-forward"));
-
-    // Nothing was opened under any of those names, and every branch still holds
-    // exactly the commits it did: a refusal that left a run root behind, or an
-    // empty branch, would be the same loss more quietly.
-    let holders = world
-        .onevcs()
-        .args(["session", "holders", "project"])
-        .assert()
-        .success();
-    let holders = String::from_utf8_lossy(&holders.get_output().stdout).into_owned();
-    for branch in ["feature/from-a-terminal", "feature/pushed-elsewhere"] {
-        assert!(
-            !holders.contains(branch),
-            "no session may hold {branch}: {holders}"
-        );
-    }
-    assert_eq!(
-        holders
-            .lines()
-            .filter(|line| line.contains("feature/fifteen-commits"))
-            .count(),
-        1,
-        "only the run that made the work holds its branch: {holders}"
+    let (_token, pushed) = fixture.open(&["--branch", "feature/pushed-elsewhere"]);
+    assert!(
+        pushed.join("far.txt").is_file(),
+        "the branch only origin carries is continued at the commit origin has"
     );
+
+    // Every branch still holds exactly the commits it did: continuing a branch reads
+    // it, and nothing here rewrites the copy it was read from.
     assert_eq!(
         world.git(&worktree, &["log", "--format=%s", "-1"]).as_str(),
         "feat: the work that must not go missing"
     );
+    assert_eq!(
+        world
+            .git(
+                &fixture.checkout,
+                &["log", "--format=%s", "-1", "feature/from-a-terminal"]
+            )
+            .as_str(),
+        "feat: work done in the checkout"
+    );
 
-    // A name nothing carries still opens, and so do the ones whose branch the base
-    // already has — in a checkout or on origin: the bar is that the session carries
-    // whatever the name means, not that the name has never been used.
+    // A name nothing carries is cut fresh from the base, which is what a pin has
+    // always meant when it named nothing — including a name whose content the base
+    // already has, in a checkout or on origin.
     world.git(
         &fixture.checkout,
         &["branch", "-q", "feature/already-on-the-base", "main"],
@@ -1947,12 +1902,365 @@ fn a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh() {
         "feature/already-on-the-base",
         "feature/landed-already",
     ] {
-        let (_token, opened) = fixture.open(&["--branch", branch]);
+        let (token, opened) = fixture.open(&["--branch", branch]);
         assert_eq!(
             world.git(&opened, &["rev-parse", "--abbrev-ref", "HEAD"]),
             branch
         );
+        assert_eq!(
+            world.git(&opened, &["rev-parse", "HEAD"]),
+            world.git(&fixture.checkout, &["rev-parse", "origin/main"]),
+            "a name whose meaning the base already carries opens on the base"
+        );
+        let opened = world.events_of(&token, "session-opened");
+        assert!(
+            opened[0]["payload"]["continued"].is_null() || branch != "feature/nothing-carries-it",
+            "a name nothing carries is a cut, not a continuation: {opened:?}"
+        );
     }
+}
+
+#[test]
+fn a_continued_branch_publishes_the_commits_its_base_does_not_carry() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+
+    // Work that landed on a branch and stayed there: the node that made it stopped
+    // before publishing, and the branch is the only record of it.
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/carried-over", "main"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "carried.txt",
+        "hours of it\n",
+        "feat: the work the first node did",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    // …and a base that moved under it in the meantime, which is what the session has
+    // to merge in before it can gate or publish against it.
+    let elsewhere = world.clone_of(&fixture.origin, "elsewhere");
+    world.commit_file(
+        &elsewhere,
+        "moved.txt",
+        "moved\n",
+        "feat: what landed on the base since",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    let (token, tree) = fixture.open(&["--branch", "feature/carried-over"]);
+    assert!(
+        tree.join("carried.txt").is_file(),
+        "the session continues the branch's own work"
+    );
+    assert!(
+        tree.join("moved.txt").is_file(),
+        "and the base it publishes into is merged in"
+    );
+
+    // The second node's own step, on top of what the first one left.
+    world.commit_file(
+        &tree,
+        "carried.txt",
+        "hours of it\nand more\n",
+        "feat: the work the second node did",
+    );
+
+    // Naming the branch as its own base was the only way to continue one before this,
+    // and a publication of that session compared the branch against itself: whatever
+    // it held, the answer was that there was nothing to publish. The base here is the
+    // branch this work is published *into*, so both nodes' commits land.
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let landed = world.git(&fixture.origin, &["show", "--stat", "--format=%s", "main"]);
+    assert!(landed.contains("carried.txt"), "{landed}");
+    assert_eq!(
+        world.git(&fixture.origin, &["show", "main:carried.txt"]),
+        "hours of it\nand more",
+        "both nodes' work reached the base"
+    );
+}
+
+#[test]
+fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/two-minds", "main"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "shared.txt",
+        "what the branch says\n",
+        "feat: the branch's answer",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let held = world.git(&fixture.checkout, &["rev-parse", "feature/two-minds"]);
+
+    // The same file, differently, on the base the branch would be published into.
+    let elsewhere = world.clone_of(&fixture.origin, "elsewhere");
+    world.commit_file(
+        &elsewhere,
+        "shared.txt",
+        "what the base says\n",
+        "feat: the base's answer",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    let refused = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/two-minds",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("feature/two-minds"))
+        .stderr(predicate::str::contains(
+            fixture.checkout.to_string_lossy().as_ref(),
+        ));
+    let said = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    let land = said
+        .split('`')
+        .find(|word| word.starts_with("onevcs publish-branch"))
+        .expect("the refusal names the command that lands the branch as it stands")
+        .to_owned();
+
+    // Nothing was opened, nothing holds the name, and the branch is where it was: a
+    // refusal that left a run root behind, or a branch merged half way, would be the
+    // same loss more quietly.
+    let holders = world
+        .onevcs()
+        .args(["session", "holders", "project"])
+        .assert()
+        .success();
+    let holders = String::from_utf8_lossy(&holders.get_output().stdout).into_owned();
+    assert!(!holders.contains("feature/two-minds"), "{holders}");
+    assert_eq!(
+        world.git(&fixture.checkout, &["rev-parse", "feature/two-minds"]),
+        held
+    );
+
+    // …and the command the refusal named is one that runs, and lands the branch.
+    world
+        .shell(&land)
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("conflicts with"));
+    world.git(&fixture.checkout, &["checkout", "-q", "feature/two-minds"]);
+    world.git(&fixture.checkout, &["fetch", "-q", "origin"]);
+    let _ = world.git_raw(&fixture.checkout, &["merge", "origin/main"]);
+    world.commit_file(
+        &fixture.checkout,
+        "shared.txt",
+        "what they agreed\n",
+        "fix: settle the two answers",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    world.shell(&land).assert().success();
+    assert_eq!(
+        world.git(&fixture.origin, &["show", "main:shared.txt"]),
+        "what they agreed"
+    );
+}
+
+#[test]
+fn copies_of_a_continued_branch_that_diverged_are_refused_rather_than_one_being_chosen() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+
+    // A copy pushed from somewhere else…
+    let elsewhere = world.clone_of(&fixture.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &["checkout", "-q", "-b", "feature/two-copies", "main"],
+    );
+    world.commit_file(
+        &elsewhere,
+        "theirs.txt",
+        "theirs\n",
+        "feat: the copy origin has",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "feature/two-copies"]);
+
+    // …and one made here under the same name, descending from neither.
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/two-copies", "main"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "ours.txt",
+        "ours\n",
+        "feat: the copy this checkout has",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/two-copies",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("neither copy carries the other"))
+        .stderr(predicate::str::contains(
+            fixture.checkout.to_string_lossy().as_ref(),
+        ))
+        .stderr(predicate::str::contains("fetch origin feature/two-copies"));
+
+    // Reconciled where the branch is, the session opens on the one copy that is left
+    // and carries both halves of the work.
+    world.git(&fixture.checkout, &["checkout", "-q", "feature/two-copies"]);
+    world.git(&fixture.checkout, &["fetch", "-q", "origin"]);
+    world.git(
+        &fixture.checkout,
+        &["merge", "-q", "--no-edit", "origin/feature/two-copies"],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let (_token, tree) = fixture.open(&["--branch", "feature/two-copies"]);
+    assert!(tree.join("ours.txt").is_file(), "the copy made here");
+    assert!(tree.join("theirs.txt").is_file(), "and the copy origin had");
+}
+
+#[test]
+fn a_continued_branch_opens_at_whichever_copy_carries_the_other() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+
+    // A branch made here and pushed, so both this checkout and origin hold it…
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/two-ends", "main"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "first.txt",
+        "first\n",
+        "feat: the commit both copies have",
+    );
+    world.git(
+        &fixture.checkout,
+        &["push", "-q", "origin", "feature/two-ends"],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    // …and then carried further on another host, so origin's copy is the one that
+    // carries this checkout's rather than the other way round.
+    let elsewhere = world.clone_of(&fixture.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "feature/two-ends",
+            "origin/feature/two-ends",
+        ],
+    );
+    world.commit_file(
+        &elsewhere,
+        "second.txt",
+        "second\n",
+        "feat: what the other host added",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "feature/two-ends"]);
+
+    let (token, tree) = fixture.open(&["--branch", "feature/two-ends"]);
+    assert!(
+        tree.join("first.txt").is_file(),
+        "the commit both copies have"
+    );
+    assert!(
+        tree.join("second.txt").is_file(),
+        "the session opens at origin's copy, which carries this checkout's"
+    );
+    // Closed, so the next open is a continuation rather than that session resumed —
+    // an open one holding the name is taken up before any copy is compared.
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // The other way round: work committed here and never pushed is what carries
+    // origin's copy, so that is where a session continuing the name opens.
+    world.git(&fixture.checkout, &["checkout", "-q", "feature/two-ends"]);
+    world.git(&fixture.checkout, &["fetch", "-q", "origin"]);
+    world.git(
+        &fixture.checkout,
+        &["merge", "-q", "--ff-only", "origin/feature/two-ends"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "third.txt",
+        "third\n",
+        "feat: what only this checkout has",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let (_token, tree) = fixture.open(&["--branch", "feature/two-ends"]);
+    assert!(
+        tree.join("third.txt").is_file(),
+        "the unpushed commit is not left behind"
+    );
+}
+
+#[test]
+fn a_session_whose_base_is_its_own_branch_is_refused_naming_the_spelling_that_replaced_it() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let world = &fixture.world;
+
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/both-ends", "main"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "work.txt",
+        "work\n",
+        "feat: the work to continue",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    // The spelling a plan written against the old behaviour uses to say "continue
+    // this branch". It is refused by name rather than opening a session that would
+    // publish the branch into itself and report that it changed nothing.
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/both-ends",
+            "--base",
+            "feature/both-ends",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("nothing to publish"))
+        .stderr(predicate::str::contains("--branch feature/both-ends"));
+
+    // The refusal names the spelling that replaced it, and it does what the old one
+    // was reached for.
+    let (_token, tree) = fixture.open(&["--branch", "feature/both-ends"]);
+    assert!(tree.join("work.txt").is_file());
 }
 
 #[test]

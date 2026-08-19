@@ -11,9 +11,21 @@ use url::Url;
 pub struct SessionRequest {
     /// The repository: an identity key, a registered alias, or a path.
     pub repo: String,
-    /// The branch to work on. Absent means one is derived.
+    /// The branch to work on.
+    ///
+    /// A name that already exists — in a checkout of this identity, or on origin —
+    /// is **continued**: the session's worktree is opened at that branch's tip and
+    /// carries the work already on it. A name nothing carries yet is cut fresh from
+    /// [`base`](Self::base). Absent means one is derived, which is always a fresh
+    /// cut.
     pub branch: Option<String>,
-    /// The base to cut it from. Absent means the identity's registered base.
+    /// The branch this session's work is merged with and published into.
+    ///
+    /// For a branch cut fresh it is also the point the branch starts from. For a
+    /// branch that already exists it is the integration target and nothing else:
+    /// what is merged in when it has moved on, and what the publication is compared
+    /// against. Absent means the identity's registered base. Naming the session's
+    /// own branch here is refused — it would publish the branch into itself.
     pub base: Option<String>,
     /// Which registered checkout to clone from. Absent means the identity's
     /// default execution checkout.
@@ -35,7 +47,8 @@ pub struct Session {
     pub worktree: PathBuf,
     /// The branch the worktree has checked out.
     pub branch: String,
-    /// The base that branch was cut from.
+    /// The branch this session's work is merged with and published into, which for
+    /// a branch cut fresh is also the one it was cut from.
     pub base: String,
 }
 

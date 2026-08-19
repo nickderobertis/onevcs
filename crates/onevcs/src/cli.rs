@@ -112,10 +112,12 @@ pub enum SessionCommand {
 pub struct SessionOpenArgs {
     /// An identity key, a registered alias, an origin URL, or a path.
     pub repo: String,
-    /// The branch to work on. Omitted, one is derived.
+    /// The branch to work on. One that already exists is continued from its own
+    /// tip; one that does not is cut from the base. Omitted, one is derived.
     #[arg(long, value_name = "B")]
     pub branch: Option<String>,
-    /// The base to cut it from. Omitted, the identity's registered base is used.
+    /// The branch this work is merged with and published into, and the one a new
+    /// branch is cut from. Omitted, the identity's registered base is used.
     #[arg(long, value_name = "B")]
     pub base: Option<String>,
     /// Which registered checkout to clone from.

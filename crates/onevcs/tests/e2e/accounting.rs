@@ -1038,16 +1038,9 @@ fn a_spent_name_does_not_block_an_import_under_another() {
         .world
         .git(&fixture.checkout, &["rev-parse", "feature/held"]);
 
-    // A session may not pin a name that already carries work, so preserved work
-    // needs a second name before the first can be spent again.
-    fixture
-        .world
-        .onevcs()
-        .args(["session", "open", "project", "--branch", "feature/held"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("already carries"));
-
+    // A session that pins the name continues the branch it stands for rather than
+    // cutting a second, empty one over it — so the work is not what needs a second
+    // name. What `--as` is for is putting a *copy* of it under one.
     fixture
         .world
         .onevcs()
@@ -1082,16 +1075,16 @@ fn a_spent_name_does_not_block_an_import_under_another() {
         ""
     );
 
-    // …and once it has one, the original name is free to spend.
+    // …and once the copy is safe under the second name, deleting the first frees it:
+    // a name nothing carries is cut fresh from the base, carrying none of the work.
     fixture
         .world
         .git(&fixture.checkout, &["branch", "-D", "feature/held"]);
-    fixture
-        .world
-        .onevcs()
-        .args(["session", "open", "project", "--branch", "feature/held"])
-        .assert()
-        .success();
+    let (_token, worktree) = fixture.open(&["--branch", "feature/held"]);
+    assert!(
+        !worktree.join("held.txt").is_file(),
+        "a name nothing carries is cut fresh"
+    );
     assert_eq!(
         fixture
             .world

@@ -35,7 +35,7 @@ use crate::registry::Registry;
 use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::{git, home, ids, lock};
+use crate::{git, guidance, home, ids, lock};
 
 /// How many dead run roots still holding unpublished work are retained.
 ///
@@ -173,7 +173,8 @@ pub struct Record {
     pub alias: String,
     /// The branch the worktree has checked out.
     pub branch: Ref,
-    /// The base that branch was cut from.
+    /// The branch this session's work is merged with and published into, which for
+    /// a branch cut fresh is also the one it was cut from.
     pub base: Ref,
     /// The change-request base, which for a stacked change is the branch below it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -545,20 +546,6 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         });
     }
 
-    // A pin naming a branch a session of this identity already holds is that
-    // session, resumed — before a token is minted, so nothing of a second one is
-    // cut. Never for a generated name: that one is this token's own. Declining only
-    // falls through to the ordinary cut below, which decides for itself whether a
-    // pin whose work it could not carry may be cut at all.
-    if let Some((held, lease)) = resumable(&resolution, request, &execution)? {
-        return resume(&held, lease, &execution);
-    }
-
-    let token = ids::session_token();
-    let mut stream = Stream::open(&token)?;
-    stream.label("identity", &resolution.key);
-    refresh(&execution, &mut stream)?;
-
     // Both names go through the one conversion git's own parser decides, so an
     // unusable one is refused here rather than by whichever git command met it first.
     let named = |value: String| -> Result<Ref> {
@@ -576,16 +563,44 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         Some(base) => base.to_owned(),
         None => root.clone().unwrap_or_default(),
     })?;
-    let branch = named(match request.branch.as_deref() {
-        Some(branch) => branch.to_owned(),
-        None => format!("onevcs/{token}"),
-    })?;
-    // Only for a pin: a generated name is this token's own and can collide with
-    // nothing, and asking the question anyway would put a search of every checkout
-    // and run clone of the identity in front of every session anybody opens.
-    if request.branch.is_some() {
-        honour_or_refuse(registry, &resolution, &execution, &branch, &base)?;
+    let pinned = request
+        .branch
+        .as_deref()
+        .map(|branch| named(branch.to_owned()))
+        .transpose()?;
+    // Before anything is resumed or cut, because it is the request that is wrong
+    // rather than anything about this host: the base is what a session's work is
+    // merged with and published into, and a session whose base is its own branch has
+    // nowhere to publish to. It was the only way to say "continue this branch" before
+    // continuing one was what pinning it means, so the refusal names that spelling.
+    if pinned.as_ref() == Some(&base) {
+        return Err(same_branch_and_base(&base));
     }
+
+    // A pin naming a branch a session of this identity already holds is that
+    // session, resumed — before a token is minted, so nothing of a second one is
+    // cut. Never for a generated name: that one is this token's own. Declining only
+    // falls through to the ordinary open below, which continues the branch instead.
+    if let Some((held, lease)) = resumable(&resolution, pinned.as_ref(), &base, &execution)? {
+        return resume(&held, lease, &execution);
+    }
+
+    let token = ids::session_token();
+    let mut stream = Stream::open(&token)?;
+    stream.label("identity", &resolution.key);
+    refresh(&execution, &mut stream)?;
+
+    let branch = match pinned {
+        Some(branch) => branch,
+        None => named(format!("onevcs/{token}"))?,
+    };
+    // Only for a pin: a generated name is this token's own and can stand for nothing
+    // that already exists, and asking the question anyway would put a search of every
+    // checkout and run clone of the identity in front of every session anybody opens.
+    let continued = match request.branch.is_some() {
+        true => continuation(registry, &resolution, &execution, &branch, &base)?,
+        false => None,
+    };
 
     let identity_root = identity_dir(&resolution.key)?;
     let runs = identity_root.join("runs");
@@ -605,18 +620,25 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     let origin = git::remote_url(&execution, "origin")
         .unwrap_or_else(|_| execution.to_string_lossy().into_owned());
     git::clone_sharing(&execution, &clone, &origin, &base)?;
-    let start = if git::ref_exists(&clone, &format!("refs/remotes/origin/{base}")) {
-        format!("origin/{base}")
-    } else {
-        base.to_string()
-    };
-    git::worktree_add(&clone, &worktree, &branch, &start)?;
-    // Read off the worktree that was just cut, which is where the commit it was cut at
-    // is by construction — asking the name it was cut from again could answer
-    // something else, or nothing.
-    let stack_tip = match &root {
-        Some(root) if **root != *base => Some(git::head_sha(&worktree)?),
-        _ => None,
+    // A refusal here is a refusal to open at all, so the run root goes with it: the
+    // branch itself is untouched wherever it was found, and a clone and a worktree
+    // left behind under a token no record names is litter nothing would come back
+    // for.
+    let stack_tip = match cut_or_continue(
+        &clone,
+        &worktree,
+        &branch,
+        &base,
+        root.as_deref(),
+        continued.as_ref(),
+        &resolution.publication,
+    ) {
+        Ok(stack_tip) => stack_tip,
+        Err(error) => {
+            drop(lease);
+            let _ = std::fs::remove_dir_all(&run_root);
+            return Err(error);
+        }
     };
 
     let record = Record {
@@ -638,24 +660,31 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         owner_started: process_started(std::process::id()),
     };
     save(&record)?;
-    stream.emit(EventKind::SessionOpened, opened(&record, Reuse::Cut));
+    let reuse = match continued {
+        Some(_) => Reuse::Continued,
+        None => Reuse::Cut,
+    };
+    stream.emit(EventKind::SessionOpened, opened(&record, reuse));
     drop(lease);
     Ok((record, stream))
 }
 
-/// Whether a session was cut for this request or was one it resumed.
+/// Whether a session was cut for this request, continued a branch that already
+/// existed, or was a session it resumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reuse {
     Cut,
+    Continued,
     Resumed,
 }
 
 /// The payload a session's opening event carries.
 ///
-/// `reused` is written only when the session was resumed, and deliberately: a fresh
-/// cut is the only thing an implementation of this seam that keeps no run roots can
-/// do, so an event that says nothing there is one such an implementation still
-/// emits unchanged. A reader tells the two apart by the field being there.
+/// `reused` and `continued` are written only when the session was one or the other,
+/// and deliberately: a fresh cut is the only thing an implementation of this seam
+/// that keeps no run roots can do, so an event that says neither is one such an
+/// implementation still emits unchanged. A reader tells them apart by the field
+/// being there.
 fn opened(record: &Record, reuse: Reuse) -> Map<String, Value> {
     let mut payload = object(json!({
         "token": record.token,
@@ -667,8 +696,14 @@ fn opened(record: &Record, reuse: Reuse) -> Map<String, Value> {
         "execution_checkout": record.execution_checkout.display().to_string(),
         "publication_checkout": record.publication_checkout.display().to_string(),
     }));
-    if reuse == Reuse::Resumed {
-        payload.insert("reused".to_owned(), Value::Bool(true));
+    match reuse {
+        Reuse::Cut => {}
+        Reuse::Continued => {
+            payload.insert("continued".to_owned(), Value::Bool(true));
+        }
+        Reuse::Resumed => {
+            payload.insert("reused".to_owned(), Value::Bool(true));
+        }
     }
     payload
 }
@@ -697,12 +732,17 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
 /// the branch somebody is watching. So a pin that names a session this host already
 /// has is that session.
 ///
-/// Declining is never a refusal — it is a fall through to cutting a session the
-/// ordinary way, which then answers for itself: a run root that has been reclaimed,
-/// an ambiguity nothing here can resolve, and somebody already inside it all answer
-/// `None`. So does a request that names a different base or a different execution
-/// checkout than the session was cut with, since resuming into one of those would
-/// answer an explicit argument with a session that does not honour it.
+/// Declining is never a refusal — it is a fall through to opening a session the
+/// ordinary way, which then answers for itself and *continues* the branch: a run
+/// root that has been reclaimed, an ambiguity nothing here can resolve, and somebody
+/// already inside it all answer `None`. So does a request that names a different base
+/// or a different execution checkout than the session was cut with, since resuming
+/// into one of those would answer an explicit argument with a session that does not
+/// honour it.
+///
+/// The base is the one [`open`] resolved, so an unnamed one is the identity's root
+/// *now* rather than whatever a record was cut from when its root may have been
+/// another branch.
 ///
 /// What comes back is the session *and its lease*, held from here until the
 /// adoption has taken its own: a shared lease is compatible with the one [`adopt`]
@@ -710,27 +750,17 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
 /// could be reclaimed between being asked about and being taken up.
 fn resumable(
     resolution: &Resolution,
-    request: &SessionRequest,
+    branch: Option<&Ref>,
+    base: &Ref,
     execution: &Path,
 ) -> Result<Option<(Record, lock::Guard)>> {
-    let Some(branch) = request.branch.as_deref() else {
+    let Some(branch) = branch else {
         return Ok(None);
-    };
-    // The base this request is for, resolved the way the cut below resolves it, so an
-    // unnamed one is the identity's root *now* rather than whatever a record was cut
-    // from when its root may have been another branch. A root nobody can name is a
-    // question this cannot answer, and an unanswered question is a session cut fresh.
-    let wanted = match request.base.as_deref() {
-        Some(base) => base.to_owned(),
-        None => match git::default_branch(execution, "origin") {
-            Ok(root) => root,
-            Err(_) => return Ok(None),
-        },
     };
     let mut held = all()?.into_iter().filter(|record| {
         record.identity == resolution.key
-            && *record.branch == *branch
-            && *record.base == *wanted
+            && record.branch == *branch
+            && record.base == *base
             // Closing a session is the statement that it is finished: it hands the
             // branch back to the execution checkout and lets its worktree go. A name
             // taken again after that is a new session under a spent name, which is a
@@ -780,63 +810,292 @@ fn resume(held: &Record, lease: lock::Guard, execution: &Path) -> Result<(Record
     Ok((record, stream))
 }
 
-/// Refuse a pinned branch name whose work this session could not carry.
+/// The commit one copy of a continued branch stands at, and where that copy is.
+#[derive(Debug, Clone)]
+struct Carried {
+    /// The repository holding it, or `None` for origin's own copy — which a session
+    /// clone is given by [`git::carry_remote_refs`] rather than fetched from.
+    checkout: Option<PathBuf>,
+    /// The commit the branch stands at there.
+    // llmlint: ignore[invalid_states_unrepresentable] git's own printed SHA, spelled the
+    // way `git::tip` answers one; the crate's `Sha` wraps an unvalidated `String` at the
+    // public surface and would make no state here unrepresentable.
+    tip: String,
+}
+
+impl Carried {
+    /// Where the copy is, as a refusal names it.
+    fn at(&self) -> String {
+        match &self.checkout {
+            Some(checkout) => checkout.display().to_string(),
+            None => "origin".to_owned(),
+        }
+    }
+
+    /// Bring this copy's objects into the session's clone, so both copies can be
+    /// compared there and the branch can be written at either.
+    ///
+    /// Origin's copy is already there and nothing is fetched for it. The commit is
+    /// the one read where the copy lives, so what this brings is the objects and not
+    /// the answer: a fetch that raced a deletion leaves `update-ref` below to refuse
+    /// a commit the clone does not have.
+    fn bring_into(&self, clone: &Path, branch: &Ref) -> Result<()> {
+        let Some(checkout) = &self.checkout else {
+            return Ok(());
+        };
+        git::fetch_into_ref(clone, &checkout.to_string_lossy(), branch, CONTINUED_REF)?;
+        Ok(())
+    }
+}
+
+/// Where a pinned branch already is, which is what a session continuing it opens at.
 ///
-/// The bar is not that the name is free: this session's branch is cut from the
-/// base, so a pin is honourable exactly when the base already carries what the
-/// name means — the same judgement `onevcs recoverable` reports a branch under,
-/// asked of every repository the identity keeps branches in and of origin's copy.
-fn honour_or_refuse(
+/// One of these three and never "nowhere": a name nothing carries is not a
+/// continuation at all, and [`continuation`] answers `None` for it.
+#[derive(Debug, Clone)]
+enum Continued {
+    /// A checkout of this identity holds the branch and origin does not.
+    Held(Carried),
+    /// Origin holds it and no checkout of this identity does — a branch pushed from
+    /// another host, or from a run root this one has since reclaimed.
+    Pushed(Carried),
+    /// Both hold it, and which of them the session opens at is decided in the clone,
+    /// where both commits can be reached at once.
+    Both {
+        /// The checkout's copy.
+        held: Carried,
+        /// Origin's.
+        pushed: Carried,
+    },
+}
+
+/// The scratch ref a continued branch's checkout copy is fetched into.
+///
+/// Not a branch: what the clone ends up with is `refs/heads/<branch>` at the copy
+/// that carries the rest, and a second name for the losing copy would be a branch
+/// the clone answers to that nothing published.
+const CONTINUED_REF: &str = "refs/onevcs/continued";
+
+/// What an operator does about copies of a continued branch that have diverged.
+const RECONCILE_THEN: &str = "open this session again, which continues the copy that is left";
+
+/// Whether a pinned branch already exists, and where.
+///
+/// A pin that names a branch something already carries is a request to **continue**
+/// it: the session's worktree is opened at that branch's tip and its base becomes
+/// what the branch is merged with and published into, rather than the point it was
+/// cut from. A pin naming a name nothing carries is cut fresh from the base, exactly
+/// as it always was.
+///
+/// Two places a name can already mean something, and both are searched: every
+/// repository the identity keeps branches in — [`checkouts_of`], the run clones
+/// included — and origin's own copy, read from the execution checkout's
+/// remote-tracking refs, which the fetch above has just brought up to date. Which of
+/// the checkouts answers is [`crate::branch::locate`], the one comparison the
+/// publishing verbs read a branch by, so a session and a landing cannot come to
+/// disagree about which copy of a name is the work.
+fn continuation(
     registry: &Registry,
     resolution: &Resolution,
     execution: &Path,
     branch: &Ref,
     base: &Ref,
+) -> Result<Option<Continued>> {
+    let anywhere = checkouts_of(registry, resolution)?
+        .into_iter()
+        .any(|repo| git::is_repo(&repo) && git::branch_exists(&repo, branch));
+    let held = match anywhere {
+        true => {
+            let checkout =
+                crate::branch::locate(registry, resolution, branch, base, RECONCILE_THEN)?;
+            git::tip(&checkout, &format!("refs/heads/{branch}")).map(|tip| Carried {
+                checkout: Some(checkout),
+                tip,
+            })
+        }
+        false => None,
+    };
+    let pushed = git::tip(execution, &format!("refs/remotes/origin/{branch}")).map(|tip| Carried {
+        checkout: None,
+        tip,
+    });
+    Ok(match (held, pushed) {
+        (Some(held), Some(pushed)) => Some(Continued::Both { held, pushed }),
+        (Some(held), None) => Some(Continued::Held(held)),
+        (None, Some(pushed)) => Some(Continued::Pushed(pushed)),
+        (None, None) => None,
+    })
+}
+
+/// The copy a continued session opens at: the one that carries every other.
+///
+/// A checkout's copy and origin's can be at different commits for honest reasons —
+/// work preserved locally that was never pushed, or a push from another host this
+/// one has not worked on since — and one of them then carries the other. Neither
+/// carrying the other is a divergence, and taking either would open a session that
+/// silently drops the commits of the one it passed over, which is the thing this
+/// whole path exists to stop.
+fn opened_at(clone: &Path, branch: &Ref, continued: &Continued) -> Result<Carried> {
+    match continued {
+        Continued::Held(only) | Continued::Pushed(only) => {
+            only.bring_into(clone, branch)?;
+            Ok(only.clone())
+        }
+        Continued::Both { held, pushed } => {
+            held.bring_into(clone, branch)?;
+            pushed.bring_into(clone, branch)?;
+            if git::is_ancestor(clone, &pushed.tip, &held.tip)? {
+                return Ok(held.clone());
+            }
+            if git::is_ancestor(clone, &held.tip, &pushed.tip)? {
+                return Ok(pushed.clone());
+            }
+            Err(diverged(branch, held, pushed))
+        }
+    }
+}
+
+/// Why a checkout's copy of a continued branch and origin's are refused when neither
+/// carries the other, and what reconciles them.
+fn diverged(branch: &Ref, held: &Carried, pushed: &Carried) -> Error {
+    let at = held.at();
+    Error::Invalid {
+        reason: format!(
+            "branch {branch:?} stands at {here} in {at} and at {there} on {theirs}, and neither \
+             copy carries the other, so a session continuing it would have to leave one of them \
+             behind. Reconcile them where the branch is — `{fetch}` brings origin's copy in as \
+             FETCH_HEAD, to merge or rebase onto the one that is there — and then {RECONCILE_THEN}",
+            here = held.tip,
+            there = pushed.tip,
+            theirs = pushed.at(),
+            fetch = guidance::command(["git", "-C", &at, "fetch", "origin", branch]),
+        ),
+    }
+}
+
+/// Put the session's branch in its worktree, and answer the stack its record has to
+/// write down.
+///
+/// Two shapes. A name nothing carries is **cut** from the base with `worktree add
+/// -b`, which is every session that generates its own name and every pin that is
+/// new. A name something already carries is **continued**: the worktree is opened at
+/// that branch's tip and the base is merged into it, so the session starts from the
+/// work rather than from an empty branch wearing its name.
+fn cut_or_continue(
+    clone: &Path,
+    worktree: &Path,
+    branch: &Ref,
+    base: &Ref,
+    root: Option<&str>,
+    continued: Option<&Continued>,
+    publication: &Path,
+) -> Result<Option<String>> {
+    // The base as this clone can name it: its remote-tracking copy where there is
+    // one, and a local branch of that name otherwise.
+    let remote = format!("origin/{base}");
+    let carried = git::ref_exists(clone, &format!("refs/remotes/{remote}"));
+    let integrated = match carried {
+        true => remote,
+        false => base.to_string(),
+    };
+    let Some(continued) = continued else {
+        git::worktree_add(clone, worktree, branch, &integrated)?;
+        // Read off the worktree that was just cut, which is where the commit it was
+        // cut at is by construction — asking the name it was cut from again could
+        // answer something else, or nothing.
+        return match root {
+            Some(root) if *root != **base => git::head_sha(worktree).map(Some),
+            _ => Ok(None),
+        };
+    };
+
+    let opened = opened_at(clone, branch, continued)?;
+    git::update_ref(clone, &format!("refs/heads/{branch}"), &opened.tip)?;
+    git::delete_ref(clone, CONTINUED_REF);
+    git::detach_head(clone)?;
+    git::worktree_add_existing(clone, worktree, branch)?;
+
+    // Where this branch's own work begins, read *before* the base is merged in:
+    // afterwards the two have the base's tip in common and the fork point is gone.
+    // A continued branch was cut from its base by something this session did not
+    // watch, so unlike a fresh cut there is nothing to read off HEAD.
+    let stack_tip = match root {
+        Some(root) if *root != **base => git::merge_base(clone, &integrated, branch)?,
+        _ => None,
+    };
+    // Unguarded, unlike the sync a publication runs: that one tolerates a base no ref
+    // names because a branch-keyed verb can be handed one, and here the base is the
+    // argument this session was opened with. A session opened against a base nothing
+    // has would gate and publish against nothing, so git's own refusal of the name is
+    // the answer.
+    integrate(worktree, &integrated, branch, &opened, publication)?;
+    Ok(stack_tip)
+}
+
+/// Merge the integration target into the branch this session continues.
+///
+/// A continued branch was cut from a base that has since moved, and a session that
+/// opened on it without the base would gate, commit, and publish against a tree
+/// nobody has seen. The merge is [`crate::publish::reconcile`], the one this crate
+/// uses everywhere a branch is brought level with what it lands on, so a session and
+/// a publication cannot come to disagree about what a sync does.
+///
+/// A conflict is refused rather than left in the worktree: an opened session whose
+/// tree does not build is a session whose first act must be a merge resolution
+/// nobody asked it for. The branch is untouched — the merge is aborted where it was
+/// attempted, and the copy this session read is where it always was — so the refusal
+/// names that copy and the command that lands the branch as it stands.
+fn integrate(
+    worktree: &Path,
+    integrated: &str,
+    branch: &Ref,
+    opened: &Carried,
+    publication: &Path,
 ) -> Result<()> {
-    // The base as it stands now, so a run clone's frozen view of it cannot make work
-    // that landed long ago look like work a pin would lose.
-    let current = crate::vcs::base_commit(&resolution.publication, base);
-    for repo in checkouts_of(registry, resolution)? {
-        if !git::is_repo(&repo) || !git::branch_exists(&repo, branch) {
-            continue;
-        }
-        let compared = crate::vcs::judged_against(&repo, base, current.as_ref());
-        if !git::trees_differ(&repo, &compared, branch)? {
-            continue;
-        }
-        let ahead = git::log_messages(&repo, &compared, branch)?.len();
-        return Err(Error::Invalid {
-            reason: format!(
-                "branch {branch:?} already carries {ahead} commit(s) that {base} does not, in \
-                 {held}. A session cuts its branch fresh from {base}, so this one would \
-                 report {branch:?} and carry none of them, and it could not hand the name back \
-                 either. `onevcs recoverable` lists that branch with the command that lands it: \
-                 land it first, or open this session under a name nothing carries",
-                held = repo.display(),
-            ),
-        });
+    if let crate::publish::Reconciled::Settled =
+        crate::publish::reconcile(worktree, integrated, branch, None)?
+    {
+        return Ok(());
     }
-    // Origin's copy is the other place the name can already mean something, and it
-    // is the one no checkout of this identity has to have seen: the branch is read
-    // from the execution checkout's remote-tracking refs, which the fetch above has
-    // just brought up to date.
-    let remote = format!("origin/{branch}");
-    if git::ref_exists(execution, &format!("refs/remotes/{remote}")) {
-        let compared = crate::vcs::base_ref(execution, base);
-        if git::trees_differ(execution, &compared, &remote)? {
-            let ahead = git::log_messages(execution, &compared, &remote)?.len();
-            return Err(Error::Invalid {
-                reason: format!(
-                    "origin already carries branch {branch:?}, with {ahead} commit(s) that \
-                     {base} does not. A session cuts its branch fresh from {base}, so this \
-                     one would report {branch:?}, carry none of them, and have its publishing \
-                     push rejected as a non-fast-forward. Open this session under a name nothing \
-                     carries: a branch only origin has is not one a session adopts"
-                ),
-            });
-        }
+    Err(Error::SyncConflict {
+        reason: format!(
+            "{integrated} conflicts with branch {branch:?} at {tip}, which is the copy in {at} \
+             this session would continue, so opening it would leave a conflict in a worktree \
+             nobody asked to resolve. The branch is untouched. Resolve the conflict on it — check \
+             it out in {publication} and merge {integrated} into it — and open this session \
+             again, or land it as it stands with `{land}`",
+            tip = opened.tip,
+            at = opened.at(),
+            publication = publication.display(),
+            land = guidance::command([
+                "onevcs",
+                "publish-branch",
+                branch,
+                "--repo",
+                &publication.to_string_lossy(),
+            ]),
+        ),
+    })
+}
+
+/// Why a session whose branch is its own base is refused, and what to write instead.
+///
+/// The base is what a session's work is merged with and published into, so a session
+/// whose base is its own branch is compared against itself: whatever it commits is
+/// already in its base, and publishing it answers that there is nothing to publish
+/// however much work it holds. Naming both was the only way to say "continue this
+/// branch" before a pin that names an existing branch meant exactly that, so the
+/// refusal names the spelling that replaced it.
+fn same_branch_and_base(base: &Ref) -> Error {
+    Error::Invalid {
+        reason: format!(
+            "branch {base:?} is also this session's base, so it would be published into itself \
+             and every publication of it would answer that there is nothing to publish. Pass \
+             `--branch {base}` on its own — a branch that already exists is continued from its \
+             own tip — and pass `--base` only to name the branch this work is merged with and \
+             published into"
+        ),
     }
-    Ok(())
 }
 
 fn execution_checkout(
