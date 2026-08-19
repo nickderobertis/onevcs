@@ -16,8 +16,9 @@
 //!
 //! What it borrows is objects and not *refs*: cloning from a local path maps the
 //! lender's local branches into the clone's `refs/remotes/origin/*`, so origin's own
-//! refs — which are what a session is cut at, and what every diff of it afterwards is
-//! addressed from — are copied over separately, by [`git::carry_remote_refs`].
+//! refs — which are what a session is cut at or continued from, and what every diff
+//! of it afterwards is addressed from — are copied over separately, by
+//! [`git::carry_remote_refs`].
 //!
 //! A clone is disposable, so anything that must outlive it — a preserved branch, a
 //! pushed branch, a recovery attestation — is copied back into the execution

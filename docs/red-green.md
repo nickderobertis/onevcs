@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 117. Tests observed red and then green: 149.
+Patches: 121. Tests observed red and then green: 154.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -82,6 +82,25 @@ an argument a shell would split is printed as it is.
 --repo is rendered through a lossy conversion instead of being refused when it is not text.
 
 - RED `a_repository_path_that_is_not_text_is_refused_as_the_argument_it_is` — Unexpected stderr, failed var.contains(is not valid UTF-8)
+
+### `100-a-copy-is-taken-rather-than-compared`
+
+the copies of a continued branch stop being compared — a checkout's is taken whatever origin holds.
+
+- RED `a_continued_branch_opens_at_whichever_copy_carries_the_other` — the session opens at origin's copy, which carries this checkout's
+- RED `copies_of_a_continued_branch_that_diverged_are_refused_rather_than_one_being_chosen` — Unexpected return code, failed var == 2
+
+### `101-a-branch-may-be-its-own-base-again`
+
+a session may name its own branch as its base again, and publish it into itself.
+
+- RED `a_session_whose_base_is_its_own_branch_is_refused_naming_the_spelling_that_replaced_it` — Unexpected return code, failed var == 2
+
+### `102-a-continued-session-conflict-names-no-way-out`
+
+the refusal a continued branch's conflict gives names neither the copy it is in nor the command that lands it.
+
+- RED `a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it` — Unexpected stderr, failed var.contains(<tmp>/project)
 
 ### `10-the-subject-is-checked-after-the-attestation`
 
@@ -248,23 +267,17 @@ the report does not say which identity it answered for.
 
 - RED `a_scoped_recoverable_answer_names_the_identity_it_covers` — Unexpected stdout, failed var.contains(No preserved unpublished branches in)
 
-### `36-a-pin-is-cut-fresh-and-says-nothing`
-
-a pinned branch name is taken on trust.
-
-- RED `a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh` — Unexpected return code, failed var == 2
-
 ### `37-a-spent-name-answers-for-a-live-one`
 
 the first repository to hold a name answers for it, spent or not.
 
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
 
 ### `38-a-spent-copy-of-a-name-is-published`
 
 a branch is located by name alone, spent copy or not.
 
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — git show main:b.txt failed in <tmp>/project.git:
 
 ### `39-a-base-nobody-can-reach-judges-the-branch`
 
@@ -515,17 +528,17 @@ the clone takes the lender's local branches for origin's own refs.
 
 - RED `a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch` — assertion `left == right` failed: the worktree is cut at what origin holds, not at what the lender remembers
 
-### `75-a-pinned-resume-cuts-a-second-worktree`
-
-a pinned branch a session already holds is not resumed.
-
-- RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — Unexpected failure.
-
 ### `75-an-ambiguous-reference-answers-with-the-first-candidate`
 
 status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
 
 - RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected return code, failed var == 2
+
+### `75-a-pinned-resume-cuts-a-second-worktree`
+
+a pinned branch a session already holds is not resumed.
+
+- RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — assertion `left == right` failed: a pinned branch a session holds is that session
 
 ### `76-a-branch-a-session-still-holds-is-handed-to-the-verb-for-preserved-work`
 
@@ -631,18 +644,18 @@ the copy a landing chose is no longer said, so a stale selection and a current o
 - RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — the copy that was published is named:
 - RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — the copy the answer came from is named:
 
-### `82-a-wordless-refusal-is-reported-as-nothing`
-
-a hook that refuses without writing anything is reported as a refusal with nothing after it.
-
-- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
-
 ### `82-an-alternate-name-is-dropped`
 
 import writes the branch's own name whatever --as asked for, so work whose name is already spent has nowhere to go.
 
 - RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected stdout, failed var.contains(imported preserved/held)
 - RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
+### `82-a-wordless-refusal-is-reported-as-nothing`
+
+a hook that refuses without writing anything is reported as a refusal with nothing after it.
+
+- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
 
 ### `83-a-choice-nobody-made-is-announced-anyway`
 
@@ -712,7 +725,6 @@ a filesystem that will not say whether a hook is there is read as saying there i
 the copies whose content the base already carries are left out of the comparison, so a lone work-carrying copy is chosen beside a tip nothing descends from.
 
 - RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected return code, failed var == 2
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
 
 ### `86-the-report-does-not-say-which-shape-it-is`
 
@@ -749,7 +761,7 @@ the copies whose commit a checkout cannot see are asked about anyway, so an abse
 - RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_to_it` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — the spent copy is compared like any other:
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — Unexpected failure.
 
 ### `91-a-character-that-renders-as-nothing-is-passed-through`
 
@@ -795,4 +807,19 @@ the branch-keyed verbs stop carrying the caller's body into the publication.
 the record stops quoting the approved sentence the branch-keyed body options depart from.
 
 - RED `the_record_names_the_body_sentence_the_branch_keyed_verbs_depart_from` — docs/inferred-surface.md must quote the sentence the branch-keyed body options depart from, so a reader of either document finds the other
+
+### `98-a-pinned-branch-is-cut-fresh-over-the-work`
+
+a pinned branch goes back to being cut fresh from the base whatever already carries it.
+
+- RED `a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh` — the work is in the worktree: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+- RED `a_continued_branch_publishes_the_commits_its_base_does_not_carry` — the session continues the branch's own work
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — the second use opens on the branch the first one left, with the base it has since landed on merged in
+
+### `99-a-continued-session-never-merges-its-base`
+
+a continued session stops merging the base it publishes into.
+
+- RED `a_continued_branch_publishes_the_commits_its_base_does_not_carry` — and the base it publishes into is merged in
+- RED `a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it` — Unexpected return code, failed var == 3
 
