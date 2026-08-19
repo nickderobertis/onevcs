@@ -309,8 +309,10 @@ fn a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_te
     );
     let run_root = only_run_root(&family);
 
-    // Every floor lowered: nothing but the occupancy lease may be what saves it.
-    backdate(&run_root, 72);
+    // Every floor lowered: with a floor of nought, age cannot be what saves it and
+    // nothing but the occupancy lease is left. Deliberately not backdated as well —
+    // walking a tree a publication is writing into races its own lock files, and the
+    // floor already says what the backdate would.
     let report = swept(&fixture, &["--min-age-hours", "0"]);
     assert!(
         run_root.is_dir(),
