@@ -236,7 +236,11 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
     // and merges its base first, and a refusal after those is one an operator cannot
     // undo.
     let title = explicit_title(args.title.as_ref())?;
-    let body = explicit_body(args)?;
+    let body = explicit_body(
+        &["onevcs", "publish", &args.token],
+        args.body.as_ref(),
+        args.body_file.as_deref(),
+    )?;
     let publication = crate::publish(
         providers,
         &SessionToken(args.token.clone()),
@@ -311,22 +315,33 @@ fn explicit_title(title: Option<&String>) -> Result<Option<Subject>> {
 /// that guessed which would open a change request nobody wrote. The file is the
 /// form a real body arrives in — it is prose, and prose does not survive a shell
 /// argument — so a path that cannot be read names itself rather than the option.
-fn explicit_body(args: &PublishArgs) -> Result<Option<String>> {
-    match (args.body.as_ref(), args.body_file.as_ref()) {
-        (Some(_), Some(path)) => Err(error::invalid(format!(
-            "--body and --body-file both name the body of the change request, and it is opened \
-             with one body. Keep the one that holds it: `{}` for the body in {}, or `{}` for the \
-             text as typed",
-            guidance::command([
-                "onevcs",
-                "publish",
-                &args.token,
-                "--body-file",
-                &path.to_string_lossy()
-            ]),
-            path.display(),
-            guidance::command(["onevcs", "publish", &args.token, "--body", "TEXT"]),
-        ))),
+///
+/// Three commands take the pair, so `invocation` is the verb and operands the
+/// caller actually typed: a refusal is only worth reading if the command it prints
+/// is the one to re-run, and a `publish` invocation printed at an operator who
+/// named a branch is a command that does not exist.
+fn explicit_body(
+    invocation: &[&str],
+    body: Option<&String>,
+    body_file: Option<&Path>,
+) -> Result<Option<String>> {
+    match (body, body_file) {
+        (Some(_), Some(path)) => {
+            let named = path.to_string_lossy();
+            let keeping = |option: &str, value: &str| {
+                let mut argv = invocation.to_vec();
+                argv.extend([option, value]);
+                guidance::command(argv)
+            };
+            Err(error::invalid(format!(
+                "--body and --body-file both name the body of the change request, and it is \
+                 opened with one body. Keep the one that holds it: `{}` for the body in {}, or \
+                 `{}` for the text as typed",
+                keeping("--body-file", &named),
+                path.display(),
+                keeping("--body", "TEXT"),
+            )))
+        }
         (Some(body), None) => Ok(Some(body.clone())),
         (None, Some(path)) => std::fs::read_to_string(path)
             .map(Some)
@@ -338,6 +353,17 @@ fn explicit_body(args: &PublishArgs) -> Result<Option<String>> {
 fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
     let title = explicit_title(args.title.as_ref())?;
+    let body = explicit_body(
+        &[
+            "onevcs",
+            "recover",
+            &args.branch,
+            "--repo",
+            &args.repo.to_string_lossy(),
+        ],
+        args.body.as_ref(),
+        args.body_file.as_deref(),
+    )?;
     let token = format!("recover-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
     report_publication(recover::run(
@@ -345,6 +371,7 @@ fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
         &args.repo,
         &args.branch,
         title,
+        body,
         providers.hosting,
         &mut stream,
     ))
@@ -353,6 +380,17 @@ fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
 fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
     let title = explicit_title(args.title.as_ref())?;
+    let body = explicit_body(
+        &[
+            "onevcs",
+            "publish-branch",
+            &args.branch,
+            "--repo",
+            &args.repo.to_string_lossy(),
+        ],
+        args.body.as_ref(),
+        args.body_file.as_deref(),
+    )?;
     let token = format!("publish-branch-{}", policy::branch_slug(&args.branch));
     let mut stream = Stream::open(&token)?;
     report_publication(publish_branch::run(
@@ -360,6 +398,7 @@ fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result
         &args.repo,
         &args.branch,
         title,
+        body,
         args.policy,
         providers.hosting,
         &mut stream,

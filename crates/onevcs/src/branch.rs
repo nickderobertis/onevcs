@@ -462,6 +462,7 @@ impl Landing {
     pub fn publish(
         &self,
         title: Option<Subject>,
+        body: Option<String>,
         hosting: &dyn Hosting,
         stream: &mut Stream,
     ) -> Result<PublishOutcome> {
@@ -486,10 +487,10 @@ impl Landing {
             },
             run_root: self.run_root.clone(),
             title,
-            // Neither branch-keyed verb takes a body: they are reached by an
-            // operator naming a branch, not by a caller that drafted one, and the
-            // option to pass one belongs where there is something to pass.
-            body: None,
+            // Both branch-keyed verbs carry a caller's body now: a branch is landed
+            // by whichever verb its provenance belongs to, and which one that was is
+            // no reason for the change request to describe itself differently.
+            body,
             trailers: Vec::new(),
             provenance: self.trailers.clone(),
             hosting,

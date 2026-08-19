@@ -235,9 +235,8 @@ fn a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_requi
         .events_of("publish-branch-feature-reviewed", "change-opened");
     assert_eq!(opened.len(), 1, "one change request was opened");
     assert_eq!(opened[0]["payload"]["base"], "main");
-    // …and with no body: this verb is reached by an operator naming a branch, not by
-    // a caller that drafted one, so there is nothing to open it with and nothing is
-    // composed to stand in.
+    // …and with no body, because nobody gave it one: this verb takes a caller's
+    // body now, and an absent one is still absent — nothing is composed to stand in.
     assert_eq!(
         hosted.world.change_request_body(1),
         "",
@@ -410,6 +409,184 @@ fn an_explicit_title_is_the_subject_a_branch_publishes_under() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("the explicit title is blank"));
+}
+
+/// The title one change request the substituted host opened was given.
+fn change_request_title(hosted: &Hosted, number: usize) -> String {
+    let path = hosted.world.path(format!("gh-state/pr-{number}.title"));
+    let recorded = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!("the host records every title: {} — {error}", path.display())
+    });
+    recorded.trim_end_matches('\n').to_owned()
+}
+
+#[test]
+fn a_complete_branch_opens_its_change_request_with_the_body_the_caller_drafted() {
+    // The verb most branches on a hosted repository land through, now that a caller
+    // drafts the description out of band: what it opens has to be that description
+    // and nothing else, whichever of the two spellings it arrives in.
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(&hosted, "feature/drafted", "feat: add the drafted thing");
+    let drafted = "## What\n\nThe thing the branch adds.\n\n\
+                   ## Why\n\nBecause an empty change request tells a reviewer nothing.\n";
+    let file = hosted.world.path("drafted-body.md");
+    std::fs::write(&file, drafted).expect("a drafted body");
+
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/drafted",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+            "--title",
+            "feat: land the drafted thing",
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    // The file's own bytes, whole: nothing composed, trimmed, or appended.
+    assert_eq!(hosted.world.change_request_body(1), drafted);
+    // …and the title is the title, which the body neither supplied nor overrode.
+    assert_eq!(
+        change_request_title(&hosted, 1),
+        "feat: land the drafted thing"
+    );
+
+    // The other half of that independence: a body with no title still publishes
+    // under the subject composed from the branch.
+    finished_hosted_branch(
+        &hosted,
+        "feature/typed",
+        "feat: add the thing described as typed",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/typed",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+            "--body",
+            "One line, as typed.",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    assert_eq!(hosted.world.change_request_body(2), "One line, as typed.");
+    assert_eq!(
+        change_request_title(&hosted, 2),
+        "feat: add the thing described as typed",
+        "the subject still comes off the branch when only a body was given"
+    );
+}
+
+#[test]
+fn naming_a_branchs_body_twice_is_refused_by_the_invocation_that_keeps_each_one() {
+    let hosted = Hosted::new(REVIEWED);
+    finished_hosted_branch(
+        &hosted,
+        "feature/two-bodies",
+        "feat: add the described thing",
+    );
+    let file = hosted.world.path("drafted-body.md");
+    std::fs::write(&file, "The body that was drafted.\n").expect("a drafted body");
+
+    // Two bodies is a caller that meant one of them, and the refusal names the two
+    // options and the command that keeps each — for the verb and operands actually
+    // typed, because a `publish` invocation printed at somebody who named a branch
+    // is a command that does not exist.
+    let repo = hosted.checkout.to_string_lossy().into_owned();
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/two-bodies",
+            "--repo",
+            &repo,
+            "--body",
+            "The body that was typed.",
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--body and --body-file"))
+        .stderr(predicate::str::contains(format!(
+            "onevcs publish-branch feature/two-bodies --repo {repo} --body-file {}",
+            file.display()
+        )))
+        .stderr(predicate::str::contains(format!(
+            "onevcs publish-branch feature/two-bodies --repo {repo} --body TEXT"
+        )));
+
+    // Refused before anything was cloned or committed: no change request, and the
+    // branch never reached the origin.
+    assert!(
+        !hosted.world.path("gh-state/pr-1.env").exists(),
+        "a refused publication opens no change request"
+    );
+    assert!(
+        !hosted
+            .world
+            .git_raw(
+                &hosted.origin,
+                &["rev-parse", "--verify", "refs/heads/feature/two-bodies"]
+            )
+            .status
+            .success(),
+        "a refused publication pushes nothing"
+    );
+
+    // A path that is not there names itself rather than the option, and publishes
+    // nothing either.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/two-bodies",
+            "--repo",
+            &repo,
+            "--body-file",
+            &hosted.world.path("nobody-wrote-this.md").to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot read the change request's body from",
+        ))
+        .stderr(predicate::str::contains("nobody-wrote-this.md"));
+    assert!(
+        !hosted.world.path("gh-state/pr-1.env").exists(),
+        "a body that could not be read opens no change request"
+    );
+
+    // Keeping one of them is what the refusal said to do, and it lands.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/two-bodies",
+            "--repo",
+            &repo,
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    assert_eq!(
+        hosted.world.change_request_body(1),
+        "The body that was drafted.\n"
+    );
 }
 
 #[test]

@@ -21,6 +21,8 @@
 // it. Scripting the substituted host is likewise how a test says what GitHub reports;
 // it is the external boundary, not an internal being reached around. Every assertion
 // below still drives the real binary.
+use std::path::PathBuf;
+
 use predicates::prelude::*;
 
 use crate::lifecycle::Fixture;
@@ -1983,23 +1985,27 @@ fn a_repository_with_no_remote_still_opens_and_closes_a_session() {
         .contains("feature/offline"));
 }
 
-#[test]
-fn a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_at_all() {
-    let world = World::new();
-    let origin = world.bare_origin("attested");
-    let checkout = world.clone_of(&origin, "attested");
+/// A hosted identity holding interrupted work on `branch`, and where it lives.
+///
+/// The state `recover` is reached in, built the way an operator reaches it: a
+/// session that committed half its work, adopted the rest uncommitted — which is
+/// what writes the incomplete marker — and closed, handing the branch back. The
+/// identity's merge path is the gate, so a recovery has something to attest with.
+fn interrupted_work(world: &World, name: &str, branch: &str) -> (PathBuf, PathBuf) {
+    let origin = world.bare_origin(name);
+    let checkout = world.clone_of(&origin, name);
     world
         .onevcs()
         .args([
             "register",
             &checkout.to_string_lossy(),
             "--origin",
-            "https://github.com/acme-corp/attested.git",
+            &format!("https://github.com/acme-corp/{name}.git"),
         ])
         .assert()
         .success();
     configure_rules(
-        &world,
+        world,
         "version: 1\nrules: []\n\
          default: {publication: change-open, approvals: required, gate: {kind: pre-push}}\n",
     );
@@ -2008,29 +2014,27 @@ fn a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_
 
     let assert = world
         .onevcs()
-        .args([
-            "session",
-            "open",
-            "attested",
-            "--branch",
-            "feature/interrupted",
-        ])
+        .args(["session", "open", name, "--branch", branch])
         .assert()
         .success();
     let token = token_of(&assert.get_output().stdout);
     let worktree = worktree_of(&assert.get_output().stdout);
     world.commit_file(&worktree, "one.txt", "one\n", "feat: the first half");
     std::fs::write(worktree.join("half.txt"), "half\n").expect("uncommitted work");
-    world
-        .onevcs()
-        .args(["session", "adopt", &token])
-        .assert()
-        .success();
-    world
-        .onevcs()
-        .args(["session", "close", &token])
-        .assert()
-        .success();
+    for stage in [["session", "adopt"], ["session", "close"]] {
+        world
+            .onevcs()
+            .args([stage[0], stage[1], &token])
+            .assert()
+            .success();
+    }
+    (origin, checkout)
+}
+
+#[test]
+fn a_recovery_given_no_body_carries_its_attestation_on_the_branch_and_opens_with_none() {
+    let world = World::new();
+    let (origin, checkout) = interrupted_work(&world, "attested", "feature/interrupted");
 
     world
         .onevcs()
@@ -2062,6 +2066,144 @@ fn a_recovered_change_request_carries_its_attestation_on_the_branch_and_no_body_
         "",
         "a recovery composes no body either"
     );
+}
+
+#[test]
+fn a_recovery_opens_its_change_request_with_the_body_the_caller_drafted() {
+    // The other half of what a preserved branch loses: an operator resuming one has
+    // a drafted description in hand, and before this there was nowhere to put it —
+    // so every change request `recover` opened described itself as nothing at all.
+    let world = World::new();
+    let (origin, checkout) = interrupted_work(&world, "drafted", "feature/interrupted");
+    let drafted = "## What\n\nThe half that was interrupted, finished.\n\n\
+                   ## Why\n\nBecause a reviewer reads this and not the branch name.\n";
+    let file = world.path("drafted-body.md");
+    std::fs::write(&file, drafted).expect("a drafted body");
+
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/interrupted",
+            "--repo",
+            &checkout.to_string_lossy(),
+            "--title",
+            "feat: land the interrupted half",
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    // The file's own bytes, whole — beside an attestation that still travels on the
+    // commits rather than in what a reviewer reads.
+    assert_eq!(world.change_request_body(1), drafted);
+    let title = std::fs::read_to_string(world.path("gh-state/pr-1.title")).expect("a title");
+    assert_eq!(
+        title.trim_end_matches('\n'),
+        "feat: land the interrupted half"
+    );
+    let pushed = world.git(&origin, &["log", "--format=%B", "feature/interrupted"]);
+    assert!(
+        pushed.contains("Onevcs-Recovered-Incomplete:"),
+        "a body changes nothing about what the branch carries:\n{pushed}"
+    );
+}
+
+#[test]
+fn naming_a_recoverys_body_twice_is_refused_before_anything_is_attested() {
+    let world = World::new();
+    let (origin, checkout) = interrupted_work(&world, "two-bodies", "feature/interrupted");
+    let file = world.path("drafted-body.md");
+    std::fs::write(&file, "The body that was drafted.\n").expect("a drafted body");
+
+    // Named for the verb and operands actually typed: an operator who reached this
+    // by naming a branch cannot re-run a `publish` invocation.
+    let repo = checkout.to_string_lossy().into_owned();
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/interrupted",
+            "--repo",
+            &repo,
+            "--body",
+            "The body that was typed.",
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--body and --body-file"))
+        .stderr(predicate::str::contains(format!(
+            "onevcs recover feature/interrupted --repo {repo} --body-file {}",
+            file.display()
+        )))
+        .stderr(predicate::str::contains(format!(
+            "onevcs recover feature/interrupted --repo {repo} --body TEXT"
+        )));
+
+    // Before the attestation as well as before the publication: the branch is
+    // exactly as it was left, marker and all, and nothing reached the host.
+    assert!(
+        !world.path("gh-state/pr-1.env").exists(),
+        "a refused recovery opens no change request"
+    );
+    assert!(
+        !world
+            .git_raw(
+                &origin,
+                &["rev-parse", "--verify", "refs/heads/feature/interrupted"]
+            )
+            .status
+            .success(),
+        "a refused recovery pushes nothing"
+    );
+    let preserved = world.git(&checkout, &["log", "--format=%B", "feature/interrupted"]);
+    assert!(
+        !preserved.contains("Onevcs-Recovered-Incomplete:"),
+        "…and nothing was attested:\n{preserved}"
+    );
+
+    // A path that is not there names itself rather than the option, and attests
+    // nothing either.
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/interrupted",
+            "--repo",
+            &repo,
+            "--body-file",
+            &world.path("nobody-wrote-this.md").to_string_lossy(),
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot read the change request's body from",
+        ))
+        .stderr(predicate::str::contains("nobody-wrote-this.md"));
+    assert!(
+        !world.path("gh-state/pr-1.env").exists(),
+        "a body that could not be read opens no change request"
+    );
+
+    // Keeping one of them is what the refusal said to do, and it lands.
+    world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/interrupted",
+            "--repo",
+            &repo,
+            "--body-file",
+            &file.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    assert_eq!(world.change_request_body(1), "The body that was drafted.\n");
 }
 
 #[test]

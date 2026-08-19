@@ -23,11 +23,22 @@ use crate::rules::MergePolicy;
 use crate::stream::Stream;
 
 /// Verify and publish a complete branch under its identity's policy.
+///
+/// One parameter per operand the verb takes, which is one more than clippy counts
+/// as a list worth grouping: the four a caller may say something with — the title,
+/// the body, the policy, and the host to publish through — are exactly what
+/// `onevcs publish-branch` accepts, and a struct holding them here would be a
+/// second shape for the same arguments that `recover::run` passes positionally.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the verb's own operands, kept in step with recover::run"
+)]
 pub fn run(
     registry: &Registry,
     repo: &Path,
     branch: &str,
     title: Option<Subject>,
+    body: Option<String>,
     policy: Option<MergePolicy>,
     hosting: &dyn Hosting,
     stream: &mut Stream,
@@ -57,5 +68,5 @@ pub fn run(
     }
 
     landing.sync_change_base(stream)?;
-    landing.publish(title, hosting, stream)
+    landing.publish(title, body, hosting, stream)
 }
