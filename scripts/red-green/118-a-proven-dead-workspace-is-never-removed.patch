@@ -6,10 +6,10 @@ Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index e904725..bbbf87f 100644
+index cd01192..3011e7f 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -221,20 +221,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+@@ -253,20 +253,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
          });
          return;
      }
@@ -33,4 +33,4 @@ index e904725..bbbf87f 100644
 +    });
  }
  
- /// When a run root was last written, read as the newest of its own timestamp and
+ /// When anything under a run root was last written, however deep.

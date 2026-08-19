@@ -1,11 +1,11 @@
 Mutation: a workspace this host may not remove is reported as reclaimed anyway, so a report says the disk was freed by a directory that is still there.
-Red: a_workspace_this_host_may_not_remove_is_reported_rather_than_failing_the_sweep
+Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index e291a0b..2b64dac 100644
+index cd01192..6382256 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -256,19 +256,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+@@ -253,19 +253,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
          });
          return;
      }
