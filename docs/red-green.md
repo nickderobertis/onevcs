@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 136. Tests observed red and then green: 162.
+Patches: 136. Tests observed red and then green: 163.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -125,6 +125,7 @@ the row of a branch a live session holds is printed as ready to resume, with the
 a preserved branch's lines stop being weighed, so one that removes far more than it adds is reported exactly as a healthy one.
 
 - RED `a_branch_that_removes_more_than_it_adds_is_marked_in_both_renderings` — assertion `left == right` failed: the lines it would land, counted from where it forked: [
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — assertion `left == right` failed: the count is of the lines git counted: [
 
 ### `107-a-diverged-pair-is-refused-without-saying-how-the-copies-differ`
 
@@ -141,9 +142,10 @@ a file git compares as binary stops being left out of the line count, so its `-`
 
 ### `109-the-net-negative-boundary-takes-a-branch-that-is-even`
 
-the net-negative boundary stops being strict, so a branch that adds exactly as much as it removes is marked as one that strips work.
+the net-negative boundary stops being strict, so a branch that adds exactly as much as it removes is a mark this type will hold.
 
 - RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — feature/one-for-one is not net-negative: [
+- RED `the_reported_shapes_serialize_the_way_a_json_consumer_reads_them` — (5, 5) added and removed is not a net-negative change
 
 ### `10-the-subject-is-checked-after-the-attestation`
 
@@ -174,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpDgzZhL-project-10be2c8ce61d/runs/<token>/clone stands on its own parent 90d6769fcbb05fb0865173
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp256xK0-project-f1fb2b6e3fe9/runs/<token>/clone stands on its own parent 0692f0aea11bb1ce598cdf
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -188,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpb3RT6z-project-ac2f89ac3f73/runs/<token>/clone stands on its own parent c07b0fb2d8f53ee971f03d
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp4hPcNm-project-5e6059728017/runs/<token>/clone stands on its own parent a6c53a6b08a2afddf563cb
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
