@@ -1,0 +1,24 @@
+Mutation: the age floor stops bounding what a sweep considers, so a workspace written moments ago is reaped by a sweep that was told to leave a day's work alone.
+Red: the_age_floor_bounds_what_a_sweep_considers
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index e904725..8159e14 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -195,16 +195,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+             gate::PRESERVED_LOG_DIRNAME
+         )));
+     }
+-    let age = SystemTime::now()
+-        .duration_since(last_written(run_root))
+-        .unwrap_or(Duration::ZERO);
+-    if age < min_age {
+-        return Ok(Verdict::Retain(format!(
+-            "it was written {} ago, inside the {} the age floor leaves alone",
+-            describe_duration(age),
+-            describe_duration(min_age),
+-        )));
+-    }
+     Ok(Verdict::Reclaim(lease))
+ }
+ 

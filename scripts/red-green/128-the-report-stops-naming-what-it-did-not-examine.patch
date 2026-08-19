@@ -1,0 +1,20 @@
+Mutation: the report stops naming the directories under its own root that it did not examine, so a reader cannot tell what was covered from what was passed over.
+Red: the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into
+Red: what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index e904725..9ab7bc2 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -79,10 +79,7 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
+                 if Verb::ALL.iter().any(|verb| verb.runs() == name) {
+                     continue;
+                 }
+-                report.skipped.push(Skipped {
+-                    path: entry.path(),
+-                    reason: outside_this_verb(&entry.path()),
+-                });
++                continue;
+             }
+         }
+         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

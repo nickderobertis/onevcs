@@ -1,0 +1,35 @@
+Mutation: a sweep reports what it reclaimed and removes none of it, which is the state before this verb: the directories are named and every one of them is still there.
+Red: a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed
+Red: a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication
+Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
+Red: the_age_floor_bounds_what_a_sweep_considers
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index e904725..bbbf87f 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -221,20 +221,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+         });
+         return;
+     }
+-    match std::fs::remove_dir_all(&run_root) {
+-        Ok(()) => report.reclaimed.push(Reclaimed {
+-            path: run_root,
+-            bytes,
+-        }),
+-        // Retained rather than failed: the sweep ran, and a directory it could not
+-        // remove is one more directory that is still there — which is exactly what
+-        // the retained list is for.
+-        Err(e) => report.retained.push(Retained {
+-            path: run_root,
+-            reason: format!("it could not be removed: {e}"),
+-        }),
+-    }
+     drop(lease);
++    report.reclaimed.push(Reclaimed {
++        path: run_root,
++        bytes,
++    });
+ }
+ 
+ /// When a run root was last written, read as the newest of its own timestamp and

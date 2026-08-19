@@ -1,0 +1,31 @@
+Mutation: a run root nothing ever judged answers that its gate reached a verdict, so an unfinished publication is read as a finished one.
+Red: a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason
+
+diff --git a/crates/onevcs/src/gate.rs b/crates/onevcs/src/gate.rs
+index 5e9cb43..2a17dd5 100644
+--- a/crates/onevcs/src/gate.rs
++++ b/crates/onevcs/src/gate.rs
+@@ -199,21 +199,8 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
+ /// the gate that passed and the gate that rejected — so its absence means no gate
+ /// this crate runs ever reached one there, and a run root that cannot show it was
+ /// judged is retained rather than reaped.
+-pub fn has_recorded_verdict(run_root: &Path) -> bool {
+-    let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
+-        return false;
+-    };
+-    branches.flatten().any(|branch| {
+-        std::fs::read_dir(branch.path())
+-            .into_iter()
+-            .flatten()
+-            .flatten()
+-            .any(|log| {
+-                let name = log.file_name();
+-                let name = name.to_string_lossy();
+-                name.starts_with("gate-") && name.ends_with(".log")
+-            })
+-    })
++pub fn has_recorded_verdict(_run_root: &Path) -> bool {
++    true
+ }
+ 
+ /// The highest attempt number this branch's directory has ever recorded.
