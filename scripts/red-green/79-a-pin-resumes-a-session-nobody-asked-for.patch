@@ -2,14 +2,14 @@ Mutation: a pin resumes a record without asking whether it is the session asked 
 Red: a_pin_resumes_only_the_session_it_asked_for
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index 58cf575..cf80ffa 100644
+index 841a2ce..7a937ae 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
-@@ -730,18 +730,6 @@ fn resumable(
+@@ -760,19 +760,8 @@ fn resumable(
      let mut held = all()?.into_iter().filter(|record| {
          record.identity == resolution.key
-             && *record.branch == *branch
--            && *record.base == *wanted
+             && record.branch == *branch
+-            && record.base == *base
 -            // Closing a session is the statement that it is finished: it hands the
 -            // branch back to the execution checkout and lets its worktree go. A name
 -            // taken again after that is a new session under a spent name, which is a
@@ -22,5 +22,7 @@ index 58cf575..cf80ffa 100644
 -            && record.run_root.is_dir()
 -            && record.clone.is_dir()
      });
++    let _ = (base, execution);
      let (Some(candidate), None) = (held.next(), held.next()) else {
          return Ok(None);
+     };

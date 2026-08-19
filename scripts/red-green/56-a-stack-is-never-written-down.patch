@@ -1,23 +1,35 @@
 Mutation: the tip a session was cut from is never written down, so no session records a stack.
 Red: a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life
 
-
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index bf527c9..39fff1c 100644
+index 841a2ce..1e885d6 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
-@@ -607,13 +607,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
-         base.to_string()
+@@ -1000,13 +1000,8 @@ fn cut_or_continue(
      };
-     git::worktree_add(&clone, &worktree, &branch, &start)?;
--    // Read off the worktree that was just cut, which is where the commit it was cut at
--    // is by construction — asking the name it was cut from again could answer
--    // something else, or nothing.
--    let stack_tip = match &root {
--        Some(root) if **root != *base => Some(git::head_sha(&worktree)?),
+     let Some(continued) = continued else {
+         git::worktree_add(clone, worktree, branch, &integrated)?;
+-        // Read off the worktree that was just cut, which is where the commit it was
+-        // cut at is by construction — asking the name it was cut from again could
+-        // answer something else, or nothing.
+-        return match root {
+-            Some(root) if *root != **base => git::head_sha(worktree).map(Some),
+-            _ => Ok(None),
+-        };
++        let _ = root;
++        return Ok(None);
+     };
+ 
+     let opened = opened_at(clone, branch, continued)?;
+@@ -1019,10 +1014,7 @@ fn cut_or_continue(
+     // afterwards the two have the base's tip in common and the fork point is gone.
+     // A continued branch was cut from its base by something this session did not
+     // watch, so unlike a fresh cut there is nothing to read off HEAD.
+-    let stack_tip = match root {
+-        Some(root) if *root != **base => git::merge_base(clone, &integrated, branch)?,
 -        _ => None,
 -    };
 +    let stack_tip = None;
- 
-     let record = Record {
-         version: RECORD_VERSION,
+     // Unguarded, unlike the sync a publication runs: that one tolerates a base no ref
+     // names because a branch-keyed verb can be handed one, and here the base is the
+     // argument this session was opened with. A session opened against a base nothing
