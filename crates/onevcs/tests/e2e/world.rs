@@ -232,7 +232,41 @@ impl World {
 
     /// Run real git, requiring it to succeed.
     pub fn git(&self, cwd: &Path, args: &[&str]) -> String {
-        let output = self.git_raw(cwd, args);
+        self.git_env(cwd, &[], args)
+    }
+
+    /// Run real git, whatever it says.
+    pub fn git_raw(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
+        self.git_raw_env(cwd, &[], args)
+    }
+
+    /// The same with variables set for that one invocation.
+    ///
+    /// Only how a journey can pin the clock a commit records: git takes the committer
+    /// date from the environment and from nowhere else, and two commits made in the
+    /// same second cannot show which of two copies a date belongs to.
+    pub fn git_raw_env(
+        &self,
+        cwd: &Path,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> std::process::Output {
+        let mut command = Command::new("git");
+        command
+            .args(args)
+            .current_dir(cwd)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.root);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        command.output().expect("git must be installed")
+    }
+
+    /// Real git with those variables set, requiring it to succeed.
+    pub fn git_env(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> String {
+        let output = self.git_raw_env(cwd, env, args);
         assert!(
             output.status.success(),
             "git {} failed in {}:\n{}{}",
@@ -242,18 +276,6 @@ impl World {
             String::from_utf8_lossy(&output.stderr),
         );
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    }
-
-    /// Run real git, whatever it says.
-    pub fn git_raw(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
-        Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", &self.root)
-            .output()
-            .expect("git must be installed")
     }
 
     /// A real bare origin with one commit on `main`, and its clone URL.

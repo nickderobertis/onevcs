@@ -165,7 +165,10 @@ fn a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_
         (
             "preserved work held by a session that was never opened",
             serde_json::json!({
-                "version": 3,
+                // The version the hold belongs to: a document naming an older one and
+                // carrying this field would be a document disagreeing with itself, which
+                // is a different refusal from the one this case is about.
+                "version": onevcs_testing::STATE_VERSION,
                 "identities": [{
                     "origin": "github.com/acme-corp/widgets",
                     "workflow": "remote",

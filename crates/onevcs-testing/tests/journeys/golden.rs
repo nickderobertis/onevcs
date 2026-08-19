@@ -258,8 +258,10 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
         drafted,
         "a field of the previous bump is written to the carried-forward document"
     );
-    // …and so is a field of this one: the row the carried-forward document held is
-    // written back with the hold this build answers for that still-open session.
+    // …and this bump's two are absent for the reason they are absent: the session that
+    // preserved that row is closed, so nothing holds its branch and no line count was
+    // asked for. A carried-forward document says what this build answers, not what the
+    // build that wrote it could not.
     let carried = std::fs::read_to_string(&vcs_path).expect("a document");
     assert!(
         carried.contains(r#""version": 4"#) && !carried.contains("held_by"),

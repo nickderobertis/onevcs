@@ -2087,6 +2087,15 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
         "mine\n",
         "fix: the resolution in the session",
     );
+    // Twice in the session, so the two copies stand on two different parents: an
+    // operator choosing between them reads the parent to see where each one starts,
+    // and a refusal that named one parent for both would be describing an amend.
+    fixture.world.commit_file(
+        &worktree,
+        "mine-again.txt",
+        "and more\n",
+        "fix: what the session did next",
+    );
     fixture
         .world
         .git(&fixture.checkout, &["checkout", "-q", "feature/two-ways"]);
@@ -2137,7 +2146,7 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
         "the refusal says how the two copies differ:\n{refusal}"
     );
     for subject in [
-        "fix: the resolution in the session",
+        "fix: what the session did next",
         "fix: a different resolution in the checkout",
     ] {
         assert!(
@@ -2145,6 +2154,37 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
             "…naming each copy's own subject:\n{refusal}"
         );
     }
+    // Each copy's parent and commit date, against the checkout that holds it: these
+    // two copies fork at different commits, so a refusal that crossed them would name
+    // a parent under the wrong path while still containing both values.
+    let parents: Vec<String> = [(&clone, &mine), (&fixture.checkout, &theirs)]
+        .iter()
+        .map(|(checkout, tip)| {
+            let read = |format: &str| {
+                fixture
+                    .world
+                    .git(checkout, &["log", "-1", &format!("--format={format}"), tip])
+            };
+            let parent = read("%P");
+            assert!(
+                refusal.contains(&format!(
+                    "the copy in {path} stands at {tip}, on parent(s) {parent:?}",
+                    path = checkout.display(),
+                )),
+                "the copy in {} stands on its own parent {parent}:\n{refusal}",
+                checkout.display()
+            );
+            assert!(
+                refusal.contains(&format!("and the commit date {}", read("%cI"))),
+                "…and names when it was committed:\n{refusal}"
+            );
+            parent
+        })
+        .collect();
+    assert_ne!(
+        parents[0], parents[1],
+        "the journey is about two copies that fork at different commits"
+    );
 
     // The refusal's own guidance is what resolves it: the fetch it prints brings the
     // other copy in, and once one checkout carries both, the landing it names goes
@@ -2183,6 +2223,9 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
     // the same parent under the same subject. The refusal is correct: publishing either
     // blind loses the other. What it cost was a manager comparing two trees by hand,
     // because the refusal named neither what they differ in nor how to see it.
+    // A commit date for the amended copy alone, so the pair differs in the one field
+    // that says which copy was taken second.
+    const AMENDED_AT: &str = "2026-08-19T04:42:00+00:00";
     let fixture = Fixture::local(&local_direct("[\"false\"]"));
     let (_worktree, clone) = handed_back_and_still_open(&fixture, "feature/amended");
     let original = tip_of(&fixture, &clone, "feature/amended");
@@ -2196,9 +2239,14 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
         .git(&fixture.checkout, &["checkout", "-q", "feature/amended"]);
     std::fs::write(fixture.checkout.join("fixed.txt"), "the fix\n").expect("the amended work");
     fixture.world.git(&fixture.checkout, &["add", "-A"]);
-    fixture
-        .world
-        .git(&fixture.checkout, &["commit", "-q", "--amend", "--no-edit"]);
+    // Dated, because the two copies are made seconds apart and git records a commit
+    // date to the second: two copies at one date cannot show which date belongs to
+    // which, and telling them apart is what the refusal is read for.
+    fixture.world.git_env(
+        &fixture.checkout,
+        &[("GIT_COMMITTER_DATE", AMENDED_AT)],
+        &["commit", "-q", "--amend", "--no-edit"],
+    );
     let amended = tip_of(&fixture, &fixture.checkout, "feature/amended");
     assert_ne!(
         amended, original,
@@ -2242,23 +2290,54 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
         ),
         "the refusal says how the two differ:\n{refusal}"
     );
-    for tree in [&original, &amended].map(|tip| {
-        let at = match tip == &amended {
-            true => &fixture.checkout,
-            false => &clone,
+    for (checkout, tip) in [(&fixture.checkout, &amended), (&clone, &original)] {
+        let read = |format: &str| {
+            fixture
+                .world
+                .git(checkout, &["log", "-1", &format!("--format={format}"), tip])
         };
-        fixture
-            .world
-            .git(at, &["rev-parse", &format!("{tip}^{{tree}}")])
-    }) {
+        // The whole clause rather than its parts: the facts have to arrive *attached*
+        // to the checkout they came out of, and a refusal that crossed them would name
+        // one copy's tree, parent, or date under the other's path and still contain
+        // every value.
+        let clause = format!(
+            "the copy in {path} stands at {tip}, on parent(s) {parents:?}, with the subject \
+             {subject:?}, the tree {tree}, and the commit date {committed}",
+            path = checkout.display(),
+            parents = read("%P"),
+            subject = read("%s"),
+            tree = read("%T"),
+            committed = read("%cI"),
+        );
         assert!(
-            refusal.contains(&tree),
-            "each copy's tree is named, so two trees can be told apart:\n{refusal}"
+            refusal.contains(&clause),
+            "every fact about a copy is named against the checkout it came out of; this \
+             one is not:\n{clause}\n{refusal}"
         );
     }
-    assert!(
-        refusal.contains(&format!("the subject {subject:?}")),
-        "…and the subject both of them carry:\n{refusal}"
+    // The two dates really are different, or the attribution above proves nothing.
+    let dates: Vec<String> = [(&fixture.checkout, &amended), (&clone, &original)]
+        .iter()
+        .map(|(checkout, tip)| {
+            fixture
+                .world
+                .git(checkout, &["log", "-1", "--format=%cI", tip])
+        })
+        .collect();
+    assert_eq!(
+        dates[0], AMENDED_AT,
+        "the amended copy carries its own date"
+    );
+    assert_ne!(dates[0], dates[1], "the two copies were taken at two times");
+    // …and the parent both of them stand on, which is what makes this an amend rather
+    // than two resolutions: it is stated once per copy and it is the same commit.
+    let parent = fixture
+        .world
+        .git(&clone, &["rev-parse", &format!("{original}^")]);
+    assert_eq!(
+        refusal.matches(&format!("on parent(s) {parent:?}")).count(),
+        2,
+        "both copies stand on the one parent, and both say so:\n{refusal}"
     );
 
     // And the commands that resolve it, run as they were printed: the fetch brings the

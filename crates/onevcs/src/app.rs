@@ -499,8 +499,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         println!("    Stopped because: {}", row.stopped_because);
         if let Some(net) = row.net_negative {
             println!(
-                "    Net-negative: it removes {removed} line(s) and adds {added} against {base}, \
-                 so landing it unread would strip work. Read it first with `{diff}`",
+                "    Net-negative: it removes {removed} line(s) and adds {added} since it forked \
+                 from {base}, so landing it unread would strip work. Read it first with \
+                 `{diff}`",
                 removed = net.removed,
                 added = net.added,
                 base = row.branch.base,

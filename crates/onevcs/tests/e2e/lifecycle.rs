@@ -1563,7 +1563,8 @@ fn a_branch_that_removes_more_than_it_adds_is_marked_in_both_renderings() {
         "and only that row's does:\n{reported}"
     );
     assert!(
-        reported.contains("Net-negative: it removes 400 line(s) and adds 1 against main"),
+        reported
+            .contains("Net-negative: it removes 400 line(s) and adds 1 since it forked from main"),
         "the row says what it would strip:\n{reported}"
     );
     // The command it says to read the branch with is read as it was printed: pasting
@@ -2165,7 +2166,7 @@ fn a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting
         "feat: work done in the checkout",
     );
     world.git(&fixture.checkout, &["checkout", "-q", "main"]);
-    let (_token, from_terminal) = fixture.open(&["--branch", "feature/from-a-terminal"]);
+    let (from_checkout, from_terminal) = fixture.open(&["--branch", "feature/from-a-terminal"]);
     assert!(
         from_terminal.join("terminal.txt").is_file(),
         "the work typed into the checkout is in the session's worktree"
@@ -2189,11 +2190,31 @@ fn a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting
         &elsewhere,
         &["push", "-q", "origin", "feature/pushed-elsewhere"],
     );
-    let (_token, pushed) = fixture.open(&["--branch", "feature/pushed-elsewhere"]);
+    let (from_origin, pushed) = fixture.open(&["--branch", "feature/pushed-elsewhere"]);
     assert!(
         pushed.join("far.txt").is_file(),
         "the branch only origin carries is continued at the commit origin has"
     );
+
+    // Each of the three says so on its own stream, and a caller following a run has
+    // nothing else to read: where the name was held decides which copy is opened and
+    // nothing about whether the session found work, so a path that opened at a tip
+    // without saying `continued` would report a fresh cut over somebody's branch.
+    for (what, token) in [
+        ("a checkout of the identity", &from_checkout),
+        ("origin alone", &from_origin),
+    ] {
+        let opened = world.events_of(token, "session-opened");
+        assert_eq!(opened.len(), 1, "{what}: {opened:?}");
+        assert_eq!(
+            opened[0]["payload"]["continued"], true,
+            "a branch {what} carries is continued, and the stream says so: {opened:?}"
+        );
+        assert!(
+            opened[0]["payload"]["reused"].is_null(),
+            "{what}: {opened:?}"
+        );
+    }
 
     // Every branch still holds exactly the commits it did: continuing a branch reads
     // it, and nothing here rewrites the copy it was read from.
@@ -2521,6 +2542,11 @@ fn a_continued_branch_opens_at_whichever_copy_carries_the_other() {
         tree.join("second.txt").is_file(),
         "the session opens at origin's copy, which carries this checkout's"
     );
+    // A copy chosen by ancestry is still a branch that was continued, and the stream
+    // is the only place a caller following the run can read that.
+    let opened = world.events_of(&token, "session-opened");
+    assert_eq!(opened[0]["payload"]["continued"], true, "{opened:?}");
+    assert!(opened[0]["payload"]["reused"].is_null(), "{opened:?}");
     // Closed, so the next open is a continuation rather than that session resumed —
     // an open one holding the name is taken up before any copy is compared.
     world
@@ -2544,10 +2570,15 @@ fn a_continued_branch_opens_at_whichever_copy_carries_the_other() {
         "feat: what only this checkout has",
     );
     world.git(&fixture.checkout, &["checkout", "-q", "main"]);
-    let (_token, tree) = fixture.open(&["--branch", "feature/two-ends"]);
+    let (other_way, tree) = fixture.open(&["--branch", "feature/two-ends"]);
     assert!(
         tree.join("third.txt").is_file(),
         "the unpushed commit is not left behind"
+    );
+    let opened = world.events_of(&other_way, "session-opened");
+    assert_eq!(
+        opened[0]["payload"]["continued"], true,
+        "whichever copy carries the other, the branch was continued: {opened:?}"
     );
 }
 
