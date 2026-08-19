@@ -437,18 +437,28 @@ fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     // A session's run root, which is the bounded recovery history `session open`
     // keeps so a dead run's branch stays reachable. It is under the identity's own
-    // directory rather than under either family this verb reaps.
+    // directory rather than under either family this verb reaps — and it is made to
+    // look exactly like a workspace this verb would reap, so what saves it is the
+    // boundary and nothing else: a session that published leaves a gate verdict
+    // under its own run root, and its lease goes when the process does.
     let (token, worktree) = fixture.open(&["--branch", "feature/still-reachable"]);
-    fixture
-        .world
-        .commit_file(&worktree, "one.txt", "one\n", "feat: work nobody published");
+    fixture.world.commit_file(
+        &worktree,
+        "one.txt",
+        "one\n",
+        "feat: work a session published",
+    );
     fixture
         .world
         .onevcs()
-        .args(["session", "close", &token])
+        .args(["publish", &token])
         .assert()
         .success();
     let lifecycle_root = worktree.parent().expect("a run root").to_path_buf();
+    assert!(
+        lifecycle_root.join("gate-logs").is_dir() && lifecycle_root.join("clone").is_dir(),
+        "the premise: this run root carries everything a reclaimable one carries"
+    );
     let identity_root = lifecycle_root
         .parent()
         .and_then(Path::parent)
@@ -480,6 +490,10 @@ fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
             )
             .contains("feature/still-reachable"),
         "the run clone the recovery history is for is untouched"
+    );
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
+        "and it is not counted as something reclaimed either:\n{report}"
     );
 }
 
