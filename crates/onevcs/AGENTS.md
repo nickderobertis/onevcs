@@ -155,24 +155,14 @@ correct, and the absent-hook journey is what holds that.
 
 ## `status` and `import`, and the three things easy to undo
 
-- **A landing is decided from the base's own history, and only what history cannot
-  decide is inferred from content** (`landed.rs`, asked by both `status` and
-  `vcs::collect` so the two cannot disagree about one branch). Four tiers, most
-  certain first: a recorded landing, the change request's number in the base's log, a
-  `Landed-Commit:` trailer on the base, and the content comparison last — which never
-  answers `yes`, only `no` or `unknown`. Three answers rather than two, because a
-  branch that landed with no change request and not through this crate is undecidable
-  from history and calling that `no` is what puts a paste-ready `publish-branch` under
-  work the base already carries. The comparison is scoped to the paths the branch
-  touched, and even so it cannot be the answer on its own: work landing on those paths
-  after the branch did makes a landed branch read as unpublished, which is how this
-  went wrong. So a `no` is withheld once the base's history has already taken a change
-  under the subject a landing of this branch would have carried — the last thing
-  history has to say about a `local-direct` landing, which opens no change request for
-  any tier above to read. What `status` adds over `recoverable` is that the
-  *exclusion reason* —
-  landed, undecidable, held by an open session, or genuinely preserved — is stated
-  with the tier that decided it.
+- **A landing is decided from the base's own history, never from content alone**
+  (`landed.rs`, asked by both `status` and `vcs::collect` so the two cannot disagree
+  about one branch). Four tiers, most certain first, and the answer names the one that
+  decided it; the comparison of content is last and never answers `yes`. Three answers
+  rather than two, because calling an undecidable landing `no` is what puts a
+  paste-ready `publish-branch` under work the base already carries. What `status`
+  adds over `recoverable` is the *exclusion reason*, stated with the tier that
+  decided it.
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.

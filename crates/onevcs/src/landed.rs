@@ -1,34 +1,23 @@
 //! Whether a branch's work reached the base, decided from history.
 //!
-//! This used to be one question — does `git diff --quiet <base> <branch>` come back
-//! clean — and the answer was reported as a fact. It is an inference, and it is
-//! wrong as soon as anything else touches the base: the comparison is over the
-//! *whole tree*, so a branch that landed reads as work nobody published the moment
-//! any other commit reaches the base, related or not. `recoverable` then printed a
-//! resume instruction for it, and following that instruction re-opens a change
-//! request for work the base already carries.
-//!
-//! So landing is decided from history instead, in four tiers, most certain first,
-//! and the answer names the one that decided it:
+//! Four tiers, most certain first, and the answer names the one that decided it:
 //!
 //! 1. **A recorded landing** — a landing commit recorded for this branch that the
-//!    base carries. Exact, permanent, and immune to whatever is edited afterwards.
-//! 2. **The change request's number in the base's history.** GitHub's squash
-//!    commits carry it, written by the host rather than by us, so this answers for
-//!    anything merged through the host by anybody. Bounded by the fork point.
+//!    base carries.
+//! 2. **The change request's number in the base's history**, which the host writes
+//!    into the squash commit it lands, so it answers for anything merged through
+//!    the host by anybody. Bounded by the fork point.
 //! 3. **A landing trailer**, for work that reached the base with no change request
 //!    at all — which is every `local-direct` publication this crate makes.
 //! 4. **The content comparison, last, and never as a `yes`.** What it can say is
 //!    that the base does not carry what the branch changed ([`Landed::No`]), or
 //!    that it does and nothing records why ([`Landed::Unknown`]).
 //!
-//! `git cherry` and patch ids are no help here: publication squashes many commits
-//! into one, so no patch id matches afterwards.
-//!
-//! Three answers rather than two, because the third is real: a branch that landed
-//! with no change request and not through this crate leaves nothing in history to
-//! read, and "we cannot tell" is the true answer. Reporting that as "no" is what
-//! puts a resume instruction under work that is already on the base.
+//! Two constraints the code cannot show. `git cherry` and patch ids are no help
+//! here: publication squashes many commits into one, so no patch id matches
+//! afterwards. And tier 4 must never answer `yes` — it is a comparison, not a
+//! record, and reporting it as a fact is what put a paste-ready `publish-branch`
+//! under work the base already carried.
 
 use std::path::Path;
 

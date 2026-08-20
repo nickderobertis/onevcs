@@ -214,11 +214,7 @@ pub struct Recoverable {
     /// Whether the work reached the base, and what says so.
     ///
     /// The one field on this row that decides whether the row is an instruction at
-    /// all. It used to be answered by comparing the base's whole tree with the
-    /// branch's, which is an inference and is wrong the moment anything else lands
-    /// on the base — so a branch that had landed read as work nobody published, and
-    /// this row offered a command that re-opens a change request for work the base
-    /// already carries.
+    /// all: a row whose work reached the base carries no argv.
     ///
     /// Written always and defaulted on the way in, so a stored document that
     /// predates the field reads back as the answer it gave: nothing said.
