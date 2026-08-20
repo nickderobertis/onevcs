@@ -120,30 +120,21 @@ report is most often read about — the ones a run left in its own clone.
 
 ## A publication observes, captures, and does not settle early
 
-- **What a publication watches follows the merge policy, never the gate.**
-  `change-auto` arms the host's merge and watches it to the end; `change-direct`
-  waits for the checks the host says block a merge before asking for one. A host
-  that declares *no* required check has answered, and `change-direct` proceeds on
-  that answer — the merge is then the host's own to refuse. `change-auto` is where
-  it fails closed, because its watch ends at a merge the host never performs.
-  Triggering this off the resolved `gate` instead means no identity on a host whose
-  rules name commands.
-- **`change-open` is the stated exception, and it is a decision.** A human decides
-  when a reviewed change merges, so there is no bounded wait to have and it settles
-  at change-request-open. Anything that made it wait would be waiting on a person.
-- **Evidence capture is unconditional, at every surface**, and best effort wherever
-  the thing being recorded has already happened. `record_push` stores what every
-  push wrote whatever the policy calls its gate; a conflict carries the paths git
-  left unmerged and the hunks for them, both read before the attempt is aborted,
-  which is the only moment they exist; a red required check is refused with a
-  bounded excerpt of its log. None of them may fail the command: a merge is not
-  undone by the record of it failing to be written.
-- **`FailureKind` is how a consumer tells the failures apart.** `ChecksFailed`,
-  `ChecksUnsettled`, and `PushRejected` all keep exit code 1 — the code the contract
-  fixes for a verification failure — so a process reading the code sees no change
-  while a caller branching on the kind learns which verification it was.
-  `onepipeline` routes on these names: adding a kind is additive, renaming one is
-  not.
+What a publication watches, and what it captures, is stated in the contract's
+publication amendment. Three things about *implementing* it are not.
+
+- **Polling is driven by `context.effective`, never by `context.policy.gate`.** The
+  gate is what tempts you: it has a `checks` kind, and reading it here is one line.
+  It was one line, and on a host whose every rule names a `command:` gate it meant
+  the host's required checks were observed for no repository at all.
+- **Every capture is best effort where the thing it records has already happened.**
+  `record_push`, `report_conflict`, and `record_landing` warn on stderr and carry
+  on. A `?` in any of them turns a push git accepted, or a merge the host performed,
+  into a publication that failed — and sends somebody to land work that is landed.
+- **A conflict's paths and hunks exist only before the abort**, so `git::conflict_in`
+  takes both in the same pass that decides it *was* a conflict, and reads them
+  NUL-delimited: git quotes a pathname carrying a newline or a quote in its default
+  listing, and a reader that unquoted nothing would name a file nobody has.
 
 ## The subject policy is the repository's, and this crate holds none
 

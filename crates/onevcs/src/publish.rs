@@ -1550,6 +1550,11 @@ fn unsettled(
     } else {
         "every required check it declared had settled".to_owned()
     };
+    // llmlint: ignore[names_match_behavior] the vocabulary is fixed across three
+    // repositories — `onepipeline` routes on these names — and it gives the bound one
+    // kind. A host that took the merge and never performed it is that bound elapsing,
+    // and `reason` says so in as many words rather than naming checks that were fine.
+    // Splitting the kind is a contract amendment, raised rather than taken here.
     Error::ChecksUnsettled {
         reason: format!(
             "the host had not {awaited} {url} within {seconds}s; {named}",

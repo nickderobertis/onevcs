@@ -38,15 +38,9 @@ pub const DEFAULT_CHECKS_TIMEOUT_SECONDS: f64 = 3600.0;
 /// sixty of them watching a half-hour CI run — for an answer that changes when a
 /// job finishes, not when it is asked about. `ONEVCS_CHECKS_POLL_SECONDS` still
 /// overrides it, which is how a journey proves a bound rather than waiting one out.
-// llmlint: ignore[changed_behavior_has_e2e] the *behaviour* — that the interval is read,
-// that the override wins, and that the bound ends a watch — is driven end to end by the
-// journeys that turn it down. What is left is the number, and an end-to-end assertion
-// about it could only be made by waiting it out: a journey that let this default stand
-// would sleep thirty seconds to observe one poll, which is precisely what the override
-// exists to avoid and what this repository's own note about bounds says to do instead.
-// `the_amendment_states_the_interval_this_build_asks_the_host_at` in tests/contract.rs
-// holds the number to the contract that publishes it, which is the thing a drift here
-// would break.
+// llmlint: ignore[changed_behavior_has_e2e] a journey that let this default stand would
+// sleep thirty seconds to observe one poll. The number is held to the contract that
+// publishes it by `the_amendment_states_the_interval_this_build_asks_the_host_at`.
 pub const DEFAULT_CHECKS_POLL_SECONDS: f64 = 30.0;
 
 /// The program that answers as `gh`.

@@ -1579,6 +1579,27 @@ fn a_branch_the_host_holds_is_watched_until_it_lands() {
     let stream = "publish-branch-feature-held";
     assert!(!hosted.world.events_of(stream, "merge-queued").is_empty());
     assert!(!hosted.world.events_of(stream, "change-merged").is_empty());
+
+    // And the landing is recorded where this verb keeps the branch: the clone it
+    // published from goes with its run root, so a record only that one carried would
+    // be gone with it. A session's record reaches the *execution* checkout; a
+    // branch-keyed landing's reaches the checkout it read the branch out of.
+    let sha = hosted
+        .world
+        .git(&hosted.origin, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    let recorded = hosted.world.git(
+        &hosted.checkout,
+        &["log", "--format=%B", "-1", "feature/held"],
+    );
+    assert!(
+        recorded.contains(&format!(
+            "{} {sha}",
+            documented_trailer("Landed-Commit", &documented_default_prefix())
+        )),
+        "the source checkout keeps the branch, so it keeps the record: {recorded:?}"
+    );
 }
 
 #[test]
