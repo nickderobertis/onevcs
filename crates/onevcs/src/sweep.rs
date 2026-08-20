@@ -21,6 +21,7 @@
 //! family it does not reach into rather than reaping it.
 
 use std::fmt;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -243,7 +244,9 @@ fn shows_it_may_empty_within(path: &Path) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
-    // A file is unlinked through its parent, which is asked where the parent is.
+    // A file is unlinked through its parent, and the probe below asks that parent
+    // about a file as well as a directory — so where the parent is asked, this is
+    // answered.
     if !meta.is_dir() {
         return true;
     }
@@ -296,12 +299,16 @@ fn hands_unlinks_to_owners(_directory: &Path) -> bool {
 /// `a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking` drives, over
 /// the shape it is real for: a directory this user may write into and may not open.
 ///
+/// Both kinds of entry, because a removal takes both away and a host may answer for
+/// them differently: `rmdir` and `unlink` are separate rights in an NFSv4 ACL and
+/// separate bits in a Landlock policy, so a directory that gave a subdirectory back
+/// says nothing about the files beside it.
+///
 /// Undoing the ask is the rest of the answer rather than a tidy-up beside it — an
 /// entry left behind and a clock left moved are the same outcome, a directory this
 /// could not leave as it found it and therefore says nothing about. Both retain, like
-/// every other unknown here, and neither is reachable from any interface this crate
-/// exposes: unlinking an entry takes the permission that just created one, and the
-/// clock has already been set once by the time there is anything to put back.
+/// every other unknown here, and the clock has already been set once by the time
+/// there is anything to put back.
 fn probe(directory: &Path) -> std::io::Result<()> {
     let before = std::fs::metadata(directory)?;
     let (accessed, modified) = (
@@ -312,6 +319,9 @@ fn probe(directory: &Path) -> std::io::Result<()> {
     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
     std::fs::create_dir(&entry)?;
     std::fs::remove_dir(&entry)?;
+    let file = directory.join(format!(".sweep-probe-{}", ids::unique()));
+    File::create(&file)?;
+    std::fs::remove_file(&file)?;
     filetime::set_file_times(directory, accessed, modified)
 }
 

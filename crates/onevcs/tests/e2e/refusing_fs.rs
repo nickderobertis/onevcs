@@ -5,10 +5,12 @@
 //! `DELETE_CHILD`, a network filesystem that refuses the unlink. An ordinary user
 //! can build none of those in a scratch directory — `chattr +a` answers "Operation
 //! not permitted" and the rest need a server or a privilege — and every one of them
-//! is a *filesystem* answering. So this is one: a mount whose `mkdir` succeeds and
-//! whose `rmdir` is refused. Nothing about the tool is stood in for; the kernel
-//! routes the real binary's real calls here, and the journey asserts what the sweep
-//! decided when a real directory would not give an entry back.
+//! is a *filesystem* answering. So this is one, written for the purpose: a mount that
+//! takes an entry and refuses to give it back. What it stands in for is the host —
+//! the append-only volume nobody can provision here — and not the tool: the binary,
+//! the workspace, the syscalls, and the kernel routing them are real, and what the
+//! journey asserts is what the sweep decided when a directory would not give an
+//! entry back.
 //!
 //! Linux only, because that is where an unprivileged mount needs nothing outside the
 //! distribution's own `fuse3`. **Absent, it refuses loudly rather than skipping** —
@@ -202,8 +204,13 @@ impl Filesystem for Refusing {
     }
 
     /// The whole of what this filesystem is: an entry it took and will not give back,
-    /// which is what an append-only directory answers.
+    /// which is what an append-only directory answers. Both kinds, because the probe
+    /// asks about both and a host may answer for them separately.
     fn rmdir(&mut self, _req: &Request<'_>, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
+        reply.error(libc::EPERM);
+    }
+
+    fn unlink(&mut self, _req: &Request<'_>, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
         reply.error(libc::EPERM);
     }
 
