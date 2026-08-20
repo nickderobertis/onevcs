@@ -2,11 +2,11 @@ Mutation: the lock is taken but never contended, so a second run under one check
 Red: a_second_run_under_one_checkout_is_refused_rather_than_joining_in
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index 760bf96..f693f38 100755
+index 6bd4311..3aad2da 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -309,12 +309,7 @@ if ! mkdir -p .logs; then
-   echo "ACTION: make the repository root writable by this user (.logs is gitignored and owner-only), then re-run" >&2
+@@ -316,12 +316,7 @@ if ! mkdir -p .logs 2>/dev/null; then
+   echo "ACTION: make .logs/ writable by this user (it is gitignored and owner-only), then re-run" >&2
    exit 1
  fi
 -if ! mkdir "$lock" 2>/dev/null; then
