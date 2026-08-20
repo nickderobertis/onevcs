@@ -164,20 +164,20 @@ pub fn evidence(events: &[Value], home: &Path) -> Vec<String> {
     events
         .iter()
         .flat_map(|event| {
-            let spoken = event["kind"] == "push";
+            let from_push = event["kind"] == "push";
             event["artifacts"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .map(move |artifact| (spoken, artifact))
+                .map(move |artifact| (from_push, artifact))
         })
-        .map(|(spoken, artifact)| {
+        .map(|(from_push, artifact)| {
             let id = artifact["id"].as_str().expect("an artifact carries an id");
             let path = home.join("artifacts").join(id);
             let held = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("the artifact at {} is readable: {e}", path.display()));
-            if spoken {
+            if from_push {
                 said(&held)
             } else {
                 held

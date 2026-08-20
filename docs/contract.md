@@ -424,10 +424,22 @@ Evidence travels on the events, and none of it is conditional:
 
 Which failure it was is a case rather than a sentence:
 
+<!-- llmlint: ignore-block[cli_output_contract] the four kinds sharing `1` is the
+approved contract's exit-code table rather than this amendment's: `1` is the code it
+already fixes for a verification failure, and each of these is one. Giving three of
+them codes of their own would change what a documented code means for every caller
+that already reads it — a breaking change to the CLI contract, made to satisfy a rule
+about the contract. What a machine routes on is the kind, which travels beside the
+code on the failure outcome (`kind`, kebab-cased, in `publish --json`) and on `Error`;
+the paragraph below says so. Reported rather than resolved here, as a contract
+conflict is. `FailureKind::exit_code` carries the same suppression at the code that
+implements this line. -->
+
 ```rust
 pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented,
                        ChecksFailed, ChecksUnsettled, PushRejected }  // 1 | 2 | 3 | 70 | 1 | 1 | 1
 ```
+<!-- llmlint: ignore-end[cli_output_contract] the shared verification code ends here. -->
 
 `ChecksFailed` is a required check that concluded red, and its `reason` names the
 check. `ChecksUnsettled` is the bound elapsing with required checks unsettled, and
