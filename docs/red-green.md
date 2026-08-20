@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 175. Tests observed red and then green: 200.
+Patches: 178. Tests observed red and then green: 203.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpLetCS2-project-d3ec0c79d54c/runs/<token>/clone stands on its own parent c3880e2db3930c452dff48
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpNnE0ER-project-ddf9bbe18ce2/runs/<token>/clone stands on its own parent 67d4e0780b7031be090a5a
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpQYVNWq-project-1040978d309f/runs/<token>/clone stands on its own parent 4524f9e24c67948f139cdc
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpsh2rJc-project-0a23f69e4e1c/runs/<token>/clone stands on its own parent eea2980a1a765fe1a1c71e
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -387,7 +387,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-fbe65-18cd980941a64db9-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-3337e2-18cd9b83db0beff7-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -401,7 +401,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-ff2d8-18cd980cdfd39d1e-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-337bc5-18cd9b86e89397f4-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -483,11 +483,30 @@ a base whose history already took a change under the subject a landing of this b
 
 - RED `a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown` — assertion `left == right` failed: the base took a change under the subject a landing of this branch would have carried, so whether it landed
 
+### `158-only-the-number-a-host-parenthesises-is-looked-for`
+
+only the number a host trails in parentheses is looked for in the base's history, so a change request a merge commit names in a sentence — or one a message quotes the URL of — is a landing nothing reads.
+
+- RED `a_change_request_a_merge_commit_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history names this change request, in the sentence a merge commit spells it in: {"version":2,"r
+- RED `a_change_request_its_own_url_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history quotes this change request's own URL: {"version":2,"ref":{"given":"feature/quoted-by-ur
+
+### `159-a-landing-answers-for-work-it-never-carried`
+
+a recorded landing stops being asked whether it carried everything the branch has changed since it forked, so a landing answers for work committed onto the branch after it.
+
+- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
+
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
 an unusable stack pointer is refused as a bare name rather than as the trailer it came from.
 
 - RED `a_recorded_base_that_is_not_a_branch_names_the_trailer_that_says_so` — Unexpected stderr, failed var.contains(Onevcs-Change-Base:)
+
+### `160-a-spent-copys-landing-answers-for-the-branch`
+
+the copy that answers for a branch is whichever one shows a landing, so a run clone left at the commit that landed answers for a checkout holding commits nobody published.
+
+- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
 
 ### `16-the-trains-arguments-are-only-diagnosed`
 
