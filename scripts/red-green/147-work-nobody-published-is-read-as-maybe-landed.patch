@@ -2,21 +2,15 @@ Mutation: the comparison of content answers unknown whatever the base carries, s
 Red: a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_lands_it
 
 diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
-index d4d4171..db49095 100644
+index 446e9ad..1ff2229 100644
 --- a/crates/onevcs/src/landed.rs
 +++ b/crates/onevcs/src/landed.rs
-@@ -235,12 +235,8 @@ fn landed(evidence: LandingEvidence) -> Landed {
+@@ -228,7 +228,7 @@ pub(crate) fn decide(
+     if already_took_this_change(repo, &fork, branch, &base_history, trailers)? {
+         return Ok(Landed::Unknown);
+     }
+-    Ok(Landed::No)
++    Ok(Landed::Unknown)
  }
  
- /// The two answers the content comparison may give, and neither is a `yes`.
--fn inferred(carried: bool) -> Landed {
--    if carried {
--        Landed::Unknown
--    } else {
--        Landed::No
--    }
-+fn inferred(_carried: bool) -> Landed {
-+    Landed::Unknown
- }
- 
- /// The base commit that names this change request, when one does.
+ /// Whether the base's own history already took a change under the subject a landing

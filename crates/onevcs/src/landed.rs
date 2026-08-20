@@ -38,7 +38,7 @@ use url::Url;
 use crate::error::Result;
 use crate::git::{self, ObjectId};
 use crate::host::Sha;
-use crate::provenance::Trailers;
+use crate::provenance::{self, Trailers};
 
 /// Whether the work reached the base, and — where it did — what says so.
 ///
@@ -211,12 +211,54 @@ pub(crate) fn decide(
             }
         }
     }
-    // Tier 4, over the paths the branch actually touched rather than the whole
-    // tree: unrelated work landing on the base beside it must not change the
-    // answer, which is the failure that put this module here.
-    Ok(inferred(git::known_to_carry_changes(
-        repo, compared, &fork, branch,
-    )?))
+    // Tier 4, and only ever `no` or `unknown`. Scoped to the paths the branch
+    // actually touched rather than the whole tree, so unrelated work landing on the
+    // base beside it does not change the answer — which is the failure that put this
+    // module here.
+    if git::known_to_carry_changes(repo, compared, &fork, branch)? {
+        return Ok(Landed::Unknown);
+    }
+    // The base does not carry what this branch changed, and that is *usually* work
+    // nobody published. It is not, when the base's own history has already taken a
+    // change under the very subject a landing of this branch would have carried:
+    // then something landed work like this and something else has since edited those
+    // paths, and nothing here can tell that from a branch nobody ever published.
+    // Undecidable is the answer, because the other one puts an instruction to publish
+    // under work the base already has.
+    if already_took_this_change(repo, &fork, branch, &base_history, trailers)? {
+        return Ok(Landed::Unknown);
+    }
+    Ok(Landed::No)
+}
+
+/// Whether the base's own history already took a change under the subject a landing
+/// of this branch would have carried.
+///
+/// The last thing history has to say about a landing that left no record at all — a
+/// squash made by a build that predates the trailer, or by a person at a prompt. It
+/// is not evidence *for* a landing and never answers `yes`: subjects are prose and
+/// two changes can share one. What it is evidence for is that the answer is not
+/// knowable, which is the one thing that must not be reported as "there is work here,
+/// publish it".
+///
+/// The subject compared is the one a publication of this branch *would* land under
+/// rather than any of its commits', because that is what a squash of it writes: a
+/// branch whose every subject were searched for would match the change below it in a
+/// stack as readily as its own.
+fn already_took_this_change(
+    repo: &Path,
+    fork: &str,
+    branch: &str,
+    base_history: &[git::CommitMessage],
+    trailers: &Trailers,
+) -> Result<bool> {
+    let Ok(subject) = provenance::publication_subject(repo, fork, branch, None, trailers)? else {
+        return Ok(false);
+    };
+    Ok(base_history
+        .iter()
+        .filter_map(|commit| commit.message.lines().next())
+        .any(|landed| landed.trim() == subject))
 }
 
 /// Whether a landing landed *everything* this branch carries.
@@ -239,7 +281,8 @@ fn landed(evidence: LandingEvidence) -> Landed {
     Landed::Yes { evidence }
 }
 
-/// The two answers the content comparison may give, and neither is a `yes`.
+/// The two answers a comparison of whole trees may give, for the one branch there is
+/// no fork point to scope one to. Neither is a `yes`.
 fn inferred(carried: bool) -> Landed {
     if carried {
         Landed::Unknown

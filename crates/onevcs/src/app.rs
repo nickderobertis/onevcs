@@ -448,9 +448,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // is exactly what nobody can see it left out: this answer is about work that has
     // *not* reached its base, and a branch missing from it because it landed reads
     // identically to one missing because nothing found it at all.
-    let withheld = "Branches whose work reached their base, and ones nothing here can decide \
-                    about, are not listed; `onevcs recoverable --all` lists every preserved \
-                    branch, each saying which of the three it is.";
+    let withheld = "Branches whose work reached their base are not listed; \
+                    `onevcs recoverable --all` lists every preserved branch, each saying what \
+                    became of its work and what says so.";
     if args.json {
         // The document itself is the answer and stays exactly what a consumer
         // parses; the scope it was answered under is *about* the answer, so it goes

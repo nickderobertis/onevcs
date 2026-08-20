@@ -460,12 +460,14 @@ fn a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_
 
 #[test]
 fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown() {
-    // The third answer, and the reason there are three. Somebody squashed this branch
-    // onto the base by hand: no change request, no landing, no trailer — nothing in
-    // history to read. The base carries what it changed, which is consistent with
-    // that landing and equally consistent with somebody having made the same change,
-    // so the honest answer is that nothing here can tell. Reporting it as "no" is what
-    // puts an instruction under work that is already on the base.
+    // The third answer, and the reason there are three. This is the shape an operator
+    // met on a real host: a `local-direct` landing, so there is no change request for
+    // any tier to read, made by something that left no record — and the paths it
+    // landed were edited again afterwards, so the comparison of content no longer
+    // finds its work on the base either. Nothing here can tell that from a branch
+    // nobody ever published. The honest answer is that it cannot be decided, and the
+    // one thing it must not be is `no`, because `no` is what puts an instruction to
+    // publish under work the base already carries.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let (token, worktree) = fixture.open(&["--branch", "feature/landed-by-hand"]);
     fixture.world.commit_file(
@@ -481,7 +483,24 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
         .assert()
         .success();
 
+    // Somebody else's change lands first. It is what makes the squash below a commit
+    // of its own rather than the branch's: the same subject over the same tree with
+    // the same parent, made by the same person in the same second, *is* the same
+    // commit, and a base literally carrying the branch's commit answers a different
+    // question.
     let elsewhere = fixture.world.clone_of(&fixture.origin, "by-hand");
+    fixture.world.commit_file(
+        &elsewhere,
+        "unrelated.txt",
+        "theirs\n",
+        "feat: somebody else's change",
+    );
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+
+    // The landing itself: a squash onto the base with no change request and no record
+    // of any kind, under the subject a publication of this branch would have carried.
     fixture.world.git(
         &elsewhere,
         &[
@@ -494,18 +513,34 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     fixture
         .world
         .git(&elsewhere, &["merge", "-q", "--squash", "FETCH_HEAD"]);
-    // A subject of its own, because that is what a squash by hand leaves: the same
-    // subject over the same tree with the same parent, made by the same person in the
-    // same second, is the *same commit* — and a base that literally carried the
-    // branch's commit would be answering a different question.
     fixture.world.git(
         &elsewhere,
-        &[
-            "commit",
-            "-q",
-            "-m",
-            "feat: the work somebody squashed, as they described it",
-        ],
+        &["commit", "-q", "-m", "feat: the work somebody squashed"],
+    );
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success();
+
+    let carried = report(&fixture.world, "feature/landed-by-hand");
+    assert_eq!(
+        carried["publication"]["landed"]["state"], "unknown",
+        "the base carries what it changed and nothing records that it landed: {carried}"
+    );
+
+    // …and then the paths it landed are edited again, which is where the comparison of
+    // content stops finding its work on the base at all. The answer must not move.
+    fixture.world.commit_file(
+        &elsewhere,
+        "b.txt",
+        "b, and then somebody else's line\n",
+        "feat: edit the very file it landed",
     );
     fixture
         .world
@@ -521,7 +556,8 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     let report = report(&fixture.world, "feature/landed-by-hand");
     assert_eq!(
         report["publication"]["landed"]["state"], "unknown",
-        "nothing records that it landed, and the base carries what it changed: {report}"
+        "the base took a change under the subject a landing of this branch would have \
+         carried, so whether it landed is not decidable here: {report}"
     );
     assert!(
         report["publication"]["landed"].get("evidence").is_none(),
@@ -536,15 +572,14 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
         "the report says what it could not decide and how to look: {report}"
     );
 
-    // Withheld from the default view for the reason a landed row is — publishing it
-    // may re-do work the base has — and shown, when asked for, saying exactly that.
-    assert!(row(&rows(&fixture.world, &[]), "feature/landed-by-hand").is_none());
-    let shown = row(&rows(&fixture.world, &["--all"]), "feature/landed-by-hand")
-        .expect("the branch is reachable through the flag that shows them");
+    // The row is *listed* — withholding it is how work nobody published goes missing —
+    // and what it does not carry is the line that reads as "paste this".
+    let shown = row(&rows(&fixture.world, &[]), "feature/landed-by-hand")
+        .expect("a branch nothing can decide about may be work nobody published");
     assert_eq!(shown["landed"]["state"], "unknown");
     // It keeps the argv, unlike a row that landed: nothing here can say the work
     // reached the base, and if it did not then this is still what lands it. What the
-    // rendering withholds is the *label* that reads as "paste this".
+    // rendering withholds is the *label* that reads as an instruction.
     assert_eq!(
         shown["recover_command"][1], "publish-branch",
         "an undecided row still carries what would land it: {shown}"
@@ -552,7 +587,7 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     let listed = fixture
         .world
         .onevcs()
-        .args(["recoverable", "--all"])
+        .arg("recoverable")
         .assert()
         .success()
         .get_output()
@@ -560,8 +595,12 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
         .clone();
     let listed = String::from_utf8_lossy(&listed).into_owned();
     assert!(
-        listed.contains("Not decided:") && !listed.contains("Resume:"),
-        "an undecided row is not an instruction: {listed}"
+        listed.contains("may have landed") && listed.contains("Not decided:"),
+        "the row says which of the three it is: {listed}"
+    );
+    assert!(
+        !listed.contains("Resume:"),
+        "and an undecided row is not an instruction: {listed}"
     );
 }
 

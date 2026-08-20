@@ -166,7 +166,11 @@ correct, and the absent-hook journey is what holds that.
   work the base already carries. The comparison is scoped to the paths the branch
   touched, and even so it cannot be the answer on its own: work landing on those paths
   after the branch did makes a landed branch read as unpublished, which is how this
-  went wrong. What `status` adds over `recoverable` is that the *exclusion reason* —
+  went wrong. So a `no` is withheld once the base's history has already taken a change
+  under the subject a landing of this branch would have carried — the last thing
+  history has to say about a `local-direct` landing, which opens no change request for
+  any tier above to read. What `status` adds over `recoverable` is that the
+  *exclusion reason* —
   landed, undecidable, held by an open session, or genuinely preserved — is stated
   with the tier that decided it.
 - **A change request's URL resolves only through the event stream**, because nothing
@@ -194,9 +198,11 @@ and what a name already means are each stated rather than left to be inferred.
 
 - **A row is a command only when the branch is ready for it.** `recoverable` is read
   to be trusted without checking, so a branch a live session still holds withholds its
-  command rather than annotating it — and so does one whose work reached the base or
-  may have, which `--all` lists and which carries an empty `recover_command` when it
-  landed. Live is asked two ways — the process that opened
+  command rather than annotating it — and so does one whose work reached the base,
+  which only `--all` lists and which carries an empty `recover_command`. A branch
+  nothing can decide about is listed rather than withheld, because it may be work
+  nobody published; it keeps the argv and loses the label that reads as "paste this".
+  Live is asked two ways — the process that opened
   the session, and its run root's occupancy lease — because each is the true one at a
   different time. A net-negative branch is marked instead of withheld: stripping work
   may be exactly right, and this report does not decide. Both are measured against the

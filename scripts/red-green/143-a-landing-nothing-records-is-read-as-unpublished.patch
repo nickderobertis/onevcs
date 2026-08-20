@@ -2,21 +2,15 @@ Mutation: the comparison of content answers no rather than unknown, so a landing
 Red: a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown
 
 diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
-index d4d4171..9b82c88 100644
+index 446e9ad..1db71c5 100644
 --- a/crates/onevcs/src/landed.rs
 +++ b/crates/onevcs/src/landed.rs
-@@ -235,12 +235,8 @@ fn landed(evidence: LandingEvidence) -> Landed {
- }
- 
- /// The two answers the content comparison may give, and neither is a `yes`.
--fn inferred(carried: bool) -> Landed {
--    if carried {
--        Landed::Unknown
--    } else {
--        Landed::No
--    }
-+fn inferred(_carried: bool) -> Landed {
-+    Landed::No
- }
- 
- /// The base commit that names this change request, when one does.
+@@ -216,7 +216,7 @@ pub(crate) fn decide(
+     // base beside it does not change the answer — which is the failure that put this
+     // module here.
+     if git::known_to_carry_changes(repo, compared, &fork, branch)? {
+-        return Ok(Landed::Unknown);
++        return Ok(Landed::No);
+     }
+     // The base does not carry what this branch changed, and that is *usually* work
+     // nobody published. It is not, when the base's own history has already taken a

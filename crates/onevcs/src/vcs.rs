@@ -67,7 +67,9 @@ pub trait Vcs {
     /// branch whose work reached the base is not one of these — including one the
     /// base has moved a long way past since. The row that offered such a branch a
     /// paste-ready `publish-branch` is what this excludes: following it re-opens a
-    /// change request for work the base already carries.
+    /// change request for work the base already carries. A branch nothing can decide
+    /// about is still here, because it may be work nobody published; what it does not
+    /// carry is a command anybody should paste without looking.
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>>;
 
     /// Every preserved branch in scope, whatever became of its work, each saying
@@ -266,12 +268,11 @@ pub fn base_commit(checkout: &Path, base: &str) -> Option<Sha> {
 /// Which branches a report is asked to carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reporting {
-    /// Only the ones the base does not carry the work of, which is what
+    /// Every branch whose work is not known to have reached the base, which is what
     /// [`Vcs::recoverable`] answers.
     UnpublishedOnly,
     /// Every preserved branch, whatever became of its work — the ones that reached
-    /// the base and the ones nothing can decide about included, which is what
-    /// [`Vcs::preserved`] answers.
+    /// the base included, which is what [`Vcs::preserved`] answers.
     Everything,
 }
 
@@ -297,11 +298,10 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
     };
 
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
-    // The branches this report withholds — the ones that landed and the ones nothing
-    // can decide about — kept aside rather than dropped: they are what `preserved`
-    // adds, and a copy of a name whose work the base already carries must not answer
-    // for a copy of it elsewhere that still holds work, so they join the answer only
-    // where no such copy did.
+    // The branches whose work reached the base, kept aside rather than dropped: they
+    // are what `preserved` adds, and a copy of a name whose work the base already
+    // carries must not answer for a copy of it elsewhere that still holds work, so
+    // they join the answer only where no such copy did.
     let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     // Once per identity rather than once per checkout of one, because the places a
@@ -356,11 +356,13 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                     ..recorded
                 };
                 let verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
-                // Withheld unless every branch was asked for: a row this report
-                // offers is a row somebody publishes, and both of the other two
-                // answers — it landed, and nothing here can tell — are answers that
-                // must not be acted on by pasting a command.
-                let withheld = verdict != Landed::No;
+                // Withheld unless every branch was asked for, and only where the
+                // work *reached the base*: that is the row whose command must not be
+                // pasted. A row nothing can decide about is the opposite case — it
+                // may be work nobody published, so withholding it is how preserved
+                // work goes missing — and it is listed, saying so, with no line that
+                // reads as "paste this".
+                let withheld = verdict.is_landed();
                 if withheld && reporting == Reporting::UnpublishedOnly {
                     continue;
                 }
