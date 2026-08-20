@@ -1573,6 +1573,67 @@ fn a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest() {
 }
 
 #[test]
+fn a_second_run_under_one_checkout_is_refused_rather_than_joining_in() {
+    // Two runs sharing a tree revert each other's mutations mid-round: the loser
+    // records as green a test it never observed red, and the tree can be left
+    // carrying a mutation neither of them owns. The hook is the one moment that
+    // collision is real — it runs between a round's apply and its restore, so the
+    // first run is holding both the lock and an applied mutation when the second
+    // one arrives, which is exactly the arrival this refuses.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    harness.hook(
+        "bash scripts/red-green.sh --base HEAD --record trespasser.md \
+         >trespasser.out 2>&1; printf '%s\\n' \"$?\" >trespasser.status",
+    );
+
+    harness
+        .run(&["--base", "HEAD", "--record", "evidence.md"])
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
+
+    let refused = harness.read("trespasser.out");
+    assert_eq!(
+        harness.read("trespasser.status").trim(),
+        "1",
+        "the second run must refuse rather than join in; it said:\n{refused}"
+    );
+    assert!(
+        refused.contains("another run holds .logs/red-green.lock")
+            && refused.contains("ACTION: wait for it to finish"),
+        "the refusal owes the lock it met and what to do about it:\n{refused}"
+    );
+    // Named as the collision it is rather than as a symptom of it: the lock is taken
+    // before the dirty-tree check precisely so the second run is not turned away for
+    // the mutation the first one has applied.
+    assert!(
+        !refused.contains("uncommitted changes"),
+        "a second run must not be refused for the first one's mutation:\n{refused}"
+    );
+    // It got no further than the refusal: nothing recorded, and the holder's own log
+    // — which a run truncates when it starts — left whole.
+    assert!(
+        harness.read("trespasser.md").is_empty(),
+        "a run that never took the lock has nothing to record"
+    );
+    assert!(
+        harness.read(".logs/red-green.log").contains("01-subject"),
+        "the refused run must not have truncated the log of the run holding the lock"
+    );
+
+    // …and the lock goes with the run that took it, so the next run is not turned
+    // away by what the last one left behind.
+    harness.commit("test: the hook ran, once");
+    harness
+        .run(&["--base", "HEAD", "--record", "evidence.md"])
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
+}
+
+#[test]
 fn a_transcript_that_cannot_be_written_is_a_failure_rather_than_a_silent_omission() {
     // The record is the deliverable, so a run that did every round and could not
     // write it down is a failed run — not a green line with nothing behind it.

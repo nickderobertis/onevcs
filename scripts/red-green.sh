@@ -289,6 +289,40 @@ if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*' ':(exclude)*/fi
 fi
 added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)"
 
+# One run at a time under one checkout. A round applies a mutation, runs a test,
+# and reverts it, so two runs sharing a tree revert each other's mutations mid-round
+# — the loser records a test as green that was never observed, and the tree can be
+# left carrying a mutation neither of them owns. That is not theoretical: it is how
+# two of this branch's own dispatches corrupted this worktree.
+#
+# `mkdir` is the atomicity, rather than `flock`: creating a directory either happens
+# or fails because it is already there, in one syscall, on every filesystem this
+# runs on — and `flock(1)` is a Linux utility macOS does not ship, which the rest of
+# this script already writes around.
+#
+# Taken *before* the dirty-tree check below, not after: a second run arriving while
+# the first has a mutation applied would otherwise be turned away for uncommitted
+# changes, which names the symptom of the collision instead of the collision.
+lock=".logs/red-green.lock"
+if ! mkdir -p .logs; then
+  echo "red-green: .logs cannot be created, so this run cannot take $lock" >&2
+  echo "ACTION: make the repository root writable by this user (.logs is gitignored and owner-only), then re-run" >&2
+  exit 1
+fi
+if ! mkdir "$lock" 2>/dev/null; then
+  holder="$(cat "$lock/pid" 2>/dev/null || true)"
+  echo "red-green: another run holds $lock${holder:+, as pid $holder}" >&2
+  echo "ACTION: wait for it to finish — two runs under one checkout mutate the same files. If nothing is running, remove $lock and re-run" >&2
+  exit 1
+fi
+# Best effort, and the run proceeds without it: the directory is the lock, and this
+# only lets the refusal above name who is holding it.
+printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
+release_lock() {
+  rm -rf "$lock"
+}
+trap release_lock EXIT
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "red-green: the working tree has uncommitted changes" >&2
   echo "ACTION: commit or stash them first — this script reverts patches with 'git checkout', which would take them with it" >&2
@@ -381,7 +415,10 @@ restore() {
     return 1
   fi
 }
-trap restore EXIT
+# Both, because one `trap ... EXIT` replaces the other: the lock taken above is
+# still held, and a run that put the tree back but kept the lock would turn away
+# every run after it.
+trap 'restore; release_lock' EXIT
 
 for patch in "${patches[@]}"; do
   name="$(basename "$patch" .patch)"
