@@ -1846,6 +1846,36 @@ fn the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_
 }
 
 #[test]
+fn the_amendment_states_the_interval_this_build_asks_the_host_at() {
+    // The interval is an operator-visible cost, not an implementation detail: every
+    // ask is a `gh` subprocess and at least one API call, so a publication watching a
+    // half-hour CI run spends hundreds of them. The amendment states the number, the
+    // constant is the number, and neither can move without the other.
+    //
+    // Read out of the source rather than through the type, because the module is
+    // private — the constant is this build's answer and not part of the surface, and
+    // making it public to reconcile it would widen the surface to test it.
+    let declared = repo_file("crates/onevcs/src/gh.rs")
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const DEFAULT_CHECKS_POLL_SECONDS: f64 = ")?
+                .strip_suffix(";")
+                .map(str::to_owned)
+        })
+        .expect("gh.rs declares the default poll interval");
+    let seconds: f64 = declared
+        .parse()
+        .expect("the default is a number of seconds");
+    assert!(
+        regions()
+            .0
+            .contains(&format!("defaults to **{seconds:.0} seconds**")),
+        "the amendment no longer states the {seconds:.0}-second interval this build polls at"
+    );
+}
+
+#[test]
 fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
     // The seventh method, and the one thing this crate cannot learn any other way:
     // under `change-auto` the host performs the merge, out of a tree this process

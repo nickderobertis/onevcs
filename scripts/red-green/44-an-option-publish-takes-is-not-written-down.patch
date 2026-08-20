@@ -2,12 +2,12 @@ Mutation: the amendment stops naming one of the options `onevcs publish` takes.
 Red: the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_not
 
 diff --git a/docs/contract.md b/docs/contract.md
-index 99d3896..2b3f954 100644
+index 937d163..908a546 100644
 --- a/docs/contract.md
 +++ b/docs/contract.md
-@@ -379,7 +379,7 @@ publication *commit*'s, composed by `compose_message`, and a recovered incomplet
- step still records `Recovered-Incomplete:` there — they simply stop appearing in a
- change request's body, which was never a record anything read them back out of.
+@@ -473,7 +473,7 @@ the base might have come by some other way. Writing it is best effort: the chang
+ already merged by then, and reporting the publication as failed because its own
+ footnote could not be written would be a worse lie than the missing line.
  
 -`onevcs publish` takes the body two ways: `--body` and `--body-file`.
 +`onevcs publish` takes the body two ways, one of them `--body`.
