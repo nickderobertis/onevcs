@@ -820,6 +820,19 @@ fn a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into() 
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked,tests_mirror_real_usage] nothing about the tool
+// is stood in for below: the process is the compiled binary, the state root and the
+// workspace are the ones every journey here cuts, the directory is an ordinary one on
+// this filesystem, and the entry the probe creates is really created in it. What is
+// arranged is the *world* — what the kernel answers when that entry is removed —
+// because the condition this journey is about is one no ordinary user can build on an
+// ordinary filesystem. A directory that takes an entry and will not give it up comes
+// from an append-only attribute, an NFSv4 ACL without DELETE_CHILD, or a sandbox
+// policy, and each of those needs a privilege, a server, or a filesystem a suite
+// cannot have; `chattr +a` on this host answers "Operation not permitted". This is the
+// same class of arrangement as `backdate` above, which sets the world's clock because
+// no product interface makes a directory a day old — and what is asserted is entirely
+// what the real `onevcs sweep` then decided.
 /// One `onevcs sweep`, run with the kernel refusing to take a directory away again.
 ///
 /// A filesystem that lets an entry be created and will not let it be unlinked is a
@@ -867,14 +880,16 @@ fn refuse_directory_removal() -> std::io::Result<()> {
     const ALLOW: u32 = 0x7fff_0000;
     /// `SECCOMP_MODE_FILTER`.
     const FILTER: libc::c_int = 2;
-    /// No architecture here has a syscall by this number, so where `rmdir` is not
-    /// one of them the test below it can never match.
+    // Where the architecture has no `rmdir` syscall, no number can match the test
+    // below, and `std` reaches `unlinkat` there instead.
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    const RMDIR: u32 = libc::SYS_rmdir as u32;
+    let rmdir = u32::try_from(libc::SYS_rmdir).expect("a syscall number");
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    const RMDIR: u32 = u32::MAX;
+    let rmdir = u32::MAX;
 
-    let deny = ERRNO | libc::EPERM as u32;
+    let number = |syscall: libc::c_long| u32::try_from(syscall).expect("a syscall number");
+    let deny = ERRNO | u32::try_from(libc::EPERM).expect("an errno");
+    let remove_directory = u32::try_from(libc::AT_REMOVEDIR).expect("a flag bit");
     let program = [
         // load the syscall number
         libc::sock_filter {
@@ -888,14 +903,14 @@ fn refuse_directory_removal() -> std::io::Result<()> {
             code: 0x15,
             jt: 3,
             jf: 0,
-            k: RMDIR,
+            k: rmdir,
         },
         // anything but unlinkat — allow it
         libc::sock_filter {
             code: 0x15,
             jt: 0,
             jf: 3,
-            k: libc::SYS_unlinkat as u32,
+            k: number(libc::SYS_unlinkat),
         },
         // load unlinkat's flags
         libc::sock_filter {
@@ -905,12 +920,11 @@ fn refuse_directory_removal() -> std::io::Result<()> {
             k: 40,
         },
         // AT_REMOVEDIR among them — refuse it, otherwise allow it
-        #[allow(clippy::cast_sign_loss)]
         libc::sock_filter {
             code: 0x45,
             jt: 0,
             jf: 1,
-            k: libc::AT_REMOVEDIR as u32,
+            k: remove_directory,
         },
         libc::sock_filter {
             code: 0x06,
@@ -1007,6 +1021,8 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
 
     std::fs::remove_dir(&left[0]).expect("the entry the sweep could not take away");
 }
+
+// llmlint: ignore-end[e2e_not_mocked,tests_mirror_real_usage]
 
 #[test]
 fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {
