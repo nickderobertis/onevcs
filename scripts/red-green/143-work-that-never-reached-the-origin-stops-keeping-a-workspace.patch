@@ -3,13 +3,14 @@ Red: the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond
 Red: a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 7d43e23..55acfa2 100644
+index 1fa5a19..6113c5c 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -503,13 +503,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+@@ -502,23 +502,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+     }
      // What the clone still holds. Bounded rather than kept forever, and bounded by
      // the caller — this workspace's place in that bound is a fact about the family.
-     match unpublished_work(&run_root.join("clone")) {
+-    match unpublished_work(&run_root.join("clone")) {
 -        Ok(branches) if branches.is_empty() => Ok(Verdict::Reclaim(lease)),
 -        Ok(branches) => Ok(Verdict::Holds(Holding {
 -            path: run_root.to_path_buf(),
@@ -17,7 +18,16 @@ index 7d43e23..55acfa2 100644
 -            written,
 -            lease,
 -        })),
-+        Ok(_) => Ok(Verdict::Reclaim(lease)),
-         // llmlint: ignore-block[changed_behavior_has_e2e] a clone the ownership proof
-         // above has already read as a repository, that `git` then declines to answer
-         // about: no interface this crate exposes leaves one. It retains — the answer
+-        // llmlint: ignore-block[changed_behavior_has_e2e] a clone the ownership proof
+-        // above has already read as a repository, that `git` then declines to answer
+-        // about: no interface this crate exposes leaves one. It retains — the answer
+-        // every other unknown in this module resolves to, and the only safe one here,
+-        // because what could not be asked about may be the only copy of somebody's
+-        // work.
+-        Err(_) => Ok(Verdict::Retain(Kept::WorkUnknown)),
+-        // llmlint: ignore-end[changed_behavior_has_e2e]
+-    }
++    Ok(Verdict::Reclaim(lease))
+ }
+ 
+ /// The branches of a run clone holding work that never reached the origin.

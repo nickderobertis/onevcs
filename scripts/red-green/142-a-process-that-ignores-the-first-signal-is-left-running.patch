@@ -1,16 +1,17 @@
-Mutation: a process that does not answer the first signal is never ended, so a workspace whose daemon ignores SIGTERM is one nothing can ever reclaim.
+Mutation: the signal that ends a process which would not stop is the one it has already ignored, so a workspace whose daemon ignores SIGTERM is one nothing can ever reclaim.
 Red: a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes
 
 diff --git a/crates/onevcs/src/processes.rs b/crates/onevcs/src/processes.rs
-index a3defdf..e392ea9 100644
+index 631902f..32ce8ef 100644
 --- a/crates/onevcs/src/processes.rs
 +++ b/crates/onevcs/src/processes.rs
-@@ -138,7 +138,7 @@ pub enum Outcome {
- pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Outcome> {
-     let mut left: Vec<Holder> = holders.to_vec();
-     let mut signalled: Vec<Pid> = Vec::new();
--    for signal in [Signal::Terminate, Signal::Kill] {
-+    for signal in [Signal::Terminate] {
-         // Asked again rather than assumed: a process that has already gone, or whose
-         // pid has been taken over by something working elsewhere, is not this run
-         // root's to signal.
+@@ -379,8 +379,7 @@ fn parent_of(_pid: u32) -> Option<u32> {
+ #[cfg(unix)]
+ fn signal_to(pid: Pid, signal: Signal) {
+     let signal = match signal {
+-        Signal::Terminate => libc::SIGTERM,
+-        Signal::Kill => libc::SIGKILL,
++        Signal::Terminate | Signal::Kill => libc::SIGTERM,
+     };
+     // SAFETY: `kill` with a pid above `1` signals that one process and borrows
+     // nothing. A refusal — a process this user may not signal, or one that has
