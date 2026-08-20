@@ -1895,8 +1895,6 @@ fn a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set() {
     assert!(versioned.contains("\"version\""), "{versioned}");
 }
 
-/// Every ending a publication has, proven exhaustive by the match below: adding a
-/// variant without listing it here stops compiling.
 /// Every failure a publication can end with, taken off the type.
 ///
 /// Exhaustive by the same device [`all_publish_outcomes`] uses: the match below is
