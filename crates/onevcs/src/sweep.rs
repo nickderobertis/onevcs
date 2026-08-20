@@ -561,6 +561,9 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
         });
         return Ok(());
     }
+    // Asked to stop and then ended, before a single file is unlinked: what comes back
+    // is what would not go, and a workspace that still has one of those is not one
+    // this could claim to have reclaimed.
     let left = processes::stop(&holding, &run_root);
     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
     // still working inside the run root after it has been asked to stop and then
