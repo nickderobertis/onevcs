@@ -1855,13 +1855,29 @@ fn a_landing_says_so_when_the_retention_rule_could_not_run_and_lands_anyway() {
     publish_branch(&fixture, "feature/warm");
     let warm = only_run_root(&publications(&fixture.world));
 
-    finished_branch(&fixture, "feature/earlier");
-    let before = fixture.world.locks();
-    publish_branch(&fixture, "feature/earlier");
-    let earlier = run_roots(&publications(&fixture.world))
+    // A workspace that is spent and dead, named so that it is judged *before* the one
+    // nothing can ask about: what a pass reclaims before it fails is reclaimed, and a
+    // rule that gave that back on the way out would leave the disk to whichever
+    // leftover happened to sort last.
+    finished_branch(&fixture, "feature/aaa-spent");
+    publish_branch(&fixture, "feature/aaa-spent");
+    let spent = run_roots(&publications(&fixture.world))
         .into_iter()
         .find(|root| root != &warm)
-        .expect("the second landing's run root");
+        .expect("the spent landing's run root");
+
+    finished_branch(&fixture, "feature/zzz-unaskable");
+    let before = fixture.world.locks();
+    publish_branch(&fixture, "feature/zzz-unaskable");
+    let earlier = run_roots(&publications(&fixture.world))
+        .into_iter()
+        .find(|root| root != &warm && root != &spent)
+        .expect("the unaskable landing's run root");
+    assert!(
+        spent < earlier,
+        "the premise: the workspace that can be judged is judged first"
+    );
+    backdate(&spent, 72);
     backdate(&earlier, 72);
 
     // The leases that landing took, made unopenable — a state root this user may no
@@ -1903,11 +1919,15 @@ fn a_landing_says_so_when_the_retention_rule_could_not_run_and_lands_anyway() {
     );
     assert!(
         earlier.is_dir(),
-        "nothing was removed by a pass that could not finish"
+        "the workspace nothing could ask about is kept"
+    );
+    assert!(
+        !spent.exists(),
+        "and what the pass reclaimed before it met that one stays reclaimed"
     );
     assert_eq!(
         fixture.origin_log().len(),
-        4,
+        5,
         "and every landing reached the base"
     );
 
