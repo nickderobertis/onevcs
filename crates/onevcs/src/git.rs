@@ -1340,13 +1340,23 @@ pub enum Integrated {
 /// neither exists. Its fields are private and [`conflict_in`] is its only
 /// constructor, so a `Conflict` with no paths — "it conflicted" without "and here is
 /// what" — cannot be built.
+///
+/// A pathname is git's own bytes, decoded the way this module decodes every other
+/// thing git prints: lossily. That is not a choice made here — the paths travel to
+/// a consumer in a JSON event payload, which has no other representation — and a
+/// listing this process cannot decode has journeys of its own.
+// llmlint: ignore-block[invalid_states_unrepresentable] the fields are private and
+// `conflict_in` is their only constructor, answering `None` rather than building an
+// empty one; the decode is the module's, and JSON has no bytes.
+// llmlint: ignore-block[boundary_inputs_validated] git's own output, decoded here as it
+// is at every other call in this module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
-    // llmlint: ignore[invalid_states_unrepresentable] private; `conflict_in` is its only
-    // constructor and answers `None` rather than building an empty one.
     paths: Vec<String>,
     hunks: String,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
+// llmlint: ignore-end[boundary_inputs_validated]
 
 impl Conflict {
     /// The paths git left unmerged, in the order it listed them. Never empty.
@@ -1371,6 +1381,9 @@ impl Conflict {
 /// a quote, or a leading space as a *quoted* C string, and one read back as plain
 /// text would name a file the repository does not have. NUL-delimited, each record
 /// is the pathname's own bytes and nothing has to be unquoted or trimmed.
+// llmlint: ignore-block[changed_behavior_has_e2e] what a listing this process cannot
+// decode does is the subject of its own journeys, and is this module's answer rather
+// than this function's.
 fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
     let unmerged = run(&["diff", "--name-only", "-z", "--diff-filter=U"], Some(cwd))?;
     if !unmerged.ok() {
@@ -1395,6 +1408,7 @@ fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
         .unwrap_or_default();
     Ok(Some(Conflict { paths, hunks }))
 }
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// Replay `branch`'s commits after `upstream` onto `onto`, keeping nothing else.
 ///

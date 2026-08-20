@@ -2156,6 +2156,40 @@ fn a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefi
         "",
         "recording a landing must not change what the branch holds"
     );
+
+    // A merge this run asked for itself is recorded the same way: what writes the
+    // trailer is the host reporting the merge, not which policy asked for it.
+    let direct = Hosted::new(DIRECT);
+    direct.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = direct.change("feature/directed", "feat: add the directed thing");
+    direct
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let sha = direct
+        .world
+        .git(&direct.origin, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    let recorded = direct.world.git(
+        &direct.checkout,
+        &["log", "--format=%B", "-1", "feature/directed"],
+    );
+    assert!(
+        recorded.contains(&format!(
+            "{} {sha}",
+            documented_trailer("Landed-Commit", &documented_default_prefix())
+        )),
+        "a direct merge records its landing too: {recorded:?}"
+    );
 }
 
 #[test]
