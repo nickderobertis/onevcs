@@ -411,12 +411,13 @@ impl World {
         self.write_rows("gh-state/checks.rows", checks);
     }
 
-    /// What the substituted host reports once it has been asked `after` times, so a
-    /// journey can drive a check that *moves* while a publication watches it.
+    /// What the substituted host reports once it has been asked for its check
+    /// rollup `after` times, so a journey can drive a check that *moves* while a
+    /// publication watches it.
     ///
-    /// The switch is counted in calls rather than timed, because a race a journey
-    /// cannot state is a journey that fails on a slow machine. Every call the host
-    /// answers is counted, which is the same number `host_calls` reports.
+    /// Counted in readings rather than timed, because a race a journey cannot state
+    /// is a journey that fails on a slow machine. `1` is "from the second reading
+    /// on", which is the smallest thing a watcher can observe moving.
     pub fn host_checks_after(&self, after: usize, then: &[Check]) {
         self.write_rows("gh-state/checks.rows.next", then);
         std::fs::write(self.path("gh-state/checks-flip-after"), after.to_string())
@@ -677,11 +678,13 @@ ORIGIN="$(cat "$STATE/origin")"
 CHECKS="$STATE/checks.rows"
 # A repository's checks move while something is watching them, which is the whole
 # premise of watching. This world says so by writing a second rollup and the number
-# of calls after which it takes over — counted off the call log above, so what a
-# journey states is "after the host has been asked this many times" rather than a
-# wall-clock race.
+# of *readings of the rollup* after which it takes over — counted off the call log
+# above, which already holds this call, so `1` means "from the second reading on".
+# Counted in readings rather than in wall-clock time so a journey states the moment
+# it means instead of racing for it.
 if [ -f "$STATE/checks-flip-after" ] && [ -f "$STATE/checks.rows.next" ]; then
-  if [ "$(wc -l <"$STATE/gh-calls.log")" -gt "$(cat "$STATE/checks-flip-after")" ]; then
+  if [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+       -gt "$(cat "$STATE/checks-flip-after")" ]; then
     CHECKS="$STATE/checks.rows.next"
   fi
 fi
@@ -948,10 +951,18 @@ settle_auto_merges() {
     [ ! -f "$STATE/refuse-merge" ] || continue
     [ "$(verdict)" = "green" ] || continue
     ( . "$STATE/pr-$pr.env"; [ "$PR_STATE" = "OPEN" ] ) || continue
-    ( land_pr "$pr" )
+    # Silenced, because this runs *inside* whatever call happened to be the moment
+    # the host landed it: `git merge --squash` prints a line even under `-q`, and on
+    # a `pr view --json` call that line would arrive ahead of the JSON.
+    ( land_pr "$pr" ) >/dev/null
   done
 }
-settle_auto_merges
+# On the calls that *observe* the change request, never on the one that arms the
+# hold: GitHub lands a held change between calls, and landing it during the very
+# call that asked it to hold would leave that call merging something already merged.
+case "$subcommand" in
+  view|checks|list) settle_auto_merges ;;
+esac
 
 case "$subcommand" in
   checks)
@@ -1133,7 +1144,7 @@ case "$subcommand" in
       # merge that worked without asking the host again.
       exit 0
     fi
-    ( land_pr "$PR_NUMBER" )
+    ( land_pr "$PR_NUMBER" ) >/dev/null
     ;;
   *)
     printf 'fake gh: unsupported pr subcommand %s\n' "$subcommand" >&2

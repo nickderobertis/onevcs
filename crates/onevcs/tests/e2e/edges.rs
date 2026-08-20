@@ -1108,7 +1108,7 @@ fn a_train_reports_each_way_a_candidate_can_fail_without_stopping() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "claude/clashes-remote: skipped (conflict with the current base)",
+            "claude/clashes-remote: skipped (conflict with the current base in \"shared.txt\")",
         ))
         .stdout(predicate::str::contains(
             "claude/rejected: skipped (gate-failed)",
@@ -2807,26 +2807,32 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
         let token = token_of(&assert.get_output().stdout);
         let worktree = worktree_of(&assert.get_output().stdout);
         world.commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
-        // One clean publication first, so the change request exists and the second
-        // attempt reaches the host's answers *about* it — which is where a real
-        // host's partial answer arrives.
-        world
-            .onevcs()
-            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
-            .args(["publish", &token])
-            .assert()
-            .code(1);
-        world.answer_malformed(shape);
         if shape == "no-state" {
-            // Only this one is answered at the merge, so its checks have to settle
-            // for the publication to get that far.
+            // The one shape answered at the *merge*, so this publication has to get
+            // that far: its check settles green, the host lands the change, and the
+            // refusal is about what the host then would not say it did. Nothing is
+            // published before it — a change request already held under auto-merge
+            // lands on its own the moment the checks it is held for turn green, as
+            // the real host's does, and the change would then be gone from under the
+            // attempt this journey is about.
             world.host_checks(&[crate::world::Check {
                 name: "gate",
                 status: "completed",
                 conclusion: Some("success"),
                 required: true,
             }]);
+        } else {
+            // One clean publication first, so the change request exists and the
+            // second attempt reaches the host's answers *about* it — which is where
+            // a real host's partial answer arrives.
+            world
+                .onevcs()
+                .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+                .args(["publish", &token])
+                .assert()
+                .code(1);
         }
+        world.answer_malformed(shape);
 
         world
             .onevcs()

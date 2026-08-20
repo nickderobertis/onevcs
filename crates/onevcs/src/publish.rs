@@ -1260,14 +1260,26 @@ fn publish_as_change(
         );
         let sha = if context.effective == MergePolicy::ChangeAuto {
             // Arming is all this run does: the merge itself is the host's to perform,
-            // on its own clock. What the arming call answers is therefore discarded
-            // in favour of watching — the publication stays live rather than settling
-            // at "queued", because settling is what left a change blocked for hours
-            // with no node alive to notice it. The watch reports the host's checks as
-            // they move and ends at the commit it merged, at a required check that
-            // concludes red, or at the bound, saying which.
-            host.merge(&change, context.effective)?;
-            await_merge(host.as_ref(), &change, stream)?
+            // on its own clock. So the watch *is* the publication from here — it
+            // stays live rather than settling at "queued", because settling is what
+            // left a change blocked for hours with no node alive to notice it, and it
+            // ends at the commit the host merged, at a required check that concluded
+            // red, or at the bound.
+            //
+            // Arming happens inside the watch, and after its first reading of the
+            // checks, for two reasons that are both about order. A host that will not
+            // say what its checks are, or say which of them block, is refused with
+            // nothing armed against it — arming a merge whose gate this build cannot
+            // read is a landing nobody gated. And one loop rather than a read
+            // followed by a watch is what reports each check transition exactly once.
+            let mut armed = false;
+            watch(host.as_ref(), &change, stream, "merged", |host, _| {
+                if !armed {
+                    host.merge(&change, MergePolicy::ChangeAuto)?;
+                    armed = true;
+                }
+                host.merged_at(&change)
+            })?
         } else {
             match host.merge(&change, context.effective)? {
                 MergeOutcome::Merged(sha) => sha,
@@ -1397,19 +1409,6 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
     )
 }
 
-/// Wait until the host reports the merge it was asked to perform, and at which
-/// commit.
-///
-/// The commit comes from the host's own answer rather than from anything this run
-/// can see: under `change-auto` the merge is performed by the host, out of a tree
-/// this process never held, so the only honest source for what it landed as is the
-/// host being asked.
-fn await_merge(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stream) -> Result<Sha> {
-    watch(host, change, stream, "merged", |host, _| {
-        host.merged_at(change)
-    })
-}
-
 /// Watch a change request until `ending` answers, reporting every check transition
 /// as it happens.
 ///
@@ -1427,7 +1426,7 @@ fn watch<T>(
     change: &ChangeRequest,
     stream: &mut Stream,
     awaited: &str,
-    ending: impl Fn(&dyn RemoteHost, &[Check]) -> Result<Option<T>>,
+    mut ending: impl FnMut(&dyn RemoteHost, &[Check]) -> Result<Option<T>>,
 ) -> Result<T> {
     let bound = std::time::Duration::from_secs_f64(gh::checks_timeout()?);
     let poll = std::time::Duration::from_secs_f64(gh::checks_poll()?);

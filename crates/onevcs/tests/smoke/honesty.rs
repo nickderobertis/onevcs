@@ -79,7 +79,7 @@ fn publication_events_match_between_the_real_backends_and_the_providers() {
     // Read before this process is pointed at the other world: a stream is read out
     // of the state root the run worked in.
     let real_events = real.events(&real_token);
-    let real_evidence = evidence(&real_events, &real.home());
+    let real_evidence = evidence(&real_events, &real.home(), real.root(), &real_token);
     let real_root = real.root().to_path_buf();
 
     // The provided backend: the same identity, over a local bare origin, and the
@@ -144,7 +144,12 @@ fn publication_events_match_between_the_real_backends_and_the_providers() {
     // compared where the ids cannot be.
     assert_eq!(
         real_evidence,
-        evidence(&provided_events, &provided.home()),
+        evidence(
+            &provided_events,
+            &provided.home(),
+            provided.root(),
+            &provided_token
+        ),
         "the log a gate's artifact holds must read the same either way"
     );
     // Not vacuously equal: the journey really did run a gate, push, open a change on

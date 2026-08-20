@@ -107,7 +107,12 @@ fn reduce(value: &Value, root: &Path, token: &str) -> Value {
 
 /// Every artifact a stream references, read back out of the state root it was
 /// stored in — which is what `onevcs artifact cat` reads.
-pub fn evidence(events: &[Value], home: &Path) -> Vec<String> {
+///
+/// Reduced on the same terms the events are, and for the same reason: a push
+/// artifact holds what git wrote about a remote, which names the origin a run
+/// worked against and the commits it moved. Those cannot match between two runs,
+/// and everything else must.
+pub fn evidence(events: &[Value], home: &Path, root: &Path, token: &str) -> Vec<String> {
     events
         .iter()
         .flat_map(|event| {
@@ -120,8 +125,12 @@ pub fn evidence(events: &[Value], home: &Path) -> Vec<String> {
         .map(|artifact| {
             let id = artifact["id"].as_str().expect("an artifact carries an id");
             let path = home.join("artifacts").join(id);
-            std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("the artifact at {} is readable: {e}", path.display()))
+            let held = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("the artifact at {} is readable: {e}", path.display()));
+            held.lines()
+                .map(|line| scrub(line, root, token))
+                .collect::<Vec<String>>()
+                .join("\n")
         })
         .collect()
 }

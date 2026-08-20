@@ -102,14 +102,16 @@ pub const AUTOMATED: &str = "{publication: change-auto, approvals: required, gat
 const DIRECT: &str = "{publication: change-direct, approvals: none, gate: {command: [\"true\"]}}";
 
 #[test]
-fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_and_merges_one() {
+fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
     // The credential CI runs this crate's real-backend tier under cannot read the
     // scratch repository's check runs, and GitHub refuses the *whole* `gh pr view`
     // call over it — so a build that asked for a change request's checks alongside
-    // its head commit and its merge commit could neither open nor merge under a
-    // token allowed to do both. Worse, it only broke once a check had appeared, so
-    // the same credential merged a young change request and failed on an older one.
-    let hosted = Hosted::new(DIRECT);
+    // its head commit could not even open one under a token allowed to do it.
+    // Worse, it only broke once a check had appeared, so the same credential opened
+    // a young change request and failed on an older one. `change-open` is the policy
+    // that asks the host nothing about its checks, which is what makes this the
+    // question about opening alone.
+    let hosted = Hosted::new(REVIEWED);
     hosted.world.answer_malformed("checks-refused");
     let token = hosted.change("feature/checkless-host", "feat: add the thing anyway");
 
@@ -119,42 +121,54 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_and_merges
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("merged at"));
-    assert_eq!(
-        hosted.origin_log().len(),
-        2,
-        "the change reached the base with real git, under a host that would not \
-         describe its checks"
+        .stdout(predicate::str::contains("change request open at"));
+    assert!(
+        hosted.world.path("gh-state/pr-1.env").exists(),
+        "the change request was opened under a host that would not describe its checks"
+    );
+    assert!(
+        !hosted
+            .world
+            .host_calls()
+            .iter()
+            .any(|call| call.contains("statusCheckRollup")),
+        "opening one must not ask for the checks alongside it: {:?}",
+        hosted.world.host_calls()
     );
 
-    // And the refusal is still a refusal where the checks are what decides: a host
-    // that would not say what its checks are has not said there are none, and the
-    // publication that waits for them stops rather than merging on the strength of
-    // an answer it never got. Both sources are named, with the permission that would
-    // answer one of them — GitHub says only which node it declined, and an operator
-    // reading that cannot tell a scope they can widen from one they cannot.
-    let gated = Hosted::new(AUTOMATED);
-    gated.world.answer_malformed("checks-refused");
-    let token = gated.change("feature/gated-checkless", "feat: add the gated thing");
+    // And a host that would not say what its checks are has not said there are none,
+    // so neither policy that lands a change may proceed on the strength of an answer
+    // it never got. Both sources are named, with the permission that would answer
+    // one of them — GitHub says only which node it declined, and an operator reading
+    // that cannot tell a scope they can widen from one they cannot.
+    //
+    // Both, because what a publication watches follows the merge policy and not the
+    // gate: `change-direct` asks for the merge itself and `change-auto` arms one the
+    // host performs, and neither can tell whether that merge is gated here.
+    for policy in [AUTOMATED, DIRECT] {
+        let gated = Hosted::new(policy);
+        gated.world.answer_malformed("checks-refused");
+        let token = gated.change("feature/gated-checkless", "feat: add the gated thing");
 
-    gated
-        .world
-        .onevcs()
-        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
-        .args(["publish", &token])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains(
-            "Resource not accessible by personal access token",
-        ))
-        .stderr(predicate::str::contains("HTTP 403"))
-        .stderr(predicate::str::contains("Actions: Read"))
-        .stderr(predicate::str::contains("unknown rather than empty"));
-    assert_eq!(
-        gated.origin_log().len(),
-        1,
-        "nothing may land while the host will not say what its checks are"
-    );
+        gated
+            .world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+            .args(["publish", &token])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(
+                "Resource not accessible by personal access token",
+            ))
+            .stderr(predicate::str::contains("HTTP 403"))
+            .stderr(predicate::str::contains("Actions: Read"))
+            .stderr(predicate::str::contains("unknown rather than empty"));
+        assert_eq!(
+            gated.origin_log().len(),
+            1,
+            "nothing may land under {policy} while the host will not say what its checks are"
+        );
+    }
 }
 
 #[test]
@@ -1924,7 +1938,10 @@ fn a_required_check_that_never_settles_is_bounded_rather_than_waited_on_forever(
         .args(["publish", &token])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("no settled required checks"));
+        // The bound is not a silent stop: it says the host never merged, and which
+        // check it was still holding the change for.
+        .stderr(predicate::str::contains("had not merged"))
+        .stderr(predicate::str::contains("still unsettled: \"gate\""));
     assert_eq!(hosted.origin_log().len(), 1);
 }
 
@@ -2000,13 +2017,85 @@ fn a_branch_whose_content_already_landed_opens_no_change_request() {
 }
 
 #[test]
-fn native_auto_merge_leaves_the_change_queued_while_a_required_check_is_pending() {
-    let hosted = Hosted::new(
-        // `pre-push` rather than `checks`, so the publication does not itself wait
-        // for the host: the host holds the change and lands it when its own
-        // required checks pass, which is what `change-auto` asks for.
-        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}",
+fn a_change_the_host_holds_is_watched_until_it_lands_and_reports_the_commit() {
+    // Native auto-merge: the host takes the change and lands it when its own
+    // required check settles, on its own clock. The publication does not settle at
+    // "queued" and walk away — a node that did that left a change blocked with
+    // nobody alive to report it — so it stays live and watches the host until the
+    // merge, and answers with the commit the host says the change reached its base
+    // at.
+    //
+    // The gate is `pre-push` rather than `checks` deliberately: what drives the
+    // watching is the *merge policy*, not what the policy names as its
+    // verification. This journey would have observed nothing at all before.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    // The check settles green while the publication is watching it, which is the
+    // only shape this can be proved in: a check that was already green would be
+    // landed by the arming call and never watched at all.
+    hosted.world.host_checks_after(
+        1,
+        &[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }],
     );
+    let token = hosted.change("feature/held", "feat: add the held thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    // The merge is real git against the real origin, performed by the host.
+    let subjects = hosted.origin_log();
+    assert_eq!(subjects.len(), 2, "{subjects:?}");
+    assert_eq!(subjects[0], "feat: add the held thing (#1)", "{subjects:?}");
+
+    // And the commit it reports is the host's own answer about where the change
+    // landed, not a commit this run built.
+    let merged = hosted.world.events_of(&token, "change-merged");
+    let sha = merged[0]["payload"]["sha"]
+        .as_str()
+        .expect("the merge names the commit it landed as");
+    assert_eq!(
+        sha,
+        hosted
+            .world
+            .git(&hosted.origin, &["rev-parse", "main"])
+            .trim(),
+        "the reported commit is where the base now stands"
+    );
+    // It watched: the check was reported moving, and both of its states are on the
+    // stream.
+    let checks = hosted.world.events_of(&token, "change-check");
+    let states: Vec<&str> = checks
+        .iter()
+        .map(|event| event["payload"]["status"].as_str().expect("a status"))
+        .collect();
+    assert_eq!(states, vec!["in_progress", "completed"], "{checks:?}");
+}
+
+#[test]
+fn a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending() {
+    // The other side of the journey above, and the reason the bound may not be a
+    // silent stop: the check never settles, the host never merges, and the
+    // publication has to say so — naming the check it was still being held for, so
+    // whoever routes the failure can tell "CI said no" from "nobody answered".
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -2019,17 +2108,84 @@ fn native_auto_merge_leaves_the_change_queued_while_a_required_check_is_pending(
     hosted
         .world
         .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
         .args(["publish", &token])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("merge queued for"));
+        .code(1)
+        .stderr(predicate::str::contains("checks unsettled"))
+        .stderr(predicate::str::contains("still unsettled: \"gate\""));
     assert_eq!(
         hosted.origin_log().len(),
         1,
-        "the host has not landed it yet"
+        "the host has not landed it, and nothing pretended otherwise"
     );
+    // The change request is still open and still held: giving up watching is not
+    // withdrawing the merge.
     assert!(!hosted.world.events_of(&token, "merge-queued").is_empty());
     assert!(hosted.world.events_of(&token, "change-merged").is_empty());
+}
+
+#[test]
+fn a_red_required_check_ends_an_auto_merge_publication_and_quotes_the_log() {
+    // A change the host is holding whose required check then concludes red. The
+    // host will never land it, so watching for a merge would run to the bound and
+    // report the wrong thing: the failure is the check, and it is named, with a
+    // bounded excerpt of what it printed — the diagnosis used to be reachable only
+    // by fetching the artifact by hand.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    hosted.world.host_checks_after(
+        1,
+        &[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("failure"),
+            required: true,
+        }],
+    );
+    hosted.world.host_log(
+        "gate",
+        "cargo test
+error: the regression is here
+",
+    );
+    let token = hosted.change("feature/reddened", "feat: add the reddening thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "required check \"gate\" concluded failure",
+        ))
+        .stderr(predicate::str::contains("error: the regression is here"));
+    assert_eq!(hosted.origin_log().len(), 1, "nothing may have merged");
+
+    // The whole log is still the artifact; the excerpt is a pointer to it.
+    let checks = hosted.world.events_of(&token, "change-check");
+    let settled = checks
+        .iter()
+        .find(|event| event["payload"]["status"] == "completed")
+        .expect("the check settled");
+    let id = settled["artifacts"][0]["id"]
+        .as_str()
+        .expect("a settled check carries its log");
+    hosted
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cargo test"));
 }
 
 #[test]
@@ -2184,7 +2340,9 @@ fn a_repository_that_declares_no_required_check_is_not_read_as_having_passed() {
         .args(["publish", &token])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("no settled required checks"));
+        .stderr(predicate::str::contains(
+            "the host declared no required check on it at all",
+        ));
     assert_eq!(hosted.origin_log().len(), 1);
 
     // It was still reported, carrying the host's own answer about whether it blocks.
@@ -2209,7 +2367,9 @@ fn a_change_request_the_host_reports_no_checks_on_is_bounded_rather_than_merged(
         .args(["publish", &token])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("no settled required checks"));
+        .stderr(predicate::str::contains(
+            "the host declared no required check on it at all",
+        ));
     assert_eq!(hosted.origin_log().len(), 1);
     assert!(hosted.world.events_of(&token, "change-check").is_empty());
 }
