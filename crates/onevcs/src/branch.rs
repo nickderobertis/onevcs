@@ -442,7 +442,7 @@ impl Landing {
             return Ok(());
         };
         publish::report_conflict(stream, &self.branch, &self.change_base, &conflict, None);
-        let conflicting = guidance::listed(&conflict.paths);
+        let conflicting = guidance::listed(conflict.paths());
         // Which resolution the refusal names follows what was attempted, for the
         // reason the refusal exists at all: a branch whose stack parent has already
         // landed is one that merging the base conflicts with by construction, so

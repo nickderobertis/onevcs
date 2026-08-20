@@ -1334,28 +1334,34 @@ pub enum Integrated {
     Conflicted(Conflict),
 }
 
-/// What conflicted, when bringing a ref into a branch conflicted.
+/// What conflicted: the paths git left unmerged, and the hunks it renders for them.
 ///
-/// The evidence git already had in hand at the moment it stopped: the paths it left
-/// unmerged, which are asked for anyway to tell a conflict from any other failure,
-/// and the hunks it renders for exactly those paths — one `git diff` over a tree
-/// that is already open, taken before the attempt is aborted and the answer stops
-/// existing. Nothing here costs a second attempt at the merge, which is the reason
-/// it is taken here rather than reconstructed by whoever reports the conflict.
-/// Never empty: [`conflict_in`] is its only constructor and answers `None` where
-/// git left nothing unmerged, so "it conflicted" and "and here is what" cannot come
-/// apart.
+/// Both are taken while the conflicted tree still stands, because after the abort
+/// neither exists. Its fields are private and [`conflict_in`] is its only
+/// constructor, so a `Conflict` with no paths — "it conflicted" without "and here is
+/// what" — cannot be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
-    /// The paths git left unmerged, in the order it listed them.
-    // llmlint: ignore[invalid_states_unrepresentable] these are git's own output lines
-    // for `diff --name-only`, repository-relative paths this crate transports rather
-    // than resolves; a `PathBuf` here would claim a host filesystem meaning they do not
-    // have, and every consumer writes them back out as the text git printed.
-    pub paths: Vec<String>,
-    /// The conflicting hunks, as git renders them for those paths. Empty where git
-    /// would not print them.
-    pub hunks: String,
+    // llmlint: ignore[invalid_states_unrepresentable] these are git's own NUL-delimited
+    // pathnames, repository-relative text this crate transports rather than resolves; a
+    // `PathBuf` would claim a host filesystem meaning they do not have, and every
+    // consumer writes them back out as the bytes git printed. Non-empty by
+    // construction — see the type's own documentation.
+    paths: Vec<String>,
+    hunks: String,
+}
+
+impl Conflict {
+    /// The paths git left unmerged, in the order it listed them. Never empty.
+    pub fn paths(&self) -> &[String] {
+        &self.paths
+    }
+
+    /// The conflicting hunks, as git renders them. Empty where it would not print
+    /// them.
+    pub fn hunks(&self) -> &str {
+        &self.hunks
+    }
 }
 
 /// What git left unmerged in a tree it has just stopped in, or `None` where it left
@@ -1363,21 +1369,28 @@ pub struct Conflict {
 ///
 /// Both callers below ask this the moment their attempt fails and before they abort
 /// it, because both questions are only answerable while the conflicted tree stands.
+///
+/// `-z` rather than the default listing: git renders a pathname carrying a newline,
+/// a quote, or a leading space as a *quoted* C string, and one read back as plain
+/// text would name a file the repository does not have. NUL-delimited, each record
+/// is the pathname's own bytes and nothing has to be unquoted or trimmed.
 fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
-    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
-    if !unmerged.ok() || unmerged.trimmed().is_empty() {
+    let unmerged = run(&["diff", "--name-only", "-z", "--diff-filter=U"], Some(cwd))?;
+    if !unmerged.ok() {
         return Ok(None);
     }
     let paths: Vec<String> = unmerged
-        .trimmed()
-        .lines()
-        .map(|line| line.trim().to_owned())
-        .filter(|line| !line.is_empty())
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
         .collect();
+    if paths.is_empty() {
+        return Ok(None);
+    }
     // Best effort, and deliberately not an error: the paths are the answer this
     // exists for, and a git that would not render the hunks for them has still said
-    // what conflicts. Reporting nothing at all because the illustration failed would
-    // be the diagnosis this whole path is here to stop losing.
+    // what conflicts.
     let hunks = run(&["diff", "--diff-filter=U"], Some(cwd))
         .ok()
         .filter(Output::ok)

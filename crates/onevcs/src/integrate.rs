@@ -411,7 +411,7 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
                 branch,
                 &format!(
                     "conflict with the current base in {}",
-                    guidance::listed(&conflict.paths)
+                    guidance::listed(conflict.paths())
                 ),
             ));
         }
@@ -424,7 +424,7 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
                 branch,
                 &format!(
                     "conflict with an earlier candidate in {}",
-                    guidance::listed(&conflict.paths)
+                    guidance::listed(conflict.paths())
                 ),
             ));
         }

@@ -859,7 +859,7 @@ pub(crate) fn report_conflict(
     conflict: &git::Conflict,
     attempts: Option<usize>,
 ) {
-    let artifacts = match stream::store_artifact("diff", &conflict.hunks) {
+    let artifacts = match stream::store_artifact("diff", conflict.hunks()) {
         Ok(artifact) => vec![artifact],
         Err(error) => {
             eprintln!(
@@ -872,7 +872,7 @@ pub(crate) fn report_conflict(
     let mut payload = object(json!({
         "branch": branch,
         "base": base,
-        "paths": conflict.paths,
+        "paths": conflict.paths(),
     }));
     if let Some(attempts) = attempts {
         payload.insert("attempts".to_owned(), json!(attempts));
@@ -919,7 +919,7 @@ fn sync(
         &conflict,
         Some(SYNC_ATTEMPTS),
     );
-    let conflicting = guidance::listed(&conflict.paths);
+    let conflicting = guidance::listed(conflict.paths());
     let land = guidance::command([
         "onevcs",
         "publish-branch",
@@ -1258,19 +1258,10 @@ fn publish_as_change(
             })),
         );
         let sha = if context.effective == MergePolicy::ChangeAuto {
-            // Arming is all this run does: the merge itself is the host's to perform,
-            // on its own clock. So the watch *is* the publication from here — it
-            // stays live rather than settling at "queued", because settling is what
-            // left a change blocked for hours with no node alive to notice it, and it
-            // ends at the commit the host merged, at a required check that concluded
-            // red, or at the bound.
-            //
             // Arming happens inside the watch, and after its first reading of the
-            // checks, for two reasons that are both about order. A host that will not
-            // say what its checks are, or say which of them block, is refused with
-            // nothing armed against it — arming a merge whose gate this build cannot
-            // read is a landing nobody gated. And one loop rather than a read
-            // followed by a watch is what reports each check transition exactly once.
+            // checks: a host that will not say what its checks are is refused with
+            // nothing armed against it, and one loop rather than a read followed by a
+            // watch reports each transition exactly once.
             let mut armed = false;
             watch(host.as_ref(), &change, stream, "merged", |host, _| {
                 if !armed {
@@ -1563,19 +1554,18 @@ fn unsettled(
 
 /// Record one publishing push, and what it wrote.
 ///
-/// **The evidence is captured unconditionally**, and that is the whole point of
-/// this function. A push is the last surface a publication can fail at where the
-/// only account of *why* is the bytes git and the repository's `pre-push` hook
-/// wrote to a pipe: once the process ends they are gone. This used to preserve them
-/// only when the resolved policy named `gate: {kind: pre-push}` — and on a host
-/// where every rule names a `command:` gate instead, that condition is never true,
-/// so a rejected push discarded the hook's own diagnosis every time. What the
-/// policy calls its verification cannot decide whether a failure is diagnosable.
+/// **Unconditionally**, which is the point of this function. What git and the
+/// repository's `pre-push` hook wrote is the only account of why a push was
+/// refused, and it lives in a pipe until the process ends. Preserving it only where
+/// the policy named `gate: {kind: pre-push}` meant no repository on a host whose
+/// rules name commands: what a policy calls its verification cannot decide whether
+/// a failure is diagnosable.
 ///
-/// So the output is stored as an artifact and preserved on disk for every push,
-/// accepted or rejected, and referenced from the `push` event — one artifact,
-/// referenced twice where a `pre-push` gate also has a verdict to report, because
-/// storing the same bytes twice would make one run look like two.
+/// The evidence is stored once and referenced twice where a `pre-push` gate also
+/// has a verdict to report, because two copies of one run read as two runs. Storing
+/// it is best effort: the push has already happened, so a state root that would not
+/// take the bytes says so on stderr rather than turning a push git accepted into a
+/// publication that failed.
 fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed) -> Result<()> {
     let ruling = if pushed.accepted() {
         gate::Ruling::Passed
@@ -1583,18 +1573,34 @@ fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed)
         gate::Ruling::Rejected
     };
     let output = pushed.output();
-    let artifact = stream::store_artifact("log", output)?;
-    let preserved = gate::preserve_log(&context.run_root, &context.branch, output)?;
+    let stored = stream::store_artifact("log", output);
+    let kept = gate::preserve_log(&context.run_root, &context.branch, output);
+    for error in [stored.as_ref().err(), kept.as_ref().err()]
+        .into_iter()
+        .flatten()
+    {
+        eprintln!(
+            "onevcs: warning: the push of {:?} is recorded without what it wrote: {error}",
+            context.branch
+        );
+    }
+    let artifact = stored.ok();
+    let mut payload = object(json!({
+        "branch": context.branch,
+        "remote": "origin",
+        "accepted": ruling.passed(),
+        "output": output,
+    }));
+    if let Ok(preserved) = &kept {
+        payload.insert(
+            "preserved_log".to_owned(),
+            json!(preserved.display().to_string()),
+        );
+    }
     stream.emit_with(
         EventKind::Push,
-        object(json!({
-            "branch": context.branch,
-            "remote": "origin",
-            "accepted": ruling.passed(),
-            "output": output,
-            "preserved_log": preserved.display().to_string(),
-        })),
-        vec![artifact.clone()],
+        payload,
+        artifact.clone().into_iter().collect(),
     );
     // A `pre-push` gate's verdict arrives as push output and nowhere else, so the
     // same evidence is *also* the gate's verdict when the policy names that gate —
@@ -1605,15 +1611,21 @@ fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed)
             kind: GateKind::PrePush
         }
     ) {
+        let mut verdict = object(json!({
+            "verdict": ruling.describe(),
+            "command": "the repository's pre-push hook",
+            "output": output,
+        }));
+        if let Ok(preserved) = &kept {
+            verdict.insert(
+                "preserved_log".to_owned(),
+                json!(preserved.display().to_string()),
+            );
+        }
         stream.emit_with(
             EventKind::GateVerdict,
-            object(json!({
-                "verdict": ruling.describe(),
-                "command": "the repository's pre-push hook",
-                "output": output,
-                "preserved_log": preserved.display().to_string(),
-            })),
-            vec![artifact],
+            verdict,
+            artifact.into_iter().collect(),
         );
     }
     Ok(())

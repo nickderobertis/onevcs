@@ -1078,7 +1078,7 @@ fn integrate(
              nobody asked to resolve. The branch is untouched. Resolve the conflict on it — check \
              it out in {publication} and merge {integrated} into it — and open this session \
              again, or land it as it stands with `{land}`",
-            conflicting = crate::guidance::listed(&conflict.paths),
+            conflicting = crate::guidance::listed(conflict.paths()),
             tip = opened.tip,
             at = opened.at(),
             publication = publication.display(),

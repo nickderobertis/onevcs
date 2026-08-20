@@ -2956,6 +2956,60 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
         .assert()
         .success()
         .stdout(predicate::str::contains("refs/heads/main"));
+
+    // …and a state root that will not take those bytes says so, rather than turning
+    // a push git accepted into a publication that failed. The record is a footnote
+    // to work that has already reached the base; refusing over it would send
+    // somebody to land what is already landed.
+    //
+    // Behind a `pre-push` gate, so the push is the only thing storing an artifact:
+    // a `command:` gate stores its own verdict before the push is ever made, and
+    // this is a claim about the push.
+    let unrecordable =
+        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    unrecordable
+        .world
+        .install_pre_push(&unrecordable.checkout, "exit 0");
+    let (second, worktree) = unrecordable.open(&["--branch", "feature/unrecordable"]);
+    unrecordable
+        .world
+        .commit_file(&worktree, "two.txt", "two\n", "feat: add the other thing");
+    let artifacts = unrecordable.world.home().join("artifacts");
+    std::fs::create_dir_all(&artifacts).expect("an artifact directory");
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o500))
+        .expect("a directory nothing may write into");
+
+    unrecordable
+        .world
+        .onevcs()
+        .args(["publish", &second])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "is recorded without what it wrote",
+        ));
+
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700))
+        .expect("the artifact directory is restored");
+    assert_eq!(
+        unrecordable.origin_log().len(),
+        2,
+        "the publication reached the base whatever became of the record of its push"
+    );
+    let pushes = unrecordable.world.events_of(&second, "push");
+    assert!(
+        pushes[0]["artifacts"]
+            .as_array()
+            .expect("an array")
+            .is_empty(),
+        "evidence that was not stored is no artifact reference: {pushes:?}"
+    );
+    // What could still be written was: the preserved log outlives the tree the push
+    // was made in, and it is on its own path.
+    assert!(
+        pushes[0]["payload"]["preserved_log"].is_string(),
+        "{pushes:?}"
+    );
 }
 
 #[test]
@@ -3624,7 +3678,7 @@ fn conflicting_over(fixture: &Fixture, branch: &str, files: usize) -> String {
     for file in 0..files {
         fixture.world.commit_file(
             &worktree,
-            &format!("shared-{file}.txt"),
+            &conflicted_name(file),
             "from the session\n",
             &format!("feat: change shared file {file}"),
         );
@@ -3635,13 +3689,27 @@ fn conflicting_over(fixture: &Fixture, branch: &str, files: usize) -> String {
     for file in 0..files {
         fixture.world.commit_file(
             &other,
-            &format!("shared-{file}.txt"),
+            &conflicted_name(file),
             "from the base\n",
             &format!("feat: change file {file} differently"),
         );
     }
     fixture.world.git(&other, &["push", "-q", "origin", "main"]);
     token
+}
+
+/// The name of one conflicting file.
+///
+/// The first carries a space and a quote, which git renders in its *default*
+/// listing as a quoted C string — a reader that took that for a pathname would name
+/// a file the repository does not have. Every path this crate reads off a conflict
+/// is read NUL-delimited for that reason, and this is the fixture that catches it
+/// going back.
+fn conflicted_name(file: usize) -> String {
+    match file {
+        0 => "shared \" 0.txt".to_owned(),
+        other => format!("shared-{other}.txt"),
+    }
 }
 
 #[test]
@@ -3664,7 +3732,9 @@ fn a_conflict_across_more_files_than_a_refusal_can_name_says_how_many_it_left_ou
     let said = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
     assert_eq!(
         (0..12)
-            .filter(|file| said.contains(&format!("\"shared-{file}.txt\"")))
+            // As the refusal spells them: quoted, so a name carrying a quote of its
+            // own comes back escaped rather than closing the one around it.
+            .filter(|file| said.contains(&format!("{:?}", conflicted_name(*file))))
             .count(),
         10,
         "the refusal names ten of them and counts the rest: {said}"
@@ -3703,7 +3773,7 @@ fn a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict() {
         .args(["publish", &token])
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("in \"shared-0.txt\""))
+        .stderr(predicate::str::contains("shared \\\" 0.txt"))
         .stderr(predicate::str::contains("recorded without its hunks"));
 
     std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700))
