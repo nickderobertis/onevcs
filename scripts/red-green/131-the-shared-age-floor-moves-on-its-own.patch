@@ -2,7 +2,7 @@ Mutation: the age floor's default moves in the parser alone, which is how one ca
 Red: the_sweep_age_floor_defaults_to_the_number_the_record_states
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 5c5f34b..4720600 100644
+index 79dc591..27dad2a 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -41,7 +41,7 @@ use crate::{gate, git, home, ids, lock, workspace};

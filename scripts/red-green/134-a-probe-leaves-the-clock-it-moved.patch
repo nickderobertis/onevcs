@@ -2,7 +2,7 @@ Mutation: the writability probe stops putting a directory's timestamps back, so 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 5c5f34b..10d311c 100644
+index 79dc591..678f08d 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -281,15 +281,10 @@ fn can_write_into(directory: &Path) -> bool {
@@ -22,4 +22,4 @@ index 5c5f34b..10d311c 100644
 +    std::fs::remove_dir(&entry)
  }
  
- /// A directory, open as the handle whose timestamps can be set.
+ /// The flag an open of a directory takes, which each platform spells for itself:
