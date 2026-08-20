@@ -2,13 +2,13 @@ Mutation: a landing's occupancy lease names something other than the run root it
 Red: a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
-index fb106c8..d7bb867 100644
+index bbc5278..8e4a379 100644
 --- a/crates/onevcs/src/branch.rs
 +++ b/crates/onevcs/src/branch.rs
-@@ -201,7 +201,8 @@ pub fn prepare(
-     // being filled as one nobody wants. The name carries `ids::unique()`, so nothing
-     // else can be inside it — a lease that cannot be taken is a state root this
-     // process cannot work in, and is refused as one.
+@@ -198,7 +198,8 @@ pub fn prepare(
+     // Taken the moment the directory exists, before anything is cloned into it: a
+     // sweep running beside a landing that had not taken it yet reads a directory
+     // being filled as one nobody wants.
 -    let lease = lock::try_shared(&workspace::occupancy_identity(&run_root))?.ok_or_else(|| {
 +    let lease = lock::try_shared(&workspace::occupancy_identity(&run_root.join("clone")))?
 +        .ok_or_else(|| {

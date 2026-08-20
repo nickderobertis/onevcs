@@ -1,0 +1,33 @@
+Mutation: the writability probe writes into a directory before it holds the handle that would put the clock back, so a directory it cannot reopen is left aged by having been asked about.
+Red: a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index 5c5f34b..b9b6f19 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -280,16 +280,18 @@ fn can_write_into(directory: &Path) -> bool {
+ /// The handle comes first, before anything is written, so nothing is ever created in
+ /// a directory whose timestamps this could not then restore.
+ fn probe(directory: &Path) -> std::io::Result<()> {
+-    let handle = open_dir(directory)?;
+-    let before = handle.metadata()?;
++    let before = std::fs::metadata(directory)?;
+     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
+     std::fs::create_dir(&entry)?;
+     std::fs::remove_dir(&entry)?;
+-    handle.set_times(
+-        FileTimes::new()
+-            .set_accessed(before.accessed()?)
+-            .set_modified(before.modified()?),
+-    )
++    let _ = open_dir(directory).and_then(|handle| {
++        handle.set_times(
++            FileTimes::new()
++                .set_accessed(before.accessed()?)
++                .set_modified(before.modified()?),
++        )
++    });
++    Ok(())
+ }
+ 
+ /// A directory, open as the handle whose timestamps can be set.

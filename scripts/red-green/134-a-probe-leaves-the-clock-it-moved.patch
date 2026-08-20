@@ -2,15 +2,24 @@ Mutation: the writability probe stops putting a directory's timestamps back, so 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 188c69a..5e3a243 100644
+index 5c5f34b..10d311c 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -283,7 +283,7 @@ fn can_write_into(directory: &Path) -> bool {
-         return false;
-     }
-     let _ = std::fs::remove_dir(&probe);
--    restore_times(directory, &before);
-+    let _ = &before;
-     true
+@@ -281,15 +281,10 @@ fn can_write_into(directory: &Path) -> bool {
+ /// a directory whose timestamps this could not then restore.
+ fn probe(directory: &Path) -> std::io::Result<()> {
+     let handle = open_dir(directory)?;
+-    let before = handle.metadata()?;
++    let _before = handle.metadata()?;
+     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
+     std::fs::create_dir(&entry)?;
+-    std::fs::remove_dir(&entry)?;
+-    handle.set_times(
+-        FileTimes::new()
+-            .set_accessed(before.accessed()?)
+-            .set_modified(before.modified()?),
+-    )
++    std::fs::remove_dir(&entry)
  }
  
+ /// A directory, open as the handle whose timestamps can be set.

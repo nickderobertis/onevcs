@@ -6,13 +6,13 @@ Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 188c69a..7adff51 100644
+index 5c5f34b..3ca5a98 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -387,11 +387,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
-     // it could make and then could not is the sweep failing to run — the one thing a
-     // non-zero code means here.
-     // llmlint: ignore[changed_behavior_has_e2e] no interface this crate exposes reaches it; the note above says what a fixture for it would be standing in for.
+@@ -397,11 +397,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+     // family this user may not write to, and content it may not unlink — is decided
+     // by the walk above and is a journey. What is left is the state root changing
+     // between the question and the act, which no interface this crate exposes reaches.
 -    if let Err(e) = std::fs::remove_dir_all(&run_root) {
 -        return Err(error::at("remove the reclaimable workspace at", &run_root)(
 -            e,
