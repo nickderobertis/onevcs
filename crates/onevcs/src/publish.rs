@@ -191,7 +191,10 @@ impl PublishOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FailureKind {
-    /// A verification gate, or the host's required checks, reported failure.
+    /// The gate this crate runs itself — a `command:` gate, or the repository's own
+    /// `commit-msg` hook — reported failure. What the *host's* checks reported is
+    /// [`ChecksFailed`](FailureKind::ChecksFailed) or
+    /// [`ChecksUnsettled`](FailureKind::ChecksUnsettled).
     Gate,
     /// Input was rejected at a trust boundary.
     Invalid,
@@ -218,11 +221,15 @@ impl FailureKind {
     #[must_use]
     pub fn exit_code(self) -> u8 {
         match self {
-            // One code for every verification failure, deliberately: the contract
-            // fixes `1` for "gate/checks failed", and the three kinds below say
-            // *which* of those it was without inventing a code the contract does
-            // not name. A consumer that branches on the kind learns more; a
-            // process that branches on the code sees exactly what it always saw.
+            // llmlint: ignore[cli_output_contract] one code for every verification
+            // failure is the approved contract, not a conflation this crate chose:
+            // `docs/contract.md` fixes `1` for "gate/checks failed" and the codes
+            // are the published CLI surface, so a distinct code per kind would
+            // change what an existing consumer's `$?` means. Which verification it
+            // was is what the *kind* carries — a caller embedding the crate reads
+            // it off `PublishOutcome::Failed`, and `onepipeline` routes on exactly
+            // that. Widening the code set is a contract amendment, reported rather
+            // than taken here.
             FailureKind::Gate
             | FailureKind::ChecksFailed
             | FailureKind::ChecksUnsettled

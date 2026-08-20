@@ -22,11 +22,12 @@ pub enum Error {
         operation: &'static str,
     },
 
-    /// A verification gate, or the host's required checks, reported failure.
-    /// The CLI reports this as exit code 1.
+    /// The gate this crate runs itself reported failure. The CLI reports this as
+    /// exit code 1. What the *host's* checks reported is [`Error::ChecksFailed`] or
+    /// [`Error::ChecksUnsettled`].
     #[error("gate failed: {reason}")]
     GateFailed {
-        /// What failed, naming the check where the host reported one.
+        /// What failed, naming the command that judged it.
         reason: String,
     },
 

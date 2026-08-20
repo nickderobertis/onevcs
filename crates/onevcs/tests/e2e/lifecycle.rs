@@ -2371,6 +2371,8 @@ fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_wha
         .assert()
         .code(3)
         .stderr(predicate::str::contains("feature/two-minds"))
+        // Which file the two minds disagree over, not merely that they do.
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains(
             fixture.checkout.to_string_lossy().as_ref(),
         ));
@@ -2401,7 +2403,8 @@ fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_wha
         .shell(&land)
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("conflicts with"));
+        .stderr(predicate::str::contains("conflicts with"))
+        .stderr(predicate::str::contains("in \"shared.txt\""));
     world.git(&fixture.checkout, &["checkout", "-q", "feature/two-minds"]);
     world.git(&fixture.checkout, &["fetch", "-q", "origin"]);
     let _ = world.git_raw(&fixture.checkout, &["merge", "origin/main"]);
@@ -4111,6 +4114,9 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
         .stderr(predicate::str::contains(
             "already carries what \"feature/clashing-filter\" was stacked on",
         ))
+        // A replay conflicts over files just as a merge does, and says which:
+        // "resolve the conflict" is not an instruction until it names one.
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains("the branch is retained"))
         .stderr(predicate::str::contains(format!(
             "land it with `onevcs publish-branch feature/clashing-filter --repo {}`",

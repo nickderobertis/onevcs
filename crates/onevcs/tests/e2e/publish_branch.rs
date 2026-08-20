@@ -1158,7 +1158,30 @@ fn a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved()
         .assert()
         .code(3)
         .stderr(predicate::str::contains("re-running will conflict again"))
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains(format!("land it with `{again}`")));
+
+    // The branch-keyed verbs report a conflict through the same emitter the
+    // publication path does, so the event carries the paths and the hunks beside
+    // them here too.
+    let conflicts = fixture
+        .world
+        .events_of("publish-branch-feature-clashing", "sync-conflict");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"],
+        serde_json::json!(["shared.txt"]),
+        "{conflicts:?}"
+    );
+    let id = conflicts[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("the conflict carries its hunks");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from the base"));
 
     // Resolve it once where the branch is retained, and the named command lands it.
     fixture
