@@ -114,14 +114,20 @@ impl Trailers {
         &self.change_url
     }
 
-    /// Records the commit a change request reached its base at.
+    /// Records a landing: on the base's own landing commit, the branch commit whose
+    /// work that commit lands; on the branch, the commit the host merged it at.
     ///
-    /// The one thing a branch can carry that answers "did this land" without
-    /// inferring it: content equality says the base carries the same change, which
-    /// is also true of a change somebody else landed by hand, and an open change
-    /// request says nothing about a merged one. This is written the moment the host
-    /// reports the merge and read back under the same configured prefix.
-    pub(crate) fn landed_commit(&self) -> &str {
+    /// One key for both, because both answer the one question — did this work reach
+    /// that base — and a reader tells them apart by which side the commit sits on
+    /// and by which way the commit it names is reachable. Two writers, because two
+    /// landings leave no record otherwise: the `local-direct` squash opens no change
+    /// request for anything to find later, and a host that lands the change on its
+    /// own clock writes its number onto the base and nothing at all onto the branch.
+    ///
+    /// A commit rather than a branch name — a name is spent and re-cut, and a
+    /// landing of the work that used to wear it must not answer for work that wears
+    /// it now.
+    pub(crate) fn landed(&self) -> &str {
         &self.landed
     }
 }
@@ -200,7 +206,7 @@ pub(crate) fn is_provenance(message: &str, trailers: &Trailers) -> bool {
         // change is, so a later synthesis of a subject must skip it exactly as it
         // skips a marker — otherwise a branch that landed and was published again
         // would land under "chore: record the landing of ...".
-        || message.contains(trailers.landed_commit())
+        || message.contains(trailers.landed())
 }
 
 /// The message an incomplete-step commit carries.

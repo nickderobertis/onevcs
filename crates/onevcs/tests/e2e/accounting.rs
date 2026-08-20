@@ -39,8 +39,8 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v1.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v1-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v2.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v2-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
@@ -462,6 +462,11 @@ fn work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it() {
     fixture.open(&["--branch", "feature/empty"]);
     let answer = report(&fixture.world, "feature/empty");
     assert_eq!(answer["publication"]["state"], "nothing-to-publish");
+    // The landing answer beside it is the honest one for a branch that *is* its
+    // base: nothing records that it reached it, and there is nothing of its own for
+    // the base to be carrying — which is not the same as "it did not land".
+    assert_eq!(answer["publication"]["landed"]["state"], "unknown");
+    assert!(answer["publication"]["landed"].get("evidence").is_none());
     assert!(answer["next"]["command"].is_null());
     fixture
         .world
@@ -1557,7 +1562,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&full, &hosted.world, Some(&token)),
         FULL,
         "the object `onevcs status --json` writes is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/status-report-v1.json from the run above, and bump \
+         crates/onevcs/tests/golden/status-report-v2.json from the run above, and bump \
          the version in docs/inferred-surface.md and src/status.rs if the shape moved"
     );
     for path in OPTIONAL {
@@ -1600,7 +1605,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&minimal, &plain.world, None),
         MINIMAL,
         "the object a report with nothing optional in it writes is its checked-in \
-         golden; re-make crates/onevcs/tests/golden/status-report-v1-minimal.json"
+         golden; re-make crates/onevcs/tests/golden/status-report-v2-minimal.json"
     );
     // Omitted rather than null: a consumer that has never heard of a field is not
     // handed one, and "no session" and "a session that is null" are different

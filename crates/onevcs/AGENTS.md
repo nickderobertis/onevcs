@@ -170,12 +170,14 @@ correct, and the absent-hook journey is what holds that.
 
 ## `status` and `import`, and the three things easy to undo
 
-- **`status` reads landing off content, never off ancestry or off the host.**
-  Publication squashes, so a branch that landed is an ancestor of nothing — the base
-  carries what it changed, which is the question `vcs::collect` excludes a branch on.
-  Reading the absence of an open change request instead reports a merged change as
-  unpublished. What `status` adds over `recoverable` is that the *exclusion reason* —
-  landed, held by an open session, or genuinely preserved — is stated.
+- **A landing is decided from the base's own history, never from content alone**
+  (`landed.rs`, asked by both `status` and `vcs::collect` so the two cannot disagree
+  about one branch). Four tiers, most certain first, and the answer names the one that
+  decided it; the comparison of content is last and never answers `yes`. Three answers
+  rather than two, because calling an undecidable landing `no` is what puts a
+  paste-ready `publish-branch` under work the base already carries. What `status`
+  adds over `recoverable` is the *exclusion reason*, stated with the tier that
+  decided it.
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.
@@ -185,9 +187,10 @@ correct, and the absent-hook journey is what holds that.
   because `--as` is the way through and only works once those are visible.
 - **`status --json` is a versioned object whose bytes are checked in.** It declares
   `version`, an absent field is omitted rather than written as `null`, and the
-  goldens under `tests/golden/status-report-v1*.json` are compared byte for byte
-  against the real CLI. Changing what the object carries means bumping
-  `status::REPORT_VERSION` and re-making both goldens in the same change.
+  goldens under `tests/golden/` are compared byte for byte against the real CLI.
+  Changing what the object carries means bumping `status::REPORT_VERSION` — which is
+  the one place the number is stated — and re-making both goldens, named for that
+  version, in the same change.
 
 Both find a branch nobody named through `branch::locate`, which is the search the
 two publishing verbs use.
@@ -200,7 +203,11 @@ and what a name already means are each stated rather than left to be inferred.
 
 - **A row is a command only when the branch is ready for it.** `recoverable` is read
   to be trusted without checking, so a branch a live session still holds withholds its
-  command rather than annotating it. Live is asked two ways — the process that opened
+  command rather than annotating it — and so does one whose work reached the base,
+  which only `--all` lists and which carries an empty `recover_command`. A branch
+  nothing can decide about is listed rather than withheld, because it may be work
+  nobody published; it keeps the argv and loses the label that reads as "paste this".
+  Live is asked two ways — the process that opened
   the session, and its run root's occupancy lease — because each is the true one at a
   different time. A net-negative branch is marked instead of withheld: stripping work
   may be exactly right, and this report does not decide. Both are measured against the

@@ -154,8 +154,16 @@ fn preserved_work_is_what_recoverable_reports() {
         "a sha-shaped value, so a consumer's own parser meets what it expects"
     );
 
-    // And the command that reads it runs against the same provider.
+    // And the command that reads it runs against the same provider — both views of
+    // it, because the wider one is a second method on the seam and a command that
+    // reached past the provider for it would answer about this host's own state.
     assert_eq!(run(&vcs, &["onevcs", "recoverable", "--json"]), 0);
+    assert_eq!(run(&vcs, &["onevcs", "recoverable", "--all", "--json"]), 0);
+    assert_eq!(
+        vcs.preserved(Scope::All).expect("every preserved branch"),
+        vcs.recoverable(Scope::All).expect("the unpublished ones"),
+        "this provider is handed work nobody published, so it withholds none of it"
+    );
 
     // Closing the session is what ends the hold, which is why the answer is read when
     // the report is asked rather than frozen when the work was preserved. Last, because

@@ -28,10 +28,10 @@ use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFil
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
     Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy,
-    Holding, Labels, Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative,
-    PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest, Recoverable,
-    RemoteHost, Retention, Scope, Session, SessionHolder, SessionRecord, SessionRequest,
-    SessionToken, Sha, Source, Subject, Url, Vcs,
+    Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness, MergeOutcome,
+    MergePolicy, NetNegative, PreservedBranch, Provenance, Publication, PublishOutcome,
+    PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session, SessionHolder,
+    SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -814,6 +814,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             change_base: None,
         },
         checkout: PathBuf::from("/home/agent/projects/onevcs"),
+        landed: Landed::No,
         stopped_because: "the run's driver died".to_owned(),
         recover_command: vec![
             "onevcs".to_owned(),
@@ -848,6 +849,10 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         }),
         ..recoverable
     };
+    // The one answer every row carries, and the reason the row is a row: `no` is
+    // work that has not reached its base, and it is spelled without evidence because
+    // there is none to name — only a landing has a record behind it.
+    assert_eq!(value["landed"], json!({"state": "no"}));
     let value = serde_json::to_value(&marked).expect("a marked recoverable serializes");
     assert_eq!(value["held_by"]["holding"], json!("owner-running"));
     assert_eq!(value["held_by"]["token"], json!("s-0123456789ab"));
@@ -880,6 +885,58 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             "{lines:?} added and removed is not a net-negative change"
         );
     }
+
+    // A row whose work reached its base says which tier decided that and names the
+    // commit that is the evidence — and carries no argv at all, because the row is
+    // read to be pasted and pasting this one re-opens a change request for work the
+    // base already carries.
+    let landed = Recoverable {
+        landed: Landed::Yes {
+            evidence: LandingEvidence::ChangeRequest {
+                commit: Sha("0f1e2d3".to_owned()),
+                change_url: Url::parse("https://github.com/nickderobertis/onevcs/pull/58")
+                    .expect("a URL"),
+            },
+        },
+        recover_command: Vec::new(),
+        ..marked
+    };
+    let value = serde_json::to_value(&landed).expect("a landed recoverable serializes");
+    assert_eq!(
+        value["landed"],
+        json!({
+            "state": "yes",
+            "evidence": {
+                "tier": "change-request",
+                "commit": "0f1e2d3",
+                "change_url": "https://github.com/nickderobertis/onevcs/pull/58",
+            },
+        })
+    );
+    assert_eq!(value["recover_command"], json!([]));
+    assert_eq!(
+        serde_json::from_value::<Recoverable>(value).expect("a landed row reads back"),
+        landed
+    );
+    // …and the third answer, which is the whole reason there are three: a branch that
+    // landed with no change request and not through this crate leaves nothing in
+    // history to read, and that is not a `no`.
+    assert_eq!(
+        serde_json::to_value(Landed::Unknown).expect("an answer serializes"),
+        json!({"state": "unknown"})
+    );
+    // The row is read to be pasted, so the one contradiction it could carry is not a
+    // row this reads: an answer saying the work is on the base, beside the argv that
+    // publishes it again.
+    let mut contradictory = serde_json::to_value(&landed).expect("a landed recoverable");
+    contradictory["recover_command"] = json!(["onevcs", "publish-branch", "feature"]);
+    let refused = serde_json::from_value::<Recoverable>(contradictory)
+        .expect_err("a landed row carrying a command is not one this reads")
+        .to_string();
+    assert!(
+        refused.contains("a row that landed carries no command"),
+        "the refusal says what was wrong with it: {refused}"
+    );
 
     assert_eq!(
         serde_json::to_value(MergeOutcome::Merged(Sha("0f1e2d3".to_owned())))
@@ -1071,6 +1128,60 @@ fn the_sweep_age_floor_defaults_to_the_number_the_record_states() {
          defaults to {defaults:?}; the number is shared with `oneagentgraph sweep`, so \
          moving it in one place alone is how the two come to answer differently"
     );
+}
+
+/// Every word the landing answer travels as, and the record that documents them.
+///
+/// The record describes a surface that leaves this process — the tiers a `landed`
+/// answer names and the three answers themselves — which makes it a second statement
+/// of a vocabulary the types already spell. This is the gate that keeps the two the
+/// same one: every spelling is taken from the *types*, by serializing each variant,
+/// and the record has to name each in backticks. Rename a variant and this fails
+/// naming the word the record still teaches.
+#[test]
+fn the_record_names_every_word_the_landing_answer_travels_as() {
+    let record = repo_file("docs/inferred-surface.md");
+    let mut spellings: Vec<String> = Vec::new();
+    for answer in [
+        Landed::No,
+        Landed::Unknown,
+        Landed::Yes {
+            evidence: LandingEvidence::RecordedLanding {
+                commit: Sha("0f1e2d3".to_owned()),
+            },
+        },
+        Landed::Yes {
+            evidence: LandingEvidence::ChangeRequest {
+                commit: Sha("0f1e2d3".to_owned()),
+                change_url: Url::parse("https://example.invalid/changes/1").expect("a URL"),
+            },
+        },
+        Landed::Yes {
+            evidence: LandingEvidence::Trailer {
+                commit: Sha("0f1e2d3".to_owned()),
+            },
+        },
+    ] {
+        let value = serde_json::to_value(&answer).expect("an answer serializes");
+        let state = value["state"].as_str().expect("an answer says which it is");
+        spellings.push(state.to_owned());
+        if let Some(tier) = value
+            .get("evidence")
+            .and_then(|evidence| evidence["tier"].as_str())
+        {
+            spellings.push(tier.to_owned());
+        }
+    }
+    // The state a report gives a branch the base carries and nothing records, which
+    // is the value version 2 of that document added beside the seven it had.
+    spellings.push("maybe-landed".to_owned());
+    for spelling in spellings {
+        assert!(
+            record.contains(&format!("`{spelling}`")),
+            "docs/inferred-surface.md teaches the landing vocabulary, and {spelling:?} is a \
+             word the types spell that it does not name"
+        );
+    }
 }
 
 /// The one sentence of approved text the command surface deliberately departs

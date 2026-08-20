@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::error::{Error, Result};
 use crate::event::EventKind;
 use crate::host::{Hosting, Sha};
+use crate::landed::{self, Landed};
 use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
@@ -61,7 +62,29 @@ pub trait Vcs {
     ) -> Result<Publication>;
 
     /// Every preserved-but-unpublished branch in scope, and what would land each.
+    ///
+    /// Unpublished is decided from history rather than inferred from content, and a
+    /// branch whose work reached the base is not one of these — including one the
+    /// base has moved a long way past since. The row that offered such a branch a
+    /// paste-ready `publish-branch` is what this excludes: following it re-opens a
+    /// change request for work the base already carries. A branch nothing can decide
+    /// about is still here, because it may be work nobody published; what it does not
+    /// carry is a command anybody should paste without looking.
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>>;
+
+    /// Every preserved branch in scope, whatever became of its work, each saying
+    /// what did become of it and what says so.
+    ///
+    /// [`recoverable`](Self::recoverable) is this without the ones whose work is on
+    /// the base, and is what somebody asking "what is left to publish" wants. This is
+    /// what somebody asking "what became of all of it" wants, and it is the one place
+    /// a withheld branch is reported rather than silently dropped — an exclusion
+    /// nobody can see is how preserved work goes missing.
+    ///
+    /// Required rather than defaulted to [`recoverable`](Self::recoverable): the
+    /// default would answer the *narrower* question under this one's name, and an
+    /// implementation whose wider answer is the same one has only to say so.
+    fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>>;
 }
 
 /// The git implementation of [`Vcs`].
@@ -124,7 +147,11 @@ impl Vcs for Git {
     }
 
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>> {
-        collect(&scope)
+        collect(&scope, Reporting::UnpublishedOnly)
+    }
+
+    fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>> {
+        collect(&scope, Reporting::Everything)
     }
 }
 
@@ -238,22 +265,44 @@ pub fn base_commit(checkout: &Path, base: &str) -> Option<Sha> {
     git::tip(checkout, &base_ref(checkout, base)).map(Sha)
 }
 
-/// Every preserved, unpublished branch in scope, newest first.
+/// Which branches a report is asked to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reporting {
+    /// Every branch whose work is not known to have reached the base, which is what
+    /// [`Vcs::recoverable`] answers.
+    UnpublishedOnly,
+    /// Every preserved branch, whatever became of its work — the ones that reached
+    /// the base included, which is what [`Vcs::preserved`] answers.
+    Everything,
+}
+
+/// Every preserved branch in scope, newest first, and whether its work landed.
 ///
 /// Read-only in the strongest sense: it opens repositories to ask questions, writes
 /// nothing, and takes no lease, so it is safe to run beside live work — which is
 /// exactly when somebody reaches for it.
-pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
+pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> {
     let registry = store::load()?;
     let (rules, _source) = crate::policy::load(&registry)?;
     let trailers = provenance::from_rules(&rules);
     let sessions = workspace::all()?;
+    // What this host's own runs recorded, read once: the change request each branch
+    // opened and any landing seen for it. A gap in the streams is not reported here —
+    // this report has nowhere to say one — and costs only certainty: a branch whose
+    // record could not be read falls to a lower tier and is judged from the base's own
+    // history instead.
+    let streams = crate::status::recorded_streams(&mut Vec::new())?;
     let wanted = match scope {
         Scope::All => None,
         Scope::Repo(repo) => Some(store::resolve(&registry, repo)?.key),
     };
 
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
+    // The branches whose work reached the base, kept aside rather than dropped: they
+    // are what `preserved` adds, and a copy of a name whose work the base already
+    // carries must not answer for a copy of it elsewhere that still holds work, so
+    // they join the answer only where no such copy did.
+    let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     // Once per identity rather than once per checkout of one, because the places a
     // branch of it can be are a property of the identity — and they are read from
@@ -290,100 +339,70 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                     continue;
                 }
                 // Unpublished by ref is not the same as unfinished: publication
-                // squashes, so a branch that landed is never an ancestor of the
-                // base afterwards. What answers the question is whether the base
-                // already carries this branch's content.
-                if !git::trees_differ(&repo, &compared, &branch)? {
+                // squashes, so a branch that landed is never an ancestor of the base
+                // afterwards. What answers the question is what the base's own history
+                // records about this branch — and, only where it records nothing, what
+                // the base carries of what the branch changed.
+                let recorded = crate::status::recorded_for(
+                    &streams,
+                    identity,
+                    &branch,
+                    session_holding(&sessions, identity, &branch),
+                );
+                let recorded = landed::Recorded {
+                    change: recorded
+                        .change
+                        .or_else(|| change_url_of(&repo, &compared, &branch, &trailers)),
+                    ..recorded
+                };
+                let verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
+                // Withheld unless every branch was asked for, and only where the
+                // work *reached the base*: that is the row whose command must not be
+                // pasted. A row nothing can decide about is the opposite case — it
+                // may be work nobody published, so withholding it is how preserved
+                // work goes missing — and it is listed, saying so, with no line that
+                // reads as "paste this".
+                let withheld = verdict.is_landed();
+                if withheld && reporting == Reporting::UnpublishedOnly {
                     continue;
                 }
-                // Marked seen only once it is a row, so that one repository's spent
-                // copy of a name cannot answer for another's: a branch published out
-                // of the checkout and re-cut in a later run has both, and the first
-                // has nothing left in it.
-                seen.push(key);
-                // A marker under a prefix this host does not read is still a marker:
-                // reporting the branch as complete is what would let somebody hand
-                // interrupted work to the verb that publishes a finished one.
-                let unrecognized = provenance::unrecognized(&repo, &compared, &branch, &trailers)?;
-                let kind = match unrecognized.first() {
-                    Some(_) => Provenance::IncompleteStep,
-                    None => provenance::provenance_of(&repo, &compared, &branch, &trailers)?,
-                };
-                let incomplete = kind == Provenance::IncompleteStep;
-                let change_base =
-                    provenance::recorded_change_base(&repo, &compared, &branch, &trailers)?;
-                // Asked before the row says anything about why the work stopped,
-                // because a branch a live session is still writing to has not stopped.
-                let held_by = held_by(&sessions, identity, &branch)?;
-                let mut stopped = match &held_by {
-                    Some(held) => format!(
-                        "nothing has stopped: session {token} still holds this branch and \
-                         {because}. Its work is being made in {worktree}",
-                        token = held.token.0,
-                        because = held.holding.because(),
-                        worktree = held.worktree.display(),
-                    ),
-                    None => sessions
-                        .iter()
-                        .find(|record| *record.branch == *branch)
-                        .map(|record| {
-                            if record.state == Lifecycle::Open {
-                                format!("session {} was left open", record.token)
-                            } else {
-                                format!("session {} closed without publishing", record.token)
-                            }
-                        })
-                        .unwrap_or_else(|| {
-                            "no session record names this branch; it stopped before recording one"
-                                .to_owned()
-                        }),
-                };
-                if let Some(prefix) = unrecognized.first() {
-                    stopped.push_str(&format!(
-                        ". Its provenance is written under the trailer prefix {prefix:?}, which \
-                         this host is not configured to read: set trailer_prefix in the rules \
-                         file to {prefix:?} before publishing it"
-                    ));
+                // Marked seen only once it is a row this report is answering with, so
+                // that one repository's spent copy of a name cannot answer for
+                // another's: a branch published out of the checkout and re-cut in a
+                // later run has both, and the first has nothing left in it.
+                if !withheld {
+                    seen.push(key);
                 }
-                // The verb its provenance earns, taking the repository by path so
-                // that the command runs wherever the row is read.
-                let verb = if incomplete {
-                    "recover"
-                } else {
-                    "publish-branch"
-                };
-                // llmlint: ignore[names_match_behavior] the name is the public
-                // `Recoverable::recover_command` field this fills, which the recorded
-                // surface in docs/inferred-surface.md fixes; renaming that field is a
-                // break of the published surface, and a local that disagreed with it
-                // would be the drift. Which verb the argv holds is the two lines above.
-                let recover_command = vec![
-                    "onevcs".to_owned(),
-                    verb.to_owned(),
-                    branch.clone(),
-                    "--repo".to_owned(),
-                    publication.display().to_string(),
-                ];
-                rows.push((
-                    git::committed_at(&repo, &branch),
-                    Recoverable {
-                        identity: identity.to_owned(),
-                        branch: PreservedBranch {
-                            branch: branch.clone(),
-                            base: base.clone(),
-                            provenance: kind,
-                            change_url: change_url_of(&repo, &compared, &branch, &trailers),
-                            change_base,
-                        },
-                        checkout: repo.clone(),
-                        stopped_because: stopped,
-                        recover_command,
-                        held_by,
-                        net_negative: net_negative(&repo, &compared, &branch)?,
+                let row = preserved_row(
+                    &Preserved {
+                        identity,
+                        repo: &repo,
+                        publication: &publication,
+                        base: &base,
+                        compared: &compared,
+                        branch: &branch,
+                        verdict,
                     },
-                ));
+                    &sessions,
+                    &trailers,
+                )?;
+                if withheld {
+                    withheld_rows.push(row);
+                } else {
+                    rows.push(row);
+                }
             }
         }
+    }
+    // A landed copy answers only where nothing holding work under that name did.
+    let mut kept: Vec<(String, String)> = Vec::new();
+    for (at, row) in withheld_rows {
+        let key = (row.identity.clone(), row.branch.branch.clone());
+        if seen.contains(&key) || kept.contains(&key) {
+            continue;
+        }
+        kept.push(key);
+        rows.push((at, row));
     }
     rows.sort_by_key(|(at, row)| {
         (
@@ -392,6 +411,154 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
         )
     });
     Ok(rows.into_iter().map(|(_, row)| row).collect())
+}
+
+/// One preserved branch, and everything a row about it is read out of.
+///
+/// One value rather than seven arguments, for the reason `status`'s own decision
+/// takes one: every field is read by the one function below, and two of them
+/// transposed would produce a row that reads perfectly and names another branch's
+/// repository.
+struct Preserved<'a> {
+    identity: &'a str,
+    repo: &'a Path,
+    publication: &'a Path,
+    base: &'a str,
+    compared: &'a str,
+    branch: &'a str,
+    verdict: Landed,
+}
+
+/// The row one preserved branch answers with.
+fn preserved_row(
+    preserved: &Preserved<'_>,
+    sessions: &[workspace::Record],
+    trailers: &provenance::Trailers,
+) -> Result<(Option<u64>, Recoverable)> {
+    let Preserved {
+        identity,
+        repo,
+        publication,
+        base,
+        compared,
+        branch,
+        ref verdict,
+    } = *preserved;
+    // A marker under a prefix this host does not read is still a marker:
+    // reporting the branch as complete is what would let somebody hand
+    // interrupted work to the verb that publishes a finished one.
+    let unrecognized = provenance::unrecognized(repo, compared, branch, trailers)?;
+    let kind = match unrecognized.first() {
+        Some(_) => Provenance::IncompleteStep,
+        None => provenance::provenance_of(repo, compared, branch, trailers)?,
+    };
+    let incomplete = kind == Provenance::IncompleteStep;
+    let change_base = provenance::recorded_change_base(repo, compared, branch, trailers)?;
+    // Asked before the row says anything about why the work stopped,
+    // because a branch a live session is still writing to has not stopped.
+    let held_by = held_by(sessions, identity, branch)?;
+    let mut stopped = match verdict {
+        // Nothing stopped it: it finished. Which tier says so travels with the
+        // sentence, because "it landed" is exactly the claim that used to be an
+        // inference and was wrong whenever the base had moved.
+        Landed::Yes { evidence } => format!(
+            "nothing stopped: this branch's work reached {base}, and {tier} ({commit}) says so",
+            tier = verdict.tier(),
+            commit = evidence.commit(),
+        ),
+        _ => match &held_by {
+            Some(held) => format!(
+                "nothing has stopped: session {token} still holds this branch and \
+                 {because}. Its work is being made in {worktree}",
+                token = held.token.0,
+                because = held.holding.because(),
+                worktree = held.worktree.display(),
+            ),
+            None => sessions
+                .iter()
+                .find(|record| *record.branch == *branch)
+                .map(|record| {
+                    if record.state == Lifecycle::Open {
+                        format!("session {} was left open", record.token)
+                    } else {
+                        format!("session {} closed without publishing", record.token)
+                    }
+                })
+                .unwrap_or_else(|| {
+                    "no session record names this branch; it stopped before recording one"
+                        .to_owned()
+                }),
+        },
+    };
+    if *verdict == Landed::Unknown {
+        stopped.push_str(&format!(
+            ". Whether it landed cannot be decided from history: nothing records that it \
+             reached {base} — no landing, no change request's number in the base's history, \
+             and no landing trailer — and {base} already carries everything it changed"
+        ));
+    }
+    if let Some(prefix) = unrecognized.first() {
+        stopped.push_str(&format!(
+            ". Its provenance is written under the trailer prefix {prefix:?}, which \
+             this host is not configured to read: set trailer_prefix in the rules \
+             file to {prefix:?} before publishing it"
+        ));
+    }
+    // The verb its provenance earns, taking the repository by path so
+    // that the command runs wherever the row is read. A branch whose work
+    // reached the base earns none: the row is read to be pasted, and pasting
+    // one for finished work re-opens a change request for what the base has.
+    let verb = if incomplete {
+        "recover"
+    } else {
+        "publish-branch"
+    };
+    // llmlint: ignore[names_match_behavior] the name is the public
+    // `Recoverable::recover_command` field this fills, which the recorded
+    // surface in docs/inferred-surface.md fixes; renaming that field is a
+    // break of the published surface, and a local that disagreed with it
+    // would be the drift. Which verb the argv holds is the two lines above.
+    let recover_command = match verdict.is_landed() {
+        true => Vec::new(),
+        false => vec![
+            "onevcs".to_owned(),
+            verb.to_owned(),
+            branch.to_owned(),
+            "--repo".to_owned(),
+            publication.display().to_string(),
+        ],
+    };
+    Ok((
+        git::committed_at(repo, branch),
+        Recoverable {
+            identity: identity.to_owned(),
+            branch: PreservedBranch {
+                branch: branch.to_owned(),
+                base: base.to_owned(),
+                provenance: kind,
+                change_url: change_url_of(repo, compared, branch, trailers),
+                change_base,
+            },
+            checkout: repo.to_path_buf(),
+            landed: verdict.clone(),
+            stopped_because: stopped,
+            recover_command,
+            held_by,
+            net_negative: net_negative(repo, compared, branch)?,
+        },
+    ))
+}
+
+/// The token of an open session holding this branch, for reading its stream.
+fn session_holding<'a>(
+    sessions: &'a [workspace::Record],
+    identity: &str,
+    branch: &str,
+) -> Option<&'a str> {
+    sessions
+        .iter()
+        .find(|record| record.identity == identity && *record.branch == *branch)
+        .map(|record| record.token.as_ref())
 }
 
 /// The live session still writing to a preserved branch, when one is.

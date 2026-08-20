@@ -1,0 +1,16 @@
+Mutation: the comparison of content answers unknown whatever the base carries, so work nobody published reads as work that may have landed.
+Red: a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_lands_it
+
+diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
+index 446e9ad..1ff2229 100644
+--- a/crates/onevcs/src/landed.rs
++++ b/crates/onevcs/src/landed.rs
+@@ -228,7 +228,7 @@ pub(crate) fn decide(
+     if already_took_this_change(repo, &fork, branch, &base_history, trailers)? {
+         return Ok(Landed::Unknown);
+     }
+-    Ok(Landed::No)
++    Ok(Landed::Unknown)
+ }
+ 
+ /// Whether the base's own history already took a change under the subject a landing

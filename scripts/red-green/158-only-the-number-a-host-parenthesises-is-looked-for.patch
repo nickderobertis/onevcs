@@ -1,0 +1,20 @@
+Mutation: only the number a host trails in parentheses is looked for in the base's history, so a change request a merge commit names in a sentence — or one a message quotes the URL of — is a landing nothing reads.
+Red: a_change_request_a_merge_commit_names_is_read_off_the_bases_history
+Red: a_change_request_its_own_url_names_is_read_off_the_bases_history
+
+diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
+index f8529d7..f2b7bca 100644
+--- a/crates/onevcs/src/landed.rs
++++ b/crates/onevcs/src/landed.rs
+@@ -292,10 +292,9 @@ fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String>
+         .rsplit('/')
+         .next()
+         .filter(|last| !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()));
+-    let mut spellings = vec![url.to_owned()];
++    let mut spellings = Vec::new();
+     if let Some(number) = number {
+         spellings.push(format!("(#{number})"));
+-        spellings.push(format!("Merge pull request #{number} "));
+     }
+     history
+         .iter()

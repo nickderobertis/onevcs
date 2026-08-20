@@ -25,7 +25,20 @@ the same way it reconciles the text below.
 version 2.** The contract requires `Recovered-Incomplete` trailers and an
 incomplete-step commit but fixes no keys, so this crate spells them
 `<prefix>Status: incomplete`, `<prefix>Change-Base:`,
-`<prefix>Recovered-Incomplete:`, and `<prefix>Change-Url:`.
+`<prefix>Recovered-Incomplete:`, `<prefix>Change-Url:`, and
+`<prefix>Landed-Commit:`.
+
+The last records a landing, and it is written on whichever side of one would
+otherwise keep no record. A `local-direct` publication squashes a branch onto its
+base and opens no change request for anything to find later, so the commit it lands
+carries that key on the *base*, with the branch commit whose work it landed as its
+value. A change the host lands on its own clock is the mirror of that: the host
+writes the change request's own number onto the base, and nothing at all onto the
+branch — so the key is written on the *branch* instead, carrying the commit the
+change reached its base at (below). One key for both, because both answer the one
+question, and a reader tells them apart by which side the commit sits on. A commit
+rather than a branch name, because a branch name is spent and re-cut and a landing
+of the work that used to wear it must not answer for work that wears it now.
 
 The prefix is the rules file's optional `trailer_prefix` key, unset `Onevcs-`.
 
