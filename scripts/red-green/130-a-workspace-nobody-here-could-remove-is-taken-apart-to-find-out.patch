@@ -2,7 +2,7 @@ Mutation: the sweep stops asking whether removing a workspace is this host's to 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index dd6dc13..ff150b1 100644
+index 1beb2ad..b4f14c0 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -373,9 +373,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
@@ -26,5 +26,5 @@ index dd6dc13..ff150b1 100644
 +    if std::fs::remove_dir_all(&run_root).is_err() {
 +        return Ok(());
      }
-     report.reclaimed.push(Reclaimed {
+     report.reclaimed.push(Reclaim {
          path: run_root,

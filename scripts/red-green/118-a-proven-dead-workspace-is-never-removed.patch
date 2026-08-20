@@ -6,10 +6,10 @@ Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 79dc591..2da19a5 100644
+index 1beb2ad..dae007d 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -398,11 +398,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+@@ -399,11 +399,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
      // family this user may not write to, and content it may not unlink — is decided
      // by the walk above and is a journey. What is left is the state root changing
      // between the question and the act, which no interface this crate exposes reaches.
@@ -19,6 +19,6 @@ index 79dc591..2da19a5 100644
 -        ));
 -    }
 +
-     report.reclaimed.push(Reclaimed {
+     report.reclaimed.push(Reclaim {
          path: run_root,
          bytes,
