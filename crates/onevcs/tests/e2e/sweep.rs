@@ -619,10 +619,11 @@ fn a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking() {
     backdate(&run_root, 72);
 
     // Whether emptying a workspace is this host's to do is asked by writing into every
-    // directory under it, and putting the clock back afterwards needs that directory
-    // open. One this user may write into and may not list is therefore the shape that
-    // separates a question asked and undone from one asked and left behind — and it is
-    // an ordinary thing to meet on a state root several managers share.
+    // directory under it, and putting the clock back needs times this host can set —
+    // which a directory it may write into and may not read is not one of. That is the
+    // shape which separates a question asked and undone from one asked and left
+    // behind, and it is an ordinary thing to meet on a state root several managers
+    // share.
     let listable = std::fs::metadata(&spool)
         .expect("the directory the gate left")
         .permissions();
