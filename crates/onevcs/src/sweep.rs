@@ -278,12 +278,21 @@ fn can_write_into(directory: &Path) -> bool {
 /// clock back — every step part of the answer rather than an attempt beside it.
 ///
 /// The handle comes first, before anything is written, so nothing is ever created in
-/// a directory whose timestamps this could not then restore.
+/// a directory whose timestamps this could not then restore. That ordering is what
+/// `a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking` drives: a
+/// directory this cannot open is one it never writes into.
 fn probe(directory: &Path) -> std::io::Result<()> {
     let handle = open_dir(directory)?;
     let before = handle.metadata()?;
     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
     std::fs::create_dir(&entry)?;
+    // Undoing the ask is the rest of the answer, not a tidy-up beside it: an entry
+    // left behind and a clock left moved are the same outcome — a directory this
+    // could not leave as it found it, and therefore one it says nothing about. Both
+    // retain, like every other unknown here, and neither is reachable from any
+    // interface this crate exposes: unlinking an entry from a directory takes the
+    // permission that just created one, and the restoration uses the handle already
+    // open above rather than an open that could still be refused.
     std::fs::remove_dir(&entry)?;
     handle.set_times(
         FileTimes::new()
