@@ -2,16 +2,16 @@ Mutation: the writability probe stops putting a directory's timestamps back, so 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index b5bb42b..752af9b 100644
+index 3c3d817..ff0199a 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -311,8 +311,7 @@ fn probe(directory: &Path) -> std::io::Result<()> {
-     filetime::set_file_times(directory, accessed, modified)?;
-     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
-     std::fs::create_dir(&entry)?;
--    std::fs::remove_dir(&entry)?;
+@@ -321,8 +321,7 @@ fn probe(directory: &Path) -> std::io::Result<()> {
+     std::fs::remove_dir(&entry)?;
+     let file = directory.join(format!(".sweep-probe-{}", ids::unique()));
+     File::create(&file)?;
+-    std::fs::remove_file(&file)?;
 -    filetime::set_file_times(directory, accessed, modified)
-+    std::fs::remove_dir(&entry)
++    std::fs::remove_file(&file)
  }
  
  /// Why a directory under the workspaces root is none of this verb's business.
