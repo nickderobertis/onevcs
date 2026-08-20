@@ -189,17 +189,10 @@ pub fn prepare(
         &format!("land it with `{}`", verb.command(branch, repo)),
     )?;
 
-    // The retention rule, enforced where the run roots are made. Nothing else runs
-    // between two landings on a host that publishes all day, so a family reaped only
-    // when an operator remembers to ask is the family that fills the disk — which is
-    // what it did: thirty-one workspaces and forty-nine gigabytes, until a publication
-    // failed with `No space left on device`. Before the new run root is cut, so this
-    // run's own directory is never a candidate.
-    //
-    // A landing is not refused over it. What this could not reclaim is somebody
-    // else's leftovers, and losing a publication to those is the failure this whole
-    // rule exists to prevent — so it is said on stderr and named to the verb that
-    // reports what was kept and why.
+    // The retention rule, enforced where the run roots are made and before this run's
+    // own is cut, so it is never a candidate. A landing is not refused over it: what
+    // it reclaims is the previous runs' leftovers, and a publication lost to those is
+    // the failure the rule exists to prevent.
     if let Err(error) = sweep::enforce(verb) {
         eprintln!(
             "onevcs: warning: the {family} workspaces could not be reclaimed before this \

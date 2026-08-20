@@ -43,17 +43,17 @@ use filetime::FileTime;
 
 use crate::branch::Verb;
 use crate::error::{self, Result};
-use crate::{gate, git, home, ids, lock, processes, workspace};
+use crate::processes::{self, Holder};
+use crate::{gate, git, home, ids, lock, workspace};
 
 /// How many dead run roots holding work no origin has are kept past the age floor.
 ///
-/// The bound [`crate::workspace::RETAINED_DEAD_RUNS`] is for the lifecycle clones,
-/// and for the same reason: a workspace whose clone still holds a commit that never
-/// reached the origin is the one an operator reaches for after a publication went
-/// wrong, and keeping every one of them forever turns a scratch root into an archive
-/// nobody prunes. The newest are the ones kept — the failure somebody is asking
-/// about is the one that just happened.
-pub const RETAINED_UNPUBLISHED: usize = 3;
+/// [`workspace::RETAINED_DEAD_RUNS`] itself rather than a second number equal to it:
+/// it is one bound on one question — how much unpublished work a scratch root keeps
+/// before it becomes an archive nobody prunes — asked of the lifecycle clones there
+/// and of the landings' workspaces here. The newest are the ones kept, because the
+/// failure somebody is asking about is the one that just happened.
+pub const RETAINED_UNPUBLISHED: usize = workspace::RETAINED_DEAD_RUNS;
 
 /// The age floor a caller that says nothing gets, in hours.
 ///
@@ -540,30 +540,23 @@ fn unpublished_work(clone: &Path) -> Result<Vec<String>> {
 /// The lease is held across the removal rather than dropped before it, so nothing
 /// can take the run root up between the proof and the act.
 ///
-/// **The processes it left running are stopped first, and that is part of removing
-/// it.** A gate starts daemons and they outlive the publication that started them —
-/// two of them outlived theirs by 33 and 16 minutes on the host this verb was
-/// written for, pinning roughly 14G. Unlinking a file a process still holds open
-/// frees none of its blocks, so a removal that left them running would report a
-/// figure the disk never gets back. One that cannot stop them all removes nothing:
-/// the workspace is kept and reported, because a half-emptied tree a daemon is still
-/// writing into is worse than the tree that was there.
+/// **Stopping what it left running is part of removing it** ([`processes`]), and a
+/// workspace whose holders would not all stop is kept instead: a half-emptied tree a
+/// daemon is still writing into is worse than the tree that was there, and its blocks
+/// would not have come back anyway.
 fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
-    // Measured before anything is stopped: what a daemon holds open is part of what
-    // this workspace is costing, and it is the reason stopping it is what reclaims.
+    // Measured before anything is stopped, so what a daemon holds open is counted.
     let bytes = size_of(&run_root);
     let holding = processes::holding(&run_root);
     if report.dry_run {
         report.reclaimed.push(Reclaimed {
             path: run_root,
             bytes,
-            stopped: holding.iter().map(|holder| holder.pid).collect(),
+            stopped: holding.iter().map(Holder::pid).collect(),
         });
         return Ok(());
     }
-    // Asked to stop and then ended, before a single file is unlinked: what comes back
-    // is what would not go, and a workspace that still has one of those is not one
-    // this could claim to have reclaimed.
+    // Before a single file is unlinked: what comes back is what would not go.
     let left = processes::stop(&holding, &run_root);
     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
     // still working inside the run root after it has been asked to stop and then
@@ -578,7 +571,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
         report.retained.push(Retained {
             path: run_root,
             why: Kept::StillRunning {
-                pids: left.iter().map(|holder| holder.pid).collect(),
+                pids: left.iter().map(Holder::pid).collect(),
             },
         });
         return Ok(());
@@ -599,7 +592,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,
-        stopped: holding.iter().map(|holder| holder.pid).collect(),
+        stopped: holding.iter().map(Holder::pid).collect(),
     });
     drop(lease);
     Ok(())
@@ -692,7 +685,7 @@ struct Reclaimed {
     bytes: u64,
     /// Every process that was working inside it, which removing it stopped — or,
     /// under a rehearsal, would have stopped.
-    stopped: Vec<u32>,
+    stopped: Vec<processes::Pid>,
 }
 
 struct Retained {
@@ -742,7 +735,7 @@ enum Kept {
     HoldsUnpublishedWork { branches: Vec<String> },
     /// It is dead, and something it left running would not stop — so removing it
     /// would have freed none of what that process holds open.
-    StillRunning { pids: Vec<u32> },
+    StillRunning { pids: Vec<processes::Pid> },
 }
 
 impl Kept {
@@ -783,10 +776,10 @@ fn describe_branches(branches: &[String]) -> String {
 }
 
 /// Processes as the report names them: how many, and which.
-fn describe_processes(pids: &[u32]) -> String {
+fn describe_processes(pids: &[processes::Pid]) -> String {
     let listed = pids
         .iter()
-        .map(|pid| format!("pid {pid}"))
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
     format!("{} process(es) ({listed})", pids.len())

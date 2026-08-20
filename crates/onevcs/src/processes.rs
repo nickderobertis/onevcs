@@ -1,11 +1,10 @@
 //! The processes a run root left running, and stopping them before it is removed.
 //!
-//! A gate is the repository's own verification, and a repository's verification
-//! starts daemons. The incident this exists for left two Nx daemons running 33 and
-//! 16 minutes after the publications that started them had finished, pinning roughly
-//! 14G between them — so removing the directory reclaimed nothing at all: the blocks
-//! a process holds open stay allocated after the files are unlinked, and the daemon
-//! goes on working against a tree that is gone.
+//! A gate is the repository's own verification, and verifications start daemons —
+//! ones that outlive the publication that started them. Removing the directory
+//! reclaims nothing while one is running: the blocks a process holds open stay
+//! allocated after the files are unlinked, and it goes on working against a tree
+//! that is gone.
 //!
 //! **What names such a process is its working directory.** A `command:` gate runs in
 //! the run root's worktree and everything it starts inherits that directory, so a
@@ -14,27 +13,57 @@
 //! parent — those would each be this crate guessing which of a host's processes are
 //! its business.
 //!
-//! Three are never signalled: this process, anything it descends from — an operator
-//! who ran a sweep from inside a workspace is not a daemon — and any pid at or below
-//! `1`. And the working directory is read again immediately before each signal, so a
-//! pid that exited between the search and the act cannot be signalled as the process
-//! it was reused by.
+//! Two are never signalled: this process, and anything it descends from — an
+//! operator who ran a sweep from inside a workspace is not a daemon. Nor is a pid a
+//! signal cannot name one process by, which [`Pid`] makes unrepresentable. And the
+//! working directory is read again immediately before each signal, so a pid that
+//! exited between the search and the act cannot be signalled as whatever reused it.
 //!
 //! Windows answers nothing here: it exposes no supported way to ask which process
 //! holds a directory. It does not need one to be safe — a removal there fails while a
 //! process holds the tree, which the sweep reports as the failure it is — and this
 //! crate's own journeys run on Unix, where both answers below are real.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// A process id a signal can name exactly one process by.
+///
+/// `0` and every negative value are how `kill` spells a whole process *group*, and
+/// `1` is the host's own init. Neither is representable here, so the guard is the
+/// type rather than a check at each of the two places a signal is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pid(i32);
+
+impl Pid {
+    /// The one way to make one: out of a pid this host listed, checked here.
+    fn new(raw: u32) -> Option<Self> {
+        i32::try_from(raw).ok().filter(|pid| *pid > 1).map(Pid)
+    }
+}
+
+impl fmt::Display for Pid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "pid {}", self.0)
+    }
+}
+
 /// One process working inside a run root.
+///
+/// Made here and nowhere else: a holder whose path somebody else supplied would be
+/// this crate signalling a process on a caller's say-so.
 #[derive(Debug, Clone)]
 pub struct Holder {
-    /// The process id, which is what a report names and what a signal reaches.
-    pub pid: u32,
-    /// Where it was working when it was found.
-    pub cwd: PathBuf,
+    pid: Pid,
+    cwd: PathBuf,
+}
+
+impl Holder {
+    /// The process, as a report names it and a signal reaches it.
+    pub fn pid(&self) -> Pid {
+        self.pid
+    }
 }
 
 /// How long a signalled process is given to go before the next one is sent.
@@ -56,11 +85,12 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
     let mut found: Vec<Holder> = live_pids()
         .into_iter()
         .filter(|pid| !ours.contains(pid))
+        .filter_map(Pid::new)
         .filter_map(|pid| working_dir(pid).map(|cwd| Holder { pid, cwd }))
         .filter(|holder| holder.cwd.starts_with(run_root))
         .collect();
     // By pid, so a report naming several reads the same way twice.
-    found.sort_by_key(|holder| holder.pid);
+    found.sort_by_key(|holder| holder.pid.0);
     found
 }
 
@@ -148,8 +178,8 @@ fn live_pids() -> Vec<u32> {
 
 /// Where one process is working, or `None` where this host will not say.
 #[cfg(target_os = "linux")]
-fn working_dir(pid: u32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+fn working_dir(pid: Pid) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{}/cwd", pid.0)).ok()
 }
 
 /// The process that started one, or `None` where this host will not say.
@@ -199,11 +229,11 @@ fn live_pids() -> Vec<u32> {
 }
 
 #[cfg(target_os = "macos")]
-fn working_dir(pid: u32) -> Option<PathBuf> {
+fn working_dir(pid: Pid) -> Option<PathBuf> {
     use std::ffi::c_int;
     use std::os::unix::ffi::OsStringExt;
 
-    let pid = c_int::try_from(pid).ok().filter(|pid| *pid > 0)?;
+    let pid: c_int = pid.0;
     let size = c_int::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
     // SAFETY: `info` is writable for exactly `size` bytes and is borrowed for the
@@ -270,7 +300,7 @@ fn live_pids() -> Vec<u32> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn working_dir(_pid: u32) -> Option<PathBuf> {
+fn working_dir(_pid: Pid) -> Option<PathBuf> {
     None
 }
 
@@ -291,33 +321,15 @@ fn kill_signal() -> i32 {
     libc::SIGKILL
 }
 
-/// Signal one process, and only ever one.
-///
-/// A pid at or below `1` is never signalled: `0` and negative values are how `kill`
-/// spells a whole process *group*, which would reach processes nothing here has
-/// shown anything about, and `1` is the host's own init.
+/// Signal one process, and only ever one — which is what [`Pid`] guarantees.
 #[cfg(unix)]
-fn signal_to(pid: u32, signal: i32) {
-    // llmlint: ignore-block[changed_behavior_has_e2e] both guards are uncovered and
-    // deliberately unreachable from any journey: no host hands out a pid that will not
-    // fit its own `pid_t`, and the two values that would widen a signal into a group —
-    // `0` and anything negative — are ones the search above cannot answer with, since
-    // it reads pids out of the kernel's own listing. They are here because the cost of
-    // being wrong is signalling every process in a group, and a guard that is never hit
-    // is what keeps that unrepresentable rather than merely unlikely.
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return;
-    };
-    if pid <= 1 {
-        return;
-    }
-    // llmlint: ignore-end[changed_behavior_has_e2e]
-    // SAFETY: `kill` with a positive pid signals that one process and borrows
+fn signal_to(pid: Pid, signal: i32) {
+    // SAFETY: `kill` with a pid above `1` signals that one process and borrows
     // nothing. A refusal — a process this user may not signal, or one that has
     // already gone — is answered by the caller asking again whether it still holds
     // the run root.
     unsafe {
-        libc::kill(pid, signal);
+        libc::kill(pid.0, signal);
     }
 }
 
@@ -333,4 +345,4 @@ fn kill_signal() -> i32 {
 }
 
 #[cfg(not(unix))]
-fn signal_to(_pid: u32, _signal: i32) {}
+fn signal_to(_pid: Pid, _signal: i32) {}
