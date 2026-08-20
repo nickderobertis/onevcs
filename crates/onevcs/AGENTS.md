@@ -121,9 +121,9 @@ report is most often read about — the ones a run left in its own clone.
 ## A publication observes, captures, and does not settle early
 
 - **Polling is driven by `context.effective`, never by `context.policy.gate`.** The
-  gate is what tempts you: it has a `checks` kind, and reading it here is one line.
-  It was one line, and on a host whose every rule names a `command:` gate it meant
-  the host's required checks were observed for no repository at all.
+  gate is what tempts you — it has a `checks` kind, and reading it here is one line
+  — but a host whose every rule names a `command:` gate then has its required checks
+  observed for no repository at all.
 - **Every capture is best effort where the thing it records has already happened.**
   `record_push`, `report_conflict`, and `record_landing` warn on stderr and carry
   on. A `?` in any of them turns a push git accepted, or a merge the host performed,
