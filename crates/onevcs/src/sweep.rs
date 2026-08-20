@@ -562,13 +562,20 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
         report.reclaimed.push(Reclaimed {
             path: run_root,
             bytes,
-            stopped: holding.iter().map(Holder::pid).collect(),
+            signalled: holding.iter().map(Holder::pid).collect(),
         });
         return Ok(());
     }
     // Before a single file is unlinked, because unlinking one a process holds open
     // frees nothing: what comes back from this is what would not go.
-    let processes::Stopped { stopped, left } = processes::stop(&holding, &run_root);
+    let mut released: Vec<processes::Pid> = Vec::new();
+    let mut left: Vec<processes::Pid> = Vec::new();
+    for outcome in processes::stop(&holding, &run_root) {
+        match outcome {
+            processes::Outcome::Released(pid) => released.push(pid),
+            processes::Outcome::Holding(holder) => left.push(holder.pid()),
+        }
+    }
     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
     // still working inside the run root after it has been asked to stop and then
     // killed. What survives `SIGKILL` is a process this user may not signal at all —
@@ -581,9 +588,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     if !left.is_empty() {
         report.retained.push(Retained {
             path: run_root,
-            why: Kept::StillRunning {
-                pids: left.iter().map(Holder::pid).collect(),
-            },
+            why: Kept::StillRunning { pids: left },
         });
         return Ok(());
     }
@@ -603,7 +608,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,
-        stopped,
+        signalled: released,
     });
     drop(lease);
     Ok(())
@@ -694,10 +699,10 @@ struct Skipped {
 struct Reclaimed {
     path: PathBuf,
     bytes: u64,
-    /// Every process removing it stopped — which under a rehearsal is every one
-    /// found working inside it, since a rehearsal signals nothing and can only say
-    /// what it would have reached for.
-    stopped: Vec<processes::Pid>,
+    /// Every process removing it signalled, each of which then let the workspace go
+    /// — under a rehearsal, every one found working inside it, since a rehearsal
+    /// signals nothing and can only say which it would have reached for.
+    signalled: Vec<processes::Pid>,
 }
 
 struct Retained {
@@ -770,8 +775,9 @@ impl Kept {
                 branches = describe_branches(branches),
             ),
             Kept::StillRunning { pids } => format!(
-                "{processes} it left running would not stop, and unlinking files a process holds \
-                 open frees none of them — so nothing under it was removed",
+                "{processes} it left running are working inside it still, after being asked to \
+                 stop and then ended, and unlinking files a process holds open frees none of \
+                 them — so nothing under it was removed",
                 processes = describe_processes(pids),
             ),
         }
@@ -871,23 +877,24 @@ impl fmt::Display for Report {
             writeln!(f, "  none")?;
         }
         for reclaimed in &self.reclaimed {
-            // What was stopped is said on the same line as what was freed, because it
+            // What it signalled is said on the same line as what it freed, because it
             // is the same fact: the blocks a running process holds open are not
             // returned by unlinking the files, so a figure beside a daemon nobody
-            // stopped would be a number the disk never gets back.
-            let stopped = match (reclaimed.stopped.is_empty(), self.dry_run) {
+            // reached would be a number the disk never gets back.
+            let processes = match (reclaimed.signalled.is_empty(), self.dry_run) {
                 (true, _) => String::new(),
                 (false, true) => format!(
-                    ", and would stop {}",
-                    describe_processes(&reclaimed.stopped)
+                    ", and would signal {} working inside it",
+                    describe_processes(&reclaimed.signalled)
                 ),
-                (false, false) => {
-                    format!(", and stopped {}", describe_processes(&reclaimed.stopped))
-                }
+                (false, false) => format!(
+                    ", after signalling {} that then let it go",
+                    describe_processes(&reclaimed.signalled)
+                ),
             };
             writeln!(
                 f,
-                "  {} — {}{stopped}",
+                "  {} — {}{processes}",
                 reclaimed.path.display(),
                 describe_bytes(reclaimed.bytes)
             )?;

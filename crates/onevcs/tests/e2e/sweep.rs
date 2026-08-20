@@ -1317,8 +1317,10 @@ fn reclaiming_a_workspace_stops_the_process_the_publication_left_running() {
     // because what a caller wants from a rehearsal is what the real run would decide.
     let rehearsal = swept(&fixture, &["--dry-run"]);
     assert!(
-        rehearsal.contains(&format!("and would stop 1 process(es) (pid {pid})")),
-        "the rehearsal names the process the removal would stop:\n{rehearsal}"
+        rehearsal.contains(&format!(
+            "and would signal 1 process(es) (pid {pid}) working inside it"
+        )),
+        "the rehearsal names the process the removal would reach for:\n{rehearsal}"
     );
     assert!(
         run_root.is_dir() && still_running(pid),
@@ -1331,8 +1333,10 @@ fn reclaiming_a_workspace_stops_the_process_the_publication_left_running() {
         "the finished workspace is reclaimed:\n{report}"
     );
     assert!(
-        report.contains(&format!("and stopped 1 process(es) (pid {pid})")),
-        "the report says what it stopped beside what it freed:\n{report}"
+        report.contains(&format!(
+            "after signalling 1 process(es) (pid {pid}) that then let it go"
+        )),
+        "the report says what it signalled beside what it freed:\n{report}"
     );
     // The sweep does not return until what it signalled has stopped holding the run
     // root, so this is asked rather than waited for — bounded only because a pid the
@@ -1368,8 +1372,8 @@ fn a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_g
         "a workspace whose daemon ignored the first signal is still reclaimed:\n{report}"
     );
     assert!(
-        report.contains("and stopped ") && report.contains(&format!("pid {pid}")),
-        "the report names the daemon it stopped — the shell holding the trap, and the \
+        report.contains("after signalling ") && report.contains(&format!("pid {pid}")),
+        "the report names the daemon it signalled — the shell holding the trap, and the \
          sleep under it, are both working in there:\n{report}"
     );
     World::until("the daemon that ignored the first signal has gone", || {

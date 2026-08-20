@@ -113,23 +113,29 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
     found
 }
 
-/// What one attempt to stop a run root's processes actually did.
-pub struct Stopped {
-    /// The ones this signalled and that then stopped holding the run root. Only
-    /// those: a process that had already gone when its turn came was never signalled,
-    /// and a report naming it would be claiming something this did not do.
-    pub stopped: Vec<Pid>,
-    /// The ones still working inside it.
-    pub left: Vec<Holder>,
+/// What became of one process a reclamation asked to stop.
+///
+/// One value per process rather than two lists beside each other: a pid is in
+/// exactly one of these states, and a shape that could carry it in both would let a
+/// report say a process both let go of a workspace and is still writing into it.
+pub enum Outcome {
+    /// It was signalled, and afterwards it was no longer working inside the run root
+    /// — which is what this can *see*, and all a caller is told: a process that
+    /// stopped and one that moved away look the same from outside, and both leave the
+    /// directory nobody's.
+    Released(Pid),
+    /// It is still working inside it, signalled or not.
+    Holding(Holder),
 }
 
-/// Stop them, and answer what that did.
+/// Stop them, and answer what became of each.
 ///
 /// `SIGTERM` first and `SIGKILL` only after the grace, because the daemon this is
 /// about has state of its own to put down. A caller decides what a survivor means;
-/// what this promises is that everything it does not leave in `left` has stopped
-/// holding the directory.
-pub fn stop(holders: &[Holder], run_root: &Path) -> Stopped {
+/// what this promises is that everything it does not answer [`Outcome::Holding`] for
+/// has stopped holding the directory. A holder that had already gone when its turn
+/// came is in neither answer: nothing here did anything to it.
+pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Outcome> {
     let mut left: Vec<Holder> = holders.to_vec();
     let mut signalled: Vec<Pid> = Vec::new();
     for signal in [Signal::Terminate, Signal::Kill] {
@@ -158,13 +164,13 @@ pub fn stop(holders: &[Holder], run_root: &Path) -> Stopped {
             break;
         }
     }
-    Stopped {
-        stopped: signalled
-            .into_iter()
-            .filter(|pid| !left.iter().any(|holder| holder.pid == *pid))
-            .collect(),
-        left,
-    }
+    let mut outcomes: Vec<Outcome> = signalled
+        .into_iter()
+        .filter(|pid| !left.iter().any(|holder| holder.pid == *pid))
+        .map(Outcome::Released)
+        .collect();
+    outcomes.extend(left.into_iter().map(Outcome::Holding));
+    outcomes
 }
 
 /// Whether this pid is still the process that was found working inside the run root.
