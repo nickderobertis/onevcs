@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.2.8...onevcs-testing-v0.3.0) - 2026-08-20
+
+### Added
+
+- *(status)* [**breaking**] decide landing from history, and never resume a landed branch ([#61](https://github.com/nickderobertis/onevcs/pull/61))
+
 ## [0.2.7](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.2.6...onevcs-testing-v0.2.7) - 2026-08-20
 
 ### Added
