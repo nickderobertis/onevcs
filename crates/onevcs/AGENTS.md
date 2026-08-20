@@ -252,9 +252,10 @@ other way. `just smoke-real` runs it. It never skips and never substitutes `gh`:
 missing credential or a repository whose name does not end in `-smoke` is a loud
 failure, because a smoke that can pass without talking to GitHub proves nothing.
 
-**One journey mounts a filesystem of its own, so a Linux host running the suite needs
-`fuse3`.** `just bootstrap` provisions it, and absent it that journey refuses rather
-than skips: one that passed without building its own premise would prove nothing.
+**A Linux host running this suite needs `fuse3`**, because one journey mounts a
+filesystem of its own to make a real removal fail. `just bootstrap` provisions the
+package; without it that journey refuses rather than skips, since one that passed
+without building its own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
