@@ -52,11 +52,13 @@ landings leave behind. Every branch published by name cuts a run root — a clon
 worktree, and the gate's preserved logs — under the state root, and until this verb
 existed nothing removed one; thirty-one of them filled a host's disk twice in a
 single run. It removes a workspace only where this tool can *prove* it is finished:
-its gate recorded a verdict, no live session holds its occupancy lease, and it was
-last written outside the age floor (24 hours by default). Everything else is
-retained and reported with the reason — a workspace somebody is still publishing in
-is never removed and never terminated — and the per-run lifecycle clones a session
-keeps as recovery history are outside the verb entirely.
+its gate recorded a verdict, no live session holds its occupancy lease, it was last
+written outside the age floor `--min-age-hours` sets, and removing it is something
+this host can do at all. Everything else is retained and reported with the reason —
+a workspace somebody is still publishing in is never removed and never terminated,
+and neither is one belonging to another manager on a shared state root — and the
+per-run lifecycle clones a session keeps as recovery history are outside the verb
+entirely.
 
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.

@@ -501,8 +501,8 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
 
     // A state root several managers share holds directories this one may not write
     // to — the incident that motivated the verb left root-owned build output under
-    // exactly such a workspace. The family is made unwritable, which is what stops
-    // the removal.
+    // exactly such a workspace. The family is made unwritable, which is what makes
+    // reaping anything in it somebody else's to do.
     let family = publications(&fixture.world);
     let original = std::fs::metadata(&family)
         .expect("the family")
@@ -522,27 +522,28 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
         run_root.is_dir(),
         "the premise held: nothing was removed:\n{report}"
     );
+    // Decided, not attempted. `remove_dir_all` works inwards, so a sweep that found
+    // out by trying would have emptied the workspace and then failed at the directory
+    // — destroying another manager's work to learn it was not its to destroy.
     assert!(
-        retained_reason(&report, &run_root).starts_with("it could not be removed: "),
-        "a removal that did not happen is retained with what the system said:\n{report}"
+        run_root.join("clone").is_dir() && run_root.join("worktree").is_dir(),
+        "nothing under a workspace this host may not remove was touched:\n{report}"
+    );
+    assert_eq!(
+        retained_reason(&report, &run_root),
+        "this host cannot remove it: something it holds, or the directory it sits in, is not \
+         one this user may write to — so removing it belongs to whoever can, and nothing \
+         under it was touched",
     );
     assert!(
         report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
         "and it is not counted as reclaimed:\n{report}"
     );
-    // The exit code says the sweep *ran*, so what did not happen has to be said
-    // rather than encoded in it — on the headline, and in the stream every other
-    // diagnosis this binary writes goes to.
-    assert!(
-        report.contains(
-            "This sweep was incomplete: 1 workspace(s) it proved dead could not be removed"
-        ),
-        "the headline says the run was partial:\n{report}"
-    );
-    assert!(
-        diagnosis.contains("onevcs: warning: this sweep was incomplete")
-            && diagnosis.contains(&run_root.display().to_string()),
-        "and stderr carries the same, naming the workspace:\n{diagnosis}"
+    // The exit code answers whether the sweep ran, and every outcome it reports is a
+    // decision — so a run that met somebody else's directory has nothing to diagnose.
+    assert_eq!(
+        diagnosis, "",
+        "a directory that is not this host's to reap is a decision, not a failure"
     );
 
     // The other half of the same permission: a family this user may not even list.
@@ -563,32 +564,90 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
         "and it is not also claimed as a family that was examined:\n{unreadable}"
     );
 
-    // A removal this host may not finish can still have got part way — the contents
-    // of a workspace under an unwritable family go, and only the directory itself
-    // stays — which is the other reason the report says what happened rather than
-    // reporting the workspace as reclaimed.
+    // The other shape of the same answer, and the one the incident actually found:
+    // the family is this user's, and something *inside* the workspace is not. It is
+    // decided the same way and before anything is removed — `remove_dir_all` works
+    // inwards, so a sweep that found out by trying would have destroyed everything
+    // above the file it could not unlink.
+    let theirs = run_root.join("worktree/build");
+    let closed = std::fs::metadata(&theirs)
+        .expect("the directory the gate built")
+        .permissions();
+    std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o555))
+        .expect("a directory this user may not unlink from");
+    let (inside, quiet) = swept_with_diagnosis(&fixture, &[]);
+    std::fs::set_permissions(&theirs, closed).expect("the built directory is restored");
+    assert!(
+        run_root.is_dir(),
+        "a workspace holding something this user may not unlink is not reaped:\n{inside}"
+    );
+    assert!(
+        retained_reason(&inside, &run_root).starts_with("this host cannot remove it: "),
+        "and it is the same answer, for the same reason:\n{inside}"
+    );
+    assert!(
+        theirs.join("output.log").is_file(),
+        "asked before anything is removed, so nothing under it went:\n{inside}"
+    );
+    assert_eq!(
+        quiet, "",
+        "it is a decision like the other, so there is nothing to diagnose"
+    );
+    assert!(
+        inside.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
+        "and nothing is counted as reclaimed:\n{inside}"
+    );
 }
 
 #[test]
 fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let family = publications(&fixture.world);
+    std::fs::create_dir_all(&family).expect("the publications family");
+
     // Another manager on the same host, or a run root somebody has already taken
-    // apart by hand: whatever it is, nothing here made it, and a sweep that guessed
-    // would destroy work this tool knows nothing about.
-    let stranger = publications(&fixture.world).join("somebody-elses-workspace");
-    std::fs::create_dir_all(stranger.join("worktree")).expect("a stranger's directory");
-    std::fs::write(stranger.join("worktree/build.log"), "output\n").expect("its contents");
-    backdate(&stranger, 72);
+    // apart by hand. Three of them, each carrying all but one of the things a run
+    // root this crate cut always carries — because no single one of those is a
+    // proof, and a sweep that guessed would destroy work this tool knows nothing
+    // about.
+    let strangers = [
+        (
+            "somebody-elses-workspace",
+            "its name is not one this crate composes for a run root",
+        ),
+        (
+            "feature-theirs-1a2b-3c4d-0",
+            "it holds no run clone this crate would have cut",
+        ),
+        (
+            "feature-borrowed-5e6f-7a8b-1",
+            "the repository under it borrows no lender's objects, and every run clone this \
+             crate cuts is a shared clone that does",
+        ),
+    ];
+    for (name, _) in &strangers {
+        std::fs::create_dir_all(family.join(name).join("worktree")).expect("their directory");
+        std::fs::write(family.join(name).join("worktree/build.log"), "output\n")
+            .expect("their contents");
+    }
+    // The second gets no clone at all; the third gets one that borrows nothing,
+    // which is a repository anybody can make and no run clone this crate cuts.
+    let unshared = family.join(strangers[2].0).join("clone");
+    std::fs::create_dir_all(&unshared).expect("their repository");
+    fixture.world.git(&unshared, &["init", "-q", "-b", "main"]);
 
     let report = swept(&fixture, &["--min-age-hours", "0"]);
-    assert!(
-        stranger.is_dir(),
-        "a directory this verb cannot show it cut is left where it is:\n{report}"
-    );
-    assert_eq!(
-        retained_reason(&report, &stranger),
-        "its owner cannot be proven: it holds no run clone this crate would have cut",
-    );
+    for (name, reason) in &strangers {
+        let stranger = family.join(name);
+        assert!(
+            stranger.join("worktree/build.log").is_file(),
+            "a directory this verb cannot show it cut is left exactly as it is:\n{report}"
+        );
+        assert_eq!(
+            retained_reason(&report, &stranger),
+            format!("its owner cannot be proven: {reason}"),
+        );
+    }
 }
 
 #[test]

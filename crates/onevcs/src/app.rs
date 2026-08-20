@@ -629,36 +629,23 @@ fn sync(args: &SyncArgs) -> Result<u8> {
     Ok(0)
 }
 
-/// Reap the publication workspaces this host has finished with, and say what of it
-/// did not happen.
+/// Reap the publication workspaces this host has finished with.
 ///
-/// **The exit code answers whether the sweep ran, and nothing else** — `0` when it
-/// did, non-zero when it could not. That is the contract `ai-orchestrator`'s composed
-/// `just sweep-scratch` reads, and it is what a state root several managers share
-/// requires: a workspace another manager owns is an expected, recurring outcome on
-/// every run, so failing on one would make "somebody else's directory is still
-/// there" indistinguishable from "the sweep never happened" and would stop a caller
-/// that forwards one argument set to two tools.
+/// **Every outcome this verb reports is a decision it made**, and that is what lets
+/// the exit code be what it is. A workspace is removed only once five questions have
+/// been answered about it, the last of them being whether removing it is this host's
+/// to do at all — so another manager's directory on a shared state root is retained
+/// deliberately and named in the report, rather than attempted and reported as a
+/// failure. Nothing under such a directory is touched.
 ///
-/// So the *partial* outcome is reported rather than encoded in the status. It is
-/// said three times, in the three places something reads: the report's headline says
-/// the run was incomplete, the retained list names each directory with what the
-/// system said about it, and a warning goes to stderr — which is where this binary
-/// puts every other diagnosis, and where a caller that reads no further than the
-/// stream looks.
+/// So `0` means the sweep ran and did what it decided to do, and non-zero means it
+/// could not run: an unusable `--min-age-hours`, or a state root it cannot read.
+/// That is the contract `ai-orchestrator`'s composed `just sweep-scratch` reads, and
+/// it is the one a state root several managers share requires — a directory somebody
+/// else owns is an expected outcome of every run, and a status code that fell over
+/// on one would say nothing a caller could act on.
 fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
-    let report = sweep::run(args.dry_run, args.min_age_hours)?;
-    println!("{report}");
-    let unremovable = report.unremovable();
-    if let Some(first) = unremovable.first() {
-        eprintln!(
-            "onevcs: warning: this sweep was incomplete — {count} workspace(s) it proved dead \
-             could not be removed, the first being {first}. The report on stdout names each one \
-             and what the system said; a workspace another manager owns is left to them.",
-            count = unremovable.len(),
-            first = first.display(),
-        );
-    }
+    println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
     Ok(0)
 }
 

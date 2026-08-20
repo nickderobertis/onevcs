@@ -21,12 +21,13 @@
 //! family it does not reach into rather than reaping it.
 
 use std::fmt;
+use std::fs::{File, FileTimes, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::branch::Verb;
 use crate::error::{self, Result};
-use crate::{gate, git, home, lock, workspace};
+use crate::{gate, git, home, ids, lock, workspace};
 
 /// The age floor a caller that says nothing gets, in hours.
 ///
@@ -171,11 +172,132 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
                     path: run_root,
                     why,
                 }),
-                Verdict::Reclaim(lease) => reclaim(&mut report, run_root, lease),
+                Verdict::Reclaim(lease) => reclaim(&mut report, run_root, lease)?,
             }
         }
     }
     Ok(report)
+}
+
+/// What a run root would have to carry to be one `branch::prepare` cut, and does
+/// not — or `None` where it carries all of it.
+///
+/// Three signals rather than one, because the state root is shared and no single
+/// one of them is a proof: a directory could be named the way this crate names one
+/// by chance, and a bare `clone` that is a repository is a shape anybody can make.
+/// Together they are what that function *always* leaves and what nothing else on
+/// this host does — a name it composed, a run clone at the path it clones into, and
+/// that clone borrowing a lender's object store, which is the `--shared` clone it
+/// alone cuts there.
+///
+/// Deliberately not a marker file this crate writes. One would be a stronger proof
+/// and would exempt every workspace already on disk, which is the whole of what
+/// this verb was built to reap.
+fn not_this_crates(run_root: &Path) -> Option<&'static str> {
+    if !names_a_run(run_root) {
+        return Some("its name is not one this crate composes for a run root");
+    }
+    let clone = run_root.join("clone");
+    if !git::is_repo(&clone) {
+        return Some("it holds no run clone this crate would have cut");
+    }
+    if !clone.join(".git/objects/info/alternates").is_file() {
+        return Some(
+            "the repository under it borrows no lender's objects, and every run clone \
+             this crate cuts is a shared clone that does",
+        );
+    }
+    None
+}
+
+/// Whether a directory is named the way [`ids::unique`] leaves a run root named:
+/// a branch slug, then a process id, a nanosecond clock, and a counter, in hex.
+fn names_a_run(run_root: &Path) -> bool {
+    let Some(name) = run_root.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let mut parts = name.rsplitn(4, '-');
+    let hex = |part: Option<&str>| {
+        part.is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    let (counter, nanos, pid) = (parts.next(), parts.next(), parts.next());
+    hex(counter) && hex(nanos) && hex(pid) && parts.next().is_some_and(|slug| !slug.is_empty())
+}
+
+/// Whether this host could remove a run root outright — the family it sits in, and
+/// every directory under it that a removal would have to empty.
+///
+/// Asked *before* anything is removed, and that is the whole point.
+/// `remove_dir_all` works inwards: it deletes what it can reach and fails at the
+/// first thing it cannot, so a sweep that found out by trying would have destroyed
+/// another manager's work in order to learn it was not its to destroy. The incident
+/// that motivated this verb left root-owned build output inside otherwise ordinary
+/// workspaces, which is exactly that shape. Asked in full, the removal below has
+/// nothing left to discover, and every outcome this verb reports is a decision it
+/// took rather than an operation that failed.
+///
+/// A rehearsal asks it too: it leaves nothing behind, and a `--dry-run` that skipped
+/// it would report a decision the real run would not take.
+///
+/// It is the *last* question `judge` asks, so this walk is only ever paid for a
+/// workspace already proven dead by the four cheaper ones.
+fn can_remove(run_root: &Path) -> bool {
+    run_root.parent().is_some_and(can_write_into) && can_empty(run_root)
+}
+
+/// Whether every directory under `path` is one this user could unlink an entry from.
+fn can_empty(path: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    // A file is unlinked through its parent, which is asked where the parent is.
+    if !meta.is_dir() {
+        return true;
+    }
+    if !can_write_into(path) {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    entries
+        .map(|entry| entry.map(|entry| can_empty(&entry.path())))
+        .all(|answer| answer.unwrap_or(false))
+}
+
+/// Ask one directory whether this user may add an entry to it.
+///
+/// By doing it, because the permission bits do not answer on their own: what decides
+/// is the effective user, its groups, and whatever the filesystem enforces over both
+/// — which is the question the removal itself asks. What is created is removed
+/// again, and the directory's timestamps are put back, because creating an entry
+/// moves the modified time and this verb's own age floor reads that on the next run:
+/// a probe that left it moved would retain, for a day, every workspace it had just
+/// decided was too old to keep.
+fn can_write_into(directory: &Path) -> bool {
+    let Ok(before) = std::fs::metadata(directory) else {
+        return false;
+    };
+    let probe = directory.join(format!(".sweep-probe-{}", ids::unique()));
+    if std::fs::create_dir(&probe).is_err() {
+        return false;
+    }
+    let _ = std::fs::remove_dir(&probe);
+    restore_times(directory, &before);
+    true
+}
+
+fn restore_times(directory: &Path, before: &Metadata) {
+    let (Ok(accessed), Ok(modified)) = (before.accessed(), before.modified()) else {
+        return;
+    };
+    if let Ok(handle) = File::open(directory) {
+        let _ = handle.set_times(
+            FileTimes::new()
+                .set_accessed(accessed)
+                .set_modified(modified),
+        );
+    }
 }
 
 /// Why a directory under the workspaces root is none of this verb's business.
@@ -203,20 +325,17 @@ enum Verdict {
 /// The order is the order the answers matter in. Ownership comes first because
 /// nothing else this says about a directory means anything until it is one this
 /// crate cut; occupancy comes next because it is the answer that must never be got
-/// wrong; the gate verdict and the age floor are the two proofs of deadness.
+/// wrong; the gate verdict and the age floor are the two proofs of deadness; and
+/// whether removing it is this host's to do comes last, because it is the only one
+/// of the five that is about the host rather than about the workspace.
 fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     if !run_root.is_dir() {
         return Ok(Verdict::Retain(Kept::OwnerUnproven(
             "it is not a directory, and every run root is one",
         )));
     }
-    // The one thing `branch::prepare` always leaves: a run clone. A directory under
-    // this family carrying none is somebody else's, or one somebody has already
-    // taken apart by hand, and either way this verb cannot show it made it.
-    if !git::is_repo(&run_root.join("clone")) {
-        return Ok(Verdict::Retain(Kept::OwnerUnproven(
-            "it holds no run clone this crate would have cut",
-        )));
+    if let Some(missing) = not_this_crates(run_root) {
+        return Ok(Verdict::Retain(Kept::OwnerUnproven(missing)));
     }
     // An exclusive take succeeds only while no shared occupancy lease is held, which
     // is what a landing holds for the whole of its run. Held, the answer is that
@@ -236,6 +355,12 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
             floor: min_age,
         }));
     }
+    // Last, because it is the only question whose answer is about this *host* rather
+    // than about the workspace: everything above has already decided the directory is
+    // dead, and this decides whether reaping it is ours to do.
+    if !can_remove(run_root) {
+        return Ok(Verdict::Retain(Kept::NotOurs));
+    }
     Ok(Verdict::Reclaim(lease))
 }
 
@@ -243,29 +368,37 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
 ///
 /// The lease is held across the removal rather than dropped before it, so nothing
 /// can take the run root up between the proof and the act.
-fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
     let bytes = size_of(&run_root);
     if report.dry_run {
         report.reclaimed.push(Reclaimed {
             path: run_root,
             bytes,
         });
-        return;
+        return Ok(());
     }
-    match std::fs::remove_dir_all(&run_root) {
-        Ok(()) => report.reclaimed.push(Reclaimed {
-            path: run_root,
-            bytes,
-        }),
-        // Retained rather than failed: the sweep ran, and a directory it could not
-        // remove is one more directory that is still there — which is exactly what
-        // the retained list is for.
-        Err(e) => report.retained.push(Retained {
-            path: run_root,
-            why: Kept::NotRemoved(e.to_string()),
-        }),
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a removal that fails
+    // after `can_remove` asked every directory it would touch. Nothing this crate
+    // exposes can produce one — the two shapes an operator meets, a family this user
+    // may not write to and content under a workspace it may not unlink, are both
+    // decided above and are journeys — so what is left is the state root changing
+    // between the question and the act, or a file the kernel refuses for a reason of
+    // its own. It is an `Err` rather than a line in the report for the same reason
+    // this verb answers `0` everywhere else: the report says what this sweep
+    // *decided*, and a removal it had proved it could make and then could not is the
+    // sweep failing to run, which is what a non-zero code means here.
+    if let Err(e) = std::fs::remove_dir_all(&run_root) {
+        return Err(error::at("remove the reclaimable workspace at", &run_root)(
+            e,
+        ));
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+    report.reclaimed.push(Reclaimed {
+        path: run_root,
+        bytes,
+    });
     drop(lease);
+    Ok(())
 }
 
 /// When anything under a run root was last written, however deep.
@@ -373,6 +506,9 @@ const OCCUPIED: &str =
 const NO_VERDICT: &str =
     "its gate has recorded no verdict under {}, so nothing here can say the publication finished";
 
+/// Why a run root this host could not remove outright is not this host's.
+const NOT_OURS: &str = "something it holds, or the directory it sits in, is not one this user may write to — so removing it belongs to whoever can, and nothing under it was touched";
+
 /// Why one run root was kept.
 ///
 /// A type rather than a sentence, because two of these are not the same kind of
@@ -389,8 +525,8 @@ enum Kept {
     NoVerdict,
     /// It was written inside the age floor.
     Fresh { age: Duration, floor: Duration },
-    /// It was proven dead, and the removal did not go through.
-    NotRemoved(String),
+    /// It is dead, and reaping it is not something this host can do.
+    NotOurs,
 }
 
 impl Kept {
@@ -405,7 +541,7 @@ impl Kept {
                 describe_duration(*age),
                 describe_duration(*floor),
             ),
-            Kept::NotRemoved(said) => format!("it could not be removed: {said}"),
+            Kept::NotOurs => format!("this host cannot remove it: {NOT_OURS}"),
         }
     }
 }
@@ -429,20 +565,6 @@ impl Report {
     fn bytes(&self) -> u64 {
         self.reclaimed.iter().map(|entry| entry.bytes).sum()
     }
-
-    /// Every workspace this sweep proved dead and then could not remove.
-    ///
-    /// The one kind of retention that is a *failure* rather than a decision, which
-    /// is why it is answered as a list rather than read back out of the report's
-    /// prose: `onevcs sweep` warns about these on stderr, and a sweep that had
-    /// nothing to warn about must be able to say so without matching a sentence.
-    pub fn unremovable(&self) -> Vec<&Path> {
-        self.retained
-            .iter()
-            .filter(|retained| matches!(retained.why, Kept::NotRemoved(_)))
-            .map(|retained| retained.path.as_path())
-            .collect()
-    }
 }
 
 impl fmt::Display for Report {
@@ -458,18 +580,6 @@ impl fmt::Display for Report {
             describe_bytes(self.bytes()),
             describe_duration(self.min_age),
         )?;
-        // On the headline as well as in the retained list below, because the headline
-        // is the line a reader takes the run's outcome from — and a sweep that proved
-        // a workspace dead and then could not remove it did not do what it set out to.
-        let unremovable = self.unremovable();
-        if !unremovable.is_empty() {
-            writeln!(
-                f,
-                "This sweep was incomplete: {} workspace(s) it proved dead could not be \
-                 removed, and are listed below with what the system said.",
-                unremovable.len()
-            )?;
-        }
         if self.dry_run {
             writeln!(f, "Nothing was removed: this was a rehearsal.")?;
         }
