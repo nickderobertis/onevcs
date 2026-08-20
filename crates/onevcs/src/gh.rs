@@ -32,7 +32,13 @@ pub const CHECKS_POLL_ENV: &str = "ONEVCS_CHECKS_POLL_SECONDS";
 /// CI is doing the work and abandoning it mid-flight leaves state nobody recorded.
 pub const DEFAULT_CHECKS_TIMEOUT_SECONDS: f64 = 3600.0;
 /// The default interval between asking the host again.
-pub const DEFAULT_CHECKS_POLL_SECONDS: f64 = 5.0;
+///
+/// Thirty seconds against an hour-long bound. Each ask is a `gh` subprocess and at
+/// least one API call, so a five-second interval spent about three hundred and
+/// sixty of them watching a half-hour CI run — for an answer that changes when a
+/// job finishes, not when it is asked about. `ONEVCS_CHECKS_POLL_SECONDS` still
+/// overrides it, which is how a journey proves a bound rather than waiting one out.
+pub const DEFAULT_CHECKS_POLL_SECONDS: f64 = 30.0;
 
 /// The program that answers as `gh`.
 pub fn program() -> PathBuf {

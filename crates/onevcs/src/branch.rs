@@ -16,17 +16,14 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
-
 use crate::error::{self, Error, Result};
-use crate::event::EventKind;
 use crate::host::Hosting;
 use crate::publish::{self, PublishOutcome, Subject};
 use crate::registry::Registry;
 use crate::rules::MergePolicy;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::workspace::{self, object, Ref};
+use crate::workspace::{self, Ref};
 use crate::{git, guidance, home, ids, lock, policy, provenance};
 
 /// Which verb is landing the branch.
@@ -441,13 +438,11 @@ impl Landing {
             &self.branch,
             self.stack_replay.as_deref(),
         )?;
-        let publish::Reconciled::Conflicted(attempted) = reconciled else {
+        let publish::Reconciled::Conflicted(attempted, conflict) = reconciled else {
             return Ok(());
         };
-        stream.emit(
-            EventKind::SyncConflict,
-            object(json!({"branch": self.branch, "base": self.change_base})),
-        );
+        publish::report_conflict(stream, &self.branch, &self.change_base, &conflict, None);
+        let conflicting = guidance::listed(&conflict.paths);
         // Which resolution the refusal names follows what was attempted, for the
         // reason the refusal exists at all: a branch whose stack parent has already
         // landed is one that merging the base conflicts with by construction, so
@@ -455,8 +450,8 @@ impl Landing {
         Err(Error::SyncConflict {
             reason: match attempted {
                 publish::Reconciliation::Replay { from } => format!(
-                    "{compared} conflicts with {branch:?}, and re-running will conflict again: \
-                     {compared} already carries what {branch:?} was stacked on, so this verb \
+                    "{compared} conflicts with {branch:?} in {conflicting}, and re-running will \
+                     conflict again: {compared} already carries what {branch:?} was stacked on, so this verb \
                      replays only its own commits onto {compared} and nothing about either has \
                      changed. The branch is retained in {source} — resolve the conflict on it \
                      there, by replaying it with `{replay}` and committing the resolution, and \
@@ -475,8 +470,8 @@ impl Landing {
                     command = self.command(),
                 ),
                 publish::Reconciliation::Merge => format!(
-                    "{compared} conflicts with {branch:?}, and re-running will conflict again: \
-                     this verb merges {compared} into the branch and nothing about either has \
+                    "{compared} conflicts with {branch:?} in {conflicting}, and re-running will \
+                     conflict again: this verb merges {compared} into the branch and nothing about either has \
                      changed. The branch is retained in {source} — resolve the conflict on it \
                      there, by merging {compared} into it and committing the resolution, and then \
                      land it with `{command}`, which is what publishes it",
@@ -520,6 +515,10 @@ impl Landing {
                 _ => publish::Push::Forward,
             },
             run_root: self.run_root.clone(),
+            // The source keeps the branch, so the source is where the landing this
+            // publication records has to end up: the clone below it goes with the
+            // run root.
+            preserved_into: self.source.clone(),
             title,
             // Both branch-keyed verbs carry a caller's body now: a branch is landed
             // by whichever verb its provenance belongs to, and which one that was is

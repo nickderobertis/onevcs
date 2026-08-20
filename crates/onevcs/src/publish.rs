@@ -200,6 +200,14 @@ pub enum FailureKind {
     SyncConflict,
     /// The request was well-formed and the seam behind it has no implementation.
     NotImplemented,
+    /// A required check the host reports concluded red. The reason names it.
+    ChecksFailed,
+    /// The bound on watching the host elapsed with its required checks unsettled.
+    /// The reason names the checks that were still pending.
+    ChecksUnsettled,
+    /// The publishing push was refused by the merge path. The reason carries git's
+    /// own per-ref refusal.
+    PushRejected,
 }
 
 impl FailureKind {
@@ -210,7 +218,15 @@ impl FailureKind {
     #[must_use]
     pub fn exit_code(self) -> u8 {
         match self {
-            FailureKind::Gate => 1,
+            // One code for every verification failure, deliberately: the contract
+            // fixes `1` for "gate/checks failed", and the three kinds below say
+            // *which* of those it was without inventing a code the contract does
+            // not name. A consumer that branches on the kind learns more; a
+            // process that branches on the code sees exactly what it always saw.
+            FailureKind::Gate
+            | FailureKind::ChecksFailed
+            | FailureKind::ChecksUnsettled
+            | FailureKind::PushRejected => 1,
             FailureKind::Invalid => 2,
             FailureKind::SyncConflict => 3,
             FailureKind::NotImplemented => 70,
@@ -229,6 +245,9 @@ impl FailureKind {
             Error::GateFailed { .. } => FailureKind::Gate,
             Error::SyncConflict { .. } => FailureKind::SyncConflict,
             Error::NotImplemented { .. } => FailureKind::NotImplemented,
+            Error::ChecksFailed { .. } => FailureKind::ChecksFailed,
+            Error::ChecksUnsettled { .. } => FailureKind::ChecksUnsettled,
+            Error::PushRejected { .. } => FailureKind::PushRejected,
             _ => FailureKind::Invalid,
         }
     }
@@ -292,6 +311,7 @@ pub fn run_for_session(
         // Nothing has rewritten this branch yet; a replay below decides otherwise.
         push: Push::Forward,
         run_root: record.run_root.clone(),
+        preserved_into: record.execution_checkout.clone(),
         title: request.title.clone(),
         body: request.body.clone(),
         trailers: Vec::new(),
@@ -351,6 +371,13 @@ pub struct Context<'a> {
     pub push: Push,
     /// Where preserved gate logs are written.
     pub run_root: PathBuf,
+    /// The checkout that keeps this branch once the run root is gone — a session's
+    /// execution checkout, or the checkout a branch-keyed verb read the branch out
+    /// of.
+    ///
+    /// Written to for one thing only: the landing record. Everything else this
+    /// publication does happens in [`repo`](Context::repo), which is disposable.
+    pub preserved_into: PathBuf,
     /// An explicit title, which replaces the synthesized subject. Checked where it
     /// was built, so nothing here can compose a message from one that is not a
     /// subject.
@@ -531,6 +558,7 @@ impl<'a> Context<'a> {
             target,
             push: self.push.clone(),
             run_root: self.run_root.clone(),
+            preserved_into: self.preserved_into.clone(),
             title: self.title.clone(),
             body: self.body.clone(),
             trailers: self.trailers.clone(),
@@ -752,8 +780,10 @@ pub(crate) enum Reconciled {
     /// The branch carries what it lands on now.
     Settled,
     /// It conflicted, doing this — which is what a refusal about it has to name,
-    /// since the resolution an operator is sent to is the shape that was attempted.
-    Conflicted(Reconciliation),
+    /// since the resolution an operator is sent to is the shape that was attempted
+    /// — and *what* conflicted, which is what makes the refusal actionable rather
+    /// than merely true.
+    Conflicted(Reconciliation, git::Conflict),
 }
 
 /// Which shape bringing a branch level with what it lands on takes.
@@ -804,8 +834,53 @@ pub(crate) fn reconcile(
     };
     Ok(match integrated {
         git::Integrated::Settled => Reconciled::Settled,
-        git::Integrated::Conflicted => Reconciled::Conflicted(shape),
+        git::Integrated::Conflicted(conflict) => Reconciled::Conflicted(shape, conflict),
     })
+}
+
+/// Report the conflict that stopped a publication: which paths, and the hunks.
+///
+/// The paths go in the payload because they are a short list an operator acts on
+/// directly — "what conflicts" is the question a refusal that only said *that*
+/// something conflicted left unanswered. The hunks go beside it as an artifact,
+/// because a diff is evidence rather than a field, and the envelope's own rule is
+/// that large evidence is referenced by id.
+///
+/// Shared with the branch-keyed verbs, which conflict at the same place for the
+/// same reasons: a second emitter would be a second answer to what conflicts.
+///
+/// A hunk artifact that could not be stored is a warning on stderr and no artifact,
+/// never a failure: the conflict is the answer, and reporting a filesystem problem
+/// in place of it would lose the diagnosis this exists to keep.
+pub(crate) fn report_conflict(
+    stream: &mut Stream,
+    branch: &Ref,
+    base: &Ref,
+    conflict: &git::Conflict,
+    attempts: Option<usize>,
+) {
+    let artifacts = match conflict.hunks.trim().is_empty() {
+        true => Vec::new(),
+        false => match stream::store_artifact("diff", &conflict.hunks) {
+            Ok(artifact) => vec![artifact],
+            Err(error) => {
+                eprintln!(
+                    "onevcs: warning: the conflict on {branch:?} is recorded without its \
+                     hunks: {error}"
+                );
+                Vec::new()
+            }
+        },
+    };
+    let mut payload = object(json!({
+        "branch": branch,
+        "base": base,
+        "paths": conflict.paths,
+    }));
+    if let Some(attempts) = attempts {
+        payload.insert("attempts".to_owned(), json!(attempts));
+    }
+    stream.emit_with(EventKind::SyncConflict, payload, artifacts);
 }
 
 /// Sync the branch with the current base, bounded, before anything is published.
@@ -825,23 +900,27 @@ fn sync(
         return Ok(());
     }
     let mut attempted = Reconciliation::Merge;
+    let mut conflict = git::Conflict::default();
     for attempt in 1..=SYNC_ATTEMPTS {
         match reconcile(&context.worktree, compared, &context.branch, replay_from)? {
             Reconciled::Settled => return Ok(()),
-            Reconciled::Conflicted(shape) => attempted = shape,
+            Reconciled::Conflicted(shape, found) => {
+                attempted = shape;
+                conflict = found;
+            }
         }
         if attempt < SYNC_ATTEMPTS && git::has_remote(&context.repo, "origin") {
             git::fetch(&context.repo, "origin")?;
         }
     }
-    stream.emit(
-        EventKind::SyncConflict,
-        object(json!({
-            "branch": context.branch,
-            "base": context.target.base(),
-            "attempts": SYNC_ATTEMPTS,
-        })),
+    report_conflict(
+        stream,
+        &context.branch,
+        context.target.base(),
+        &conflict,
+        Some(SYNC_ATTEMPTS),
     );
+    let conflicting = guidance::listed(&conflict.paths);
     let land = guidance::command([
         "onevcs",
         "publish-branch",
@@ -859,18 +938,25 @@ fn sync(
         reason: match attempted {
             Reconciliation::Replay { from } => {
                 format!(
-                "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
-                 branch is retained. {compared} already carries what {branch:?} was stacked on, so \
-                 only its own commits are replayed onto it. Resolve the conflict on it — replay it \
-                 with `{}` — and then land it with `{land}`",
-                guidance::command(["git", "rebase", "--onto", compared, &from, &context.branch]),
-                branch = context.branch,
-            )
+                    "{compared} conflicts with {branch:?} in {conflicting} after {SYNC_ATTEMPTS} \
+                 bounded attempts; the branch is retained. {compared} already carries what \
+                 {branch:?} was stacked on, so only its own commits are replayed onto it. Resolve \
+                 the conflict on it — replay it with `{}` — and then land it with `{land}`",
+                    guidance::command([
+                        "git",
+                        "rebase",
+                        "--onto",
+                        compared,
+                        &from,
+                        &context.branch
+                    ]),
+                    branch = context.branch,
+                )
             }
             Reconciliation::Merge => format!(
-                "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
-                 branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
-                 and then land it with `{land}`",
+                "{compared} conflicts with {branch:?} in {conflicting} after {SYNC_ATTEMPTS} \
+                 bounded attempts; the branch is retained. Resolve the conflict on it — merge \
+                 {compared} into {branch} — and then land it with `{land}`",
                 branch = context.branch,
             ),
         },
@@ -958,12 +1044,17 @@ fn publish_locally(
 
 /// A push the merge path refused, reported as what git said it was.
 ///
+/// [`Error::PushRejected`] rather than a gate failure: the same exit code, and a
+/// kind a caller can route on. What the hook or the remote actually *wrote* is not
+/// in here — it is the artifact `record_push` stored a moment earlier, because it
+/// is a run of the repository's whole verification and does not belong inline.
+///
 /// This is also what an *unclassified* rejection is reported as, deliberately: it
 /// names the push and hands over git's own per-ref summary without deciding what
 /// produced it. The fallback below it is for a failure that never reached a ref at
 /// all — no credential, no remote — where git's last line is the whole answer.
 fn rejected(context: &Context<'_>, pushed: &git::Pushed) -> Error {
-    Error::GateFailed {
+    Error::PushRejected {
         reason: format!(
             "the publishing push of {:?} was rejected by the merge path: {}",
             context.branch,
@@ -1150,12 +1241,13 @@ fn publish_as_change(
     );
 
     let outcome = (|| -> Result<PublishOutcome> {
-        if matches!(
-            context.policy.gate,
-            Gate::Kind {
-                kind: GateKind::Checks
-            }
-        ) {
+        // What is watched, and until when, follows the **merge policy** — never what
+        // the policy names as its gate. Watching used to happen only where the gate
+        // was `{kind: checks}`, and on a host whose every rule names a `command:`
+        // gate that is no identity at all: the host's required checks were observed
+        // for no repository. A change-direct publication asks for the merge itself,
+        // so it waits for the checks the host says block one first.
+        if context.effective == MergePolicy::ChangeDirect {
             await_checks(host.as_ref(), &change, stream)?;
         }
         stream.emit(
@@ -1166,36 +1258,184 @@ fn publish_as_change(
                 "url": change.url.to_string(),
             })),
         );
-        match host.merge(&change, context.effective)? {
-            MergeOutcome::Merged(sha) => {
-                stream.emit(
-                    EventKind::ChangeMerged,
-                    object(json!({"url": change.url.to_string(), "sha": sha.0})),
-                );
-                stream.emit(
-                    EventKind::MergeCompleted,
-                    object(json!({"identity": identity, "sha": sha.0})),
-                );
-                fast_forward_publication(&context.resolution.publication, context.target.base())?;
-                Ok(PublishOutcome::Merged(sha))
+        let sha = if context.effective == MergePolicy::ChangeAuto {
+            // Arming is all this run does: the merge itself is the host's to perform,
+            // on its own clock. What the arming call answers is therefore discarded
+            // in favour of watching — the publication stays live rather than settling
+            // at "queued", because settling is what left a change blocked for hours
+            // with no node alive to notice it. The watch reports the host's checks as
+            // they move and ends at the commit it merged, at a required check that
+            // concludes red, or at the bound, saying which.
+            host.merge(&change, context.effective)?;
+            await_merge(host.as_ref(), &change, stream)?
+        } else {
+            match host.merge(&change, context.effective)? {
+                MergeOutcome::Merged(sha) => sha,
+                MergeOutcome::Queued => return Ok(PublishOutcome::Queued(change.url.clone())),
+                MergeOutcome::Open => return Ok(PublishOutcome::ChangeOpen(change.url.clone())),
             }
-            MergeOutcome::Queued => Ok(PublishOutcome::Queued(change.url.clone())),
-            MergeOutcome::Open => Ok(PublishOutcome::ChangeOpen(change.url.clone())),
-        }
+        };
+        stream.emit(
+            EventKind::ChangeMerged,
+            object(json!({"url": change.url.to_string(), "sha": sha.0})),
+        );
+        stream.emit(
+            EventKind::MergeCompleted,
+            object(json!({"identity": identity, "sha": sha.0})),
+        );
+        record_landing(context, &sha);
+        fast_forward_publication(&context.resolution.publication, context.target.base())?;
+        Ok(PublishOutcome::Merged(sha))
     })();
     drop(turn);
     outcome
 }
 
-/// Wait for the host's required checks, reporting every transition as it happens.
+/// Record the commit the host merged this change at, on the branch itself.
 ///
-/// Only required checks may gate a merge: a non-blocking check never triggers or
-/// holds one, which is the whole reason `required` travels on a [`Check`].
+/// The most certain answer to "did this branch land": a landing that was *recorded*
+/// rather than inferred from what the base happens to carry. The record is one
+/// provenance trailer, `<prefix>Landed-Commit: <sha>`, under the same configured
+/// prefix every other trailer this crate reads and writes uses — so a host that
+/// spells its provenance differently reads its own landings and not somebody
+/// else's. It goes on an otherwise empty commit, because the branch's content is
+/// exactly what merged and a record that changed it would leave the branch
+/// disagreeing with the base it has just reached.
+///
+/// Best effort, deliberately. The change has already merged by the time this runs,
+/// and reporting the publication as failed because its own footnote could not be
+/// written would be a worse lie than the missing line — the same rule the event
+/// stream is written under. What went wrong is said on stderr, where the operator
+/// running the command sees it.
+fn record_landing(context: &Context<'_>, sha: &Sha) {
+    if let Err(error) = write_landing(context, sha) {
+        eprintln!(
+            "onevcs: warning: {branch:?} merged at {merged}, and the landing was not recorded on \
+             the branch: {error}",
+            branch = context.branch,
+            merged = sha.0,
+        );
+    }
+}
+
+fn write_landing(context: &Context<'_>, sha: &Sha) -> Result<()> {
+    git::commit_empty(
+        &context.worktree,
+        &format!(
+            "chore: record the landing of {branch}\n\n{key} {merged}",
+            branch = context.branch,
+            key = context.provenance.landed_commit(),
+            merged = sha.0,
+        ),
+    )?;
+    // The repository this publication worked in goes with its run root, so the
+    // record has to reach the checkout that keeps the branch. Fast-forward only,
+    // like every other hand-back here: a checkout holding work this run does not
+    // have keeps it.
+    if !git::copy_branch(&context.repo, &context.preserved_into, &context.branch)? {
+        return Err(crate::error::invalid(format!(
+            "the checkout {} would not take the branch, so nothing outside this run carries the \
+             record",
+            context.preserved_into.display()
+        )));
+    }
+    Ok(())
+}
+
+/// How much of a failing check's log travels on the failure that names it.
+///
+/// Well under the envelope's own 4096-byte payload limit, because this is a
+/// pointer to the evidence and not a second copy of it: the whole log is the
+/// artifact the `change-check` event already carries, fetched with `onevcs
+/// artifact cat`.
+const CHECK_LOG_EXCERPT: usize = 2048;
+
+/// The end of a check's log, bounded at a line boundary.
+///
+/// The *end*, because a CI job prints its diagnosis last and its setup first — an
+/// excerpt taken from the top of a twenty-thousand-line log is the part nobody
+/// needed. What was cut is marked, so a reader can tell an excerpt from a short log.
+fn excerpt(log: &str) -> String {
+    let trimmed = log.trim_end();
+    if trimmed.len() <= CHECK_LOG_EXCERPT {
+        return trimmed.to_owned();
+    }
+    let mut cut = trimmed.len() - CHECK_LOG_EXCERPT;
+    while cut < trimmed.len() && !trimmed.is_char_boundary(cut) {
+        cut += 1;
+    }
+    let tail = &trimmed[cut..];
+    let tail = tail.find('\n').map_or(tail, |at| &tail[at + 1..]);
+    format!("[…earlier output omitted; the whole log is the check's artifact…]\n{tail}")
+}
+
+/// Wait until every required check the host reports has settled without blocking.
+///
+/// What a `change-direct` publication does before it asks the host to merge: this
+/// run performs the merge, so asking for one the host's own checks have already
+/// failed is a request that can only be refused — slowly, and with the reason on
+/// the host rather than in this stream.
+///
+/// A host that reports **no required check at all** is not a stall here. It has
+/// answered, and its answer is that nothing blocks the merge; the merge below is
+/// then the host's own to refuse under its own rules. `change-auto` is the policy
+/// that fails closed on that, because its watch ends at a merge the host performs
+/// and a host holding a change behind a check nobody declared never performs one.
 fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stream) -> Result<()> {
+    watch(
+        host,
+        change,
+        stream,
+        "settled its required checks on",
+        |_, checks| {
+            let settled = checks
+                .iter()
+                .filter(|check| check.required)
+                .all(Check::green);
+            Ok(settled.then_some(()))
+        },
+    )
+}
+
+/// Wait until the host reports the merge it was asked to perform, and at which
+/// commit.
+///
+/// The commit comes from the host's own answer rather than from anything this run
+/// can see: under `change-auto` the merge is performed by the host, out of a tree
+/// this process never held, so the only honest source for what it landed as is the
+/// host being asked.
+fn await_merge(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stream) -> Result<Sha> {
+    watch(host, change, stream, "merged", |host, _| {
+        host.merged_at(change)
+    })
+}
+
+/// Watch a change request until `ending` answers, reporting every check transition
+/// as it happens.
+///
+/// Three ways out, and each one says which it was: `ending` answers, a **required**
+/// check concludes red ([`Error::ChecksFailed`], naming it and quoting its log), or
+/// the bound elapses ([`Error::ChecksUnsettled`], naming what was still pending).
+/// The bound used to just stop with a sentence about settled checks that was true
+/// of two different situations; a caller routing a failure has to be able to tell
+/// "CI said no" from "nobody answered in an hour".
+///
+/// Only required checks may end it: a non-blocking check never holds or fails a
+/// merge, which is the whole reason `required` travels on a [`Check`].
+fn watch<T>(
+    host: &dyn RemoteHost,
+    change: &ChangeRequest,
+    stream: &mut Stream,
+    awaited: &str,
+    ending: impl Fn(&dyn RemoteHost, &[Check]) -> Result<Option<T>>,
+) -> Result<T> {
     let bound = std::time::Duration::from_secs_f64(gh::checks_timeout()?);
     let poll = std::time::Duration::from_secs_f64(gh::checks_poll()?);
     let started = std::time::Instant::now();
     let mut reported: Vec<(String, String)> = Vec::new();
+    // What each settled check's log was stored as, so the refusal that names a red
+    // check can quote it without fetching it from the host a second time.
+    let mut logs: Vec<(String, crate::event::ArtifactId)> = Vec::new();
     loop {
         // What was consulted travels with the checks and is deliberately not acted
         // on here: a credential that can see only GitHub Actions still gates a merge
@@ -1217,11 +1457,15 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
                 // one over is reported the way a stream that cannot be written is —
                 // on stderr, without failing the command over it.
                 match host.check_log(change, check) {
-                    Ok(id) => artifacts.push(crate::event::ArtifactRef {
-                        id,
-                        kind: "log".to_owned(),
-                        bytes: 0,
-                    }),
+                    Ok(id) => {
+                        logs.retain(|(name, _)| name != &check.name);
+                        logs.push((check.name.clone(), id.clone()));
+                        artifacts.push(crate::event::ArtifactRef {
+                            id,
+                            kind: "log".to_owned(),
+                            bytes: 0,
+                        });
+                    }
                     Err(error) => eprintln!(
                         "onevcs: warning: check {:?} on {} is recorded without its log: {error}",
                         check.name, change.url
@@ -1242,35 +1486,98 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
             reported.retain(|(name, _)| name != &check.name);
             reported.push((check.name.clone(), check.status.clone()));
         }
-        let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
-        if let Some(failed) = required.iter().find(|check| check.red()) {
-            return Err(Error::GateFailed {
-                reason: format!(
-                    "required check {:?} concluded {}",
-                    failed.name,
-                    failed
-                        .conclusion
-                        .as_deref()
-                        .unwrap_or("without a conclusion")
-                ),
-            });
+        if let Some(failed) = checks.iter().find(|check| check.required && check.red()) {
+            return Err(checks_failed(failed, &logs));
         }
-        if !required.is_empty() && required.iter().all(|check| check.green()) {
-            return Ok(());
+        if let Some(answer) = ending(host, &checks)? {
+            return Ok(answer);
         }
         if started.elapsed() >= bound {
-            return Err(Error::GateFailed {
-                reason: format!(
-                    "the host reported no settled required checks on {} within {}s",
-                    change.url,
-                    bound.as_secs_f64()
-                ),
-            });
+            return Err(unsettled(change, &checks, bound, awaited));
         }
         std::thread::sleep(poll);
     }
 }
 
+/// A required check that concluded red, named, with a bounded excerpt of what it
+/// printed.
+///
+/// The excerpt is on the failure itself rather than only in the artifact beside it,
+/// because a caller routing this failure — or a person reading stderr — otherwise
+/// learns only that a check called `gate` failed and has to go and fetch the log by
+/// hand to find out why. A log this crate could not read back is simply not quoted:
+/// an excerpt naming the reason there is no excerpt would read as the check's own
+/// output.
+fn checks_failed(check: &Check, logs: &[(String, crate::event::ArtifactId)]) -> Error {
+    let said = logs
+        .iter()
+        .find(|(name, _)| name == &check.name)
+        .and_then(|(_, id)| stream::read_artifact(&id.0).ok())
+        .map(|log| excerpt(&log))
+        .filter(|log| !log.trim().is_empty())
+        .map(|log| format!(". It said:\n{}", guidance::quoted_output(&log)))
+        .unwrap_or_default();
+    Error::ChecksFailed {
+        reason: format!(
+            "required check {:?} concluded {}{said}",
+            check.name,
+            check
+                .conclusion
+                .as_deref()
+                .unwrap_or("without a conclusion"),
+        ),
+    }
+}
+
+/// The bound elapsed, naming what the host had not settled.
+///
+/// It names them because the alternative is what the bound used to do: stop after
+/// an hour with a sentence that reads the same whether one check is still running,
+/// the repository declares none, or the host has simply never landed the change.
+/// Those are three different next moves.
+fn unsettled(
+    change: &ChangeRequest,
+    checks: &[Check],
+    bound: std::time::Duration,
+    awaited: &str,
+) -> Error {
+    let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
+    let pending: Vec<&str> = required
+        .iter()
+        .filter(|check| !check.settled())
+        .map(|check| check.name.as_str())
+        .collect();
+    let named = if !pending.is_empty() {
+        format!("still unsettled: {}", guidance::listed(&pending))
+    } else if required.is_empty() {
+        "the host declared no required check on it at all".to_owned()
+    } else {
+        "every required check it declared had settled".to_owned()
+    };
+    Error::ChecksUnsettled {
+        reason: format!(
+            "the host had not {awaited} {url} within {seconds}s; {named}",
+            url = change.url,
+            seconds = bound.as_secs_f64(),
+        ),
+    }
+}
+
+/// Record one publishing push, and what it wrote.
+///
+/// **The evidence is captured unconditionally**, and that is the whole point of
+/// this function. A push is the last surface a publication can fail at where the
+/// only account of *why* is the bytes git and the repository's `pre-push` hook
+/// wrote to a pipe: once the process ends they are gone. This used to preserve them
+/// only when the resolved policy named `gate: {kind: pre-push}` — and on a host
+/// where every rule names a `command:` gate instead, that condition is never true,
+/// so a rejected push discarded the hook's own diagnosis every time. What the
+/// policy calls its verification cannot decide whether a failure is diagnosable.
+///
+/// So the output is stored as an artifact and preserved on disk for every push,
+/// accepted or rejected, and referenced from the `push` event — one artifact,
+/// referenced twice where a `pre-push` gate also has a verdict to report, because
+/// storing the same bytes twice would make one run look like two.
 fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed) -> Result<()> {
     let ruling = if pushed.accepted() {
         gate::Ruling::Passed
@@ -1278,26 +1585,28 @@ fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed)
         gate::Ruling::Rejected
     };
     let output = pushed.output();
-    stream.emit(
+    let artifact = stream::store_artifact("log", output)?;
+    let preserved = gate::preserve_log(&context.run_root, &context.branch, output)?;
+    stream.emit_with(
         EventKind::Push,
         object(json!({
             "branch": context.branch,
             "remote": "origin",
             "accepted": ruling.passed(),
+            "output": output,
+            "preserved_log": preserved.display().to_string(),
         })),
+        vec![artifact.clone()],
     );
-    // A `pre-push` gate's verdict arrives as push output and nowhere else, so it is
-    // recorded here whether it passed or was rejected — the passing run used to
-    // leave nothing readable once the work landed, while the failure it superseded
-    // stayed on disk.
+    // A `pre-push` gate's verdict arrives as push output and nowhere else, so the
+    // same evidence is *also* the gate's verdict when the policy names that gate —
+    // reported as one, on the event a consumer reads verdicts from.
     if matches!(
         context.policy.gate,
         Gate::Kind {
             kind: GateKind::PrePush
         }
     ) {
-        let artifact = stream::store_artifact("log", output)?;
-        let preserved = gate::preserve_log(&context.run_root, &context.branch, output)?;
         stream.emit_with(
             EventKind::GateVerdict,
             object(json!({

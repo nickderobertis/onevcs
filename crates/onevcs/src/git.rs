@@ -1326,12 +1326,61 @@ pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) 
 /// Named rather than a `bool`, because "it conflicted" is a domain answer every
 /// caller acts on — it decides a refusal, a skipped candidate, another bounded
 /// attempt — and the one thing a caller must never read it as is a failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Integrated {
     /// The branch carries it now.
     Settled,
-    /// It conflicted, and the branch is as it was found.
-    Conflicted,
+    /// It conflicted, and the branch is as it was found — carrying what conflicted.
+    Conflicted(Conflict),
+}
+
+/// What conflicted, when bringing a ref into a branch conflicted.
+///
+/// The evidence git already had in hand at the moment it stopped: the paths it left
+/// unmerged, which are asked for anyway to tell a conflict from any other failure,
+/// and the hunks it renders for exactly those paths — one `git diff` over a tree
+/// that is already open, taken before the attempt is aborted and the answer stops
+/// existing. Nothing here costs a second attempt at the merge, which is the reason
+/// it is taken here rather than reconstructed by whoever reports the conflict.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Conflict {
+    /// The paths git left unmerged, in the order it listed them.
+    // llmlint: ignore[invalid_states_unrepresentable] these are git's own output lines
+    // for `diff --name-only`, repository-relative paths this crate transports rather
+    // than resolves; a `PathBuf` here would claim a host filesystem meaning they do not
+    // have, and every consumer writes them back out as the text git printed.
+    pub paths: Vec<String>,
+    /// The conflicting hunks, as git renders them for those paths. Empty where git
+    /// would not print them.
+    pub hunks: String,
+}
+
+/// What git left unmerged in a tree it has just stopped in, or `None` where it left
+/// nothing unmerged — which is a failure that is not a conflict.
+///
+/// Both callers below ask this the moment their attempt fails and before they abort
+/// it, because both questions are only answerable while the conflicted tree stands.
+fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
+    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
+    if !unmerged.ok() || unmerged.trimmed().is_empty() {
+        return Ok(None);
+    }
+    let paths: Vec<String> = unmerged
+        .trimmed()
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect();
+    // Best effort, and deliberately not an error: the paths are the answer this
+    // exists for, and a git that would not render the hunks for them has still said
+    // what conflicts. Reporting nothing at all because the illustration failed would
+    // be the diagnosis this whole path is here to stop losing.
+    let hunks = run(&["diff", "--diff-filter=U"], Some(cwd))
+        .ok()
+        .filter(Output::ok)
+        .map(|out| out.stdout)
+        .unwrap_or_default();
+    Ok(Some(Conflict { paths, hunks }))
 }
 
 /// Replay `branch`'s commits after `upstream` onto `onto`, keeping nothing else.
@@ -1344,13 +1393,12 @@ pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Resu
     if replayed.ok() {
         return Ok(Integrated::Settled);
     }
-    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
-    let conflicted = unmerged.ok() && !unmerged.trimmed().is_empty();
+    let conflict = conflict_in(cwd)?;
     // Whatever stopped it, the tree is left as it was found: a replay that halted
     // mid-way is a repository nothing else in this crate knows how to read.
     run(&["rebase", "--abort"], Some(cwd))?;
-    if conflicted {
-        return Ok(Integrated::Conflicted);
+    if let Some(conflict) = conflict {
+        return Ok(Integrated::Conflicted(conflict));
     }
     Err(Error::Invalid {
         reason: format!(
@@ -1412,14 +1460,13 @@ pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<I
     if merged.ok() {
         return Ok(Integrated::Settled);
     }
-    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
-    if !unmerged.ok() || unmerged.trimmed().is_empty() {
+    let Some(conflict) = conflict_in(cwd)? else {
         return Err(Error::Invalid {
             reason: format!("git merge {reference} failed: {}", merged.diagnostic()),
         });
-    }
+    };
     run(&["merge", "--abort"], Some(cwd))?;
-    Ok(Integrated::Conflicted)
+    Ok(Integrated::Conflicted(conflict))
 }
 
 /// Squash-merge a ref and commit it, or report that it added no content.

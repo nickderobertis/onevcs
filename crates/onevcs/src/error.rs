@@ -46,6 +46,34 @@ pub enum Error {
         /// The conflict that survived the bounded retry.
         reason: String,
     },
+
+    /// A required check the host reports concluded red. The CLI reports this as
+    /// exit code 1, which is the code the contract fixes for a verification
+    /// failure — this says *which* verification failed, not a different one.
+    #[error("required check failed: {reason}")]
+    ChecksFailed {
+        /// The check that concluded red, named, and a bounded excerpt of its log.
+        reason: String,
+    },
+
+    /// The bound on waiting for the host elapsed with its required checks still
+    /// unsettled. The CLI reports this as exit code 1.
+    ///
+    /// Distinct from [`Error::ChecksFailed`] because the operator's next move
+    /// differs: nothing has failed, and the publication stopped watching.
+    #[error("checks unsettled: {reason}")]
+    ChecksUnsettled {
+        /// The checks that were still unsettled when the bound elapsed.
+        reason: String,
+    },
+
+    /// The publishing push was refused by the merge path. The CLI reports this as
+    /// exit code 1.
+    #[error("push rejected: {reason}")]
+    PushRejected {
+        /// git's own per-ref refusal, which is what an operator acts on.
+        reason: String,
+    },
 }
 
 /// The result type every fallible entry point in this crate returns.

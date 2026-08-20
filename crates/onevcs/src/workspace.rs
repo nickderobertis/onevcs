@@ -1066,18 +1066,19 @@ fn integrate(
     opened: &Carried,
     publication: &Path,
 ) -> Result<()> {
-    if let crate::publish::Reconciled::Settled =
+    let crate::publish::Reconciled::Conflicted(_, conflict) =
         crate::publish::reconcile(worktree, integrated, branch, None)?
-    {
+    else {
         return Ok(());
-    }
+    };
     Err(Error::SyncConflict {
         reason: format!(
-            "{integrated} conflicts with branch {branch:?} at {tip}, which is the copy in {at} \
+            "{integrated} conflicts with branch {branch:?} in {conflicting} at {tip}, which is the copy in {at} \
              this session would continue, so opening it would leave a conflict in a worktree \
              nobody asked to resolve. The branch is untouched. Resolve the conflict on it — check \
              it out in {publication} and merge {integrated} into it — and open this session \
              again, or land it as it stands with `{land}`",
+            conflicting = crate::guidance::listed(&conflict.paths),
             tip = opened.tip,
             at = opened.at(),
             publication = publication.display(),

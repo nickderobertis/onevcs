@@ -38,6 +38,35 @@ fn bare(c: char) -> bool {
     c.is_ascii_alphanumeric() || "-_./=:+,@".contains(c)
 }
 
+/// How many names a refusal spells out before it says how many more there are.
+///
+/// Ten, because the list is read to decide what to do next: a conflict across a
+/// dozen files and a conflict across two hundred call for the same first move, and
+/// a refusal nobody reads to the end names nothing at all.
+pub const LISTED_LIMIT: usize = 10;
+
+/// A list of names as a refusal spells it — bounded, and counting what it dropped.
+///
+/// The values arrive from outside (git's own answer about what it left unmerged),
+/// so the length is not this crate's to assume. What is left out is *counted*
+/// rather than quietly cut: a truncated list read as the whole one is a report of a
+/// smaller problem than the one that happened.
+pub fn listed<S: AsRef<str>>(values: &[S]) -> String {
+    let mut spelled: Vec<String> = values
+        .iter()
+        .take(LISTED_LIMIT)
+        .map(|value| format!("{:?}", value.as_ref()))
+        .collect();
+    if spelled.is_empty() {
+        return "no path git named".to_owned();
+    }
+    let dropped = values.len().saturating_sub(LISTED_LIMIT);
+    if dropped > 0 {
+        spelled.push(format!("and {dropped} more"));
+    }
+    spelled.join(", ")
+}
+
 /// Text some other program wrote, rendered for a message a terminal prints.
 ///
 /// A repository's own hook decides what it says, and a refusal hands that back

@@ -399,21 +399,34 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
     git::worktree_add_existing(root, &worktree, branch)?;
 
     let outcome = (|| -> Result<BranchOutcome> {
-        if git::merge_into_branch(
+        // The paths travel with the skip for the reason they travel with a
+        // publication's own conflict: a candidate the train passed over tells an
+        // operator nothing they can act on unless it says what conflicts.
+        if let git::Integrated::Conflicted(conflict) = git::merge_into_branch(
             &worktree,
             remote_base,
             &format!("Merge {remote_base} into {branch}"),
-        )? == git::Integrated::Conflicted
-        {
-            return Ok(skipped(branch, "conflict with the current base"));
+        )? {
+            return Ok(skipped(
+                branch,
+                &format!(
+                    "conflict with the current base in {}",
+                    guidance::listed(&conflict.paths)
+                ),
+            ));
         }
-        if git::merge_into_branch(
+        if let git::Integrated::Conflicted(conflict) = git::merge_into_branch(
             &worktree,
             base,
             &format!("Merge integration train {base} into {branch}"),
-        )? == git::Integrated::Conflicted
-        {
-            return Ok(skipped(branch, "conflict with an earlier candidate"));
+        )? {
+            return Ok(skipped(
+                branch,
+                &format!(
+                    "conflict with an earlier candidate in {}",
+                    guidance::listed(&conflict.paths)
+                ),
+            ));
         }
         if let Some(command) = gate_command {
             stream.emit(
