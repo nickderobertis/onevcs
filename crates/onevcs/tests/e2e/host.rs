@@ -2089,6 +2089,76 @@ fn a_change_the_host_holds_is_watched_until_it_lands_and_reports_the_commit() {
 }
 
 #[test]
+fn a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefix() {
+    // A branch that landed is an ancestor of nothing afterwards — publication
+    // squashes — so whether it landed can only be *inferred* from what the base
+    // happens to carry, and a base that came by the same content some other way is
+    // indistinguishable. The one answer that is not an inference is a landing that
+    // was recorded, so the moment the host reports the merge the commit it merged at
+    // is written onto the branch as a provenance trailer.
+    //
+    // Under this host's own configured prefix, like every other trailer this crate
+    // reads and writes: a repository spelling its provenance differently must read
+    // its own landings and not somebody else's.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    configure_rules(
+        &hosted.world,
+        "version: 2\ntrailer_prefix: Orchestrator-\nrules: []\n\
+         default: {publication: change-auto, approvals: required, gate: {kind: pre-push}}\n",
+    );
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/recorded", "feat: add the recorded thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let sha = hosted
+        .world
+        .git(&hosted.origin, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    // The record reached the checkout that keeps the branch: the repository the
+    // publication worked in goes with its run root, and a record only that one
+    // carried would be gone with it.
+    let recorded = hosted.world.git(
+        &hosted.checkout,
+        &["log", "--format=%B", "-1", "feature/recorded"],
+    );
+    assert!(
+        recorded.contains(&format!(
+            "{} {sha}",
+            documented_trailer("Landed-Commit", "Orchestrator-")
+        )),
+        "the branch must record where it landed, under the configured prefix: {recorded:?}"
+    );
+    // It records and nothing more: the branch's content is exactly what merged, so
+    // the base still carries everything the branch has.
+    assert_eq!(
+        hosted
+            .world
+            .git(
+                &hosted.checkout,
+                &["diff", "--name-only", "origin/main", "feature/recorded"]
+            )
+            .trim(),
+        "",
+        "recording a landing must not change what the branch holds"
+    );
+}
+
+#[test]
 fn a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending() {
     // The other side of the journey above, and the reason the bound may not be a
     // silent stop: the check never settles, the host never merges, and the

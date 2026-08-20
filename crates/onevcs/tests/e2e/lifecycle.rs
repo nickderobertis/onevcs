@@ -2859,6 +2859,105 @@ fn the_publishing_push_hands_its_hook_the_base_it_publishes_onto() {
 }
 
 #[test]
+fn a_push_a_hook_refuses_records_what_the_hook_wrote_whatever_the_policy_calls_its_gate() {
+    // The repository's verification here is a `command:` gate, which this crate runs
+    // itself and which passes — and the repository *also* carries a `pre-push` hook,
+    // which is the shape every identity on the host this was written for has. The
+    // hook refuses the publishing push, and what it wrote is the only account of why
+    // there will ever be: it lives in a pipe, and the process ends.
+    //
+    // That evidence used to be preserved only where the resolved policy named
+    // `gate: {kind: pre-push}`, so on this shape of repository a rejected push threw
+    // the diagnosis away every time. What the policy calls its verification cannot
+    // decide whether a failure is diagnosable, so the capture is unconditional.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    fixture.world.install_pre_push(
+        &fixture.checkout,
+        "echo 'the pre-push hook found a secret in the diff' >&2; exit 1",
+    );
+    let (token, worktree) = fixture.open(&["--branch", "feature/refused"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("push rejected"));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    // The hook's own words are on the `push` event, as the artifact the envelope's
+    // rule puts large evidence in, and preserved on disk where they outlive the
+    // worktree the publication was built in.
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0]["payload"]["accepted"], false);
+    let id = pushes[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("every publishing push records what it wrote");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "the pre-push hook found a secret in the diff",
+        ));
+    let preserved = pushes[0]["payload"]["preserved_log"]
+        .as_str()
+        .expect("the push preserves its output beyond the run's own tree");
+    assert!(
+        std::fs::read_to_string(preserved)
+            .expect("the preserved log is readable")
+            .contains("the pre-push hook found a secret in the diff"),
+        "{preserved}"
+    );
+
+    // And the gate that *was* named ran and passed, so this is not the hook being
+    // reported as the policy's gate by another name.
+    let verdicts = fixture.world.events_of(&token, "gate-verdict");
+    assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+    assert_eq!(verdicts[0]["payload"]["verdict"], "pass");
+    assert_eq!(verdicts[0]["payload"]["command"], "true");
+}
+
+#[test]
+fn a_push_that_is_accepted_records_what_it_wrote_too() {
+    // The other half of "unconditional": a publication that landed leaves an account
+    // of the push that landed it, so the record of a green run is readable and not
+    // only the record of a red one.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/accepted"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], true);
+    let id = pushes[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("an accepted push records what it wrote as well");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("refs/heads/main"));
+}
+
+#[test]
 fn a_pre_push_gate_that_rejects_the_push_is_reported_as_the_gate_failing() {
     let fixture =
         Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
@@ -3547,6 +3646,9 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
         // settle.
         .code(3)
         .stderr(predicate::str::contains("sync conflict"))
+        // What conflicts, not merely that something did: an operator told only that
+        // two branches conflict is an operator opening both and diffing by hand.
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains("the branch is retained"))
         // A deterministic refusal has to name what would change the answer: the
         // bounded retry is spent, so re-running publishes nothing, and the exit is
@@ -3555,7 +3657,28 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
             "land it with `onevcs publish-branch feature/conflicting --repo {}`",
             fixture.checkout.display()
         )));
-    assert!(!fixture.world.events_of(&token, "sync-conflict").is_empty());
+    // The event carries the same paths, and the hunks git would have printed for
+    // them beside it — read out of the conflicted tree before the attempt was
+    // aborted, which is the only moment they exist.
+    let conflicts = fixture.world.events_of(&token, "sync-conflict");
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"],
+        serde_json::json!(["shared.txt"]),
+        "{conflicts:?}"
+    );
+    assert_eq!(conflicts[0]["artifacts"][0]["kind"], "diff");
+    let id = conflicts[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("the conflict carries its hunks");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from the session"))
+        .stdout(predicate::str::contains("from the base"));
     // The branch survives, which is what "retained" has to mean.
     assert!(fixture
         .world
