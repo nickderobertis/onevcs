@@ -2216,8 +2216,6 @@ fn a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting
         );
     }
 
-    // Every branch still holds exactly the commits it did: continuing a branch reads
-    // it, and nothing here rewrites the copy it was read from.
     assert_eq!(
         world.git(&worktree, &["log", "--format=%s", "-1"]).as_str(),
         "feat: the work that must not go missing"

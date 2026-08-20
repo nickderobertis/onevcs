@@ -725,8 +725,6 @@ fn the_age_floor_bounds_what_a_sweep_considers() {
         "and the floor is why it was kept:\n{written_inside}"
     );
 
-    // A floor is a window rather than a count of hours, and the report says which
-    // window it kept things inside of.
     for (floor, window) in [("0.5", "30 minute(s)"), ("1.5", "1 hour(s) 30 minute(s)")] {
         let held = swept(&fixture, &[&format!("--min-age-hours={floor}")]);
         assert!(
