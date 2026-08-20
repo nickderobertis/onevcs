@@ -1342,7 +1342,10 @@ pub enum Integrated {
 /// that is already open, taken before the attempt is aborted and the answer stops
 /// existing. Nothing here costs a second attempt at the merge, which is the reason
 /// it is taken here rather than reconstructed by whoever reports the conflict.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Never empty: [`conflict_in`] is its only constructor and answers `None` where
+/// git left nothing unmerged, so "it conflicted" and "and here is what" cannot come
+/// apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     /// The paths git left unmerged, in the order it listed them.
     // llmlint: ignore[invalid_states_unrepresentable] these are git's own output lines

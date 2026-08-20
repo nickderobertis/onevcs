@@ -859,18 +859,15 @@ pub(crate) fn report_conflict(
     conflict: &git::Conflict,
     attempts: Option<usize>,
 ) {
-    let artifacts = match conflict.hunks.trim().is_empty() {
-        true => Vec::new(),
-        false => match stream::store_artifact("diff", &conflict.hunks) {
-            Ok(artifact) => vec![artifact],
-            Err(error) => {
-                eprintln!(
-                    "onevcs: warning: the conflict on {branch:?} is recorded without its \
-                     hunks: {error}"
-                );
-                Vec::new()
-            }
-        },
+    let artifacts = match stream::store_artifact("diff", &conflict.hunks) {
+        Ok(artifact) => vec![artifact],
+        Err(error) => {
+            eprintln!(
+                "onevcs: warning: the conflict on {branch:?} is recorded without its \
+                 hunks: {error}"
+            );
+            Vec::new()
+        }
     };
     let mut payload = object(json!({
         "branch": branch,
@@ -899,20 +896,22 @@ fn sync(
     {
         return Ok(());
     }
-    let mut attempted = Reconciliation::Merge;
-    let mut conflict = git::Conflict::default();
+    let mut last: Option<(Reconciliation, git::Conflict)> = None;
     for attempt in 1..=SYNC_ATTEMPTS {
         match reconcile(&context.worktree, compared, &context.branch, replay_from)? {
             Reconciled::Settled => return Ok(()),
-            Reconciled::Conflicted(shape, found) => {
-                attempted = shape;
-                conflict = found;
-            }
+            Reconciled::Conflicted(shape, found) => last = Some((shape, found)),
         }
         if attempt < SYNC_ATTEMPTS && git::has_remote(&context.repo, "origin") {
             git::fetch(&context.repo, "origin")?;
         }
     }
+    // Every path out of the loop above either returned or wrote this, and the bound
+    // is at least one attempt — so the refusal below is always about a conflict this
+    // run actually met, rather than about a value standing in for one.
+    let Some((attempted, conflict)) = last else {
+        return Ok(());
+    };
     report_conflict(
         stream,
         &context.branch,

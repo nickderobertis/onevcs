@@ -15,6 +15,7 @@
 // its base is therefore an assertion about git.
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use predicates::prelude::*;
@@ -3614,6 +3615,108 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
         vec![1, 2],
         "the two publications took the one identity's queue one after the other"
     );
+}
+
+/// One session and one base that disagree about `files` files, which is a real
+/// conflict driven end to end rather than one asserted about.
+fn conflicting_over(fixture: &Fixture, branch: &str, files: usize) -> String {
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    for file in 0..files {
+        fixture.world.commit_file(
+            &worktree,
+            &format!("shared-{file}.txt"),
+            "from the session\n",
+            &format!("feat: change shared file {file}"),
+        );
+    }
+    let other = fixture
+        .world
+        .clone_of(&fixture.origin, &format!("advancing-{branch}"));
+    for file in 0..files {
+        fixture.world.commit_file(
+            &other,
+            &format!("shared-{file}.txt"),
+            "from the base\n",
+            &format!("feat: change file {file} differently"),
+        );
+    }
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+    token
+}
+
+#[test]
+fn a_conflict_across_more_files_than_a_refusal_can_name_says_how_many_it_left_out() {
+    // The paths come from git and their number is a fact about the repository, not
+    // about this crate — a refactor conflicts across a hundred files as readily as
+    // across one. A refusal nobody reads to the end names nothing, so it is bounded;
+    // what it leaves out is counted, because a truncated list read as the whole one
+    // reports a smaller problem than the one that happened.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let token = conflicting_over(&fixture, "feature/many", 12);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("and 2 more"));
+    let said = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert_eq!(
+        (0..12)
+            .filter(|file| said.contains(&format!("\"shared-{file}.txt\"")))
+            .count(),
+        10,
+        "the refusal names ten of them and counts the rest: {said}"
+    );
+
+    // The event is not bounded, because a consumer is not reading it aloud: every
+    // path git left unmerged is on it.
+    let conflicts = fixture.world.events_of(&token, "sync-conflict");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"]
+            .as_array()
+            .expect("the paths travel as a list")
+            .len(),
+        12,
+        "{conflicts:?}"
+    );
+}
+
+#[test]
+fn a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict() {
+    // The hunks are an illustration of the conflict; the paths are the answer. A
+    // state root that will not take the artifact must not turn a sync conflict —
+    // which has its own exit code and its own next command — into a filesystem
+    // complaint, so the miss is said on stderr and the refusal is the one it always
+    // was.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let token = conflicting_over(&fixture, "feature/unstorable", 1);
+    let artifacts = fixture.world.home().join("artifacts");
+    std::fs::create_dir_all(&artifacts).expect("an artifact directory");
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o500))
+        .expect("a directory nothing may write into");
+
+    let conflicted = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("in \"shared-0.txt\""))
+        .stderr(predicate::str::contains("recorded without its hunks"));
+
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700))
+        .expect("the artifact directory is restored");
+    let conflicts = fixture.world.events_of(&token, "sync-conflict");
+    assert!(
+        conflicts[0]["artifacts"]
+            .as_array()
+            .expect("an array")
+            .is_empty(),
+        "evidence that was not stored is no artifact reference: {conflicts:?}"
+    );
+    drop(conflicted);
 }
 
 #[test]

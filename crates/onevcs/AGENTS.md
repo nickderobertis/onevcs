@@ -118,6 +118,41 @@ cwd. The train is deliberately not what it names, even for finished work:
 refuses a team or remote identity outright, so it lands none of the branches this
 report is most often read about — the ones a run left in its own clone.
 
+## A publication observes, captures, and does not settle early
+
+Three rules that took a lost diagnosis each to learn, and that read as arbitrary
+without them.
+
+- **What a publication watches follows the merge policy, never the gate.** Check
+  polling used to be triggered by the resolved policy naming `gate: {kind: checks}`
+  — and on a host whose every rule names a `command:` gate, that is no identity at
+  all, so the host's required checks were observed for no repository. `change-auto`
+  arms the host's merge and then watches it to the end; `change-direct` waits for
+  the checks the host says block a merge before asking for one. A host that declares
+  *no* required check has answered, and `change-direct` proceeds on that answer —
+  the merge is then the host's own to refuse. `change-auto` is where it fails
+  closed, because its watch ends at a merge the host never performs.
+- **`change-open` is the stated exception, and it is a decision.** A human decides
+  when a reviewed change merges, so there is no bounded wait to have and it settles
+  at change-request-open. Anything that made it wait would be waiting on a person.
+- **Evidence capture is unconditional, at every surface.** `record_push` stores what
+  every publishing push wrote — git's porcelain and whatever the `pre-push` hook
+  printed — for every push, accepted or rejected, whatever the policy calls its
+  gate. A conflict carries the paths git left unmerged and the hunks for them, both
+  read out of the tree git had already opened and *before* the attempt is aborted,
+  which is the only moment they exist. A red required check is refused with a
+  bounded excerpt of its own log. All three are best-effort where the thing being
+  recorded already happened: a merge is not undone by the record of it failing to be
+  written, and a filesystem that would not take a diff must not turn a sync conflict
+  into a filesystem complaint.
+
+And `FailureKind` is how a consumer tells them apart. `ChecksFailed`,
+`ChecksUnsettled`, and `PushRejected` all keep exit code 1 — the code the contract
+fixes for a verification failure — so a process reading the code sees nothing
+change while a caller branching on the kind learns which verification it was.
+`onepipeline` routes on exactly these names; adding a kind is additive, and
+renaming one is not.
+
 ## The subject policy is the repository's, and this crate holds none
 
 `publish::subject_for` composes the subject a publication lands under — an explicit
@@ -300,12 +335,14 @@ script written beside them that answered to what they asked.
   Cleanup is a `Drop`, so a run that fails half way still removes its branch; what
   it can leave behind is a merged (or, on a failure between opening and merging,
   an open) pull request, which is deliberate — that is the evidence it ran.
-- **The scratch repository declares no required check.** `gate: {kind: checks}`
-  waits for checks that *block*, so that path cannot go green there and stays
-  covered by the offline tier; this tier proves `change_checks` and `check_log`
-  themselves against the real workflow the repository carries. Making its check
-  required would need branch protection, which would then also gate every merge
-  this tier depends on.
+- **The scratch repository declares no required check.** Its `change-direct`
+  journeys still consult the host's checks — every automated policy does — and a
+  host that declares none has *answered*, so they proceed and the merge is the
+  host's own to refuse. What cannot be proved there is the waiting: a publication
+  that ends at a check going green stays covered by the offline tier, and this tier
+  proves `change_checks`, `check_log`, and `merged_at` themselves against the real
+  workflow the repository carries. Making its check required would need branch
+  protection, which would then also gate every merge this tier depends on.
 - **The honesty comparison has two legs.** `tests/e2e/honesty.rs` is the offline
   one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
   real `Git` + real `GitHub`. Both reduce their streams with

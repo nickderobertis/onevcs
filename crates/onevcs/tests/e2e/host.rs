@@ -2159,6 +2159,44 @@ fn a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefi
 }
 
 #[test]
+fn a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publication() {
+    // The record is a footnote to a merge that has already happened. A checkout that
+    // will not take the branch — this one has it checked out, and git refuses to
+    // fetch into a branch somebody is standing on — leaves nothing outside the run
+    // carrying it, and that is worth saying. It is not worth reporting the merge as
+    // having failed: the change is on the base either way, and a publication that
+    // answered "failed" would send somebody to land work that is already landed.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/standing-on", "feat: add the stood-on thing");
+    hosted.world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/standing-on"],
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"))
+        .stderr(predicate::str::contains("the landing was not recorded"));
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the change reached the base whatever became of the record of it"
+    );
+}
+
+#[test]
 fn a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending() {
     // The other side of the journey above, and the reason the bound may not be a
     // silent stop: the check never settles, the host never merges, and the
@@ -2220,12 +2258,15 @@ fn a_red_required_check_ends_an_auto_merge_publication_and_quotes_the_log() {
             required: true,
         }],
     );
-    hosted.world.host_log(
-        "gate",
-        "cargo test
-error: the regression is here
-",
-    );
+    // A real CI log is long, and the excerpt is bounded — taken from the *end*,
+    // because a job prints its setup first and its diagnosis last. What was cut is
+    // marked, so nobody reads an excerpt as a short log.
+    let long: String = (0..400)
+        .map(|line| format!("     Compiling crate-number-{line} v0.1.0 — fine\n"))
+        .collect();
+    hosted
+        .world
+        .host_log("gate", &format!("{long}error: the regression is here\n"));
     let token = hosted.change("feature/reddened", "feat: add the reddening thing");
 
     hosted
@@ -2237,7 +2278,9 @@ error: the regression is here
         .stderr(predicate::str::contains(
             "required check \"gate\" concluded failure",
         ))
-        .stderr(predicate::str::contains("error: the regression is here"));
+        .stderr(predicate::str::contains("error: the regression is here"))
+        .stderr(predicate::str::contains("earlier output omitted"))
+        .stderr(predicate::str::contains("crate-number-0 ").not());
     assert_eq!(hosted.origin_log().len(), 1, "nothing may have merged");
 
     // The whole log is still the artifact; the excerpt is a pointer to it.
@@ -2255,7 +2298,41 @@ error: the regression is here
         .args(["artifact", "cat", id])
         .assert()
         .success()
-        .stdout(predicate::str::contains("cargo test"));
+        .stdout(predicate::str::contains("crate-number-0 "));
+}
+
+#[test]
+fn an_auto_merge_the_host_takes_and_never_performs_is_bounded_and_says_the_checks_were_fine() {
+    // The third thing a bound can mean, and the one that used to read exactly like
+    // the other two: every required check settled green, the host took the merge,
+    // and the change simply never landed. Naming the pending checks would be a lie
+    // here — there are none — so the bound says which of the three it was, because
+    // "CI is still running", "the repository declares nothing blocking", and "the
+    // host took it and did nothing" are three different next moves.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.accept_merges_without_performing_them();
+    let token = hosted.change("feature/accepted", "feat: add the accepted thing");
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("checks unsettled"))
+        .stderr(predicate::str::contains(
+            "every required check it declared had settled",
+        ));
+    assert_eq!(hosted.origin_log().len(), 1, "the host never landed it");
 }
 
 #[test]

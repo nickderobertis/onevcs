@@ -26,11 +26,11 @@
 // journey in this suite uses.
 
 use onevcs::{
-    CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub, Holding,
-    Identity, MergePolicy, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope,
-    Session, SessionRequest, SessionToken, Source, Vcs,
+    ChangeId, Check, CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub,
+    Holding, Identity, MergeOutcome, MergePolicy, Providers, PublishOutcome, PublishRequest,
+    RemoteHost, Retention, Scope, Session, SessionRequest, SessionToken, Source, Vcs,
 };
-use onevcs_testing::{MemoryHost, MemoryVcs, VcsState};
+use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
 use crate::honesty::inhabit;
 use crate::registry::configure_rules;
@@ -453,6 +453,81 @@ fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
     let opened = world.events_of(&session.token.0, "change-opened");
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0]["payload"]["url"], url.to_string());
+}
+
+#[test]
+fn a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed() {
+    // `change-direct` asks the host to land the change now, and GitHub either does
+    // or refuses. A host with a merge queue of its own — GitLab's train, GitHub's
+    // own merge queue — may instead take it and land it later, and that is neither
+    // a merge nor a refusal. The publication says so: it answers `Queued` with the
+    // change request to watch, and nothing here claims the base moved.
+    //
+    // Reached with the real repository side and a supplied host, because that is
+    // the only combination that can express it: the answer is the host's, and the
+    // git underneath is still real git against a real origin.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(
+        &world,
+        "{publication: change-direct, approvals: none, gate: {command: [\"true\"]}}",
+    );
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/queueing");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the queueing thing",
+    );
+
+    let host = MemoryHost::seeded(HostState {
+        authenticated_user: "tester".to_owned(),
+        checks: [(
+            ChangeId("1".to_owned()),
+            vec![Check {
+                name: "gate".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some("success".to_owned()),
+                required: true,
+            }],
+        )]
+        .into_iter()
+        .collect(),
+        merges: [(ChangeId("1".to_owned()), MergeOutcome::Queued)]
+            .into_iter()
+            .collect(),
+        ..HostState::default()
+    });
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &host,
+        },
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+
+    let PublishOutcome::Queued(url) = &published.outcome else {
+        panic!("a queued merge is not a landing: {published:?}");
+    };
+    assert_eq!(
+        published.outcome.describe(),
+        format!("merge queued for {url}"),
+        "and the rendering says the same thing the value does"
+    );
+    // It waited for the host's required check first — a direct merge asked for
+    // against a check the host has already failed can only be refused.
+    let checks = world.events_of(&session.token.0, "change-check");
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0]["payload"]["name"], "gate");
+    assert!(
+        world
+            .events_of(&session.token.0, "change-merged")
+            .is_empty(),
+        "nothing may report a merge the host only queued"
+    );
 }
 
 #[test]

@@ -51,15 +51,15 @@ pub const LISTED_LIMIT: usize = 10;
 /// so the length is not this crate's to assume. What is left out is *counted*
 /// rather than quietly cut: a truncated list read as the whole one is a report of a
 /// smaller problem than the one that happened.
+/// Every caller hands it a list something else already proved non-empty — git's own
+/// answer about what it left unmerged, or the checks a host reported still pending —
+/// so there is no empty case to spell here and none to leave untested.
 pub fn listed<S: AsRef<str>>(values: &[S]) -> String {
     let mut spelled: Vec<String> = values
         .iter()
         .take(LISTED_LIMIT)
         .map(|value| format!("{:?}", value.as_ref()))
         .collect();
-    if spelled.is_empty() {
-        return "no path git named".to_owned();
-    }
     let dropped = values.len().saturating_sub(LISTED_LIMIT);
     if dropped > 0 {
         spelled.push(format!("and {dropped} more"));
