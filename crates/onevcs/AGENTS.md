@@ -120,9 +120,6 @@ report is most often read about — the ones a run left in its own clone.
 
 ## A publication observes, captures, and does not settle early
 
-What a publication watches, and what it captures, is stated in the contract's
-publication amendment. Three things about *implementing* it are not.
-
 - **Polling is driven by `context.effective`, never by `context.policy.gate`.** The
   gate is what tempts you: it has a `checks` kind, and reading it here is one line.
   It was one line, and on a host whose every rule names a `command:` gate it meant

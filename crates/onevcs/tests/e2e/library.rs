@@ -987,16 +987,10 @@ fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() 
         "the checkout it names carries the branch: {branches:?}"
     );
 
-    // The gate this crate runs is one of the verifications a publication can fail,
-    // and the exit code cannot tell them apart: the contract fixes `1` for all of
-    // them, so a process reading `$?` sees one answer where a caller embedding the
-    // crate has to see four. They are asserted here, together, because *which* one
-    // it was is the thing a caller routes on and the thing a single code hides.
-    // Which verification failed is the thing a consumer branches on, and the exit
-    // code cannot carry it: the contract fixes `1` for every verification failure,
-    // so a process reading `$?` sees one answer where a caller embedding the crate
-    // has to see four. These are the three new ones, each driven to its own ending
-    // through the typed entry point against real git.
+    // The gate above is one of four verifications a publication can fail, and the
+    // exit code cannot tell them apart: the contract fixes `1` for all of them, so a
+    // process reading `$?` sees one answer where a caller embedding the crate has to
+    // see four. The other three are driven here, each to its own ending.
     const AUTOMATED: &str =
         "{publication: change-auto, approvals: required, gate: {kind: pre-push}}";
 
