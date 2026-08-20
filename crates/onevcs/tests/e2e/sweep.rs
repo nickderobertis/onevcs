@@ -854,8 +854,11 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
     // routes the binary's own calls to it, and it answers the removal the way an
     // append-only directory does. Aged with the workspace, so the sweep reaches the
     // question this journey is about rather than keeping it for its age.
-    let mounted =
-        crate::refusing_fs::mount_over(&spool, SystemTime::now() - Duration::from_secs(72 * 3600));
+    let mounted = crate::refusing_fs::mount_over(
+        &spool,
+        SystemTime::now() - Duration::from_secs(72 * 3600),
+        crate::refusing_fs::Refuses::Directories,
+    );
 
     let (report, diagnosis) = swept_with_diagnosis(&fixture, &[]);
 
@@ -887,6 +890,63 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
     );
     // A decision rather than a failure: the sweep ran, and what it could not show is
     // a line in its report.
+    assert_eq!(
+        diagnosis, "",
+        "a directory this host cannot answer for is a decision, not a failure"
+    );
+
+    mounted.join();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_probe_file_this_host_could_not_unlink_is_no_answer_about_the_workspace() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/file-stays");
+    publish_branch(&fixture, "feature/file-stays");
+    let family = publications(&fixture.world);
+    let run_root = only_run_root(&family);
+    let spool = run_root.join("worktree/spool");
+    std::fs::create_dir_all(&spool).expect("a directory the gate left");
+    backdate(&run_root, 72);
+
+    // The other half of what a removal takes. This mount gives a directory back and
+    // refuses to unlink a file, which is a real shape: `rmdir` and `unlink` are
+    // separate rights in an NFSv4 ACL and separate bits in a Landlock policy, so a
+    // host can answer for one and not the other.
+    let mounted = crate::refusing_fs::mount_over(
+        &spool,
+        SystemTime::now() - Duration::from_secs(72 * 3600),
+        crate::refusing_fs::Refuses::Files,
+    );
+
+    let (report, diagnosis) = swept_with_diagnosis(&fixture, &[]);
+
+    let left = probes_left_in(&spool);
+    let [entry] = left.as_slice() else {
+        panic!(
+            "the premise: the probe's file was created on that filesystem and could not \
+             be unlinked, so exactly one entry is still in {}, not {left:?}:\n{report}",
+            spool.display()
+        );
+    };
+    assert!(
+        entry.is_file(),
+        "and it is the file, not the directory this mount did give back: the probe asks \
+         both, and only the unlink was refused:\n{report}"
+    );
+    assert!(
+        run_root.is_dir() && run_root.join("clone").is_dir() && run_root.join("worktree").is_dir(),
+        "a question that could not be finished is no answer, so nothing was removed:\n{report}"
+    );
+    assert!(
+        retained_reason(&report, &run_root).starts_with("this host cannot show it may remove it: "),
+        "and the workspace is kept for the question that could not be finished:\n{report}"
+    );
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
+        "nothing is counted as reclaimed:\n{report}"
+    );
     assert_eq!(
         diagnosis, "",
         "a directory this host cannot answer for is a decision, not a failure"

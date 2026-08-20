@@ -1,16 +1,17 @@
-//! A filesystem that takes a directory and will not give it back.
+//! A filesystem of this suite's own that takes an entry and will not give it back.
 //!
-//! One thing `onevcs sweep` has to answer for is a directory an entry may be added
-//! to and not taken out of again: an append-only attribute, an NFSv4 ACL without
-//! `DELETE_CHILD`, a network filesystem that refuses the unlink. An ordinary user
-//! can build none of those in a scratch directory — `chattr +a` answers "Operation
-//! not permitted" and the rest need a server or a privilege — and every one of them
-//! is a *filesystem* answering. So this is one, written for the purpose: a mount that
-//! takes an entry and refuses to give it back. What it stands in for is the host —
-//! the append-only volume nobody can provision here — and not the tool: the binary,
-//! the workspace, the syscalls, and the kernel routing them are real, and what the
-//! journey asserts is what the sweep decided when a directory would not give an
-//! entry back.
+//! Something is arranged here, and it is the host rather than the tool: a mount whose
+//! `rmdir` and `unlink` answer `EPERM`, so a real syscall fails where a journey needs
+//! one to. That is what `onevcs sweep` has to answer for — a directory an entry may
+//! be added to and not taken out of again — and an ordinary user can provision none
+//! of the things that do it: `chattr +a` answers "Operation not permitted", and an
+//! NFSv4 ACL without `DELETE_CHILD` or a policy granting `add_name` without
+//! `remove_name` needs a server or a privilege a suite cannot have.
+//!
+//! It is arranged in the kernel and not in the code under test: the call leaves the
+//! process, crosses the VFS, and comes back refused, which is indistinguishable from
+//! any other mount to the binary making it. What each journey asserts is what the
+//! real sweep decided when a real removal failed.
 //!
 //! Linux only, because that is where an unprivileged mount needs nothing outside the
 //! distribution's own `fuse3`. **Absent, it refuses loudly rather than skipping** —
@@ -38,6 +39,16 @@ const NOW: Duration = Duration::from_secs(0);
 /// What an unprivileged mount goes through, and what a host without it is told.
 const MOUNTS: &str = "fusermount3";
 
+/// What a mount will not give back, which is the half of the probe's question the
+/// journey mounting it is about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Refuses {
+    /// `rmdir` is refused; a file may still be unlinked.
+    Directories,
+    /// `unlink` is refused; a directory may still be removed.
+    Files,
+}
+
 /// Mount one over `path`, with everything on it as old as `aged`.
 ///
 /// The age is the mount's own: this verb's age floor reads a mounted directory like
@@ -49,7 +60,7 @@ const MOUNTS: &str = "fusermount3";
 /// unwinds, so a failing run leaves no mount behind. `auto_unmount` is deliberately
 /// not asked for: `fusermount3` allows it only alongside `allow_other`, which needs
 /// `user_allow_other` in `/etc/fuse.conf` — a host change a suite must not require.
-pub fn mount_over(path: &Path, aged: SystemTime) -> BackgroundSession {
+pub fn mount_over(path: &Path, aged: SystemTime, refuses: Refuses) -> BackgroundSession {
     // Checked before the mount rather than read out of whatever error it fails with:
     // a host missing one package should be told which, not handed a errno.
     let mounts = Command::new(MOUNTS).arg("--version").output();
@@ -69,7 +80,7 @@ pub fn mount_over(path: &Path, aged: SystemTime) -> BackgroundSession {
     );
 
     let options = [MountOption::FSName("onevcs-refuses-removal".to_owned())];
-    fuser::spawn_mount2(Refusing::new(aged), path, &options).unwrap_or_else(|e| {
+    fuser::spawn_mount2(Refusing::new(aged, refuses), path, &options).unwrap_or_else(|e| {
         panic!(
             "this journey's filesystem could not be mounted at {}: {e}\n\
              ACTION: check that {MOUNTS} may mount for this user (`user_allow_other` is \
@@ -84,6 +95,7 @@ struct Refusing {
     attrs: HashMap<u64, FileAttr>,
     children: HashMap<u64, Vec<(OsString, u64)>>,
     next: u64,
+    refuses: Refuses,
 }
 
 impl Refusing {
@@ -105,11 +117,32 @@ impl Refusing {
         })
     }
 
-    fn new(aged: SystemTime) -> Self {
+    /// Take one entry away, or refuse where that is the kind this mount is about.
+    fn take_away(&mut self, parent: u64, name: &OsStr, kind: Refuses, reply: ReplyEmpty) {
+        if self.refuses == kind {
+            reply.error(libc::EPERM);
+            return;
+        }
+        let Some(entries) = self.children.get_mut(&parent) else {
+            reply.error(libc::ENOENT);
+            return;
+        };
+        let Some(at) = entries.iter().position(|(held, _)| held == name) else {
+            reply.error(libc::ENOENT);
+            return;
+        };
+        let (_, ino) = entries.remove(at);
+        self.attrs.remove(&ino);
+        self.children.remove(&ino);
+        reply.ok();
+    }
+
+    fn new(aged: SystemTime, refuses: Refuses) -> Self {
         let mut filesystem = Self {
             attrs: HashMap::new(),
             children: HashMap::new(),
             next: ROOT + 1,
+            refuses,
         };
         filesystem.attrs.insert(ROOT, directory(ROOT, aged));
         filesystem.children.insert(ROOT, Vec::new());
@@ -216,15 +249,15 @@ impl Filesystem for Refusing {
         }
     }
 
-    /// The whole of what this filesystem is: an entry it took and will not give back,
-    /// which is what an append-only directory answers. Both kinds, because the probe
-    /// asks about both and a host may answer for them separately.
-    fn rmdir(&mut self, _req: &Request<'_>, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
-        reply.error(libc::EPERM);
+    /// The whole of what this filesystem is: an entry it took and will not give back.
+    /// One kind at a time, because `rmdir` and `unlink` are separate rights in an
+    /// NFSv4 ACL and separate bits in a Landlock policy, and the probe asks both.
+    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        self.take_away(parent, name, Refuses::Directories, reply);
     }
 
-    fn unlink(&mut self, _req: &Request<'_>, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
-        reply.error(libc::EPERM);
+    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        self.take_away(parent, name, Refuses::Files, reply);
     }
 
     /// A file may be made here, so that what refuses is the taking away rather than
