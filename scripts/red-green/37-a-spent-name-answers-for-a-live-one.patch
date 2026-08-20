@@ -2,22 +2,24 @@ Mutation: the first repository to hold a name answers for it, spent or not.
 Red: a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it
 
 diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
-index d54609a..3df2e29 100644
+index 93c5a02..edeaf4b 100644
 --- a/crates/onevcs/src/vcs.rs
 +++ b/crates/onevcs/src/vcs.rs
-@@ -281,14 +281,10 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
-                 // squashes, so a branch that landed is never an ancestor of the
-                 // base afterwards. What answers the question is whether the base
-                 // already carries this branch's content.
+@@ -360,6 +360,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>>
+                 // answers — it landed, and nothing here can tell — are answers that
+                 // must not be acted on by pasting a command.
+                 let withheld = verdict != Landed::No;
 +                seen.push(key);
-                 if !git::trees_differ(&repo, &compared, &branch)? {
+                 if withheld && reporting == Reporting::UnpublishedOnly {
                      continue;
                  }
--                // Marked seen only once it is a row, so that one repository's spent
--                // copy of a name cannot answer for another's: a branch published out
--                // of the checkout and re-cut in a later run has both, and the first
--                // has nothing left in it.
--                seen.push(key);
-                 // A marker under a prefix this host does not read is still a marker:
-                 // reporting the branch as complete is what would let somebody hand
-                 // interrupted work to the verb that publishes a finished one.
+@@ -367,9 +368,6 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>>
+                 // that one repository's spent copy of a name cannot answer for
+                 // another's: a branch published out of the checkout and re-cut in a
+                 // later run has both, and the first has nothing left in it.
+-                if !withheld {
+-                    seen.push(key);
+-                }
+                 let row = preserved_row(
+                     &Preserved {
+                         identity,

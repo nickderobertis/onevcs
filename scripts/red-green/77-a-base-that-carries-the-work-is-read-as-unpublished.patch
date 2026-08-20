@@ -1,16 +1,21 @@
-Mutation: status stops reading a landing off the base's content, which is the answer a squash-merge leaves and the one a planner got wrong.
+Mutation: status stops reading the landing the base's own history records, and answers from the host and its own paperwork alone — which is how a change already squash-merged got reported as unpublished.
 Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
 
 diff --git a/crates/onevcs/src/status.rs b/crates/onevcs/src/status.rs
-index 8da2809..6142506 100644
+index 9d8c4c8..5f5cbf3 100644
 --- a/crates/onevcs/src/status.rs
 +++ b/crates/onevcs/src/status.rs
-@@ -492,7 +492,7 @@ enum Proposed {
- fn landing(branch: OnTheBranch, host: OnTheHost, proposed: Proposed) -> Landing {
-     match branch {
-         OnTheBranch::Carried { ahead: 0 } => return Landing::NothingToPublish,
--        OnTheBranch::Carried { .. } => return Landing::Landed,
-+        OnTheBranch::Carried { .. } => return Landing::Unpublished,
-         OnTheBranch::Ahead | OnTheBranch::Nowhere => {}
+@@ -642,13 +642,6 @@ fn landing(
+     if ahead == Some(0) && verdict != Some(&Landed::No) {
+         return Landing::NothingToPublish;
      }
+-    match verdict {
+-        Some(Landed::Yes { .. }) => return Landing::Landed,
+-        Some(Landed::Unknown) => return Landing::MaybeLanded,
+-        // Nothing holds the branch, or the base does not carry what it changed: the
+-        // host and this host's own record are what is left to say where it got to.
+-        Some(Landed::No) | None => {}
+-    }
      match (host, proposed) {
+         (OnTheHost::Open, Proposed::OpenedAndAskedToLand) => Landing::Queued,
+         (OnTheHost::Open, _) => Landing::Open,

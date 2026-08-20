@@ -4,19 +4,19 @@ Red: work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_com
 Red: session_events_match_across_backends
 
 diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
-index 49c1029..49ea82a 100644
+index 93c5a02..4e2d79f 100644
 --- a/crates/onevcs/src/vcs.rs
 +++ b/crates/onevcs/src/vcs.rs
-@@ -335,11 +335,7 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
-                 }
-                 // The verb its provenance earns, taking the repository by path so
-                 // that the command runs wherever the row is read.
--                let verb = if incomplete {
--                    "recover"
--                } else {
--                    "publish-branch"
--                };
-+                let verb = if incomplete { "recover" } else { "integrate" };
-                 // llmlint: ignore[names_match_behavior] the name is the public
-                 // `Recoverable::recover_command` field this fills, which the recorded
-                 // surface in docs/inferred-surface.md fixes; renaming that field is a
+@@ -505,11 +505,7 @@ fn preserved_row(
+     // that the command runs wherever the row is read. A branch whose work
+     // reached the base earns none: the row is read to be pasted, and pasting
+     // one for finished work re-opens a change request for what the base has.
+-    let verb = if incomplete {
+-        "recover"
+-    } else {
+-        "publish-branch"
+-    };
++    let verb = if incomplete { "recover" } else { "integrate" };
+     // llmlint: ignore[names_match_behavior] the name is the public
+     // `Recoverable::recover_command` field this fills, which the recorded
+     // surface in docs/inferred-surface.md fixes; renaming that field is a
