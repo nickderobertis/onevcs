@@ -1,8 +1,11 @@
 //! Reaping the publication workspaces this crate leaves behind.
 //!
 //! Every branch-keyed landing cuts a run root under the state root — a clone, a
-//! worktree, and the gate's preserved logs — and this is the only thing that
-//! removes one.
+//! worktree, and the gate's preserved logs — and this is the one rule that removes
+//! one. It is asked two ways: deliberately, as `onevcs sweep` over every family, and
+//! by [`enforce`] as a branch-keyed verb cuts the next run root under one. The second
+//! is what makes it a *retention rule* rather than a verb somebody has to remember:
+//! nothing else runs between two landings on a host that publishes all day.
 //!
 //! What makes a run root reclaimable is `onevcs` state and nothing a caller
 //! supplies: its gate has recorded a verdict under it, no live session holds its
@@ -11,9 +14,20 @@
 //! caller-supplied liveness proof that is wrong deletes a publication worktree
 //! somebody is still gating.
 //!
-//! **Anything not proven dead is retained and reported, never removed and never
-//! terminated.** This root is shared by several managers on one host, so a run
-//! root whose owner cannot be proven is left exactly where it is and said so.
+//! **How long the evidence lasts is the age floor, and it is a promise.** A run
+//! root's preserved gate logs are what an operator reads *after* a publication
+//! failed, and reclamation is the only thing that takes them: they are written under
+//! the run root, which outlives the worktree the gate ran in. So nothing written
+//! inside the floor — 24 hours where a caller says nothing — is removed by either
+//! way of asking, and a run root whose clone holds a commit no origin has is kept
+//! past it too, until [`RETAINED_UNPUBLISHED`] newer ones stand in front of it.
+//!
+//! **Anything not proven dead is retained and reported.** This root is shared by
+//! several managers on one host, so a run root whose owner cannot be proven is left
+//! exactly where it is and said so. What a *proven-dead* run root does get is the
+//! processes it left running stopped ([`crate::processes`]) — a publication's gate
+//! starts daemons, and unlinking the files a daemon still holds open frees no disk at
+//! all. Nothing a live workspace holds is ever signalled.
 //!
 //! One boundary is deliberately outside it. `<identity>/runs` is the per-run
 //! lifecycle clone root, which [`crate::workspace`] keeps as a bounded recovery
@@ -29,7 +43,17 @@ use filetime::FileTime;
 
 use crate::branch::Verb;
 use crate::error::{self, Result};
-use crate::{gate, git, home, ids, lock, workspace};
+use crate::{gate, git, home, ids, lock, processes, workspace};
+
+/// How many dead run roots holding work no origin has are kept past the age floor.
+///
+/// The bound [`crate::workspace::RETAINED_DEAD_RUNS`] is for the lifecycle clones,
+/// and for the same reason: a workspace whose clone still holds a commit that never
+/// reached the origin is the one an operator reaches for after a publication went
+/// wrong, and keeping every one of them forever turns a scratch root into an archive
+/// nobody prunes. The newest are the ones kept — the failure somebody is asking
+/// about is the one that just happened.
+pub const RETAINED_UNPUBLISHED: usize = 3;
 
 /// The age floor a caller that says nothing gets, in hours.
 ///
@@ -123,58 +147,119 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     // reads the same however the verbs come to be declared.
     families.sort_by_key(|verb| verb.runs());
     for verb in families {
-        let family = root.join(verb.runs());
-        let entries = match std::fs::read_dir(&family) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                report.examined.push(Examined {
-                    name: verb.runs(),
-                    path: family,
-                    roots: None,
-                    unreadable: Vec::new(),
-                });
-                continue;
-            }
-            Err(e) => {
-                report.skipped.push(Skipped {
-                    path: family.clone(),
-                    reason: format!("cannot read this family of run roots: {e}"),
-                });
-                continue;
-            }
-        };
-        let mut run_roots: Vec<PathBuf> = Vec::new();
-        let mut unreadable: Vec<String> = Vec::new();
-        for entry in entries {
-            match entry {
-                Ok(entry) => run_roots.push(entry.path()),
-                // llmlint: ignore[changed_behavior_has_e2e] uncovered for the reason
-                // given at the root's own listing above, and reported for the same
-                // one: a run root that fell out of the listing would otherwise be a
-                // workspace this report never mentions, which is indistinguishable
-                // from one that was reclaimed.
-                Err(e) => unreadable.push(e.to_string()),
-            }
+        family(&mut report, verb, min_age)?;
+    }
+    Ok(report)
+}
+
+/// Enforce the retention rule over one verb's family, as that verb cuts a run root.
+///
+/// The same judgement `onevcs sweep` makes, under the same floor a caller who says
+/// nothing gets — one family rather than all of them, because a landing is
+/// housekeeping for the directory it is about to add to and not an audit of the
+/// state root. This is what makes the rule a rule: a family reaped only when
+/// somebody remembers to ask is the family that filled the disk.
+///
+/// The report is built and dropped. A landing's output is about the landing, and
+/// `onevcs sweep` is where an operator asks what was kept and why — so what a
+/// caller gets here is whether the pass ran at all.
+pub fn enforce(verb: Verb) -> Result<()> {
+    let min_age = hours(DEFAULT_MIN_AGE_HOURS).map_err(error::invalid)?;
+    let root = home::workspaces_dir()?;
+    let mut report = Report {
+        root,
+        dry_run: false,
+        min_age,
+        examined: Vec::new(),
+        skipped: Vec::new(),
+        reclaimed: Vec::new(),
+        retained: Vec::new(),
+    };
+    family(&mut report, verb, min_age)
+}
+
+/// Judge every run root under one verb's family, and act on each verdict.
+fn family(report: &mut Report, verb: Verb, min_age: Duration) -> Result<()> {
+    let directory = report.root.join(verb.runs());
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            report.examined.push(Examined {
+                name: verb.runs(),
+                path: directory,
+                roots: None,
+                unreadable: Vec::new(),
+            });
+            return Ok(());
         }
-        run_roots.sort();
-        unreadable.sort();
-        report.examined.push(Examined {
-            name: verb.runs(),
-            path: family,
-            roots: Some(run_roots.len()),
-            unreadable,
-        });
-        for run_root in run_roots {
-            match judge(&run_root, min_age)? {
-                Verdict::Retain(why) => report.retained.push(Retained {
-                    path: run_root,
-                    why,
-                }),
-                Verdict::Reclaim(lease) => reclaim(&mut report, run_root, lease)?,
+        Err(e) => {
+            report.skipped.push(Skipped {
+                path: directory,
+                reason: format!("cannot read this family of run roots: {e}"),
+            });
+            return Ok(());
+        }
+    };
+    let mut run_roots: Vec<PathBuf> = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => run_roots.push(entry.path()),
+            // llmlint: ignore[changed_behavior_has_e2e] uncovered for the reason
+            // given at the root's own listing above, and reported for the same
+            // one: a run root that fell out of the listing would otherwise be a
+            // workspace this report never mentions, which is indistinguishable
+            // from one that was reclaimed.
+            Err(e) => unreadable.push(e.to_string()),
+        }
+    }
+    run_roots.sort();
+    unreadable.sort();
+    report.examined.push(Examined {
+        name: verb.runs(),
+        path: directory,
+        roots: Some(run_roots.len()),
+        unreadable,
+    });
+    // A run root holding work no origin has is bounded rather than decided on its
+    // own, so those are collected here and answered once the whole family has been
+    // judged: which of them to keep is a question about the *set*.
+    let mut holding: Vec<Holding> = Vec::new();
+    for run_root in run_roots {
+        match judge(&run_root, min_age)? {
+            Verdict::Retain(why) => report.retained.push(Retained {
+                path: run_root,
+                why,
+            }),
+            Verdict::Reclaim(lease) => reclaim(report, run_root, lease)?,
+            Verdict::Holds(mut holds) => {
+                holds.path = run_root;
+                holding.push(holds);
             }
         }
     }
-    Ok(report)
+    // Newest first, by when anything under the run root was last written — which is
+    // the clock the age floor already read, so the two cannot come to disagree about
+    // which workspace is the recent one. The bound keeps the front of that order:
+    // the failure an operator is asking about is the one that just happened.
+    holding.sort_by_key(|holds| std::cmp::Reverse(holds.written));
+    for (older, holds) in holding.into_iter().enumerate() {
+        let Holding {
+            path,
+            branches,
+            lease,
+            ..
+        } = holds;
+        if older < RETAINED_UNPUBLISHED {
+            report.retained.push(Retained {
+                path,
+                why: Kept::HoldsUnpublishedWork { branches },
+            });
+        } else {
+            reclaim(report, path, lease)?;
+        }
+    }
+    Ok(())
 }
 
 /// What a run root would have to carry to be one `branch::prepare` cut, and does
@@ -341,8 +426,24 @@ enum Verdict {
     /// Provably dead, with the exclusive take that proved nobody is inside it still
     /// held: dropping it before the removal would reopen the window this closes.
     Reclaim(lock::Guard),
+    /// Provably dead, and holding a commit that never reached the origin. Whether it
+    /// is removed is a question about the whole family, which [`family`] answers.
+    Holds(Holding),
     /// Kept, and why.
     Retain(Kept),
+}
+
+/// A dead run root whose clone still holds work no origin has.
+struct Holding {
+    /// Where it is. Filled in by the caller, which is what holds the run roots.
+    path: PathBuf,
+    /// The branches of its clone carrying commits no `origin` ref has.
+    branches: Vec<String>,
+    /// When anything under it was last written, which is what the bound orders on.
+    written: SystemTime,
+    /// The exclusive take that proved nobody is inside it, held for the same reason
+    /// [`Verdict::Reclaim`] holds one.
+    lease: lock::Guard,
 }
 
 /// Decide one run root, asking the cheapest question that can retain it first.
@@ -350,9 +451,11 @@ enum Verdict {
 /// The order is the order the answers matter in. Ownership comes first because
 /// nothing else this says about a directory means anything until it is one this
 /// crate cut; occupancy comes next because it is the answer that must never be got
-/// wrong; the gate verdict and the age floor are the two proofs of deadness; and
-/// whether removing it is this host's to do comes last, because it is the only one
-/// of the five that is about the host rather than about the workspace.
+/// wrong; the gate verdict and the age floor are the two proofs of deadness;
+/// whether removing it is this host's to do comes next, because it is the only one
+/// about the host rather than about the workspace; and what the clone still holds
+/// comes last, because it is the only question that runs a `git` of its own and
+/// every answer above it has already kept the workspace without needing one.
 fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     if !run_root.is_dir() {
         return Ok(Verdict::Retain(Kept::OwnerUnproven(
@@ -371,8 +474,9 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     if !gate::has_recorded_verdict(run_root) {
         return Ok(Verdict::Retain(Kept::NoVerdict));
     }
+    let written = last_written(run_root);
     let age = SystemTime::now()
-        .duration_since(last_written(run_root))
+        .duration_since(written)
         .unwrap_or(Duration::ZERO);
     if age < min_age {
         return Ok(Verdict::Retain(Kept::Fresh {
@@ -380,28 +484,103 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
             floor: min_age,
         }));
     }
-    // Last, because it is the only question whose answer is about this *host* rather
-    // than about the workspace: everything above has already decided the directory is
+    // Because it is the only question whose answer is about this *host* rather than
+    // about the workspace: everything above has already decided the directory is
     // dead, and this asks whether emptying it can be shown to be ours to do.
     if !shows_it_may_empty(run_root) {
         return Ok(Verdict::Retain(Kept::Unproven));
     }
-    Ok(Verdict::Reclaim(lease))
+    // What the clone still holds. Bounded rather than kept forever, and bounded by
+    // the caller — this workspace's place in that bound is a fact about the family.
+    match unpublished_work(&run_root.join("clone")) {
+        Ok(branches) if branches.is_empty() => Ok(Verdict::Reclaim(lease)),
+        Ok(branches) => Ok(Verdict::Holds(Holding {
+            path: run_root.to_path_buf(),
+            branches,
+            written,
+            lease,
+        })),
+        // llmlint: ignore[changed_behavior_has_e2e] uncovered: a clone the ownership
+        // proof above has already read as a repository, that `git` then declines to
+        // answer about. No interface this crate exposes leaves one, and it retains —
+        // the answer every other unknown in this module resolves to, and the only safe
+        // one here, because what could not be asked about may be the only copy of
+        // somebody's work.
+        Err(_) => Ok(Verdict::Retain(Kept::WorkUnknown)),
+    }
+}
+
+/// The branches of a run clone holding work that never reached the origin.
+///
+/// The same two questions `vcs::collect` answers a `recoverable` row with, and
+/// deliberately the same two: a branch carries commits no `origin` ref has, *and*
+/// the base does not already carry what it changed. Either alone is the wrong
+/// answer here. Ancestry cannot say a landing finished — publication squashes, so
+/// the branch a landing pushed is an ancestor of nothing afterwards and every
+/// finished workspace would look like unpublished work — and content alone would
+/// call a branch spent whose commits happen to change nothing.
+///
+/// So a workspace this keeps is one whose clone holds work an operator could still
+/// want, and the report that offers such work for recovery cannot come to disagree
+/// with the rule that keeps its workspace.
+fn unpublished_work(clone: &Path) -> Result<Vec<String>> {
+    let base = git::default_branch(clone, "origin")?;
+    let compared = crate::vcs::base_ref(clone, &base);
+    let mut holding = Vec::new();
+    for branch in git::unpublished_branches(clone)? {
+        if git::trees_differ(clone, &compared, &branch)? {
+            holding.push(branch);
+        }
+    }
+    Ok(holding)
 }
 
 /// Remove one proven-dead run root, or record why the removal did not happen.
 ///
 /// The lease is held across the removal rather than dropped before it, so nothing
 /// can take the run root up between the proof and the act.
+///
+/// **The processes it left running are stopped first, and that is part of removing
+/// it.** A gate starts daemons and they outlive the publication that started them —
+/// two of them outlived theirs by 33 and 16 minutes on the host this verb was
+/// written for, pinning roughly 14G. Unlinking a file a process still holds open
+/// frees none of its blocks, so a removal that left them running would report a
+/// figure the disk never gets back. One that cannot stop them all removes nothing:
+/// the workspace is kept and reported, because a half-emptied tree a daemon is still
+/// writing into is worse than the tree that was there.
 fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
+    // Measured before anything is stopped: what a daemon holds open is part of what
+    // this workspace is costing, and it is the reason stopping it is what reclaims.
     let bytes = size_of(&run_root);
+    let holding = processes::holding(&run_root);
     if report.dry_run {
         report.reclaimed.push(Reclaimed {
             path: run_root,
             bytes,
+            stopped: holding.iter().map(|holder| holder.pid).collect(),
         });
         return Ok(());
     }
+    let left = processes::stop(&holding, &run_root);
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
+    // still working inside the run root after it has been asked to stop and then
+    // killed. What survives `SIGKILL` is a process this user may not signal at all —
+    // another manager's, under another uid — and no journey can make one without a
+    // second account to run it as. The daemon journeys drive both signals; this is
+    // what the workspace does when neither reached. It is *reported* rather than
+    // removed for the reason the module's own note gives: unlinking a file a live
+    // process holds open frees nothing, so the report would name a figure the disk
+    // never gets back.
+    if !left.is_empty() {
+        report.retained.push(Retained {
+            path: run_root,
+            why: Kept::StillRunning {
+                pids: left.iter().map(|holder| holder.pid).collect(),
+            },
+        });
+        return Ok(());
+    }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     // An `Err` rather than a line in the report: the report says what this sweep
     // *decided*, and a removal it had proved it could make and then could not is the
     // sweep failing to run.
@@ -417,6 +596,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,
+        stopped: holding.iter().map(|holder| holder.pid).collect(),
     });
     drop(lease);
     Ok(())
@@ -507,6 +687,9 @@ struct Skipped {
 struct Reclaimed {
     path: PathBuf,
     bytes: u64,
+    /// Every process that was working inside it, which removing it stopped — or,
+    /// under a rehearsal, would have stopped.
+    stopped: Vec<u32>,
 }
 
 struct Retained {
@@ -526,6 +709,11 @@ const NO_VERDICT: &str =
 /// Why a run root nothing here could show this host may empty was kept.
 const UNPROVEN: &str = "something it holds, or the directory it sits in, did not answer that this user may write into it — so removing it belongs to whoever can, and nothing under it was touched";
 
+/// Why a dead run root nothing could ask about its own work was kept.
+const WORK_UNKNOWN: &str =
+    "nothing here could ask its clone which of its branches the origin already has, and a \
+     workspace that may hold the only copy of somebody's work is kept";
+
 /// Why one run root was kept.
 ///
 /// A type rather than a sentence, because two of these are not the same kind of
@@ -544,6 +732,14 @@ enum Kept {
     Fresh { age: Duration, floor: Duration },
     /// It is dead, and nothing here could show this host may empty it.
     Unproven,
+    /// It is dead, and nothing here could ask its clone what work it holds.
+    WorkUnknown,
+    /// Its clone holds commits no origin has, and it is one of the newest such
+    /// workspaces this family keeps.
+    HoldsUnpublishedWork { branches: Vec<String> },
+    /// It is dead, and something it left running would not stop — so removing it
+    /// would have freed none of what that process holds open.
+    StillRunning { pids: Vec<u32> },
 }
 
 impl Kept {
@@ -559,8 +755,38 @@ impl Kept {
                 describe_duration(*floor),
             ),
             Kept::Unproven => format!("this host cannot show it may remove it: {UNPROVEN}"),
+            Kept::WorkUnknown => WORK_UNKNOWN.to_owned(),
+            Kept::HoldsUnpublishedWork { branches } => format!(
+                "its clone holds work no origin has on {branches}, and it is one of the \
+                 {RETAINED_UNPUBLISHED} most recently written workspaces of this family that do",
+                branches = describe_branches(branches),
+            ),
+            Kept::StillRunning { pids } => format!(
+                "{processes} it left running would not stop, and unlinking files a process holds \
+                 open frees none of them — so nothing under it was removed",
+                processes = describe_processes(pids),
+            ),
         }
     }
+}
+
+/// Branch names as the report lists them.
+fn describe_branches(branches: &[String]) -> String {
+    branches
+        .iter()
+        .map(|branch| format!("{branch:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Processes as the report names them: how many, and which.
+fn describe_processes(pids: &[u32]) -> String {
+    let listed = pids
+        .iter()
+        .map(|pid| format!("pid {pid}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{} process(es) ({listed})", pids.len())
 }
 
 /// What one sweep examined, reclaimed, and retained.
@@ -638,9 +864,23 @@ impl fmt::Display for Report {
             writeln!(f, "  none")?;
         }
         for reclaimed in &self.reclaimed {
+            // What was stopped is said on the same line as what was freed, because it
+            // is the same fact: the blocks a running process holds open are not
+            // returned by unlinking the files, so a figure beside a daemon nobody
+            // stopped would be a number the disk never gets back.
+            let stopped = match (reclaimed.stopped.is_empty(), self.dry_run) {
+                (true, _) => String::new(),
+                (false, true) => format!(
+                    ", and would stop {}",
+                    describe_processes(&reclaimed.stopped)
+                ),
+                (false, false) => {
+                    format!(", and stopped {}", describe_processes(&reclaimed.stopped))
+                }
+            };
             writeln!(
                 f,
-                "  {} — {}",
+                "  {} — {}{stopped}",
                 reclaimed.path.display(),
                 describe_bytes(reclaimed.bytes)
             )?;

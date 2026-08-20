@@ -356,13 +356,22 @@ script written beside them that answered to what they asked.
   without its log rather than failing, because the log is evidence and `conclusion`
   is what decided the merge.
 
-## The disk is a resource, and `sweep` is the only verb that frees it
+## The disk is a resource, and one retention rule frees it
 
-Every branch-keyed landing cuts a run root, and `sweep` is the only thing that
-removes one. Three rules govern how it decides.
+Every branch-keyed landing cuts a run root, and `sweep.rs` holds the only rule that
+removes one. It is asked two ways and they are the same judgement: deliberately, as
+`onevcs sweep` over every family, and by `sweep::enforce` from `branch::prepare`, as
+a landing cuts the next run root under its own family. The second is what makes it a
+*rule* rather than a chore — nothing else runs between two landings on a host that
+publishes all day, and a family reaped only when somebody remembers is the family
+that filled the disk. A pass that could not run is a warning on stderr and never a
+refused landing: what it reclaims is the *previous* runs' leftovers, and losing a
+publication to those is the failure the rule exists to prevent.
+
+Five rules govern how it decides.
 
 - **Proof, never inference.** A workspace is removed only where this crate can show
-  it is finished. Every other answer retains, reports why, and terminates nothing.
+  it is finished. Every other answer retains and reports why.
 - **A question that could not be finished is not an answer.** Whether emptying a
   workspace is this host's to do is asked by writing into every directory the removal
   would have to empty; a probe that could not be undone proves nothing and retains,
@@ -370,7 +379,28 @@ removes one. Three rules govern how it decides.
   clock on the next run.
 - **A landing holds its own run root's lease**, and it is the lease `recoverable`
   reads, through the same function, so the two cannot come to disagree about who is
-  inside a workspace.
+  inside a workspace. Nothing a lease is held on is removed, and nothing inside it is
+  signalled.
+- **The evidence outlives the failure by the age floor**, which is 24 hours where
+  nobody says otherwise. Preserved gate logs live under the run root — which outlives
+  the worktree the gate ran in — so reclamation is the only thing that takes them,
+  and a run root written inside the floor is kept whichever way the rule is asked. A
+  clone still holding work no origin has is kept past the floor as well, bounded to
+  `sweep::RETAINED_UNPUBLISHED` (the newest three) the way `workspace::reclaim` bounds
+  the lifecycle clones. What "no origin has" means is `vcs::collect`'s own two
+  questions — commits no `origin` ref carries, *and* content the base does not
+  already carry — because publication squashes, so ancestry alone would call every
+  finished workspace unpublished work and content alone would call a branch spent
+  whose commits change nothing.
+- **Reclaiming a workspace stops what it left running** (`processes.rs`). A gate is
+  the repository's own verification and verifications start daemons; two Nx daemons
+  outlived their publications by 33 and 16 minutes on the host this was written for,
+  pinning roughly 14G — and unlinking files a live process holds open frees none of
+  their blocks. A process is named by its *working directory* being inside the run
+  root, never by a name or a command line; it is asked with `SIGTERM` and ended with
+  `SIGKILL`; and this process, its ancestors, and any pid at or below `1` are never
+  signalled. A workspace whose holders would not stop is kept and reported rather
+  than half-emptied.
 
 The flag surface is shared with `oneagentgraph sweep`, spelling for spelling and
 default for default; neither side may amend it alone.
