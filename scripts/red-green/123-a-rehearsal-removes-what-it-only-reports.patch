@@ -2,20 +2,20 @@ Mutation: --dry-run stops being a rehearsal: the run that was asked to report wh
 Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index e904725..4a9ab68 100644
+index c828fad..d964ef1 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -214,13 +214,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+@@ -370,13 +370,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
  /// can take the run root up between the proof and the act.
- fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
      let bytes = size_of(&run_root);
 -    if report.dry_run {
 -        report.reclaimed.push(Reclaimed {
 -            path: run_root,
 -            bytes,
 -        });
--        return;
+-        return Ok(());
 -    }
-     match std::fs::remove_dir_all(&run_root) {
-         Ok(()) => report.reclaimed.push(Reclaimed {
-             path: run_root,
+     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a removal that fails
+     // after `can_remove` asked every directory it would touch. Nothing this crate
+     // exposes can produce one — the two shapes an operator meets, a family this user

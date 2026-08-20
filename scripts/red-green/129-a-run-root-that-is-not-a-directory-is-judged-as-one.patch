@@ -2,18 +2,18 @@ Mutation: the sweep stops asking whether what it found is a directory at all, so
 Red: what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 4c48e38..e897c10 100644
+index c828fad..4c2d79b 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -205,11 +205,6 @@ enum Verdict {
- /// crate cut; occupancy comes next because it is the answer that must never be got
- /// wrong; the gate verdict and the age floor are the two proofs of deadness.
+@@ -329,11 +329,6 @@ enum Verdict {
+ /// whether removing it is this host's to do comes last, because it is the only one
+ /// of the five that is about the host rather than about the workspace.
  fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
 -    if !run_root.is_dir() {
 -        return Ok(Verdict::Retain(Kept::OwnerUnproven(
 -            "it is not a directory, and every run root is one",
 -        )));
 -    }
-     // The one thing `branch::prepare` always leaves: a run clone. A directory under
-     // this family carrying none is somebody else's, or one somebody has already
-     // taken apart by hand, and either way this verb cannot show it made it.
+     if let Some(missing) = not_this_crates(run_root) {
+         return Ok(Verdict::Retain(Kept::OwnerUnproven(missing)));
+     }

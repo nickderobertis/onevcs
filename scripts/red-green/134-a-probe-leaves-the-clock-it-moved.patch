@@ -1,0 +1,16 @@
+Mutation: the writability probe stops putting a directory's timestamps back, so every workspace it asks about looks freshly written and the age floor keeps it for another day.
+Red: the_age_floor_bounds_what_a_sweep_considers
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index c828fad..5f499d0 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -283,7 +283,7 @@ fn can_write_into(directory: &Path) -> bool {
+         return false;
+     }
+     let _ = std::fs::remove_dir(&probe);
+-    restore_times(directory, &before);
++    let _ = &before;
+     true
+ }
+ 

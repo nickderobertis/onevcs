@@ -1,0 +1,30 @@
+Mutation: the sweep stops asking whether removing a workspace is this host's to do and finds out by trying, which destroys everything above the first thing it cannot unlink.
+Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index c828fad..325ba63 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -358,9 +358,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+     // Last, because it is the only question whose answer is about this *host* rather
+     // than about the workspace: everything above has already decided the directory is
+     // dead, and this decides whether reaping it is ours to do.
+-    if !can_remove(run_root) {
+-        return Ok(Verdict::Retain(Kept::NotOurs));
+-    }
+     Ok(Verdict::Reclaim(lease))
+ }
+ 
+@@ -387,10 +384,8 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+     // this verb answers `0` everywhere else: the report says what this sweep
+     // *decided*, and a removal it had proved it could make and then could not is the
+     // sweep failing to run, which is what a non-zero code means here.
+-    if let Err(e) = std::fs::remove_dir_all(&run_root) {
+-        return Err(error::at("remove the reclaimable workspace at", &run_root)(
+-            e,
+-        ));
++    if std::fs::remove_dir_all(&run_root).is_err() {
++        return Ok(());
+     }
+     // llmlint: ignore-end[changed_behavior_has_e2e]
+     report.reclaimed.push(Reclaimed {
