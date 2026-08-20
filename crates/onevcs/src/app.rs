@@ -631,19 +631,11 @@ fn sync(args: &SyncArgs) -> Result<u8> {
 
 /// Reap the publication workspaces this host has finished with.
 ///
-/// **Every outcome this verb reports is a decision it made**, and that is what lets
-/// the exit code be what it is. A workspace is removed only once five questions have
-/// been answered about it, the last of them being whether removing it is this host's
-/// to do at all — so another manager's directory on a shared state root is retained
-/// deliberately and named in the report, rather than attempted and reported as a
-/// failure. Nothing under such a directory is touched.
-///
-/// So `0` means the sweep ran and did what it decided to do, and non-zero means it
-/// could not run: an unusable `--min-age-hours`, or a state root it cannot read.
-/// That is the contract `ai-orchestrator`'s composed `just sweep-scratch` reads, and
-/// it is the one a state root several managers share requires — a directory somebody
-/// else owns is an expected outcome of every run, and a status code that fell over
-/// on one would say nothing a caller could act on.
+/// `0` means the sweep ran and did what it decided to do; non-zero means it could
+/// not run — an unusable `--min-age-hours`, or a state root it cannot read. Every
+/// outcome it reports is a decision, so a directory somebody else owns is an expected
+/// outcome of a shared state root rather than a failure, and a status code that fell
+/// over on one would say nothing a composing caller could act on.
 fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
     println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
     Ok(0)

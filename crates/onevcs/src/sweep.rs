@@ -31,20 +31,16 @@ use crate::{gate, git, home, ids, lock, workspace};
 
 /// The age floor a caller that says nothing gets, in hours.
 ///
-/// Spelled as the text clap parses rather than as a number, because it is the
-/// argument's own default and `oneagentgraph sweep` spells the same option the
-/// same way — one composing caller forwards its arguments to both unchanged, so
-/// the two defaults have to be the one value.
+/// The text clap parses rather than a number, because `oneagentgraph sweep` spells
+/// the same option the same way and one composing caller forwards its arguments to
+/// both unchanged: the two defaults have to be the one value.
 // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the half of that surface
-// this repository can reach *is* gated: this constant is the single source inside the
-// crate — `cli.rs` takes the parser's default from it rather than restating a number —
-// and `the_sweep_age_floor_defaults_to_the_number_the_record_states` in
-// `tests/contract.rs` holds it to `docs/inferred-surface.md`, so it cannot move in the
-// parser or in the record alone. The other half is a value in a repository this one
-// does not depend on and cannot build; a check here would either vendor a copy of it,
-// which is the second source the rule exists to prevent, or reach the network from an
-// offline gate. It is reconciled by the caller that composes the two verbs, which is
-// exactly why neither side may amend the surface unilaterally.
+// this repository can reach *is* gated — `cli.rs` takes the parser's default from this
+// constant, and `the_sweep_age_floor_defaults_to_the_number_the_record_states` in
+// `tests/contract.rs` holds it to `docs/inferred-surface.md`. The other half is a value
+// in a repository this one cannot build, so a check here would either vendor a copy of
+// it — the second source the rule exists to prevent — or reach the network from an
+// offline gate. The caller that composes the two verbs reconciles it.
 pub const DEFAULT_MIN_AGE_HOURS: &str = "24";
 
 /// Read `--min-age-hours` as the window it names.

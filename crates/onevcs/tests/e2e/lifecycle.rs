@@ -1384,22 +1384,17 @@ fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
 
 #[test]
 fn a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land() {
-    // The state that cost a three-day run: the report listed the branch as complete
-    // with a paste-ready `publish-branch` beside it while a live node was still
-    // committing to that very branch, and four more commits followed. Running the
-    // offered command would have published a branch mid-flight.
+    // The state that cost a three-day run: a paste-ready `publish-branch` offered for
+    // a branch a live node was still committing to.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
-    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock on a
-    // run root, and holding it is the only thing that makes the lease answer "taken": no
-    // verb holds one across time — each takes it, works, and releases it before the
-    // process that opened the session exits — so there is no command to run that leaves a
-    // run root occupied for the length of a journey. The lock is found the only way
-    // anything can find it, by what appeared when the session was opened (it is named
-    // after a digest of the run root), it is held in the *shared* mode a session holds it
-    // in, and the real CLI then meets it. `a_pinned_branch_whose_session_is_occupied…`
-    // above reaches occupancy the same way; the other half of this question — an owner
-    // process that is simply still running — is `library.rs`, where a journey can hold a
-    // session across time.
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb holds an occupancy lease
+    // across time — each takes it, works, and releases it before the process that opened
+    // the session exits — so there is no command to run that leaves a run root occupied
+    // for the length of a journey. The lock is found the only way anything can find it,
+    // by what appeared when the session was opened, it is held in the *shared* mode a
+    // session holds it in, and the real CLI then meets it. The other half of this
+    // question — an owner process that is simply still running — is `library.rs`, where
+    // a journey can hold a session across time.
     let before = fixture.world.locks();
     let (token, worktree) = fixture.open(&["--branch", "feature/still-being-written"]);
     let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();

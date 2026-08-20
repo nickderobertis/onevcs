@@ -195,12 +195,9 @@ pub fn prepare(
         ids::unique()
     ));
     home::ensure_dir(&run_root)?;
-    // Taken the moment the directory exists, before anything is cloned into it: the
-    // whole of what it says is "a publication is being made in here", and a sweep
-    // running beside a landing that had not taken it yet would read a directory
-    // being filled as one nobody wants. The name carries `ids::unique()`, so nothing
-    // else can be inside it — a lease that cannot be taken is a state root this
-    // process cannot work in, and is refused as one.
+    // Taken the moment the directory exists, before anything is cloned into it: a
+    // sweep running beside a landing that had not taken it yet reads a directory
+    // being filled as one nobody wants.
     let lease = lock::try_shared(&workspace::occupancy_identity(&run_root))?.ok_or_else(|| {
         Error::Invalid {
             reason: format!(
