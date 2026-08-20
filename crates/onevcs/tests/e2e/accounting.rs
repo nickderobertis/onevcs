@@ -462,6 +462,11 @@ fn work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it() {
     fixture.open(&["--branch", "feature/empty"]);
     let answer = report(&fixture.world, "feature/empty");
     assert_eq!(answer["publication"]["state"], "nothing-to-publish");
+    // The landing answer beside it is the honest one for a branch that *is* its
+    // base: nothing records that it reached it, and there is nothing of its own for
+    // the base to be carrying — which is not the same as "it did not land".
+    assert_eq!(answer["publication"]["landed"]["state"], "unknown");
+    assert!(answer["publication"]["landed"].get("evidence").is_none());
     assert!(answer["next"]["command"].is_null());
     fixture
         .world

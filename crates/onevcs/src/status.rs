@@ -258,6 +258,12 @@ pub enum BranchProvenance {
 /// deserialize at all, rather than becoming a report a reader has to remember to
 /// question. The number that says which shape a report is exists to be *acted on*,
 /// and so does this.
+// llmlint: ignore[invalid_states_unrepresentable] the two cannot be one field: `state` is
+// the word this report has always carried and `landed` is the three-answer version of it,
+// and a consumer branching on either is why both are written. The report is a *document*
+// before it is a type — nothing in this build constructs one but `run`, which derives the
+// word from the answer in one place — so the boundary that can be held is the one where a
+// report is read, and it refuses a document whose two halves disagree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "AnyPublication")]
 pub struct PublicationReport {

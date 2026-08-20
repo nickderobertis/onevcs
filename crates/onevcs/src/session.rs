@@ -193,6 +193,13 @@ pub enum Scope {
 /// carrying the argv that publishes it again does not deserialize at all. The row is
 /// read to be pasted, and the whole reason the answer is on it is that pasting one
 /// for finished work re-opens a change request for what the base has.
+// llmlint: ignore[invalid_states_unrepresentable] the two cannot be *one* field: this
+// row's field list is the recorded public surface in docs/inferred-surface.md, which a
+// consumer parses `--json` into, and folding the answer and the argv into one value would
+// change the document every consumer already reads. What is available is what this crate
+// does everywhere a rule spans two values it must keep: the one place that builds a row
+// derives both from the same verdict, and the boundary where a row is *read* refuses a
+// document whose two halves disagree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "AnyRecoverable")]
 pub struct Recoverable {
