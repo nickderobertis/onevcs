@@ -3,10 +3,10 @@ Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: reclaiming_a_workspace_stops_the_process_the_publication_left_running
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 4a2e893..b742424 100644
+index a8040c2..5e015f0 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -548,14 +548,6 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+@@ -558,14 +558,6 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
      // Measured before anything is stopped, so what a daemon holds open is counted.
      let bytes = size_of(&run_root);
      let holding = processes::holding(&run_root);
@@ -20,4 +20,4 @@ index 4a2e893..b742424 100644
 -    }
      // Before a single file is unlinked, because unlinking one a process holds open
      // frees nothing: what comes back from this is what would not go.
-     let left = processes::stop(&holding, &run_root);
+     let processes::Stopped { stopped, left } = processes::stop(&holding, &run_root);
