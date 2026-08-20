@@ -21,9 +21,10 @@
 //! family it does not reach into rather than reaping it.
 
 use std::fmt;
-use std::fs::{File, FileTimes};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+
+use filetime::FileTime;
 
 use crate::branch::Verb;
 use crate::error::{self, Result};
@@ -282,64 +283,39 @@ fn hands_unlinks_to_owners(_directory: &Path) -> bool {
 ///
 /// By doing it, because the permission bits do not answer on their own: what decides
 /// is the effective user, its groups, and whatever the filesystem enforces over both
-/// — which is the question the removal itself asks.
-///
-/// A probe that stopped part way answers `false`: it has shown nothing about the
-/// directory, and what it did before stopping may have left a mark on one. Creating
-/// an entry moves the modified time and this verb's own age floor reads that on the
-/// next run, so a probe that left it moved would retain, for a day, every workspace
-/// it had just decided was too old to keep.
+/// — which is the question the removal itself asks. A probe that stopped part way
+/// answers `false`, having shown nothing about the directory.
 fn can_write_into(directory: &Path) -> bool {
     probe(directory).is_ok()
 }
 
-/// Hold the directory open, add an entry to it, take that away again, and put the
-/// clock back — every step part of the answer rather than an attempt beside it.
+/// Add an entry to the directory, take that away again, and put its clock back.
 ///
-/// The handle comes first, before anything is written, so nothing is ever created in
-/// a directory whose timestamps this could not then restore. That ordering is what
-/// `a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking` drives: a
-/// directory this cannot open is one it never writes into.
+/// The clock is put back to what it already says *before* anything moves it, because
+/// a directory whose timestamps this cannot set is one it must not write into at all:
+/// creating an entry moves the modified time, and this verb's own age floor reads
+/// that on the next run — a probe that left it moved would retain, for a day, every
+/// workspace it had just decided was too old to keep. That is what
+/// `a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking` drives, over
+/// the shape it is real for: a directory this user may write into and may not open.
+///
+/// Undoing the ask is the rest of the answer rather than a tidy-up beside it — an
+/// entry left behind and a clock left moved are the same outcome, a directory this
+/// could not leave as it found it and therefore says nothing about. Both retain, like
+/// every other unknown here, and neither is reachable from any interface this crate
+/// exposes: unlinking an entry takes the permission that just created one, and the
+/// clock has already been set once by the time there is anything to put back.
 fn probe(directory: &Path) -> std::io::Result<()> {
-    let handle = open_dir(directory)?;
-    let before = handle.metadata()?;
+    let before = std::fs::metadata(directory)?;
+    let (accessed, modified) = (
+        FileTime::from_last_access_time(&before),
+        FileTime::from_last_modification_time(&before),
+    );
+    filetime::set_file_times(directory, accessed, modified)?;
     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
     std::fs::create_dir(&entry)?;
-    // Undoing the ask is the rest of the answer, not a tidy-up beside it: an entry
-    // left behind and a clock left moved are the same outcome — a directory this
-    // could not leave as it found it, and therefore one it says nothing about. Both
-    // retain, like every other unknown here, and neither is reachable from any
-    // interface this crate exposes: unlinking an entry from a directory takes the
-    // permission that just created one, and the restoration uses the handle already
-    // open above rather than an open that could still be refused.
     std::fs::remove_dir(&entry)?;
-    handle.set_times(
-        FileTimes::new()
-            .set_accessed(before.accessed()?)
-            .set_modified(before.modified()?),
-    )
-}
-
-/// The flag an open of a directory takes, which each platform spells for itself:
-/// `O_DIRECTORY` refuses to open anything that is not one, and `CreateFileW` hands a
-/// directory back only to a caller that asks for the backup semantics one takes —
-/// `FILE_FLAG_BACKUP_SEMANTICS`, which the `windows-sys` features this crate takes do
-/// not carry.
-#[cfg(unix)]
-const OPEN_DIRECTORY: i32 = libc::O_DIRECTORY;
-#[cfg(windows)]
-const OPEN_DIRECTORY: u32 = 0x0200_0000;
-
-/// A directory, open as the handle whose timestamps can be set.
-fn open_dir(directory: &Path) -> std::io::Result<File> {
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-    #[cfg(windows)]
-    use std::os::windows::fs::OpenOptionsExt;
-    File::options()
-        .read(true)
-        .custom_flags(OPEN_DIRECTORY)
-        .open(directory)
+    filetime::set_file_times(directory, accessed, modified)
 }
 
 /// Why a directory under the workspaces root is none of this verb's business.

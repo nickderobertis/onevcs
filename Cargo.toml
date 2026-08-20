@@ -41,6 +41,11 @@ url = { version = "2", features = ["serde"] }
 # is the only one of those that survives a holder being killed. Cross-platform so
 # the coordination is not a Unix-only feature of the same binary.
 fs4 = { version = "0.13", default-features = false, features = ["sync"] }
+# Setting a directory's timestamps, which `std` can only do through a handle it has
+# no portable way to open one with — Windows hands a directory back on no terms but
+# the backup semantics, and a `#[cfg]` for that would be a second implementation of
+# the sweep's probe on the one platform its journeys cannot run.
+filetime = "0.2"
 # A lock file is named by a digest of the identity it guards, because that identity
 # is a filesystem path and a path is not a filename.
 sha2 = "0.10"

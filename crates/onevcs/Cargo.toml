@@ -30,6 +30,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+filetime = { workspace = true }
 fs4 = { workspace = true }
 icu_properties = { workspace = true }
 serde = { workspace = true }
