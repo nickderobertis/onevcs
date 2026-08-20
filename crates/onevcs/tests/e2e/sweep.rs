@@ -708,6 +708,300 @@ fn a_workspace_holding_a_directory_that_hands_unlinks_to_owners_is_retained() {
     );
 }
 
+/// The newest thing anywhere under a path, which is what the age floor reads.
+fn newest_write(path: &Path) -> SystemTime {
+    let meta = std::fs::symlink_metadata(path)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+    let mut newest = meta.modified().expect("a modified time");
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)
+            .unwrap_or_else(|e| panic!("{} is listable: {e}", path.display()))
+        {
+            let entry = entry.unwrap_or_else(|e| panic!("{} lists: {e}", path.display()));
+            newest = newest.max(newest_write(&entry.path()));
+        }
+    }
+    newest
+}
+
+/// A run root outside the world's scratch root, taken away when the journey ends
+/// however it ends.
+struct Reaped(PathBuf);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into() {
+    // The one directory a journey can count on being writable and *not this user's*:
+    // the shared temporary root every Unix has at mode 1777 owned by root. It is the
+    // shape of a volume another manager owns — this user may add an entry to it and
+    // may not set its timestamps — which is the shape a sweep meets when an operator
+    // puts a family somewhere with room for it.
+    let shared = Path::new("/var/tmp");
+    let held = std::fs::metadata(shared).expect("the shared temporary root");
+    assert!(
+        held.permissions().mode() & 0o002 != 0,
+        "the premise: {} is writable by this user",
+        shared.display()
+    );
+    let unchanged = FileTimes::new().set_modified(held.modified().expect("its clock"));
+    assert!(
+        File::open(shared)
+            .expect("the shared temporary root opens")
+            .set_times(unchanged)
+            .is_err(),
+        "the premise: this user cannot set the times of {}, which it does not own. Run \
+         the suite as an ordinary user rather than as root",
+        shared.display()
+    );
+
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let family = publications(&fixture.world);
+    std::fs::create_dir_all(family.parent().expect("the workspaces root"))
+        .expect("the workspaces root");
+    std::os::unix::fs::symlink(shared, &family).expect("the family, put on that volume");
+
+    finished_branch(&fixture, "feature/no-clock");
+    publish_branch(&fixture, "feature/no-clock");
+    let found: Vec<PathBuf> = run_roots(&family)
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("feature-no-clock-"))
+        })
+        .collect();
+    let [run_root] = found.as_slice() else {
+        panic!("the publication cut exactly one run root under {found:?}");
+    };
+    let run_root = Reaped(run_root.clone());
+    let run_root = &run_root.0;
+    backdate(run_root, 72);
+    let work = newest_write(run_root);
+
+    // Finished, unheld, and three days old, so the last question is whether emptying
+    // it is this host's to do — and the directory it sits in is one whose clock this
+    // host cannot put back.
+    let (report, diagnosis) = swept_with_diagnosis(&fixture, &[]);
+    assert!(
+        run_root.is_dir() && run_root.join("clone").is_dir() && run_root.join("worktree").is_dir(),
+        "a directory this could not leave as it found it is no answer, so nothing was \
+         removed:\n{report}"
+    );
+    assert!(
+        retained_reason(&report, run_root).starts_with("this host cannot show it may remove it: "),
+        "and the workspace is kept for the question that could not be finished:\n{report}"
+    );
+    assert!(
+        probes_left_in(shared).is_empty(),
+        "nothing was written into a directory whose clock could not be put back:\n{report}"
+    );
+    assert_eq!(
+        newest_write(run_root),
+        work,
+        "and the workspace still reads as old as the work in it, which is what the age \
+         floor reads:\n{report}"
+    );
+    assert_eq!(
+        diagnosis, "",
+        "a directory this host cannot answer for is a decision, not a failure"
+    );
+
+    // Asked again, the answer is the same one — never one about the clock, which is
+    // what a workspace aged by having been asked about would report.
+    let again = swept(&fixture, &[]);
+    assert!(
+        retained_reason(&again, run_root).starts_with("this host cannot show it may remove it: "),
+        "asking again gives the same answer, not one about the clock:\n{again}"
+    );
+}
+
+/// One `onevcs sweep`, run with the kernel refusing to take a directory away again.
+///
+/// A filesystem that lets an entry be created and will not let it be unlinked is a
+/// real thing to meet — a directory somebody set append-only, an NFSv4 ACL without
+/// `DELETE_CHILD`, a policy that grants `add_name` and not `remove_name` — and an
+/// ordinary user can build none of them in a scratch directory. So the refusal is
+/// arranged where those refusals come from: a seccomp filter, installed between the
+/// fork and the exec, answers `EPERM` for exactly the syscalls that remove a
+/// directory. Everything else is the real thing — the compiled binary, this world's
+/// state root, a workspace a real publication cut — and the probe's own `mkdir`
+/// still succeeds, which is what makes the entry it cannot take away observable.
+#[cfg(target_os = "linux")]
+fn swept_with_directory_removal_refused(world: &World, extra: &[&str]) -> (String, String, i32) {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = world.onevcs_process();
+    command.arg("sweep").args(extra);
+    // SAFETY: the closure runs in the forked child before the exec, where only
+    // async-signal-safe calls are allowed. `prctl` is one, and it is all this does.
+    unsafe {
+        command.pre_exec(refuse_directory_removal);
+    }
+    let output = command.output().expect("the binary runs");
+    (
+        String::from_utf8(output.stdout).expect("the report is UTF-8"),
+        String::from_utf8(output.stderr).expect("the diagnosis is UTF-8"),
+        output
+            .status
+            .code()
+            .expect("the binary exits rather than being signalled"),
+    )
+}
+
+/// Answer `EPERM` for the removal of a directory, and pass everything else through.
+///
+/// Classic BPF over `struct seccomp_data`: the syscall number is its first word, and
+/// the flags `unlinkat` takes are the low half of its fourth argument, ten words in.
+/// `std` removes a directory with `rmdir` where the architecture has that syscall
+/// and with `unlinkat(…, AT_REMOVEDIR)` where it does not, so both are named.
+#[cfg(target_os = "linux")]
+fn refuse_directory_removal() -> std::io::Result<()> {
+    /// `SECCOMP_RET_ERRNO`, whose low bits are the errno the call answers with.
+    const ERRNO: u32 = 0x0005_0000;
+    /// `SECCOMP_RET_ALLOW`.
+    const ALLOW: u32 = 0x7fff_0000;
+    /// `SECCOMP_MODE_FILTER`.
+    const FILTER: libc::c_int = 2;
+    /// No architecture here has a syscall by this number, so where `rmdir` is not
+    /// one of them the test below it can never match.
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    const RMDIR: u32 = libc::SYS_rmdir as u32;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    const RMDIR: u32 = u32::MAX;
+
+    let deny = ERRNO | libc::EPERM as u32;
+    let program = [
+        // load the syscall number
+        libc::sock_filter {
+            code: 0x20,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        // rmdir — refuse it
+        libc::sock_filter {
+            code: 0x15,
+            jt: 3,
+            jf: 0,
+            k: RMDIR,
+        },
+        // anything but unlinkat — allow it
+        libc::sock_filter {
+            code: 0x15,
+            jt: 0,
+            jf: 3,
+            k: libc::SYS_unlinkat as u32,
+        },
+        // load unlinkat's flags
+        libc::sock_filter {
+            code: 0x20,
+            jt: 0,
+            jf: 0,
+            k: 40,
+        },
+        // AT_REMOVEDIR among them — refuse it, otherwise allow it
+        #[allow(clippy::cast_sign_loss)]
+        libc::sock_filter {
+            code: 0x45,
+            jt: 0,
+            jf: 1,
+            k: libc::AT_REMOVEDIR as u32,
+        },
+        libc::sock_filter {
+            code: 0x06,
+            jt: 0,
+            jf: 0,
+            k: deny,
+        },
+        libc::sock_filter {
+            code: 0x06,
+            jt: 0,
+            jf: 0,
+            k: ALLOW,
+        },
+    ];
+    let installed = libc::sock_fprog {
+        len: u16::try_from(program.len()).expect("seven instructions"),
+        filter: program.as_ptr().cast_mut(),
+    };
+    // SAFETY: both calls are `prctl` with the arguments its contract names, and the
+    // filter outlives them — the second call copies it into the kernel.
+    unsafe {
+        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::prctl(libc::PR_SET_SECCOMP, FILTER, std::ptr::addr_of!(installed)) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Every probe entry a sweep left in one directory.
+fn probes_left_in(directory: &Path) -> Vec<PathBuf> {
+    let mut left: Vec<PathBuf> = std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".sweep-probe-"))
+        })
+        .collect();
+    left.sort();
+    left
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/probe-stays");
+    publish_branch(&fixture, "feature/probe-stays");
+    let run_root = only_run_root(&publications(&fixture.world));
+    let family = publications(&fixture.world);
+    backdate(&run_root, 72);
+
+    // Everything about this workspace is finished and old, so the only question left
+    // is whether emptying it is this host's to do — and the probe that asks gets its
+    // entry created and cannot take it away again.
+    let (report, diagnosis, code) = swept_with_directory_removal_refused(&fixture.world, &[]);
+
+    let left = probes_left_in(&family);
+    assert_eq!(
+        left.len(),
+        1,
+        "the premise: the probe's entry was created and could not be removed, so it is \
+         still in {}:\n{report}",
+        family.display()
+    );
+    assert!(
+        run_root.is_dir() && run_root.join("clone").is_dir() && run_root.join("worktree").is_dir(),
+        "a question that could not be finished is no answer, so nothing was removed:\n{report}"
+    );
+    assert!(
+        retained_reason(&report, &run_root).starts_with("this host cannot show it may remove it: "),
+        "and the workspace is kept for the question that could not be finished:\n{report}"
+    );
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
+        "nothing is counted as reclaimed:\n{report}"
+    );
+    // Still a decision rather than a failure: the sweep ran, and what it could not
+    // show is a line in its report.
+    assert_eq!(code, 0, "the sweep ran:\n{report}{diagnosis}");
+    assert_eq!(diagnosis, "", "and had nothing to diagnose:\n{report}");
+
+    std::fs::remove_dir(&left[0]).expect("the entry the sweep could not take away");
+}
+
 #[test]
 fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));

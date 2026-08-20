@@ -72,6 +72,15 @@ impl World {
 
     /// The `onevcs` binary, pointed at this world.
     pub fn onevcs(&self) -> assert_cmd::Command {
+        assert_cmd::Command::from_std(self.onevcs_process())
+    }
+
+    /// The same invocation as the process a journey spawns.
+    ///
+    /// Taken directly only where the journey is about the process itself — one that
+    /// arranges what the kernel answers a syscall with has to reach it between the
+    /// fork and the exec, which is not something an assertion wrapper exposes.
+    pub fn onevcs_process(&self) -> std::process::Command {
         let mut command =
             std::process::Command::cargo_bin("onevcs").expect("the binary must be built");
         command
@@ -94,7 +103,7 @@ impl World {
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }
-        assert_cmd::Command::from_std(command)
+        command
     }
 
     /// A shell in this world, for running a command *as it was printed*.
