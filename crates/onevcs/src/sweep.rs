@@ -431,7 +431,14 @@ fn last_written(path: &Path) -> SystemTime {
     if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
         match std::fs::read_dir(path) {
             Ok(entries) => {
-                for entry in entries.flatten() {
+                for entry in entries {
+                    // An entry the listing would not name hides whatever it holds
+                    // exactly as an unlistable directory does, so it answers the same
+                    // way rather than being passed over: skipping it would read a
+                    // workspace as older than the part of it nobody could see.
+                    let Ok(entry) = entry else {
+                        return SystemTime::now();
+                    };
                     newest = newest.max(last_written(&entry.path()));
                 }
             }
