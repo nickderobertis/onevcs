@@ -102,11 +102,12 @@ pub fn mount_over(path: &Path, aged: SystemTime, refuses: Refuses) -> Background
     })
 }
 
-/// Unmount and wait for the mount's own thread, which a journey does once it has
-/// finished asking questions of what is underneath.
+/// Unmount and wait for the mount's own thread, which a journey does last — what it
+/// asserts is what the mount is still holding, so it asks before taking it down.
 ///
-/// The unmount is what makes the assertions after it about the directory the sweep
-/// left rather than about a filesystem still answering for it.
+/// Dropping the session would unmount too, but a `fusermount3` that refused only
+/// warns on the way out and a journey would pass over it. Asking here is what turns
+/// a mount this suite could not take down into a failure somebody sees.
 pub fn unmount(mounted: BackgroundSession) {
     mounted.umount_and_join().unwrap_or_else(|e| {
         panic!(
