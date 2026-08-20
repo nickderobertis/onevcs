@@ -356,26 +356,20 @@ script written beside them that answered to what they asked.
 ## The disk is a resource, and `sweep` is the only verb that frees it
 
 Every branch-keyed landing cuts a run root, and `sweep` is the only thing that
-removes one. Four rules about it are load-bearing.
+removes one. Its surface and the reasoning behind it are in
+[`docs/inferred-surface.md`](../../docs/inferred-surface.md); three rules govern how
+it decides.
 
 - **Proof, never inference.** A workspace is removed only where this crate can show
-  it is finished; every other answer — including one it cannot decide — retains,
-  reports the reason, and terminates nothing. The state root is shared by several
-  managers on one host, so a sweep that guessed would destroy another one's live
-  work.
+  it is finished. Every other answer retains, reports why, and terminates nothing.
 - **A question that could not be finished is not an answer.** Whether emptying a
   workspace is this host's to do is asked by writing into every directory the removal
-  would have to empty and leaving each as it was found. A probe that stopped part way
-  proves nothing and retains — and it must never leave a directory looking freshly
-  written, because the age floor reads that clock on the next run.
-- **A landing holds its own run root's lease**, which is what there is to read.
-  Take that away and a sweep running beside a publication reaps the worktree it is
-  gating. It is the same lease `recoverable` reads to decide a branch is being
-  written to, through the same function, so the two cannot come to disagree.
-- **`workspaces/<identity>/runs` is outside it** — that is the bounded recovery
-  history `workspace::reclaim` keeps so a dead run's branch stays reachable.
-  `recoveries` is *inside*, because it is the same directory shape cut by the same
-  function under the same proofs.
+  would have to empty; a probe that could not be undone proves nothing and retains,
+  and none of them may be left looking freshly written — the age floor reads that
+  clock on the next run.
+- **A landing holds its own run root's lease**, and it is the lease `recoverable`
+  reads, through the same function, so the two cannot come to disagree about who is
+  inside a workspace.
 
 The flag surface is shared with `oneagentgraph sweep`; neither side may amend it
 alone, and why the half outside this repository cannot be gated from here is
