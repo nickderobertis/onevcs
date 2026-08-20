@@ -49,7 +49,6 @@ _crate-bootstrap:
 # where it is gated. Provisioned here rather than in the workflow, so a clean clone
 # and CI set up through the one command, and a host that cannot install it is told
 # what to — that journey refuses rather than skipping.
-# Install what the journey that mounts its own filesystem needs. Quiet when present.
 _ensure-fuse:
     @[ "$(uname -s)" = "Linux" ] || exit 0; \
       command -v fusermount3 >/dev/null 2>&1 && exit 0; \
