@@ -24,8 +24,8 @@ use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyDirectory,
-    ReplyEmpty, ReplyEntry, Request, TimeOrNow,
+    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, Request, TimeOrNow,
 };
 
 /// The inode a mount's own root always has.
@@ -87,6 +87,24 @@ struct Refusing {
 }
 
 impl Refusing {
+    /// Record one entry under `parent`, or `None` where there is no such directory.
+    fn made(&mut self, parent: u64, name: &OsStr, kind: FileType, perm: u16) -> Option<FileAttr> {
+        self.children.contains_key(&parent).then(|| {
+            let ino = self.next;
+            self.next += 1;
+            let attr = entry(ino, SystemTime::now(), kind, perm);
+            self.attrs.insert(ino, attr);
+            if kind == FileType::Directory {
+                self.children.insert(ino, Vec::new());
+            }
+            self.children
+                .entry(parent)
+                .or_default()
+                .push((name.to_owned(), ino));
+            attr
+        })
+    }
+
     fn new(aged: SystemTime) -> Self {
         let mut filesystem = Self {
             attrs: HashMap::new(),
@@ -103,6 +121,11 @@ impl Refusing {
 /// and no sticky bit — what a directory hands back to an entry's owner is a separate
 /// question the sweep asks, and not the one this filesystem is here to answer.
 fn directory(ino: u64, when: SystemTime) -> FileAttr {
+    entry(ino, when, FileType::Directory, 0o755)
+}
+
+/// One entry of either kind as the kernel is told about it.
+fn entry(ino: u64, when: SystemTime, kind: FileType, perm: u16) -> FileAttr {
     // SAFETY: both read this process's own credentials and cannot fail.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
     FileAttr {
@@ -113,8 +136,8 @@ fn directory(ino: u64, when: SystemTime) -> FileAttr {
         mtime: when,
         ctime: when,
         crtime: when,
-        kind: FileType::Directory,
-        perm: 0o755,
+        kind,
+        perm,
         nlink: 2,
         uid,
         gid,
@@ -187,20 +210,10 @@ impl Filesystem for Refusing {
         _umask: u32,
         reply: ReplyEntry,
     ) {
-        if !self.children.contains_key(&parent) {
-            reply.error(libc::ENOENT);
-            return;
+        match self.made(parent, name, FileType::Directory, 0o755) {
+            Some(attr) => reply.entry(&NOW, &attr, 0),
+            None => reply.error(libc::ENOENT),
         }
-        let ino = self.next;
-        self.next += 1;
-        let attr = directory(ino, SystemTime::now());
-        self.attrs.insert(ino, attr);
-        self.children.insert(ino, Vec::new());
-        self.children
-            .entry(parent)
-            .or_default()
-            .push((name.to_owned(), ino));
-        reply.entry(&NOW, &attr, 0);
     }
 
     /// The whole of what this filesystem is: an entry it took and will not give back,
@@ -212,6 +225,24 @@ impl Filesystem for Refusing {
 
     fn unlink(&mut self, _req: &Request<'_>, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
         reply.error(libc::EPERM);
+    }
+
+    /// A file may be made here, so that what refuses is the taking away rather than
+    /// the making — the probe asks both, and this answers both the same way.
+    fn create(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        _flags: i32,
+        reply: ReplyCreate,
+    ) {
+        match self.made(parent, name, FileType::RegularFile, 0o644) {
+            Some(attr) => reply.created(&NOW, &attr, 0, 0, 0),
+            None => reply.error(libc::ENOENT),
+        }
     }
 
     fn readdir(
@@ -226,15 +257,27 @@ impl Filesystem for Refusing {
             reply.error(libc::ENOENT);
             return;
         };
-        let mut listed = vec![(ino, OsString::from(".")), (ROOT, OsString::from(".."))];
-        listed.extend(children.iter().map(|(name, child)| (*child, name.clone())));
-        for (index, (child, name)) in listed
+        let kind = |child: u64| {
+            self.attrs
+                .get(&child)
+                .map_or(FileType::Directory, |attr| attr.kind)
+        };
+        let mut listed = vec![
+            (ino, FileType::Directory, OsString::from(".")),
+            (ROOT, FileType::Directory, OsString::from("..")),
+        ];
+        listed.extend(
+            children
+                .iter()
+                .map(|(name, child)| (*child, kind(*child), name.clone())),
+        );
+        for (index, (child, kind, name)) in listed
             .into_iter()
             .enumerate()
             .skip(usize::try_from(offset).unwrap_or(0))
         {
             let next = i64::try_from(index + 1).expect("a directory of this size");
-            if reply.add(child, next, FileType::Directory, name) {
+            if reply.add(child, next, kind, name) {
                 break;
             }
         }
