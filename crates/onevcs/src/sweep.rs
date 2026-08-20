@@ -221,25 +221,22 @@ fn names_a_run(run_root: &Path) -> bool {
 }
 
 /// Whether every directory a removal of this run root would have to empty — the
-/// family it sits in included — answered that this user may write into it.
+/// family it sits in included — is one this user may unlink an entry from.
 ///
-/// That is what the removal needs, and not the whole of what it takes: a sticky
-/// directory hands each unlink back to the entry's owner, and nothing here asks who
-/// owns what. So the name claims the permission and not the removal, and a directory
-/// that refused — or that could not be asked without being left changed — is
-/// unproven, which retains like every other unknown in this module.
+/// Anything it could not answer is unproven, which retains like every other unknown
+/// in this module.
 ///
 /// Asked *before* anything is removed. `remove_dir_all` works inwards: it deletes
 /// what it can reach and fails at the first thing it cannot, so a sweep that found
 /// out by trying would have destroyed another manager's work in order to learn it was
 /// not its to destroy. A rehearsal asks it too: it leaves nothing behind, and a
 /// `--dry-run` that skipped it would report a decision the real run would not take.
-fn writable_throughout(run_root: &Path) -> bool {
-    run_root.parent().is_some_and(can_write_into) && writable_within(run_root)
+fn can_unlink_throughout(run_root: &Path) -> bool {
+    run_root.parent().is_some_and(can_unlink_from) && can_unlink_within(run_root)
 }
 
 /// Whether `path` and every directory under it answered the same.
-fn writable_within(path: &Path) -> bool {
+fn can_unlink_within(path: &Path) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
@@ -247,15 +244,37 @@ fn writable_within(path: &Path) -> bool {
     if !meta.is_dir() {
         return true;
     }
-    if !can_write_into(path) {
+    if !can_unlink_from(path) {
         return false;
     }
     let Ok(entries) = std::fs::read_dir(path) else {
         return false;
     };
     entries
-        .map(|entry| entry.map(|entry| writable_within(&entry.path())))
+        .map(|entry| entry.map(|entry| can_unlink_within(&entry.path())))
         .all(|answer| answer.unwrap_or(false))
+}
+
+/// Whether an entry of one directory is this user's to unlink: writing into it is
+/// what the unlink takes, unless the directory hands that back to each entry's owner.
+fn can_unlink_from(directory: &Path) -> bool {
+    !hands_unlinks_to_owners(directory) && can_write_into(directory)
+}
+
+/// Whether a directory carries the sticky bit, which is the one thing writing into it
+/// does not answer: an entry there may be unlinked only by whoever owns it or owns
+/// the directory, and this verb asks neither — so a directory wearing it is one it
+/// does not answer for at all.
+#[cfg(unix)]
+fn hands_unlinks_to_owners(directory: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::symlink_metadata(directory).is_ok_and(|meta| meta.permissions().mode() & 0o1000 != 0)
+}
+
+/// Nothing outside POSIX has a bit that hands an unlink back to an entry's owner.
+#[cfg(not(unix))]
+fn hands_unlinks_to_owners(_directory: &Path) -> bool {
+    false
 }
 
 /// Ask one directory whether this user may add an entry to it, and leave it as it
@@ -381,7 +400,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     // Last, because it is the only question whose answer is about this *host* rather
     // than about the workspace: everything above has already decided the directory is
     // dead, and this asks whether emptying it can be shown to be ours to do.
-    if !writable_throughout(run_root) {
+    if !can_unlink_throughout(run_root) {
         return Ok(Verdict::Retain(Kept::Unproven));
     }
     Ok(Verdict::Reclaim(lease))

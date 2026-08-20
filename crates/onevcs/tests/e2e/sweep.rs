@@ -667,6 +667,47 @@ fn a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking() {
 }
 
 #[test]
+fn a_workspace_holding_a_directory_that_hands_unlinks_to_owners_is_retained() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/sticky");
+    publish_branch(&fixture, "feature/sticky");
+    let run_root = only_run_root(&publications(&fixture.world));
+    let shared = run_root.join("worktree/shared");
+    std::fs::create_dir_all(&shared).expect("a directory the gate left");
+    backdate(&run_root, 72);
+
+    // What an operator makes a directory sticky for: several users writing in one
+    // place without unlinking each other's work. Writing into it is then no answer
+    // about emptying it, because each entry there is its owner's to unlink and this
+    // sweep asks nobody who owns what.
+    let ordinary = std::fs::metadata(&shared)
+        .expect("the directory the gate left")
+        .permissions();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1755))
+        .expect("a directory whose entries only their owners may unlink");
+
+    let report = swept(&fixture, &[]);
+    assert!(
+        run_root.is_dir(),
+        "a workspace holding one is kept rather than emptied on a permission that does \
+         not answer for it:\n{report}"
+    );
+    assert!(
+        retained_reason(&report, &run_root).starts_with("this host cannot show it may remove it: "),
+        "and that is the reason it is kept for:\n{report}"
+    );
+
+    // The operator takes the bit off, and the workspace is reaped on its own age —
+    // asking about it left neither a mark nor a claim.
+    std::fs::set_permissions(&shared, ordinary).expect("the directory is restored");
+    let after = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "and once every directory under it answers, it is reclaimed:\n{after}"
+    );
+}
+
+#[test]
 fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let family = publications(&fixture.world);
