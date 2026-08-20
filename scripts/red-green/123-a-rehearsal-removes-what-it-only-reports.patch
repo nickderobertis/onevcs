@@ -14,7 +14,7 @@ index 18b37a6..703f192 100644
 -        report.reclaimed.push(Reclaimed {
 -            path: run_root,
 -            bytes,
--            signalled: holding.iter().map(Holder::pid).collect(),
+-            processes: Signalled::WouldReach(holding.iter().map(Holder::pid).collect()),
 -        });
 -        return Ok(());
 -    }

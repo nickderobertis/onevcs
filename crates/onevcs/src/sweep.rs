@@ -564,7 +564,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
         report.reclaimed.push(Reclaimed {
             path: run_root,
             bytes,
-            signalled: holding.iter().map(Holder::pid).collect(),
+            processes: Signalled::WouldReach(holding.iter().map(Holder::pid).collect()),
         });
         return Ok(());
     }
@@ -610,7 +610,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,
-        signalled: released,
+        processes: Signalled::Released(released),
     });
     drop(lease);
     Ok(())
@@ -701,11 +701,46 @@ struct Skipped {
 struct Reclaimed {
     path: PathBuf,
     bytes: u64,
-    /// Every process removing it signalled, each of which then let the workspace go
-    /// — under a rehearsal, every one found working inside it, since a rehearsal
-    /// signals nothing and can only say which it would have reached for.
-    signalled: Vec<processes::Pid>,
+    /// What the removal has to say about the processes that were working inside it.
+    processes: Signalled,
 }
+
+/// What a reclamation can say about the processes it found inside a run root.
+///
+/// Two states rather than one list a reader has to check `dry_run` to interpret, for
+/// the reason [`processes::Outcome`] is one value per process: *was signalled* and
+/// *would have been* are different claims about a live host, and a shape that spells
+/// them the same lets a rehearsal's report be read back as a record of processes
+/// something ended.
+enum Signalled {
+    /// A rehearsal signals nothing, so these are the ones it would have reached for.
+    WouldReach(Vec<processes::Pid>),
+    /// Each of these was signalled, and each then let the workspace go.
+    Released(Vec<processes::Pid>),
+}
+
+impl Signalled {
+    /// The clause the reclaimed line carries, and nothing at all where no process was
+    /// inside: a run root nobody was working in has no processes to report.
+    fn describe(&self) -> String {
+        let (pids, said) = match self {
+            Signalled::WouldReach(pids) => (pids, WOULD_SIGNAL),
+            Signalled::Released(pids) => (pids, SIGNALLED),
+        };
+        match pids.is_empty() {
+            true => String::new(),
+            false => said.replace("{}", &describe_processes(pids)),
+        }
+    }
+}
+
+/// What a rehearsal says about the processes it would have reached for, with `{}`
+/// standing in for them.
+const WOULD_SIGNAL: &str = ", and would signal {} working inside it";
+
+/// What a real removal says about the processes it stopped, with `{}` standing in for
+/// them.
+const SIGNALLED: &str = ", after signalling {} that then let it go";
 
 struct Retained {
     path: PathBuf,
@@ -883,20 +918,10 @@ impl fmt::Display for Report {
             // is the same fact: the blocks a running process holds open are not
             // returned by unlinking the files, so a figure beside a daemon nobody
             // reached would be a number the disk never gets back.
-            let processes = match (reclaimed.signalled.is_empty(), self.dry_run) {
-                (true, _) => String::new(),
-                (false, true) => format!(
-                    ", and would signal {} working inside it",
-                    describe_processes(&reclaimed.signalled)
-                ),
-                (false, false) => format!(
-                    ", after signalling {} that then let it go",
-                    describe_processes(&reclaimed.signalled)
-                ),
-            };
+            let said = reclaimed.processes.describe();
             writeln!(
                 f,
-                "  {} — {}{processes}",
+                "  {} — {}{said}",
                 reclaimed.path.display(),
                 describe_bytes(reclaimed.bytes)
             )?;
