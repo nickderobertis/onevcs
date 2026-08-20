@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 157. Tests observed red and then green: 181.
+Patches: 157. Tests observed red and then green: 182.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpZCJFhv-project-d1339cc675ad/runs/<token>/clone stands on its own parent bd95aa19ba461e54af5a34
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpiJyviV-project-ebaf7596b3b9/runs/<token>/clone stands on its own parent 8903d5e3263c1e8844b98b
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpskEDxI-project-df96f220449f/runs/<token>/clone stands on its own parent 8613163a461a9477f6c654
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpCuMerX-project-52516511ea2e/runs/<token>/clone stands on its own parent 6a1df9f2c36dc56bc3c9bb
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -344,6 +344,7 @@ the sweep answers for a directory whose entries only their owners may unlink, so
 the writability probe shrugs at an entry it could not take away again, so it goes on asking inside what it left behind rather than answering that it could not finish.
 
 - RED `a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace` — assertion `left == right` failed: and the asking stopped there rather than going on inside the entry it could not take away:
+- RED `a_probe_file_this_host_could_not_unlink_is_no_answer_about_the_workspace` — Unexpected failure.
 
 ### `139-a-clock-that-cannot-be-put-back-is-no-obstacle`
 
