@@ -27,8 +27,9 @@
 
 use onevcs::{
     ChangeId, Check, CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub,
-    Holding, Identity, MergeOutcome, MergePolicy, Providers, PublishOutcome, PublishRequest,
-    RemoteHost, Retention, Scope, Session, SessionRequest, SessionToken, Source, Vcs,
+    Holding, Hosting, Identity, MergeOutcome, MergePolicy, Providers, PublishOutcome,
+    PublishRequest, RemoteHost, Retention, Scope, Session, SessionRequest, SessionToken, Source,
+    Vcs,
 };
 use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -453,6 +454,203 @@ fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
     let opened = world.events_of(&session.token.0, "change-opened");
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0]["payload"]["url"], url.to_string());
+}
+
+/// A registered hosted repository publishing under `rules`, with a session on it
+/// carrying one commit — the setup every failure journey below shares.
+///
+/// The `pre-push` hook goes on before the session is opened, because that is when
+/// the clone is given the checkout's hooks: one installed afterwards would sit in a
+/// repository the publishing push never runs from.
+fn ready_to_publish(world: &World, rules: &str, branch: &str, pre_push: &str) -> Session {
+    let (origin, _identity) = hosted(world, rules);
+    world.install_fake_host(&origin);
+    world.install_pre_push(&world.path("hosted"), pre_push);
+    let session = open(&Git, branch);
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the thing that will not land",
+    );
+    session
+}
+
+#[test]
+fn the_failure_a_publication_ends_with_is_the_kind_a_caller_routes_on() {
+    // Which verification failed is the thing a consumer branches on, and the exit
+    // code cannot carry it: the contract fixes `1` for every verification failure,
+    // so a process reading `$?` sees one answer where a caller embedding the crate
+    // has to see four. These are the three new ones, each driven to its own ending
+    // through the typed entry point against real git.
+    const AUTOMATED: &str =
+        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}";
+
+    // A required check the host concluded red. The publication stops there, names
+    // the check, and quotes what it printed.
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(&world, AUTOMATED, "feature/reddened", "exit 0");
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("failure"),
+        required: true,
+    }]);
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a red check is an outcome, not a refusal to start");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a red required check must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksFailed);
+    assert_eq!(kind.exit_code(), 1, "the contract's code is unchanged");
+    assert!(reason.contains("required check \"gate\""), "{reason}");
+
+    // A host that never settles the check it is holding the change for. Nothing
+    // failed; nobody answered, and the two are different next moves.
+    let world = World::new();
+    inhabit(&world);
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1");
+    let session = ready_to_publish(&world, AUTOMATED, "feature/pending", "exit 0");
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a bound that elapsed is an outcome");
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("the bound must end the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksUnsettled);
+    assert_eq!(kind.exit_code(), 1);
+    assert!(reason.contains("still unsettled: \"gate\""), "{reason}");
+
+    // And a push the merge path refused, which is neither of those: git turned the
+    // ref down, and its own per-ref summary is the answer.
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(
+        &world,
+        AUTOMATED,
+        "feature/refused-push",
+        "echo 'the hook found a secret in the diff' >&2; exit 1",
+    );
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a refused push is an outcome");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a refused push must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::PushRejected);
+    assert_eq!(kind.exit_code(), 1);
+    assert!(reason.contains("rejected by the merge path"), "{reason}");
+}
+
+#[test]
+fn a_host_that_cannot_say_where_a_change_landed_refuses_rather_than_saying_not_yet() {
+    // `merged_at` is defaulted, so a `RemoteHost` written against the six methods
+    // the contract fixed still compiles — and defaults to the refusal this
+    // repository reserves for a seam with no body. A host that answered `None`
+    // instead would be saying "not yet" about a change it cannot see, and the
+    // publication would watch to its bound and then blame checks that were never
+    // the reason.
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(
+        &world,
+        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}",
+        "feature/unanswerable",
+        "exit 0",
+    );
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &Earlier,
+        },
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a seam with no body is an outcome, not a refusal to start");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a host that cannot answer must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::NotImplemented);
+    assert_eq!(kind.exit_code(), 70, "this repository's own code");
+    assert!(reason.contains("merged_at"), "{reason}");
+}
+
+/// A host written against the six methods the approved contract fixed, and nothing
+/// since: it opens and merges change requests and was never taught where one
+/// landed.
+#[derive(Debug)]
+struct Earlier;
+
+impl Hosting for Earlier {
+    fn for_repo(&self, _slug: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+        Ok(Box::new(Earlier))
+    }
+}
+
+impl RemoteHost for Earlier {
+    fn authenticated_user(&self) -> onevcs::Result<String> {
+        Ok("tester".to_owned())
+    }
+
+    fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<onevcs::ChangeRequest> {
+        Ok(onevcs::ChangeRequest {
+            id: ChangeId("1".to_owned()),
+            url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/1").expect("a URL"),
+            head_sha: onevcs::Sha("0f1e2d3c4b5a".to_owned()),
+            base: req.base,
+        })
+    }
+
+    fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<onevcs::ChangeRequest>> {
+        Ok(Vec::new())
+    }
+
+    fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+        Ok(onevcs::ChangeChecks {
+            checks: vec![Check {
+                name: "gate".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some("success".to_owned()),
+                required: true,
+            }],
+            sources: [CheckSource::StatusChecks].into_iter().collect(),
+        })
+    }
+
+    fn check_log(
+        &self,
+        _: &onevcs::ChangeRequest,
+        _: &Check,
+    ) -> onevcs::Result<onevcs::ArtifactId> {
+        Ok(onevcs::ArtifactId("a-earlier".to_owned()))
+    }
+
+    fn merge(
+        &self,
+        _: &onevcs::ChangeRequest,
+        _: MergePolicy,
+    ) -> onevcs::Result<onevcs::MergeOutcome> {
+        Ok(MergeOutcome::Queued)
+    }
 }
 
 #[test]

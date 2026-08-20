@@ -2981,6 +2981,13 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
     std::fs::create_dir_all(&artifacts).expect("an artifact directory");
     std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o500))
         .expect("a directory nothing may write into");
+    // Both halves of the record, independently: the artifact beside the stream and
+    // the log preserved where it outlives the tree the push was made in. Neither is
+    // the publication.
+    let logs = run_root_of(&unrecordable.world, &second).join("gate-logs");
+    std::fs::create_dir_all(&logs).expect("a preserved-log directory");
+    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o500))
+        .expect("a directory nothing may write into");
 
     unrecordable
         .world
@@ -2994,6 +3001,8 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
 
     std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700))
         .expect("the artifact directory is restored");
+    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o700))
+        .expect("the preserved-log directory is restored");
     assert_eq!(
         unrecordable.origin_log().len(),
         2,
@@ -3007,12 +3016,26 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
             .is_empty(),
         "evidence that was not stored is no artifact reference: {pushes:?}"
     );
-    // What could still be written was: the preserved log outlives the tree the push
-    // was made in, and it is on its own path.
+    // …and a field nothing could write is absent rather than empty: a path in the
+    // payload is a promise that a file is at it.
     assert!(
-        pushes[0]["payload"]["preserved_log"].is_string(),
+        pushes[0]["payload"].get("preserved_log").is_none(),
         "{pushes:?}"
     );
+}
+
+/// The run root one session works in, read out of the record that names it.
+fn run_root_of(world: &World, token: &str) -> PathBuf {
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("sessions").join(format!("{token}.json")))
+            .expect("a session record"),
+    )
+    .expect("the record is JSON");
+    PathBuf::from(
+        record["run_root"]
+            .as_str()
+            .expect("a session records the run root it works in"),
+    )
 }
 
 #[test]

@@ -2194,6 +2194,37 @@ fn a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_public
         2,
         "the change reached the base whatever became of the record of it"
     );
+
+    // The other way it can fail, and the same answer: the repository's own
+    // `commit-msg` hook turns the landing commit's message down. A repository is
+    // entitled to refuse a message nothing asked it about; it is not entitled to
+    // undo a merge that has already happened.
+    let refusing =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    refusing.world.install_commit_msg(
+        &refusing.checkout,
+        "grep -q 'record the landing' \"$1\" && exit 1; exit 0",
+    );
+    refusing
+        .world
+        .install_pre_push(&refusing.checkout, "exit 0");
+    refusing.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = refusing.change("feature/unmessageable", "feat: add the unmessageable thing");
+
+    refusing
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"))
+        .stderr(predicate::str::contains("the landing was not recorded"));
+    assert_eq!(refusing.origin_log().len(), 2);
 }
 
 #[test]
