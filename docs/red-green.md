@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpZH36cT-project-e52051d59032/runs/<token>/clone stands on its own parent df8d87a3f73415e95b7d51
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpidt0rH-project-00d6f2eb2ff8/runs/<token>/clone stands on its own parent ede2ce00dc4b4e067c54a9
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmppkjL9a-project-0e1614bc583c/runs/<token>/clone stands on its own parent 16a2a64a7e6daf489ce4a5
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp01JdQN-project-66e09b86e51c/runs/<token>/clone stands on its own parent c4a473cf7bf317006d0e06
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -252,7 +252,7 @@ the sweep stops asking whether a directory under its families is one this crate 
 --dry-run stops being a rehearsal: the run that was asked to report what it would do does it.
 
 - RED `a_dry_run_reports_what_it_would_reclaim_and_removes_nothing` — a rehearsal removes nothing:
-- RED `reclaiming_a_workspace_stops_the_process_the_publication_left_running` — a rehearsal removes nothing and stops nothing:
+- RED `reclaiming_a_workspace_stops_the_process_the_publication_left_running` — the rehearsal names the process the removal would reach for:
 
 ### `124-the-age-floor-is-never-consulted`
 
@@ -387,7 +387,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-3e86db-18cd8f21ba6c474d-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-d13e2-18cd9365583770ad-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -401,7 +401,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-3ebf07-18cd8f241c662fef-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-d3e68-18cd936819466e4e-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -868,7 +868,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
