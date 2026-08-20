@@ -2,7 +2,7 @@ Mutation: the sweep stops asking whether removing a workspace is this host's to 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index c828fad..325ba63 100644
+index 188c69a..ddcfc4b 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -358,9 +358,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
@@ -16,9 +16,9 @@ index c828fad..325ba63 100644
  }
  
 @@ -387,10 +384,8 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
-     // this verb answers `0` everywhere else: the report says what this sweep
-     // *decided*, and a removal it had proved it could make and then could not is the
-     // sweep failing to run, which is what a non-zero code means here.
+     // it could make and then could not is the sweep failing to run — the one thing a
+     // non-zero code means here.
+     // llmlint: ignore[changed_behavior_has_e2e] no interface this crate exposes reaches it; the note above says what a fixture for it would be standing in for.
 -    if let Err(e) = std::fs::remove_dir_all(&run_root) {
 -        return Err(error::at("remove the reclaimable workspace at", &run_root)(
 -            e,
@@ -26,5 +26,5 @@ index c828fad..325ba63 100644
 +    if std::fs::remove_dir_all(&run_root).is_err() {
 +        return Ok(());
      }
-     // llmlint: ignore-end[changed_behavior_has_e2e]
      report.reclaimed.push(Reclaimed {
+         path: run_root,

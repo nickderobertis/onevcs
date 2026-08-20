@@ -2,7 +2,7 @@ Mutation: --dry-run stops being a rehearsal: the run that was asked to report wh
 Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index c828fad..d964ef1 100644
+index 188c69a..9a2a4af 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -370,13 +370,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
@@ -16,6 +16,6 @@ index c828fad..d964ef1 100644
 -        });
 -        return Ok(());
 -    }
-     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a removal that fails
-     // after `can_remove` asked every directory it would touch. Nothing this crate
-     // exposes can produce one — the two shapes an operator meets, a family this user
+     // A failure here is one `can_remove` has already ruled out: it asked every
+     // directory this removal would touch, so the two shapes an operator meets — a
+     // family this user may not write to, and content under a workspace it may not

@@ -2,7 +2,7 @@ Mutation: the sweep stops asking whether a directory under its families is one t
 Red: a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index c828fad..117500a 100644
+index 188c69a..a0ac1a1 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -334,9 +334,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {

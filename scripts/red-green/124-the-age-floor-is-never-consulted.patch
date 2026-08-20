@@ -2,7 +2,7 @@ Mutation: the age floor stops bounding what a sweep considers, so a workspace wr
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index c828fad..8b84259 100644
+index 188c69a..1dd10b0 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -349,12 +349,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {

@@ -2,7 +2,7 @@ Mutation: the sweep stops asking whether what it found is a directory at all, so
 Red: what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index c828fad..4c2d79b 100644
+index 188c69a..07c7515 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -329,11 +329,6 @@ enum Verdict {

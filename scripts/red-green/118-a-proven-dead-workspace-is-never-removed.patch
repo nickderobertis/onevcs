@@ -6,19 +6,19 @@ Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index c828fad..b802ed4 100644
+index 188c69a..7adff51 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -387,11 +387,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
-     // this verb answers `0` everywhere else: the report says what this sweep
-     // *decided*, and a removal it had proved it could make and then could not is the
-     // sweep failing to run, which is what a non-zero code means here.
+     // it could make and then could not is the sweep failing to run — the one thing a
+     // non-zero code means here.
+     // llmlint: ignore[changed_behavior_has_e2e] no interface this crate exposes reaches it; the note above says what a fixture for it would be standing in for.
 -    if let Err(e) = std::fs::remove_dir_all(&run_root) {
 -        return Err(error::at("remove the reclaimable workspace at", &run_root)(
 -            e,
 -        ));
 -    }
 +
-     // llmlint: ignore-end[changed_behavior_has_e2e]
      report.reclaimed.push(Reclaimed {
          path: run_root,
+         bytes,
