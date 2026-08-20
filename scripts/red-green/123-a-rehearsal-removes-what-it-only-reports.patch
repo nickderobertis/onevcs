@@ -1,22 +1,23 @@
 Mutation: --dry-run stops being a rehearsal: the run that was asked to report what it would do does it.
 Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
+Red: reclaiming_a_workspace_stops_the_process_the_publication_left_running
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 52b086b..1d62bd1 100644
+index ede5b33..a4d17bd 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -553,14 +553,6 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
-     // this workspace is costing, and it is the reason stopping it is what reclaims.
+@@ -548,14 +548,6 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+     // Measured before anything is stopped, so what a daemon holds open is counted.
      let bytes = size_of(&run_root);
      let holding = processes::holding(&run_root);
 -    if report.dry_run {
 -        report.reclaimed.push(Reclaimed {
 -            path: run_root,
 -            bytes,
--            stopped: holding.iter().map(|holder| holder.pid).collect(),
+-            stopped: holding.iter().map(Holder::pid).collect(),
 -        });
 -        return Ok(());
 -    }
-     // Asked to stop and then ended, before a single file is unlinked: what comes back
-     // is what would not go, and a workspace that still has one of those is not one
-     // this could claim to have reclaimed.
+     // Before a single file is unlinked: what comes back is what would not go.
+     let left = processes::stop(&holding, &run_root);
+     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
