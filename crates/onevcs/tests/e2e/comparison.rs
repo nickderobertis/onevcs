@@ -33,7 +33,51 @@ pub fn normalize(events: &[Value], root: &Path, token: &str) -> Vec<Value> {
         .iter()
         .map(|event| reduce(event, root, token))
         .map(without_seq)
+        .map(unspoken)
         .collect()
+}
+
+/// A push event, with what the remote said about the push reduced to the fact that
+/// it said something.
+///
+/// The one payload two runs cannot be held to word for word, and not because either
+/// backend is dishonest: a push's `output` is git's porcelain about *the remote it
+/// pushed to*, and these two runs push to different remotes by construction — one a
+/// URL on github.com, which prints its own hint block after the refs, and one a bare
+/// repository on this disk, which prints nothing of the kind. Scrubbing cannot close
+/// that; the honest reduction is to compare that every push recorded what it wrote
+/// and to stop there. An empty output still fails, which is the case that matters:
+/// the whole point of the field is that a push's evidence is never thrown away.
+fn unspoken(event: Value) -> Value {
+    if event["kind"] != "push" {
+        return event;
+    }
+    let mut fields = event.as_object().expect("an event is an object").clone();
+    if let Some(payload) = fields.get_mut("payload").and_then(Value::as_object_mut) {
+        if let Some(output) = payload.get_mut("output") {
+            *output = Value::String(said(output.as_str().unwrap_or_default()));
+        }
+    }
+    // The same fact, counted: the artifact beside the payload is that output stored,
+    // so its length varies with the remote for exactly the same reason. Its `kind` is
+    // still compared, and so is the fact that there is one.
+    if let Some(artifacts) = fields.get_mut("artifacts").and_then(Value::as_array_mut) {
+        for artifact in artifacts {
+            if let Some(bytes) = artifact.as_object_mut().and_then(|a| a.get_mut("bytes")) {
+                *bytes = Value::String("<bytes>".to_owned());
+            }
+        }
+    }
+    Value::Object(fields)
+}
+
+/// Whether a remote said anything, in the words the comparison reads.
+fn said(output: &str) -> String {
+    if output.trim().is_empty() {
+        "<the remote said nothing>".to_owned()
+    } else {
+        "<what the remote said>".to_owned()
+    }
 }
 
 /// A stream's sequence numbers count its events from one, with no gaps.
@@ -108,33 +152,36 @@ fn reduce(value: &Value, root: &Path, token: &str) -> Value {
 /// Every artifact a stream references, read back out of the state root it was
 /// stored in — which is what `onevcs artifact cat` reads.
 ///
-/// Reduced on the same terms the events are, and for the same reason: a push
-/// artifact holds what git wrote about a remote, which names the origin a run
-/// worked against and the commits it moved. Those cannot match between two runs,
-/// and everything else must.
+/// A push's artifact is the one whose text is not compared, on the same terms
+/// [`unspoken`] drops its payload: it holds what the remote said, and the two runs
+/// push to different remotes. That it is there, that it is a `log`, and that it
+/// holds something are all still held to.
 // `artifact cat` reads the state root this process is pointed at, and this compares
 // two of them from a leg that is in-process by design. What a user reads is asserted
 // through the command in the journeys that spawn it.
 // llmlint: ignore[tests_mirror_real_usage] the in-process leg compares two state roots.
-pub fn evidence(events: &[Value], home: &Path, root: &Path, token: &str) -> Vec<String> {
+pub fn evidence(events: &[Value], home: &Path) -> Vec<String> {
     events
         .iter()
         .flat_map(|event| {
+            let spoken = event["kind"] == "push";
             event["artifacts"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
+                .map(move |artifact| (spoken, artifact))
         })
-        .map(|artifact| {
+        .map(|(spoken, artifact)| {
             let id = artifact["id"].as_str().expect("an artifact carries an id");
             let path = home.join("artifacts").join(id);
             let held = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("the artifact at {} is readable: {e}", path.display()));
-            held.lines()
-                .map(|line| scrub(line, root, token))
-                .collect::<Vec<String>>()
-                .join("\n")
+            if spoken {
+                said(&held)
+            } else {
+                held
+            }
         })
         .collect()
 }

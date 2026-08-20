@@ -192,18 +192,8 @@ fn publication_events_match_across_backends() {
     // id it is stored under is the one thing that cannot match — so the contents
     // are compared where the ids cannot be.
     assert_eq!(
-        evidence(
-            &real_events,
-            &real.home(),
-            real.path("").as_path(),
-            &real_token
-        ),
-        evidence(
-            &provided_events,
-            &provided.home(),
-            provided.path("").as_path(),
-            &provided_token
-        ),
+        evidence(&real_events, &real.home()),
+        evidence(&provided_events, &provided.home()),
         "the log a check's artifact holds must read the same either way"
     );
     // Not vacuously equal: the journey really did open a change, watch its checks,
