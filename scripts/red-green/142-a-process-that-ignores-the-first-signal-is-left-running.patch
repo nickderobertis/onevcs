@@ -2,11 +2,11 @@ Mutation: a process that does not answer the first signal is never ended, so a w
 Red: a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes
 
 diff --git a/crates/onevcs/src/processes.rs b/crates/onevcs/src/processes.rs
-index 61733f9..962d2d9 100644
+index a3defdf..e392ea9 100644
 --- a/crates/onevcs/src/processes.rs
 +++ b/crates/onevcs/src/processes.rs
-@@ -132,7 +132,7 @@ pub struct Stopped {
- pub fn stop(holders: &[Holder], run_root: &Path) -> Stopped {
+@@ -138,7 +138,7 @@ pub enum Outcome {
+ pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Outcome> {
      let mut left: Vec<Holder> = holders.to_vec();
      let mut signalled: Vec<Pid> = Vec::new();
 -    for signal in [Signal::Terminate, Signal::Kill] {
