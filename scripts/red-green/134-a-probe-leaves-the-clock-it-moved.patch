@@ -2,27 +2,16 @@ Mutation: the writability probe stops putting a directory's timestamps back, so 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index ba25bf0..e858a97 100644
+index 9e7987e..9d2e877 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -286,19 +286,7 @@ fn probe(directory: &Path) -> std::io::Result<()> {
-     let before = handle.metadata()?;
+@@ -314,8 +314,7 @@ fn probe(directory: &Path) -> std::io::Result<()> {
+     filetime::set_file_times(directory, accessed, modified)?;
      let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
      std::fs::create_dir(&entry)?;
--    // Undoing the ask is the rest of the answer, not a tidy-up beside it: an entry
--    // left behind and a clock left moved are the same outcome — a directory this
--    // could not leave as it found it, and therefore one it says nothing about. Both
--    // retain, like every other unknown here, and neither is reachable from any
--    // interface this crate exposes: unlinking an entry from a directory takes the
--    // permission that just created one, and the restoration uses the handle already
--    // open above rather than an open that could still be refused.
 -    std::fs::remove_dir(&entry)?;
--    handle.set_times(
--        FileTimes::new()
--            .set_accessed(before.accessed()?)
--            .set_modified(before.modified()?),
--    )
+-    filetime::set_file_times(directory, accessed, modified)
 +    std::fs::remove_dir(&entry)
  }
  
- /// The flag an open of a directory takes, which each platform spells for itself:
+ /// Why a directory under the workspaces root is none of this verb's business.
