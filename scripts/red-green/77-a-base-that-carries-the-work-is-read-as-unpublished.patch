@@ -2,15 +2,22 @@ Mutation: status stops reading the landing the base's own history records, and a
 Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
 
 diff --git a/crates/onevcs/src/status.rs b/crates/onevcs/src/status.rs
-index 9d8c4c8..5f5cbf3 100644
+index f9d77a4..bd9cda5 100644
 --- a/crates/onevcs/src/status.rs
 +++ b/crates/onevcs/src/status.rs
-@@ -642,13 +642,6 @@ fn landing(
-     if ahead == Some(0) && verdict != Some(&Landed::No) {
-         return Landing::NothingToPublish;
-     }
+@@ -643,20 +643,6 @@ fn landing(
+     host: OnTheHost,
+     proposed: Proposed,
+ ) -> Landing {
 -    match verdict {
+-        // A record of a landing is the answer whatever else is true of the branch,
+-        // including a branch that is now its own base: the word and the answer are
+-        // one decision, and `NothingToPublish` beside a landing would be a report
+-        // this build writes and its own reader refuses.
 -        Some(Landed::Yes { .. }) => return Landing::Landed,
+-        // A branch that is the base has nothing to publish, which is the narrower
+-        // and more useful of the two things true of it.
+-        Some(Landed::Unknown) if ahead == Some(0) => return Landing::NothingToPublish,
 -        Some(Landed::Unknown) => return Landing::MaybeLanded,
 -        // Nothing holds the branch, or the base does not carry what it changed: the
 -        // host and this host's own record are what is left to say where it got to.

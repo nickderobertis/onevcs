@@ -297,11 +297,12 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
     };
 
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
-    // The branches this report withholds, kept aside rather than dropped: they are
-    // what `preserved` adds, and a copy of a name whose work is spent must not answer
-    // for a copy of it elsewhere that still holds work — so they join the answer only
+    // The branches this report withholds — the ones that landed and the ones nothing
+    // can decide about — kept aside rather than dropped: they are what `preserved`
+    // adds, and a copy of a name whose work the base already carries must not answer
+    // for a copy of it elsewhere that still holds work, so they join the answer only
     // where no such copy did.
-    let mut spent: Vec<(Option<u64>, Recoverable)> = Vec::new();
+    let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     // Once per identity rather than once per checkout of one, because the places a
     // branch of it can be are a property of the identity — and they are read from
@@ -384,7 +385,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                     &trailers,
                 )?;
                 if withheld {
-                    spent.push(row);
+                    withheld_rows.push(row);
                 } else {
                     rows.push(row);
                 }
@@ -393,7 +394,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
     }
     // A landed copy answers only where nothing holding work under that name did.
     let mut kept: Vec<(String, String)> = Vec::new();
-    for (at, row) in spent {
+    for (at, row) in withheld_rows {
         let key = (row.identity.clone(), row.branch.branch.clone());
         if seen.contains(&key) || kept.contains(&key) {
             continue;

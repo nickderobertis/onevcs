@@ -643,13 +643,15 @@ fn landing(
     host: OnTheHost,
     proposed: Proposed,
 ) -> Landing {
-    // A branch that is the base has nothing to publish whatever else is true of it,
-    // and that is the answer whether or not a record says its work once landed.
-    if ahead == Some(0) && verdict != Some(&Landed::No) {
-        return Landing::NothingToPublish;
-    }
     match verdict {
+        // A record of a landing is the answer whatever else is true of the branch,
+        // including a branch that is now its own base: the word and the answer are
+        // one decision, and `NothingToPublish` beside a landing would be a report
+        // this build writes and its own reader refuses.
         Some(Landed::Yes { .. }) => return Landing::Landed,
+        // A branch that is the base has nothing to publish, which is the narrower
+        // and more useful of the two things true of it.
+        Some(Landed::Unknown) if ahead == Some(0) => return Landing::NothingToPublish,
         Some(Landed::Unknown) => return Landing::MaybeLanded,
         // Nothing holds the branch, or the base does not carry what it changed: the
         // host and this host's own record are what is left to say where it got to.

@@ -235,7 +235,6 @@ fn landed_all_of(repo: &Path, fork: &str, branch: &str, landing: &str) -> Result
     git::known_to_carry_changes(repo, landing, fork, branch)
 }
 
-/// A landing, spelled the one way every tier answers with.
 fn landed(evidence: LandingEvidence) -> Landed {
     Landed::Yes { evidence }
 }

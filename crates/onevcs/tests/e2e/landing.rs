@@ -412,6 +412,24 @@ fn a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_
             "No preserved unpublished branches",
         ))
         .stdout(predicate::str::contains("onevcs recoverable --all"));
+    // Run inside the checkout, the same two views name the identity they answered
+    // for — the wider one has rows here, and the narrower one has none and says so
+    // without offering a flag it was already given.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--all"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("preserved branch(es), whatever"))
+        .stdout(predicate::str::contains(
+            "the registered checkout this was run in",
+        ))
+        .stdout(predicate::str::contains("Nothing to resume"))
+        .stdout(predicate::str::contains(
+            "outside every registered checkout",
+        ));
     let shown = row(&rows(&fixture.world, &["--all"]), "preserved/spent-name")
         .expect("`--all` is how a branch this report withholds is seen at all");
     assert_eq!(shown["landed"]["state"], "yes");
@@ -567,6 +585,18 @@ fn a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_land
         .args(["session", "close", &token])
         .assert()
         .success();
+
+    // Before there is anything to report at all, both views say so — and the wider
+    // one does not offer the flag it was already given.
+    let empty = Fixture::local(&local_direct("[\"true\"]"));
+    empty
+        .world
+        .onevcs()
+        .args(["recoverable", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No preserved branches."))
+        .stdout(predicate::str::contains("onevcs recoverable --all").not());
 
     let report = report(&fixture.world, "feature/nobody-published");
     assert_eq!(report["publication"]["landed"]["state"], "no");

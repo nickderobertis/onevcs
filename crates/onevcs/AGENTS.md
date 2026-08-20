@@ -163,9 +163,10 @@ correct, and the absent-hook journey is what holds that.
   answers `yes`, only `no` or `unknown`. Three answers rather than two, because a
   branch that landed with no change request and not through this crate is undecidable
   from history and calling that `no` is what puts a paste-ready `publish-branch` under
-  work the base already carries. The comparison alone cannot be the answer: it is over
-  the whole tree, so any other commit reaching the base makes a landed branch read as
-  unpublished. What `status` adds over `recoverable` is that the *exclusion reason* —
+  work the base already carries. The comparison is scoped to the paths the branch
+  touched, and even so it cannot be the answer on its own: work landing on those paths
+  after the branch did makes a landed branch read as unpublished, which is how this
+  went wrong. What `status` adds over `recoverable` is that the *exclusion reason* —
   landed, undecidable, held by an open session, or genuinely preserved — is stated
   with the tier that decided it.
 - **A change request's URL resolves only through the event stream**, because nothing
