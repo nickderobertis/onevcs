@@ -6,6 +6,19 @@
 //! root they landed in. Nothing about the filesystem is stood in for: what a
 //! journey asserts is that a directory is or is not there afterwards.
 //!
+//! The one substituted thing is the one the rest of this suite substitutes: the
+//! remote host's own decisioning, which `world.rs` installs as `gh`. It is what a
+//! publication has to get past to leave a run root behind at all, and it is not what
+//! any journey here asserts about.
+
+// llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which change
+// requests exist, what their checks say, whether a merge is allowed — is the one boundary
+// an offline, credential-free gate cannot drive, and `world.rs` installs a program that
+// answers it as `gh`. Nothing this module is about is substituted: the run roots are the
+// real ones `publish-branch` and `recover` cut, the clones inside them are real, the gates
+// that ran in them are real programs that really started daemons, and the sweep under test
+// is the real binary against the real filesystem. An assertion here that a directory is
+// gone, or that a pid no longer answers, is therefore an assertion about this host.
 
 use std::fs::{File, FileTimes};
 use std::os::unix::fs::PermissionsExt;

@@ -78,8 +78,10 @@ mod smoke;
 mod subject_policy;
 mod support;
 // Unix only: it drives real publications and a real `pre-push` gate, both POSIX
-// shell, and backdates run roots with Unix file times.
+// shell, and backdates run roots with Unix file times. Its publications go through
+// the same substituted `gh` as `host.rs`; its own header carries the reason in full.
 #[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod sweep;
 #[cfg(unix)]
 mod world;
