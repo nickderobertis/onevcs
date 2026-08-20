@@ -17,20 +17,16 @@ use predicates::prelude::*;
 use crate::lifecycle::{local_direct, Fixture};
 use crate::world::World;
 
-/// clap's usage error.
 const USAGE_ERROR: i32 = 2;
 
-/// The family `publish-branch` cuts its run roots under.
 fn publications(world: &World) -> PathBuf {
     world.home().join("workspaces").join("publications")
 }
 
-/// The family `recover` cuts its run roots under.
 fn recoveries(world: &World) -> PathBuf {
     world.home().join("workspaces").join("recoveries")
 }
 
-/// Every run root one family holds right now, in name order.
 fn run_roots(family: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = std::fs::read_dir(family)
         .into_iter()
@@ -42,7 +38,6 @@ fn run_roots(family: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The one run root a family holds, or a failure naming what it holds instead.
 fn only_run_root(family: &Path) -> PathBuf {
     let found = run_roots(family);
     let [only] = found.as_slice() else {
