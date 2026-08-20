@@ -1,0 +1,45 @@
+Mutation: a change-auto publication arms the host's merge and settles at queued, which is where it left a change blocked with nobody alive to report it.
+Red: a_change_the_host_holds_is_watched_until_it_lands_and_reports_the_commit
+Red: a_branch_the_host_holds_is_watched_until_it_lands
+Red: a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending
+Red: a_branch_the_host_never_lands_is_bounded_and_says_what_was_pending
+Red: a_red_required_check_ends_an_auto_merge_publication_and_quotes_the_log
+Red: an_auto_merge_the_host_takes_and_never_performs_is_bounded_and_says_the_checks_were_fine
+Red: a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefix
+Red: a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publication
+Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index cd7532f..cf37d7d 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -1258,27 +1258,8 @@ fn publish_as_change(
+             })),
+         );
+         let sha = if context.effective == MergePolicy::ChangeAuto {
+-            // Arming is all this run does: the merge itself is the host's to perform,
+-            // on its own clock. So the watch *is* the publication from here — it
+-            // stays live rather than settling at "queued", because settling is what
+-            // left a change blocked for hours with no node alive to notice it, and it
+-            // ends at the commit the host merged, at a required check that concluded
+-            // red, or at the bound.
+-            //
+-            // Arming happens inside the watch, and after its first reading of the
+-            // checks, for two reasons that are both about order. A host that will not
+-            // say what its checks are, or say which of them block, is refused with
+-            // nothing armed against it — arming a merge whose gate this build cannot
+-            // read is a landing nobody gated. And one loop rather than a read
+-            // followed by a watch is what reports each check transition exactly once.
+-            let mut armed = false;
+-            watch(host.as_ref(), &change, stream, "merged", |host, _| {
+-                if !armed {
+-                    host.merge(&change, MergePolicy::ChangeAuto)?;
+-                    armed = true;
+-                }
+-                host.merged_at(&change)
+-            })?
++            host.merge(&change, MergePolicy::ChangeAuto)?;
++            return Ok(PublishOutcome::Queued(change.url.clone()));
+         } else {
+             match host.merge(&change, context.effective)? {
+                 MergeOutcome::Merged(sha) => sha,

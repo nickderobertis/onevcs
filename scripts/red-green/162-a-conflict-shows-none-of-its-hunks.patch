@@ -1,0 +1,20 @@
+Mutation: a conflict stops carrying the hunks git renders for it, so the evidence beside it is empty.
+Red: a_base_that_conflicts_with_the_branch_reports_its_own_exit_code
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index 79e4fc2..1c131c4 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -1378,11 +1378,7 @@ fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
+     // exists for, and a git that would not render the hunks for them has still said
+     // what conflicts. Reporting nothing at all because the illustration failed would
+     // be the diagnosis this whole path is here to stop losing.
+-    let hunks = run(&["diff", "--diff-filter=U"], Some(cwd))
+-        .ok()
+-        .filter(Output::ok)
+-        .map(|out| out.stdout)
+-        .unwrap_or_default();
++    let hunks = String::new();
+     Ok(Some(Conflict { paths, hunks }))
+ }
+ 
