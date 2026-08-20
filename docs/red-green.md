@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpEQalWD-project-2763dc979171/runs/<token>/clone stands on its own parent b90c4dad38ddad73a09920
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpFBWjHQ-project-925cdff7b0d7/runs/<token>/clone stands on its own parent 2f7956bf0aed67365c366b
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpkyhdLX-project-b14f8a8c57c9/runs/<token>/clone stands on its own parent e0a25209d851cfa2b56deb
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpcV37vb-project-6a5a2697671a/runs/<token>/clone stands on its own parent 8c16281802a7ace7514008
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -347,9 +347,9 @@ the sweep answers for a directory whose entries only their owners may unlink, so
 
 ### `138-a-probe-entry-that-could-not-be-taken-away-is-shrugged-at`
 
-the writability probe shrugs at an entry it could not take away again, so a directory it left something in answers that emptying it is this host's to do.
+the writability probe shrugs at an entry it could not take away again, so it goes on asking inside what it left behind rather than answering that it could not finish.
 
-- RED `a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace` — and the asking stopped at the directory it could not finish asking about, so nothing under the workspace was written into either:
+- RED `a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace` — assertion `left == right` failed: and the asking stopped there rather than going on inside the entry it could not take away:
 
 ### `139-a-clock-that-cannot-be-put-back-is-no-obstacle`
 
