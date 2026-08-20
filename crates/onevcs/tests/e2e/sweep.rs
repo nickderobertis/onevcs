@@ -895,7 +895,7 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
         "a directory this host cannot answer for is a decision, not a failure"
     );
 
-    mounted.join();
+    crate::refusing_fs::unmount(mounted);
 }
 
 #[cfg(target_os = "linux")]
@@ -952,7 +952,7 @@ fn a_probe_file_this_host_could_not_unlink_is_no_answer_about_the_workspace() {
         "a directory this host cannot answer for is a decision, not a failure"
     );
 
-    mounted.join();
+    crate::refusing_fs::unmount(mounted);
 }
 
 #[test]

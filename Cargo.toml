@@ -45,7 +45,11 @@ fs4 = { version = "0.13", default-features = false, features = ["sync"] }
 # — a directory that takes an entry and will not give it up — can be a real mount
 # rather than something stood in for. Built without libfuse: the pure-Rust mount goes
 # through `fusermount3`, so a clean clone needs the `fuse3` package and no headers.
-fuser = { version = "0.15", default-features = false }
+# `default-features = false` is stated rather than relied on being the default — the
+# crate's `libfuse` feature is additive, and a dependency that turned it on would
+# link headers a clean clone does not have. The floor is 0.16 because RUSTSEC-2021-0154
+# is unsound below it; this takes the newest, which is where the fix has stayed.
+fuser = { version = "0.18", default-features = false }
 # Setting a directory's timestamps, which `std` can only do through a handle it has
 # no portable way to open one with — Windows hands a directory back on no terms but
 # the backup semantics, and a `#[cfg]` for that would be a second implementation of

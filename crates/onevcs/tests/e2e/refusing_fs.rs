@@ -22,19 +22,25 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, Request, TimeOrNow,
+    BackgroundSession, BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem,
+    FopenFlags, Generation, INodeNo, MountOption, ReplyAttr, ReplyCreate, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, Request, TimeOrNow,
 };
 
 /// The inode a mount's own root always has.
-const ROOT: u64 = 1;
+const ROOT: INodeNo = INodeNo::ROOT;
 
 /// Nothing is cached, so every call a journey is about reaches this filesystem
 /// rather than an answer the kernel kept from the last one.
 const NOW: Duration = Duration::from_secs(0);
+
+/// Inodes here are never recycled, so every entry is the first of its number and the
+/// kernel has no stale one to tell apart from it.
+const FIRST: Generation = Generation(0);
 
 /// What an unprivileged mount goes through, and what a host without it is told.
 const MOUNTS: &str = "fusermount3";
@@ -79,8 +85,14 @@ pub fn mount_over(path: &Path, aged: SystemTime, refuses: Refuses) -> Background
          host whose container is given /dev/fuse, and re-run.",
     );
 
-    let options = [MountOption::FSName("onevcs-refuses-removal".to_owned())];
-    fuser::spawn_mount2(Refusing::new(aged, refuses), path, &options).unwrap_or_else(|e| {
+    // Everything else at its default, which is one event loop: the journeys' calls
+    // are made one at a time by one sweep, so a second would only make the order
+    // they reach this filesystem in something the suite could not predict. The
+    // struct is `#[non_exhaustive]`, so it is built by amending a default rather
+    // than by naming fields this suite has no opinion about.
+    let mut options = Config::default();
+    options.mount_options = vec![MountOption::FSName("onevcs-refuses-removal".to_owned())];
+    fuser::spawn_mount(Refusing::new(aged, refuses), path, &options).unwrap_or_else(|e| {
         panic!(
             "this journey's filesystem could not be mounted at {}: {e}\n\
              ACTION: check that {MOUNTS} may mount for this user (`user_allow_other` is \
@@ -90,20 +102,50 @@ pub fn mount_over(path: &Path, aged: SystemTime, refuses: Refuses) -> Background
     })
 }
 
+/// Unmount and wait for the mount's own thread, which a journey does once it has
+/// finished asking questions of what is underneath.
+///
+/// The unmount is what makes the assertions after it about the directory the sweep
+/// left rather than about a filesystem still answering for it.
+pub fn unmount(mounted: BackgroundSession) {
+    mounted.umount_and_join().unwrap_or_else(|e| {
+        panic!(
+            "this journey's filesystem could not be unmounted: {e}\n\
+             ACTION: check for a process still holding a descriptor under the mount, \
+             and unmount it by hand with `{MOUNTS} -u <path>` before re-running."
+        )
+    });
+}
+
 /// Directories, in memory, that may be made and not removed.
+///
+/// Behind a lock because `fuser` hands each call `&self` and requires a mounted
+/// filesystem to be `Sync`: the mount's event loop owns this, and the journey's own
+/// thread is making the syscalls that reach it.
 struct Refusing {
-    attrs: HashMap<u64, FileAttr>,
-    children: HashMap<u64, Vec<(OsString, u64)>>,
-    next: u64,
+    held: Mutex<Held>,
     refuses: Refuses,
 }
 
-impl Refusing {
+/// What the mount is holding, which is only ever read or written under the lock.
+struct Held {
+    attrs: HashMap<INodeNo, FileAttr>,
+    children: HashMap<INodeNo, Vec<(OsString, INodeNo)>>,
+    next: INodeNo,
+}
+
+impl Held {
     /// Record one entry under `parent`, or `None` where there is no such directory.
-    fn made(&mut self, parent: u64, name: &OsStr, kind: FileType, perm: u16) -> Option<FileAttr> {
+    fn made(
+        &mut self,
+        parent: INodeNo,
+        name: &OsStr,
+        kind: FileType,
+        perm: u16,
+    ) -> Option<FileAttr> {
         self.children.contains_key(&parent).then(|| {
             let ino = self.next;
-            self.next += 1;
+            self.next = INodeNo(ino.0 + 1);
             let attr = entry(ino, SystemTime::now(), kind, perm);
             self.attrs.insert(ino, attr);
             if kind == FileType::Directory {
@@ -117,48 +159,65 @@ impl Refusing {
         })
     }
 
-    /// Take one entry away, or refuse where that is the kind this mount is about.
-    fn take_away(&mut self, parent: u64, name: &OsStr, kind: Refuses, reply: ReplyEmpty) {
-        if self.refuses == kind {
-            reply.error(libc::EPERM);
-            return;
-        }
-        let Some(entries) = self.children.get_mut(&parent) else {
-            reply.error(libc::ENOENT);
-            return;
-        };
-        let Some(at) = entries.iter().position(|(held, _)| held == name) else {
-            reply.error(libc::ENOENT);
-            return;
-        };
+    /// Take one entry away, or say which errno stopped it.
+    fn take_away(&mut self, parent: INodeNo, name: &OsStr) -> Result<(), Errno> {
+        let entries = self.children.get_mut(&parent).ok_or(Errno::ENOENT)?;
+        let at = entries
+            .iter()
+            .position(|(held, _)| held == name)
+            .ok_or(Errno::ENOENT)?;
         let (_, ino) = entries.remove(at);
         self.attrs.remove(&ino);
         self.children.remove(&ino);
-        reply.ok();
+        Ok(())
+    }
+}
+
+impl Refusing {
+    /// Answer one removal: refuse where that is the kind this mount is about, and
+    /// otherwise take the entry away.
+    fn removed(&self, parent: INodeNo, name: &OsStr, kind: Refuses, reply: ReplyEmpty) {
+        if self.refuses == kind {
+            reply.error(Errno::EPERM);
+            return;
+        }
+        match self.held().take_away(parent, name) {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(errno),
+        }
+    }
+
+    /// What the mount is holding. A journey's own panic is what fails a test here, so
+    /// a poisoned lock is a bug in this filesystem rather than something to recover
+    /// from — it is unwrapped so that the panic is reported where it happened.
+    fn held(&self) -> std::sync::MutexGuard<'_, Held> {
+        self.held.lock().expect("this filesystem's own state")
     }
 
     fn new(aged: SystemTime, refuses: Refuses) -> Self {
-        let mut filesystem = Self {
+        let mut held = Held {
             attrs: HashMap::new(),
             children: HashMap::new(),
-            next: ROOT + 1,
-            refuses,
+            next: INodeNo(ROOT.0 + 1),
         };
-        filesystem.attrs.insert(ROOT, directory(ROOT, aged));
-        filesystem.children.insert(ROOT, Vec::new());
-        filesystem
+        held.attrs.insert(ROOT, directory(ROOT, aged));
+        held.children.insert(ROOT, Vec::new());
+        Self {
+            held: Mutex::new(held),
+            refuses,
+        }
     }
 }
 
 /// One directory as the kernel is told about it: this user's, ordinary permissions,
 /// and no sticky bit — what a directory hands back to an entry's owner is a separate
 /// question the sweep asks, and not the one this filesystem is here to answer.
-fn directory(ino: u64, when: SystemTime) -> FileAttr {
+fn directory(ino: INodeNo, when: SystemTime) -> FileAttr {
     entry(ino, when, FileType::Directory, 0o755)
 }
 
 /// One entry of either kind as the kernel is told about it.
-fn entry(ino: u64, when: SystemTime, kind: FileType, perm: u16) -> FileAttr {
+fn entry(ino: INodeNo, when: SystemTime, kind: FileType, perm: u16) -> FileAttr {
     // SAFETY: both read this process's own credentials and cannot fail.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
     FileAttr {
@@ -181,22 +240,23 @@ fn entry(ino: u64, when: SystemTime, kind: FileType, perm: u16) -> FileAttr {
 }
 
 impl Filesystem for Refusing {
-    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        match self
+    fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        let held = self.held();
+        match held
             .children
             .get(&parent)
-            .and_then(|entries| entries.iter().find(|(held, _)| held == name))
-            .and_then(|(_, ino)| self.attrs.get(ino))
+            .and_then(|entries| entries.iter().find(|(had, _)| had == name))
+            .and_then(|(_, ino)| held.attrs.get(ino))
         {
-            Some(attr) => reply.entry(&NOW, attr, 0),
-            None => reply.error(libc::ENOENT),
+            Some(attr) => reply.entry(&NOW, attr, FIRST),
+            None => reply.error(Errno::ENOENT),
         }
     }
 
-    fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        match self.attrs.get(&ino) {
+    fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+        match self.held().attrs.get(&ino) {
             Some(attr) => reply.attr(&NOW, attr),
-            None => reply.error(libc::ENOENT),
+            None => reply.error(Errno::ENOENT),
         }
     }
 
@@ -204,9 +264,9 @@ impl Filesystem for Refusing {
     /// anything: a mount that refused this would answer the question the journey
     /// beside this one is about rather than its own.
     fn setattr(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
+        &self,
+        _req: &Request,
+        ino: INodeNo,
         _mode: Option<u32>,
         _uid: Option<u32>,
         _gid: Option<u32>,
@@ -214,15 +274,16 @@ impl Filesystem for Refusing {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
         _ctime: Option<SystemTime>,
-        _fh: Option<u64>,
+        _fh: Option<FileHandle>,
         _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
-        _flags: Option<u32>,
+        _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        let Some(attr) = self.attrs.get_mut(&ino) else {
-            reply.error(libc::ENOENT);
+        let mut held = self.held();
+        let Some(attr) = held.attrs.get_mut(&ino) else {
+            reply.error(Errno::ENOENT);
             return;
         };
         if let Some(when) = atime {
@@ -235,63 +296,66 @@ impl Filesystem for Refusing {
     }
 
     fn mkdir(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
+        &self,
+        _req: &Request,
+        parent: INodeNo,
         name: &OsStr,
         _mode: u32,
         _umask: u32,
         reply: ReplyEntry,
     ) {
-        match self.made(parent, name, FileType::Directory, 0o755) {
-            Some(attr) => reply.entry(&NOW, &attr, 0),
-            None => reply.error(libc::ENOENT),
+        match self.held().made(parent, name, FileType::Directory, 0o755) {
+            Some(attr) => reply.entry(&NOW, &attr, FIRST),
+            None => reply.error(Errno::ENOENT),
         }
     }
 
     /// The whole of what this filesystem is: an entry it took and will not give back.
     /// One kind at a time, because `rmdir` and `unlink` are separate rights in an
     /// NFSv4 ACL and separate bits in a Landlock policy, and the probe asks both.
-    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        self.take_away(parent, name, Refuses::Directories, reply);
+    fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.removed(parent, name, Refuses::Directories, reply);
     }
 
-    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        self.take_away(parent, name, Refuses::Files, reply);
+    fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.removed(parent, name, Refuses::Files, reply);
     }
 
     /// A file may be made here, so that what refuses is the taking away rather than
     /// the making — the probe asks both, and this answers both the same way.
     fn create(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
+        &self,
+        _req: &Request,
+        parent: INodeNo,
         name: &OsStr,
         _mode: u32,
         _umask: u32,
         _flags: i32,
         reply: ReplyCreate,
     ) {
-        match self.made(parent, name, FileType::RegularFile, 0o644) {
-            Some(attr) => reply.created(&NOW, &attr, 0, 0, 0),
-            None => reply.error(libc::ENOENT),
+        match self.held().made(parent, name, FileType::RegularFile, 0o644) {
+            // No handle and no open flags: nothing here holds a file's contents, so
+            // there is no descriptor state for a later call to name.
+            Some(attr) => reply.created(&NOW, &attr, FIRST, FileHandle(0), FopenFlags::empty()),
+            None => reply.error(Errno::ENOENT),
         }
     }
 
     fn readdir(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let Some(children) = self.children.get(&ino) else {
-            reply.error(libc::ENOENT);
+        let held = self.held();
+        let Some(children) = held.children.get(&ino) else {
+            reply.error(Errno::ENOENT);
             return;
         };
-        let kind = |child: u64| {
-            self.attrs
+        let kind = |child: INodeNo| {
+            held.attrs
                 .get(&child)
                 .map_or(FileType::Directory, |attr| attr.kind)
         };
@@ -307,9 +371,9 @@ impl Filesystem for Refusing {
         for (index, (child, kind, name)) in listed
             .into_iter()
             .enumerate()
-            .skip(usize::try_from(offset).unwrap_or(0))
+            .skip(usize::try_from(offset).unwrap_or(usize::MAX))
         {
-            let next = i64::try_from(index + 1).expect("a directory of this size");
+            let next = u64::try_from(index + 1).expect("a directory of this size");
             if reply.add(child, next, kind, name) {
                 break;
             }
