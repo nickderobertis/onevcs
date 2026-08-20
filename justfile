@@ -42,7 +42,27 @@ _crate-bootstrap:
       || { echo "cannot add toolchain components — install rustup (https://rustup.rs/) and re-run" >&2; exit 1; }
     @just _ensure-tool cargo-nextest
     @just _ensure-tool cargo-llvm-cov
+    @just _ensure-fuse
     @cargo fetch --locked --quiet
+
+# One sweep journey mounts a filesystem of its own, because the boundary it is about
+# — a directory that takes an entry and will not give it back — is a filesystem
+# answering and nothing unprivileged can build one otherwise. The unprivileged mount
+# goes through `fusermount3`. Linux only, which is where that journey is gated, and
+# provisioned here rather than in the workflow so a clean clone and CI set up through
+# the one command. A host that cannot install it is told what to install: the journey
+# refuses rather than skipping, and a suite that skipped would prove nothing.
+# Install what the journey that mounts its own filesystem needs. Quiet when present.
+_ensure-fuse:
+    @[ "$(uname -s)" = "Linux" ] || exit 0; \
+      command -v fusermount3 >/dev/null 2>&1 && exit 0; \
+      if command -v apt-get >/dev/null 2>&1 && sudo -n true 2>/dev/null; then \
+        sudo apt-get update -qq && sudo apt-get install -y -qq fuse3; \
+      else \
+        echo "fusermount3 is missing, and one sweep journey mounts a filesystem through it" >&2; \
+        echo "ACTION: install it — Debian/Ubuntu 'sudo apt-get install -y fuse3', Fedora 'sudo dnf install fuse3' — then re-run" >&2; \
+        exit 1; \
+      fi
 
 # These are test runners, not rules: their version cannot change the gate's
 # verdict, so both here and CI take the latest rather than keeping two pins that

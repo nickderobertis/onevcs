@@ -260,10 +260,10 @@ sweep has to answer for — a directory that takes an entry and will not give it
 `chattr +a` is refused, and an ACL or a server is not something a suite can have. So
 `tests/e2e/refusing_fs.rs` *is* the filesystem, mounted through `fusermount3` and
 gated to Linux, where that needs nothing outside the distribution's own package. It
-refuses loudly rather than skipping when the package is absent, and `ci.yml` installs
-it rather than inheriting it from a runner image: a journey that passes without
-building its own premise proves nothing, which is the failure the verb it tests is
-about.
+refuses loudly rather than skipping when the package is absent, and `just bootstrap`
+provisions it rather than leaving it to whatever a runner image happens to ship: a
+journey that passes without building its own premise proves nothing, which is the
+failure the verb it tests is about.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
