@@ -377,22 +377,21 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
         });
         return Ok(());
     }
-    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a removal that fails
-    // after `can_remove` asked every directory it would touch. Nothing this crate
-    // exposes can produce one — the two shapes an operator meets, a family this user
-    // may not write to and content under a workspace it may not unlink, are both
-    // decided above and are journeys — so what is left is the state root changing
-    // between the question and the act, or a file the kernel refuses for a reason of
-    // its own. It is an `Err` rather than a line in the report for the same reason
-    // this verb answers `0` everywhere else: the report says what this sweep
-    // *decided*, and a removal it had proved it could make and then could not is the
-    // sweep failing to run, which is what a non-zero code means here.
+    // A failure here is one `can_remove` has already ruled out: it asked every
+    // directory this removal would touch, so the two shapes an operator meets — a
+    // family this user may not write to, and content under a workspace it may not
+    // unlink — are both decided above and are journeys. What is left is the state
+    // root changing between the question and the act, or a file the kernel refuses
+    // for a reason of its own. Which is why it is an `Err` rather than a line in the
+    // report: the report says what this sweep *decided*, and a removal it had proved
+    // it could make and then could not is the sweep failing to run — the one thing a
+    // non-zero code means here.
+    // llmlint: ignore[changed_behavior_has_e2e] no interface this crate exposes reaches it; the note above says what a fixture for it would be standing in for.
     if let Err(e) = std::fs::remove_dir_all(&run_root) {
         return Err(error::at("remove the reclaimable workspace at", &run_root)(
             e,
         ));
     }
-    // llmlint: ignore-end[changed_behavior_has_e2e]
     report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,
