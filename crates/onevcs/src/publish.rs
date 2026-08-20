@@ -205,8 +205,11 @@ pub enum FailureKind {
     NotImplemented,
     /// A required check the host reports concluded red. The reason names it.
     ChecksFailed,
-    /// The bound on watching the host elapsed with its required checks unsettled.
-    /// The reason names the checks that were still pending.
+    /// The bound on watching the host elapsed with the change still outstanding.
+    /// The reason names what was: the required checks that had not settled, that
+    /// the host declared none, or that it never performed the merge it took. One
+    /// kind, because the failure vocabulary is fixed across the libraries that
+    /// route on it.
     ChecksUnsettled,
     /// The publishing push was refused by the merge path. The reason carries git's
     /// own per-ref refusal.

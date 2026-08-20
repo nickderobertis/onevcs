@@ -57,14 +57,18 @@ pub enum Error {
         reason: String,
     },
 
-    /// The bound on waiting for the host elapsed with its required checks still
-    /// unsettled. The CLI reports this as exit code 1.
+    /// The bound on watching the host elapsed with the change still outstanding.
+    /// The CLI reports this as exit code 1.
     ///
-    /// Distinct from [`Error::ChecksFailed`] because the operator's next move
-    /// differs: nothing has failed, and the publication stopped watching.
+    /// Named for the commonest way that happens and shared with the others,
+    /// because the failure vocabulary is fixed across the three libraries that
+    /// route on it. Distinct from [`Error::ChecksFailed`] because the operator's
+    /// next move differs: nothing has failed, and the publication stopped watching.
     #[error("checks unsettled: {reason}")]
     ChecksUnsettled {
-        /// The checks that were still unsettled when the bound elapsed.
+        /// What was still outstanding when the bound elapsed: the required checks
+        /// that had not settled, that the host declared none at all, or — where
+        /// every one of them had settled — that it never performed the merge.
         reason: String,
     },
 
