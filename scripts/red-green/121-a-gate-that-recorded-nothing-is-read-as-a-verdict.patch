@@ -2,14 +2,14 @@ Mutation: a run root nothing ever judged answers that its gate reached a verdict
 Red: a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason
 
 diff --git a/crates/onevcs/src/gate.rs b/crates/onevcs/src/gate.rs
-index 1a46f27..28ce977 100644
+index 78294b8..b21e42b 100644
 --- a/crates/onevcs/src/gate.rs
 +++ b/crates/onevcs/src/gate.rs
 @@ -204,23 +204,8 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
  /// nothing about its contents: that path is written by that function alone, and a
  /// gate whose output was empty said as much as one that printed a page. A directory
  /// wearing the name would otherwise answer for a verdict nobody reached.
--pub fn has_recorded_verdict(run_root: &Path) -> bool {
+-pub fn shows_a_recorded_verdict(run_root: &Path) -> bool {
 -    let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
 -        return false;
 -    };
@@ -26,7 +26,7 @@ index 1a46f27..28ce977 100644
 -                    && log.file_type().is_ok_and(|kind| kind.is_file())
 -            })
 -    })
-+pub fn has_recorded_verdict(_run_root: &Path) -> bool {
++pub fn shows_a_recorded_verdict(_run_root: &Path) -> bool {
 +    true
  }
  
