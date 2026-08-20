@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 152. Tests observed red and then green: 177.
+Patches: 153. Tests observed red and then green: 177.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp1R6E5f-project-34f56a9ff573/runs/<token>/clone stands on its own parent 7f582691b03b4722109ade
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpEqAUYS-project-94a9f2bf0621/runs/<token>/clone stands on its own parent ea96830372d8bce531ce6b
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpRORdUU-project-dd600d505b0c/runs/<token>/clone stands on its own parent 8be110868569b191eb84e1
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpj6r2nw-project-26e04837e6bb/runs/<token>/clone stands on its own parent 71035c7829191a8d3f386a
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -320,6 +320,12 @@ a family of run roots this sweep could not even list is left out of the report, 
 a run root's age is read from its own timestamp and its immediate entries alone, so a gate rewriting a file deep inside the clone leaves the workspace looking a day old.
 
 - RED `the_age_floor_bounds_what_a_sweep_considers` — a workspace written inside a moment ago is not a day old:
+
+### `134-a-sweep-that-did-not-finish-reports-as-one-that-did`
+
+a sweep that proved a workspace dead and could not remove it says so nowhere but in the retained list, so its headline and its stderr both read as a run that did everything it set out to.
+
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — the headline says the run was partial:
 
 ### `13-the-gate-does-not-run`
 
