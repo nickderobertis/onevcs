@@ -2,18 +2,25 @@ Mutation: the writability probe writes into a directory before it holds the hand
 Red: a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 79dc591..c25743d 100644
+index ba25bf0..9529124 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -280,16 +280,18 @@ fn can_write_into(directory: &Path) -> bool {
- /// The handle comes first, before anything is written, so nothing is ever created in
- /// a directory whose timestamps this could not then restore.
+@@ -282,23 +282,18 @@ fn can_write_into(directory: &Path) -> bool {
+ /// `a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking` drives: a
+ /// directory this cannot open is one it never writes into.
  fn probe(directory: &Path) -> std::io::Result<()> {
 -    let handle = open_dir(directory)?;
 -    let before = handle.metadata()?;
 +    let before = std::fs::metadata(directory)?;
      let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
      std::fs::create_dir(&entry)?;
+-    // Undoing the ask is the rest of the answer, not a tidy-up beside it: an entry
+-    // left behind and a clock left moved are the same outcome — a directory this
+-    // could not leave as it found it, and therefore one it says nothing about. Both
+-    // retain, like every other unknown here, and neither is reachable from any
+-    // interface this crate exposes: unlinking an entry from a directory takes the
+-    // permission that just created one, and the restoration uses the handle already
+-    // open above rather than an open that could still be refused.
      std::fs::remove_dir(&entry)?;
 -    handle.set_times(
 -        FileTimes::new()

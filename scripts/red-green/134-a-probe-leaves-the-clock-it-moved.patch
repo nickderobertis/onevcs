@@ -2,17 +2,20 @@ Mutation: the writability probe stops putting a directory's timestamps back, so 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 79dc591..678f08d 100644
+index ba25bf0..e858a97 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -281,15 +281,10 @@ fn can_write_into(directory: &Path) -> bool {
- /// a directory whose timestamps this could not then restore.
- fn probe(directory: &Path) -> std::io::Result<()> {
-     let handle = open_dir(directory)?;
--    let before = handle.metadata()?;
-+    let _before = handle.metadata()?;
+@@ -286,19 +286,7 @@ fn probe(directory: &Path) -> std::io::Result<()> {
+     let before = handle.metadata()?;
      let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
      std::fs::create_dir(&entry)?;
+-    // Undoing the ask is the rest of the answer, not a tidy-up beside it: an entry
+-    // left behind and a clock left moved are the same outcome — a directory this
+-    // could not leave as it found it, and therefore one it says nothing about. Both
+-    // retain, like every other unknown here, and neither is reachable from any
+-    // interface this crate exposes: unlinking an entry from a directory takes the
+-    // permission that just created one, and the restoration uses the handle already
+-    // open above rather than an open that could still be refused.
 -    std::fs::remove_dir(&entry)?;
 -    handle.set_times(
 -        FileTimes::new()
