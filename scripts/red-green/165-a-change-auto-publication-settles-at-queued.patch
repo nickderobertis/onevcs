@@ -10,26 +10,17 @@ Red: a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publ
 Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index cd7532f..cf37d7d 100644
+index 2482b91..1b26793 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -1258,27 +1258,8 @@ fn publish_as_change(
+@@ -1268,18 +1268,8 @@ fn publish_as_change(
              })),
          );
          let sha = if context.effective == MergePolicy::ChangeAuto {
--            // Arming is all this run does: the merge itself is the host's to perform,
--            // on its own clock. So the watch *is* the publication from here — it
--            // stays live rather than settling at "queued", because settling is what
--            // left a change blocked for hours with no node alive to notice it, and it
--            // ends at the commit the host merged, at a required check that concluded
--            // red, or at the bound.
--            //
 -            // Arming happens inside the watch, and after its first reading of the
--            // checks, for two reasons that are both about order. A host that will not
--            // say what its checks are, or say which of them block, is refused with
--            // nothing armed against it — arming a merge whose gate this build cannot
--            // read is a landing nobody gated. And one loop rather than a read
--            // followed by a watch is what reports each check transition exactly once.
+-            // checks: a host that will not say what its checks are is refused with
+-            // nothing armed against it, and one loop rather than a read followed by a
+-            // watch reports each transition exactly once.
 -            let mut armed = false;
 -            watch(host.as_ref(), &change, stream, "merged", |host, _| {
 -                if !armed {

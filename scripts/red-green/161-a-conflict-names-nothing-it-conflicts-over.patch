@@ -5,20 +5,24 @@ Red: a_base_that_conflicts_with_the_branch_reports_its_own_exit_code
 Red: a_train_reports_each_way_a_candidate_can_fail_without_stopping
 
 diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
-index 79e4fc2..6678375 100644
+index bab9207..04fe5ec 100644
 --- a/crates/onevcs/src/git.rs
 +++ b/crates/onevcs/src/git.rs
-@@ -1368,12 +1368,7 @@ fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
-     if !unmerged.ok() || unmerged.trimmed().is_empty() {
+@@ -1379,15 +1379,10 @@ fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
+     if !unmerged.ok() {
          return Ok(None);
      }
 -    let paths: Vec<String> = unmerged
--        .trimmed()
--        .lines()
--        .map(|line| line.trim().to_owned())
--        .filter(|line| !line.is_empty())
+-        .stdout
+-        .split('\0')
+-        .filter(|path| !path.is_empty())
+-        .map(str::to_owned)
 -        .collect();
+-    if paths.is_empty() {
++    if unmerged.trimmed().is_empty() {
+         return Ok(None);
+     }
 +    let paths: Vec<String> = Vec::new();
      // Best effort, and deliberately not an error: the paths are the answer this
      // exists for, and a git that would not render the hunks for them has still said
-     // what conflicts. Reporting nothing at all because the illustration failed would
+     // what conflicts.

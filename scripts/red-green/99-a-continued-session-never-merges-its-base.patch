@@ -3,7 +3,7 @@ Red: a_continued_branch_publishes_the_commits_its_base_does_not_carry
 Red: a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it
 
 diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
-index 951d5fb..cb319ac 100644
+index 9eab4da..cb319ac 100644
 --- a/crates/onevcs/src/workspace.rs
 +++ b/crates/onevcs/src/workspace.rs
 @@ -1066,31 +1066,8 @@ fn integrate(
@@ -22,7 +22,7 @@ index 951d5fb..cb319ac 100644
 -             nobody asked to resolve. The branch is untouched. Resolve the conflict on it — check \
 -             it out in {publication} and merge {integrated} into it — and open this session \
 -             again, or land it as it stands with `{land}`",
--            conflicting = crate::guidance::listed(&conflict.paths),
+-            conflicting = crate::guidance::listed(conflict.paths()),
 -            tip = opened.tip,
 -            at = opened.at(),
 -            publication = publication.display(),
