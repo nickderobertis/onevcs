@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 156. Tests observed red and then green: 180.
+Patches: 158. Tests observed red and then green: 182.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpKXq6bc-project-991aec3747f0/runs/<token>/clone stands on its own parent 84a5d505824f3d258e466c
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpMtcYHe-project-f18facecd856/runs/<token>/clone stands on its own parent 10811f824d08dc9f79458c
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmppea31t-project-2727c03c6bab/runs/<token>/clone stands on its own parent 289bbaf6cbd770bea3fd13
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpCBc4Xe-project-a39b6639fee7/runs/<token>/clone stands on its own parent 6d9951b2d2844bc5debd08
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -344,6 +344,18 @@ a state root that is there and unreadable is read as one nobody has published fr
 the sweep answers for a directory whose entries only their owners may unlink, so a workspace it cannot show it may empty is emptied on a permission that says nothing about it.
 
 - RED `a_workspace_holding_a_directory_that_hands_unlinks_to_owners_is_retained` — a workspace holding one is kept rather than emptied on a permission that does not answer for it:
+
+### `138-a-probe-entry-that-could-not-be-taken-away-is-shrugged-at`
+
+the writability probe shrugs at an entry it could not take away again, so a directory it left something in answers that emptying it is this host's to do.
+
+- RED `a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace` — and the asking stopped at the directory it could not finish asking about, so nothing under the workspace was written into either:
+
+### `139-a-clock-that-cannot-be-put-back-is-no-obstacle`
+
+the writability probe stops treating a clock it cannot put back as an answer, so it writes into a directory it cannot leave as it found and reports what it wrote in as removable.
+
+- RED `a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into` — a directory this could not leave as it found it is no answer, so nothing was removed:
 
 ### `13-the-gate-does-not-run`
 
@@ -798,7 +810,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
