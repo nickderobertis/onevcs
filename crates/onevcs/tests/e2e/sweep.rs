@@ -6,6 +6,19 @@
 //! root they landed in. Nothing about the filesystem is stood in for: what a
 //! journey asserts is that a directory is or is not there afterwards.
 //!
+//! The one substituted thing is the one the rest of this suite substitutes: the
+//! remote host's own decisioning, which `world.rs` installs as `gh`. It is what a
+//! publication has to get past to leave a run root behind at all, and it is not what
+//! any journey here asserts about.
+
+// llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which change
+// requests exist, what their checks say, whether a merge is allowed — is the one boundary
+// an offline, credential-free gate cannot drive, and `world.rs` installs a program that
+// answers it as `gh`. Nothing this module is about is substituted: the run roots are the
+// real ones `publish-branch` and `recover` cut, the clones inside them are real, the gates
+// that ran in them are real programs that really started daemons, and the sweep under test
+// is the real binary against the real filesystem. An assertion here that a directory is
+// gone, or that a pid no longer answers, is therefore an assertion about this host.
 
 use std::fs::{File, FileTimes};
 use std::os::unix::fs::PermissionsExt;
@@ -127,10 +140,13 @@ fn finished_branch(fixture: &Fixture, branch: &str) {
 /// one is ever written.
 fn interrupted_branch(fixture: &Fixture, branch: &str) {
     let (token, worktree) = fixture.open(&["--branch", branch]);
+    // Named after the branch, as the finished one's file is: two branches committing
+    // the same content leave the second with nothing to commit once the first lands.
+    let file = format!("{}.txt", branch.replace('/', "-"));
     fixture
         .world
-        .commit_file(&worktree, "one.txt", "one\n", "feat: the first half");
-    std::fs::write(worktree.join("half.txt"), "half\n").expect("uncommitted work");
+        .commit_file(&worktree, &file, "one\n", "feat: the first half");
+    std::fs::write(worktree.join(format!("half-{file}")), "half\n").expect("uncommitted work");
     for stage in [["session", "adopt"], ["session", "close"]] {
         fixture
             .world
@@ -401,11 +417,11 @@ fn a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason() {
 }
 
 #[test]
-fn a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other() {
-    // A gate that said no said something, and what makes a workspace reclaimable is
-    // that its gate reached a verdict — not that the verdict was a pass. A run whose
-    // gate rejected it is as finished as one whose gate cleared it, and leaving those
-    // behind is half the disk.
+fn a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed() {
+    // A gate that said no said something, and what makes a workspace *judged* is that
+    // its gate reached a verdict — not that the verdict was a pass. What it is not is
+    // spent: the branch it gated never reached the origin, so the workspace holding it
+    // is kept under the bound rather than reaped like a landing that finished.
     let fixture = Fixture::local(&local_direct("[\"false\"]"));
     finished_branch(&fixture, "feature/rejected");
     fixture
@@ -449,19 +465,27 @@ fn a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other() {
          publication finished",
     );
 
+    // Read again with the verdict readable: the workspace is kept, and the reason is
+    // no longer that nothing judged it — a rejection is a verdict — but that the work
+    // it was cut for never reached the origin.
     let report = swept(&fixture, &[]);
     assert!(
-        !run_root.exists(),
-        "a verdict is a verdict whichever way it went:\n{report}"
+        run_root.is_dir(),
+        "a workspace holding work no origin has is kept:\n{report}"
     );
-    // And the branch it did not land is still where the publication left it, which
-    // is what makes reclaiming the workspace safe.
+    assert_eq!(
+        retained_reason(&report, &run_root),
+        "its clone holds work no origin has on \"feature/rejected\", and it is one of the 3 \
+         most recently written workspaces of this family that do",
+    );
+    // And the branch it did not land is still where the publication left it too — a
+    // workspace kept for holding work is not the only copy of it.
     assert!(
         fixture
             .world
             .git(&fixture.checkout, &["branch", "--list", "feature/rejected"])
             .contains("feature/rejected"),
-        "the branch a red gate handed back outlives the workspace it was gated in"
+        "the branch a red gate handed back is still in the checkout it was found in"
     );
 }
 
@@ -1243,4 +1267,693 @@ fn an_age_floor_no_window_can_hold_is_refused_at_the_boundary() {
             .stderr(predicate::str::contains("--min-age-hours"))
             .stderr(predicate::str::contains("hours"));
     }
+}
+
+/// Whether a process this journey started is still running.
+///
+/// Signal nought is the question `kill` answers without doing anything: it reports
+/// whether that one process is there. Asked through the same interface the tool
+/// signals through, because a directory that has gone says nothing about a process
+/// that outlived it.
+fn still_running(pid: i32) -> bool {
+    // SAFETY: `kill` with a positive pid and signal nought delivers nothing and
+    // borrows nothing; it answers whether that one process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// A gate that starts a daemon of its own, the way a repository's verification does.
+///
+/// What it starts inherits the gate's working directory — the landing's worktree —
+/// which is what a real Nx daemon inherits and why a run root can be removed while a
+/// process goes on holding everything that was in it. Its output goes nowhere, as a
+/// daemon's does: one still holding the gate's pipe would keep the gate from ever
+/// returning. The pid lands under `$HOME`, which the journey's world owns and the
+/// gate inherits, and therefore outside the workspace being reclaimed.
+///
+/// It sleeps far longer than any journey waits for it to go, so a run that observes
+/// it gone has observed a stop rather than a process that ran out on its own.
+fn gate_starting_a_daemon(body: &str) -> String {
+    local_direct(&format!(
+        "[\"sh\", \"-c\", \"{body} >/dev/null 2>&1 </dev/null & echo $! > $HOME/daemon.pid\"]"
+    ))
+}
+
+fn daemon_pid(fixture: &Fixture) -> i32 {
+    let pidfile = fixture.world.path("daemon.pid");
+    World::until("the gate's daemon has recorded its pid", || {
+        std::fs::read_to_string(&pidfile).is_ok_and(|pid| !pid.trim().is_empty())
+    });
+    std::fs::read_to_string(&pidfile)
+        .expect("the daemon's pid")
+        .trim()
+        .parse()
+        .expect("a pid is a number")
+}
+
+#[test]
+fn reclaiming_a_workspace_stops_the_process_the_publication_left_running() {
+    // Unlinking the files a running process holds open frees none of them, so what
+    // this asserts is that the process has gone and not only that the directory has.
+    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 300"));
+    finished_branch(&fixture, "feature/daemonised");
+    publish_branch(&fixture, "feature/daemonised");
+
+    let run_root = only_run_root(&publications(&fixture.world));
+    let pid = daemon_pid(&fixture);
+    assert!(
+        still_running(pid),
+        "the premise: the gate left a process running after the publication finished"
+    );
+    backdate(&run_root, 72);
+
+    // The rehearsal first: it reports the process it would stop and stops nothing,
+    // because what a caller wants from a rehearsal is what the real run would decide.
+    let rehearsal = swept(&fixture, &["--dry-run"]);
+    assert!(
+        rehearsal.contains(&format!(
+            "and would signal 1 process(es) (pid {pid}) working inside it"
+        )),
+        "the rehearsal names the process the removal would reach for:\n{rehearsal}"
+    );
+    assert!(
+        run_root.is_dir() && still_running(pid),
+        "a rehearsal removes nothing and stops nothing:\n{rehearsal}"
+    );
+
+    let report = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "the finished workspace is reclaimed:\n{report}"
+    );
+    assert!(
+        report.contains(&format!(
+            "after signalling 1 process(es) (pid {pid}) that then let it go"
+        )),
+        "the report says what it signalled beside what it freed:\n{report}"
+    );
+    // The sweep does not return until what it signalled has stopped holding the run
+    // root, so this is asked rather than waited for — bounded only because a pid the
+    // kernel has not reaped yet still answers a signal of nought.
+    World::until("the process the publication left running has gone", || {
+        !still_running(pid)
+    });
+}
+
+#[test]
+fn a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes() {
+    // A daemon is asked to stop before it is stopped, so that one with a socket and a
+    // lock file of its own can put them down. One that does not answer is not left
+    // running: it is the whole of what makes the removal a reclamation.
+    let fixture = Fixture::local(&gate_starting_a_daemon(
+        "sh -c 'trap \\\"\\\" TERM; touch $HOME/trapped; sleep 300'",
+    ));
+    finished_branch(&fixture, "feature/stubborn");
+    publish_branch(&fixture, "feature/stubborn");
+
+    let run_root = only_run_root(&publications(&fixture.world));
+    let pid = daemon_pid(&fixture);
+    // Said by the daemon itself, after the trap is installed and before it sleeps: a
+    // journey that only waited for the pid to exist could signal a shell still
+    // parsing, and would pass having exercised nothing but the first signal.
+    let trapped = fixture.world.path("trapped");
+    World::until("the daemon has installed its handler", || trapped.exists());
+    backdate(&run_root, 72);
+
+    let report = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "a workspace whose daemon ignored the first signal is still reclaimed:\n{report}"
+    );
+    assert!(
+        report.contains("after signalling ") && report.contains(&format!("pid {pid}")),
+        "the report names the daemon it signalled — the shell holding the trap, and the \
+         sleep under it, are both working in there:\n{report}"
+    );
+    World::until("the daemon that ignored the first signal has gone", || {
+        !still_running(pid)
+    });
+}
+
+#[test]
+fn an_operator_sweeping_from_inside_a_workspace_is_not_stopped_by_their_own_sweep() {
+    // A process is named by its working directory being inside the run root, and a
+    // shell somebody left in one answers that description exactly. It is not a daemon
+    // and it is not this verb's to end, so the sweep is run *from* the workspace it
+    // reclaims and the shell that ran it has to come back.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/stood-in");
+    publish_branch(&fixture, "feature/stood-in");
+    let run_root = only_run_root(&publications(&fixture.world));
+    backdate(&run_root, 72);
+
+    let assert = fixture
+        .world
+        .shell(&format!(
+            "cd {worktree} && onevcs sweep && echo the-shell-came-back",
+            worktree = run_root.join("worktree").to_string_lossy(),
+        ))
+        .assert()
+        .success();
+    let printed = String::from_utf8(assert.get_output().stdout.clone()).expect("UTF-8");
+    assert!(
+        printed.contains("the-shell-came-back"),
+        "the shell the sweep was run from outlives it:\n{printed}"
+    );
+    assert!(
+        !run_root.exists(),
+        "and the workspace it was standing in was still reclaimed:\n{printed}"
+    );
+}
+
+#[test]
+fn a_workspace_whose_branch_the_base_already_carries_takes_no_place_in_the_bound() {
+    // Work that never reached the origin is not the same as a branch carrying commits
+    // no origin ref names. Publication squashes, so a branch of two commits lands as
+    // one it is not an ancestor of and keeps both of them for ever — and reading that
+    // as unpublished work would keep every finished workspace on the disk.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/two-commits"]);
+    for (file, subject) in [
+        ("a.txt", "feat: the first half"),
+        ("b.txt", "feat: the second"),
+    ] {
+        fixture.world.commit_file(&worktree, file, "one\n", subject);
+    }
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    publish_branch(&fixture, "feature/two-commits");
+
+    let run_root = only_run_root(&publications(&fixture.world));
+    assert_eq!(
+        fixture
+            .world
+            .git(
+                &run_root.join("clone"),
+                &[
+                    "rev-list",
+                    "--count",
+                    "feature/two-commits",
+                    "--not",
+                    "--remotes=origin",
+                ],
+            )
+            .trim(),
+        "2",
+        "the premise: what landed is a squash, so the branch keeps commits no origin \
+         ref names"
+    );
+    backdate(&run_root, 72);
+
+    let report = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "a workspace whose branch the base already carries is spent, whatever its own \
+         commits are:\n{report}"
+    );
+    assert_eq!(
+        fixture.origin_log().len(),
+        2,
+        "and what it landed is on the base"
+    );
+}
+
+#[test]
+fn the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes() {
+    // The failure history an operator reads is the recent one, and its preserved gate
+    // logs go when it does.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let branches = [
+        "feature/oldest",
+        "feature/older",
+        "feature/newer",
+        "feature/newest",
+    ];
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for branch in branches {
+        finished_branch(&fixture, branch);
+        fixture
+            .world
+            .onevcs()
+            .args([
+                "publish-branch",
+                branch,
+                "--repo",
+                &fixture.checkout.to_string_lossy(),
+            ])
+            .assert()
+            // 1 is the contract's code for a gate that rejected the change.
+            .code(1);
+        let cut: Vec<PathBuf> = run_roots(&publications(&fixture.world))
+            .into_iter()
+            .filter(|root| !roots.contains(root))
+            .collect();
+        let [root] = cut.as_slice() else {
+            panic!("one publication cuts one run root, not {cut:?}");
+        };
+        roots.push(root.clone());
+    }
+    // Aged past the floor and apart from each other, because what the bound keeps is
+    // the *most recently written* — a fact about the workspace's own clock rather
+    // than about the order the directories happen to sort in.
+    for (index, root) in roots.iter().enumerate() {
+        backdate(root, 100 - index as u64 * 10);
+    }
+    let [oldest, older, newer, newest] = roots.as_slice() else {
+        panic!("four publications cut four run roots: {roots:?}");
+    };
+    assert!(
+        oldest.join("gate-logs").is_dir(),
+        "the premise: every one of them holds the verdict that turned it down"
+    );
+
+    let report = swept(&fixture, &[]);
+    for kept in [older, newer, newest] {
+        assert!(
+            kept.is_dir(),
+            "{} is one of the three newest workspaces holding unlanded work:\n{report}",
+            kept.display()
+        );
+        assert!(
+            retained_reason(&report, kept).contains("its clone holds work no origin has on"),
+            "the report says what it kept it for:\n{report}"
+        );
+    }
+    assert!(
+        !oldest.exists(),
+        "the fourth-newest is beyond the bound and goes:\n{report}"
+    );
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 1 workspace(s), "),
+        "one of the four was reclaimed:\n{report}"
+    );
+    // The work itself is not what was kept or lost here: every one of those branches
+    // is still in the checkout the publication read it out of.
+    for branch in branches {
+        assert!(
+            fixture
+                .world
+                .git(&fixture.checkout, &["branch", "--list", branch])
+                .contains(branch),
+            "the branch {branch} outlives the workspace that failed to land it"
+        );
+    }
+}
+
+#[test]
+fn a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind() {
+    // Nobody types `onevcs sweep` in this journey: the landing is what enforces the
+    // rule, over its own family, as it cuts the next run root.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/first");
+    publish_branch(&fixture, "feature/first");
+    let spent = only_run_root(&publications(&fixture.world));
+
+    // A second landing, and the workspace of the first is still inside the age floor
+    // — the evidence a publication leaves is not taken from under an operator who has
+    // not read it yet.
+    finished_branch(&fixture, "feature/second");
+    publish_branch(&fixture, "feature/second");
+    assert!(
+        spent.is_dir(),
+        "a workspace written minutes ago is inside the floor, whoever is asking"
+    );
+
+    // Aged past it, the next landing is what removes it.
+    backdate(&spent, 72);
+    finished_branch(&fixture, "feature/third");
+    publish_branch(&fixture, "feature/third");
+    assert!(
+        !spent.exists(),
+        "the landing enforced the retention rule over its own family"
+    );
+    assert_eq!(
+        run_roots(&publications(&fixture.world)).len(),
+        2,
+        "what the landing left is the two workspaces the floor still covers"
+    );
+    assert_eq!(
+        fixture.origin_log().len(),
+        4,
+        "and all three landings reached the base"
+    );
+}
+
+fn recover_branch(fixture: &Fixture, branch: &str) {
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            branch,
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn a_recovery_enforces_the_rule_over_its_own_family_and_not_the_publications() {
+    // Both branch-keyed verbs cut run roots and both enforce the rule, each over the
+    // family it cuts under — a recovery reaching into `publications` would be reaping
+    // a family it knows nothing about having just made.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/published");
+    publish_branch(&fixture, "feature/published");
+    let publication = only_run_root(&publications(&fixture.world));
+
+    interrupted_branch(&fixture, "feature/stopped");
+    recover_branch(&fixture, "feature/stopped");
+    let recovered = only_run_root(&recoveries(&fixture.world));
+
+    // Both dead by the clock, and the recovery that follows answers for one of them.
+    backdate(&publication, 72);
+    backdate(&recovered, 72);
+    interrupted_branch(&fixture, "feature/stopped-again");
+    recover_branch(&fixture, "feature/stopped-again");
+    assert!(
+        !recovered.exists(),
+        "the recovery reclaimed the workspace the recovery before it left behind"
+    );
+    assert!(
+        publication.is_dir(),
+        "and left the publications family to the verb that cuts under it"
+    );
+
+    // Which that verb then does, on its own next landing.
+    finished_branch(&fixture, "feature/published-again");
+    publish_branch(&fixture, "feature/published-again");
+    assert!(
+        !publication.exists(),
+        "the publication family is reclaimed by the verb that fills it"
+    );
+}
+
+#[test]
+fn a_landing_stops_the_daemon_the_landing_before_it_left_running() {
+    // The incident itself: a host publishing all day, each gate leaving a daemon
+    // behind, and nobody running a sweep. What reclaims the disk is the next landing,
+    // and reclaiming means the process too.
+    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 300"));
+    finished_branch(&fixture, "feature/one");
+    publish_branch(&fixture, "feature/one");
+    let earlier = only_run_root(&publications(&fixture.world));
+    let daemon = daemon_pid(&fixture);
+    assert!(
+        still_running(daemon),
+        "the premise: the gate left it running"
+    );
+    backdate(&earlier, 72);
+
+    finished_branch(&fixture, "feature/two");
+    publish_branch(&fixture, "feature/two");
+    assert!(
+        !earlier.exists(),
+        "the landing reclaimed the workspace before it"
+    );
+    World::until(
+        "the daemon the earlier landing left running has gone",
+        || !still_running(daemon),
+    );
+    // And the landing that did the reclaiming left its own daemon alone: what is
+    // stopped is what a *reclaimed* workspace was holding, never what is live.
+    assert!(
+        still_running(daemon_pid(&fixture)),
+        "this landing's own daemon is working in a workspace nothing has reclaimed"
+    );
+}
+
+#[test]
+fn a_landing_applies_the_same_bound_to_the_workspaces_holding_work_no_origin_has() {
+    // The bound is the rule's, not the verb's: a host that never runs `onevcs sweep`
+    // keeps the same failure history and no more of it.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for branch in ["feature/a", "feature/b", "feature/c", "feature/d"] {
+        finished_branch(&fixture, branch);
+        fixture
+            .world
+            .onevcs()
+            .args([
+                "publish-branch",
+                branch,
+                "--repo",
+                &fixture.checkout.to_string_lossy(),
+            ])
+            .assert()
+            // 1 is the contract's code for a gate that rejected the change.
+            .code(1);
+        let cut: Vec<PathBuf> = run_roots(&publications(&fixture.world))
+            .into_iter()
+            .filter(|root| !roots.contains(root))
+            .collect();
+        let [root] = cut.as_slice() else {
+            panic!("one publication cuts one run root, not {cut:?}");
+        };
+        roots.push(root.clone());
+    }
+    for (index, root) in roots.iter().enumerate() {
+        backdate(root, 100 - index as u64 * 10);
+    }
+
+    // A fifth landing, which enforces the rule as it cuts its own workspace — before
+    // the gate this identity's rules turn every one of them down with, because the
+    // rule is about the workspaces already there and not about how this one ends.
+    finished_branch(&fixture, "feature/e");
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/e",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1);
+    let [oldest, older, newer, newest] = roots.as_slice() else {
+        panic!("four refused publications cut four run roots: {roots:?}");
+    };
+    assert!(
+        !oldest.exists(),
+        "the landing bounded the failure history it found"
+    );
+    for kept in [older, newer, newest] {
+        assert!(
+            kept.is_dir(),
+            "{} is one of the three newest workspaces holding unlanded work",
+            kept.display()
+        );
+    }
+}
+
+#[test]
+fn a_landing_never_reclaims_a_workspace_somebody_holds_the_lease_on() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // A first landing, so that every lock a landing takes other than its own run
+    // root's already exists — which is what makes the next one identifiable.
+    finished_branch(&fixture, "feature/warm");
+    publish_branch(&fixture, "feature/warm");
+    let warm = only_run_root(&publications(&fixture.world));
+
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb holds an occupancy lease
+    // across time — a landing takes it, publishes, and releases it as the process
+    // exits — so there is no command to run that leaves a run root occupied for the
+    // length of a journey. The lease is found the only way anything can find it, by
+    // what appeared when the landing took it, it is held in the *shared* mode a
+    // landing holds it in, and the real binary then meets it. The other half of this
+    // question — a landing genuinely in flight — is
+    // `a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated`.
+    finished_branch(&fixture, "feature/occupied");
+    let before = fixture.world.locks();
+    publish_branch(&fixture, "feature/occupied");
+    let taken: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    assert!(
+        !taken.is_empty(),
+        "a landing takes a lease on the run root it cuts"
+    );
+    let occupied = run_roots(&publications(&fixture.world))
+        .into_iter()
+        .find(|root| root != &warm)
+        .expect("the second landing's run root");
+    // Every lease that landing took, rather than one picked out of them: a lock is
+    // named after a digest of what it guards, so which of them is the run root's is
+    // not something a journey may recompute without becoming a second source for that
+    // name. The other is that landing's merge-queue ticket — finished, and keyed by an
+    // id nothing ever claims twice — so holding it changes nothing below.
+    let occupants: Vec<std::fs::File> = taken
+        .iter()
+        .map(|lock| World::occupy_shared(lock))
+        .collect();
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    // Both are dead by the clock and spent by their content, so the lease is the only
+    // thing standing between the occupied one and the rule.
+    backdate(&warm, 72);
+    backdate(&occupied, 72);
+    finished_branch(&fixture, "feature/next");
+    publish_branch(&fixture, "feature/next");
+    assert!(
+        !warm.exists(),
+        "the workspace nobody is inside is reclaimed by the landing"
+    );
+    assert!(
+        occupied.is_dir(),
+        "a workspace whose occupancy lease is held is never reclaimed out from under it"
+    );
+
+    // And with the lease released, the same run root under the same clock goes: what
+    // decided was the lease and nothing about its age or its name.
+    drop(occupants);
+    finished_branch(&fixture, "feature/last");
+    publish_branch(&fixture, "feature/last");
+    assert!(
+        !occupied.exists(),
+        "released, the workspace the lease was protecting is reclaimed like any other"
+    );
+}
+
+#[test]
+fn a_landing_says_so_when_the_family_it_would_reclaim_cannot_be_listed() {
+    // The other way the pass does not happen: a family this user may write into and
+    // may not list. The landing has a directory to cut and nothing it can judge, and
+    // saying nothing would leave the disk filling with no word anywhere.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/before");
+    publish_branch(&fixture, "feature/before");
+    let family = publications(&fixture.world);
+    let readable = std::fs::metadata(&family)
+        .expect("the family")
+        .permissions();
+    std::fs::set_permissions(&family, std::fs::Permissions::from_mode(0o300))
+        .expect("a family this user may write into and may not list");
+
+    finished_branch(&fixture, "feature/after");
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/after",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+    let diagnosis = String::from_utf8(assert.get_output().stderr.clone()).expect("UTF-8");
+    std::fs::set_permissions(&family, readable).expect("the family is listable again");
+    assert!(
+        diagnosis.contains("could not be reclaimed before this landing")
+            && diagnosis.contains("cannot read this family of run roots"),
+        "the landing says which family it could not judge:\n{diagnosis}"
+    );
+    assert_eq!(
+        run_roots(&family).len(),
+        2,
+        "and both landings have their workspace"
+    );
+    assert_eq!(fixture.origin_log().len(), 3, "and both reached the base");
+}
+
+#[test]
+fn a_landing_says_so_when_the_retention_rule_could_not_run_and_lands_anyway() {
+    // A landing refused because somebody else's leftovers could not be judged is the
+    // failure this rule exists to prevent, so it says what it could not do and
+    // publishes.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // A first landing, so that the merge queue's own locks are already there and the
+    // ones the next landing adds are its own: its run root's lease, and the queue
+    // ticket it will have finished with.
+    finished_branch(&fixture, "feature/warm");
+    publish_branch(&fixture, "feature/warm");
+    let warm = only_run_root(&publications(&fixture.world));
+
+    // A workspace that is spent and dead, named so that it is judged *before* the one
+    // nothing can ask about: what a pass reclaims before it fails is reclaimed, and a
+    // rule that gave that back on the way out would leave the disk to whichever
+    // leftover happened to sort last.
+    finished_branch(&fixture, "feature/aaa-spent");
+    publish_branch(&fixture, "feature/aaa-spent");
+    let spent = run_roots(&publications(&fixture.world))
+        .into_iter()
+        .find(|root| root != &warm)
+        .expect("the spent landing's run root");
+
+    finished_branch(&fixture, "feature/zzz-unaskable");
+    let before = fixture.world.locks();
+    publish_branch(&fixture, "feature/zzz-unaskable");
+    let earlier = run_roots(&publications(&fixture.world))
+        .into_iter()
+        .find(|root| root != &warm && root != &spent)
+        .expect("the unaskable landing's run root");
+    assert!(
+        spent < earlier,
+        "the premise: the workspace that can be judged is judged first"
+    );
+    backdate(&spent, 72);
+    backdate(&earlier, 72);
+
+    // The leases that landing took, made unopenable — a state root this user may no
+    // longer ask about the occupancy of. Both, for the reason the journey above holds
+    // both: which of them guards the run root is a digest, not something to recompute.
+    let taken: Vec<PathBuf> = fixture.world.locks().difference(&before).cloned().collect();
+    let restore: Vec<(PathBuf, std::fs::Permissions)> = taken
+        .iter()
+        .map(|lock| {
+            let permissions = std::fs::metadata(lock).expect("a lease").permissions();
+            std::fs::set_permissions(lock, std::fs::Permissions::from_mode(0o000))
+                .expect("a lease this user may not open");
+            (lock.clone(), permissions)
+        })
+        .collect();
+
+    finished_branch(&fixture, "feature/later");
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/later",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+    let diagnosis = String::from_utf8(assert.get_output().stderr.clone()).expect("UTF-8");
+    for (lock, permissions) in restore {
+        std::fs::set_permissions(&lock, permissions).expect("the leases are restored");
+    }
+    assert!(
+        diagnosis.contains(
+            "onevcs: warning: the publications workspaces could not be reclaimed before this \
+             landing:"
+        ) && diagnosis.contains("`onevcs sweep` reports what it kept and why"),
+        "the landing says what it could not reclaim, and where the rest is reported:\n{diagnosis}"
+    );
+    assert!(
+        earlier.is_dir(),
+        "the workspace nothing could ask about is kept"
+    );
+    assert!(
+        !spent.exists(),
+        "and what the pass reclaimed before it met that one stays reclaimed"
+    );
+    assert_eq!(
+        fixture.origin_log().len(),
+        5,
+        "and every landing reached the base"
+    );
+
+    // Askable again, the same workspace under the same clock goes — so what the
+    // warning was about was the housekeeping and never the publication.
+    finished_branch(&fixture, "feature/last");
+    publish_branch(&fixture, "feature/last");
+    assert!(
+        !earlier.exists(),
+        "the workspace the refused lease protected is reclaimed once it can be judged"
+    );
 }

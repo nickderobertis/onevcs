@@ -27,7 +27,7 @@ use crate::rules::MergePolicy;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::workspace::{self, object, Ref};
-use crate::{git, guidance, home, ids, lock, policy, provenance};
+use crate::{git, guidance, home, ids, lock, policy, provenance, sweep};
 
 /// Which verb is landing the branch.
 ///
@@ -189,6 +189,17 @@ pub fn prepare(
         &format!("land it with `{}`", verb.command(branch, repo)),
     )?;
 
+    // The retention rule, enforced where the run roots are made and before this run's
+    // own is cut, so it is never a candidate. A landing is not refused over it: what
+    // it reclaims is the previous runs' leftovers, and a publication lost to those is
+    // the failure the rule exists to prevent.
+    if let Err(error) = sweep::enforce(verb) {
+        eprintln!(
+            "onevcs: warning: the {family} workspaces could not be reclaimed before this \
+             landing: {error}. `onevcs sweep` reports what it kept and why",
+            family = verb.runs(),
+        );
+    }
     let run_root = home::workspaces_dir()?.join(verb.runs()).join(format!(
         "{}-{}",
         policy::branch_slug(branch),

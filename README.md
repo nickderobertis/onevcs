@@ -49,16 +49,28 @@ it would lose.
 
 `onevcs sweep [--dry-run] [--min-age-hours HOURS]` reclaims the workspaces those
 landings leave behind. Every branch published by name cuts a run root — a clone, a
-worktree, and the gate's preserved logs — under the state root, and until this verb
+worktree, and the gate's preserved logs — under the state root, and until this rule
 existed nothing removed one; thirty-one of them filled a host's disk twice in a
-single run. It removes a workspace only where this tool can *prove* it is finished:
-its gate recorded a verdict, no live session holds its occupancy lease, it was last
-written outside the age floor `--min-age-hours` sets, and removing it is something
-this host can do at all. Everything else is retained and reported with the reason —
-a workspace somebody is still publishing in is never removed and never terminated,
-and neither is one belonging to another manager on a shared state root — and the
-per-run lifecycle clones a session keeps as recovery history are outside the verb
-entirely.
+single run. **The rule runs whether or not anybody asks:** each landing enforces it
+over its own family before cutting the next run root, and this verb is the same
+judgement asked deliberately and over every family at once.
+
+A workspace is removed only where this tool can *prove* it is finished: its gate
+recorded a verdict, no live session holds its occupancy lease, it was last written
+outside the age floor `--min-age-hours` sets, and removing it is something this host
+can do at all. Everything else is retained and reported with the reason — a
+workspace somebody is still publishing in is never removed, and neither is one
+belonging to another manager on a shared state root — and the per-run lifecycle
+clones a session keeps as recovery history are outside it entirely.
+
+Two things a proven-finished workspace still gets to keep. Its preserved gate logs
+last at least as long as the age floor, because they are what an operator reads
+after a publication failed; and a clone still holding work that never reached the
+origin is kept past the floor too, until enough newer ones stand in front of it —
+under the same bound the per-run lifecycle clones a session keeps are kept under.
+Reclaiming a workspace also **stops the processes that publication left running** —
+a gate is the repository's own verification and verifications start daemons, and
+unlinking files a live process holds open frees none of their blocks.
 
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.

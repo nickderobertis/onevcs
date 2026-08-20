@@ -2,12 +2,12 @@ Mutation: the sweep stops asking whether what it found is a directory at all, so
 Red: what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 188c69a..07c7515 100644
+index e0754cb..d7cf4b1 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -329,11 +329,6 @@ enum Verdict {
- /// whether removing it is this host's to do comes last, because it is the only one
- /// of the five that is about the host rather than about the workspace.
+@@ -457,11 +457,6 @@ struct Holding {
+ /// comes last, because it is the only question that runs a `git` of its own and
+ /// every answer above it has already kept the workspace without needing one.
  fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
 -    if !run_root.is_dir() {
 -        return Ok(Verdict::Retain(Kept::OwnerUnproven(

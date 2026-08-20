@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 157. Tests observed red and then green: 182.
+Patches: 166. Tests observed red and then green: 194.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpiJyviV-project-ebaf7596b3b9/runs/<token>/clone stands on its own parent 8903d5e3263c1e8844b98b
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpidt0rH-project-00d6f2eb2ff8/runs/<token>/clone stands on its own parent ede2ce00dc4b4e067c54a9
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpCuMerX-project-52516511ea2e/runs/<token>/clone stands on its own parent 6a1df9f2c36dc56bc3c9bb
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp01JdQN-project-66e09b86e51c/runs/<token>/clone stands on its own parent c4a473cf7bf317006d0e06
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -212,7 +212,6 @@ a sweep reports what it reclaimed and removes none of it, which is the state bef
 
 - RED `a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed` — a publication that was gated and is nobody's is reclaimed:
 - RED `a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication` — a recovery cuts the same shape of run root and is reaped by the same verb:
-- RED `a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other` — a verdict is a verdict whichever way it went:
 - RED `a_dry_run_reports_what_it_would_reclaim_and_removes_nothing` — the real run reclaims what the rehearsal named:
 - RED `the_age_floor_bounds_what_a_sweep_considers` — a floor of nought considers what was written moments ago:
 
@@ -240,7 +239,7 @@ a landing's occupancy lease names something other than the run root it works in,
 
 a run root nothing ever judged answers that its gate reached a verdict, so an unfinished publication is read as a finished one.
 
-- RED `a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason` — a workspace nothing judged is not one this verb can prove is finished:
+- RED `a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason` — assertion `left == right` failed
 
 ### `122-a-directory-nobody-can-vouch-for-is-taken-on-trust`
 
@@ -253,12 +252,14 @@ the sweep stops asking whether a directory under its families is one this crate 
 --dry-run stops being a rehearsal: the run that was asked to report what it would do does it.
 
 - RED `a_dry_run_reports_what_it_would_reclaim_and_removes_nothing` — a rehearsal removes nothing:
+- RED `reclaiming_a_workspace_stops_the_process_the_publication_left_running` — the rehearsal names the process the removal would reach for:
 
 ### `124-the-age-floor-is-never-consulted`
 
 the age floor stops bounding what a sweep considers, so a workspace written moments ago is reaped by a sweep that was told to leave a day's work alone.
 
 - RED `the_age_floor_bounds_what_a_sweep_considers` — the default floor retains it:
+- RED `a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind` — a workspace written minutes ago is inside the floor, whoever is asking
 
 ### `125-the-lifecycle-clone-root-is-reached-into`
 
@@ -357,6 +358,68 @@ the writability probe stops treating a clock it cannot put back as an answer, so
 a publication stops running the gate the policy names.
 
 - RED `a_gate_that_rejects_a_branch_keeps_it_where_it_was_found` — Unexpected return code, failed var == 1
+
+### `140-a-landing-never-enforces-the-retention-rule`
+
+a branch-keyed landing stops enforcing the retention rule over its own family, so the workspaces the landings before it left behind are reaped only when somebody remembers to run the verb.
+
+- RED `a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind` — the landing enforced the retention rule over its own family
+- RED `a_landing_never_reclaims_a_workspace_somebody_holds_the_lease_on` — the workspace nobody is inside is reclaimed by the landing
+- RED `a_landing_says_so_when_the_retention_rule_could_not_run_and_lands_anyway` — the landing says what it could not reclaim, and where the rest is reported:
+- RED `a_recovery_enforces_the_rule_over_its_own_family_and_not_the_publications` — the recovery reclaimed the workspace the recovery before it left behind
+- RED `a_landing_stops_the_daemon_the_landing_before_it_left_running` — the landing reclaimed the workspace before it
+
+### `141-a-reclaimed-workspace-leaves-its-processes-running`
+
+reclaiming a workspace stops asking which processes it left running, so the directory is unlinked while a daemon goes on holding everything that was in it.
+
+- RED `reclaiming_a_workspace_stops_the_process_the_publication_left_running` — the rehearsal names the process the removal would reach for:
+- RED `a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes` — the report names the daemon it signalled — the shell holding the trap, and the sleep under it, are both working in there:
+- RED `a_landing_stops_the_daemon_the_landing_before_it_left_running` — timed out after 60s waiting until the daemon the earlier landing left running has gone
+
+### `142-a-process-that-ignores-the-first-signal-is-left-running`
+
+the signal that ends a process which would not stop is the one it has already ignored, so a workspace whose daemon ignores SIGTERM is one nothing can ever reclaim.
+
+- RED `a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes` — a workspace whose daemon ignored the first signal is still reclaimed:
+
+### `143-work-that-never-reached-the-origin-stops-keeping-a-workspace`
+
+a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
+
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-d13e2-18cd9365583770ad-0 is one of the three newest workspaces holding unlanded work:
+- RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
+
+### `144-the-failure-history-a-workspace-holds-is-never-bounded`
+
+the bound on workspaces holding work no origin has stops being applied, so a scratch root keeps every failed publication for ever.
+
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — the fourth-newest is beyond the bound and goes:
+- RED `a_landing_applies_the_same_bound_to_the_workspaces_holding_work_no_origin_has` — the landing bounded the failure history it found
+
+### `145-the-bound-keeps-the-oldest-failures-rather-than-the-newest`
+
+the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
+
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-d3e68-18cd936819466e4e-0 is one of the three newest workspaces holding unlanded work:
+
+### `146-the-processes-this-one-descends-from-are-signalled-too`
+
+the search for what a workspace left running stops leaving out this process and the ones it descends from, so a sweep run from inside a workspace stops the shell that ran it.
+
+- RED `an_operator_sweeping_from_inside_a_workspace_is_not_stopped_by_their_own_sweep` — Unexpected failure.
+
+### `147-content-the-base-already-carries-is-read-as-unpublished-work`
+
+a run clone's branch is read as work that never reached the origin whenever a ref does not carry it, so every finished publication looks like a failure worth keeping.
+
+- RED `a_workspace_whose_branch_the_base_already_carries_takes_no_place_in_the_bound` — a workspace whose branch the base already carries is spent, whatever its own commits are:
+
+### `148-a-family-the-retention-pass-could-not-read-is-passed-over-in-silence`
+
+the retention rule a landing enforces stops saying when it could not read the family at all, so a disk fills with nothing said anywhere.
+
+- RED `a_landing_says_so_when_the_family_it_would_reclaim_cannot_be_listed` — the landing says which family it could not judge:
 
 ### `14-an-identity-with-no-bar-is-only-diagnosed`
 
@@ -805,7 +868,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 

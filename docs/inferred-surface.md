@@ -381,13 +381,32 @@ something to read.
 | the exit code | `0` whenever the sweep *ran* | A run root it could not prove dead, or could not remove, is a line in the report. A caller that got a non-zero code for a directory somebody else is inside could not tell that from a sweep that never happened. |
 | the report | every family examined, every family it did not examine and why, what it reclaimed, and every retained directory with its reason | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. |
 
-**Retain rather than remove whenever the answer is not proven, and never kill.**
+**Retain rather than remove whenever the answer is not proven.**
 The state root is shared by several managers on one host. A run root whose owner
 cannot be proven — one holding no run clone this crate would have cut — is
 retained and reported; a run root a live session holds is retained, reported, and
-never terminated. During the incident, 41 GB in a sibling orchestrator's root had
-to be left untouched for exactly that reason, and a sweep that guessed would have
-destroyed another manager's live work.
+nothing inside it is signalled. During the incident, 41 GB in a sibling
+orchestrator's root had to be left untouched for exactly that reason, and a sweep
+that guessed would have destroyed another manager's live work.
+
+**The rule is enforced where the run roots are made, not only where they are asked
+about.** `branch::prepare` runs the same judgement over its own family before it
+cuts the next run root, so the two verbs that fill the disk are the two that empty
+it. A verb nobody remembers to run is how thirty-one workspaces accumulated in the
+first place, and this is `workspace::reclaim`'s shape — the lifecycle clones have
+been reclaimed at `session open` since they existed. A pass that could not run is a
+warning on stderr and never a refused landing: what it reclaims is the *previous*
+runs' leftovers, and a publication lost to those is the failure the whole rule
+exists to prevent.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| how long the evidence lasts | the age floor: 24 hours by default, from the last write anywhere under the run root | The preserved gate logs are what an operator reads *after* a publication failed, and they live under the run root — which outlives the worktree the gate ran in — so reclamation is the only thing that takes them. Both ways of asking answer to the same floor, so the evidence a landing left cannot be taken by the landing after it. |
+| a clone holding work no origin has | kept past the floor, bounded to the most recently written of its family | `sweep::RETAINED_UNPUBLISHED` *is* `workspace::RETAINED_DEAD_RUNS` rather than a second number equal to it: one bound on one question, asked of the lifecycle clones there and of the landings' workspaces here — and stated nowhere as a literal, because a number repeated in prose is the drift this record exists to prevent. The newest are what it keeps, because the failure somebody reaches for is the one that just happened, and keeping every one forever turns a scratch root into an archive nobody prunes. |
+| what "no origin has" means | commits no `origin` ref carries **and** content the base does not already carry | `vcs::collect`'s own two questions, so the report that offers work for recovery and the rule that keeps its workspace cannot disagree. Publication squashes: ancestry alone would call every finished workspace unpublished work, and content alone would call a branch spent whose commits happen to change nothing. |
+| the processes a reclaimed workspace left running | stopped, `SIGTERM` then `SIGKILL`, before anything is unlinked | A gate is the repository's own verification and verifications start daemons. Two Nx daemons outlived their publications by 33 and 16 minutes during the incident, pinning roughly 14G, and unlinking files a live process holds open frees none of their blocks — so a removal that left them running would report a figure the disk never gets back. |
+| which processes those are | the ones whose **working directory** is inside the run root | It is what a gate's children inherit and what nothing else on a shared host has. A name or a command line would be this crate guessing which of a host's processes are its business. This process, everything it descends from, and any pid at or below `1` are never signalled — an operator who ran a sweep from inside a workspace is not a daemon. |
+| a workspace whose holders would not stop | kept, reported, and not removed | Half-emptying a tree a live process is still writing into is worse than the tree that was there, and the space would not come back anyway. |
 
 **One boundary is deliberately outside it.** `workspaces/<identity>/runs` is the
 per-run lifecycle clone root, which `workspace::reclaim` keeps as a bounded

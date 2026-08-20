@@ -50,6 +50,7 @@ mod import;
 mod integrate;
 mod lock;
 mod policy;
+mod processes;
 pub mod provenance;
 mod providers;
 mod publish;
