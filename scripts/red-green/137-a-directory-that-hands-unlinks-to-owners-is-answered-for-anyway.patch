@@ -1,0 +1,16 @@
+Mutation: the sweep answers for a directory whose entries only their owners may unlink, so a workspace it cannot show it may empty is emptied on a permission that says nothing about it.
+Red: a_workspace_holding_a_directory_that_hands_unlinks_to_owners_is_retained
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index 001d88d..249712f 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -258,7 +258,7 @@ fn can_unlink_within(path: &Path) -> bool {
+ /// Whether an entry of one directory is this user's to unlink: writing into it is
+ /// what the unlink takes, unless the directory hands that back to each entry's owner.
+ fn can_unlink_from(directory: &Path) -> bool {
+-    !hands_unlinks_to_owners(directory) && can_write_into(directory)
++    can_write_into(directory)
+ }
+ 
+ /// Whether a directory carries the sticky bit, which is the one thing writing into it

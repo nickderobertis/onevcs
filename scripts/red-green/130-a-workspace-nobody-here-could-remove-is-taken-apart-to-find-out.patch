@@ -2,20 +2,20 @@ Mutation: the sweep stops asking whether removing a workspace is this host's to 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 79dc591..cf8202e 100644
+index 001d88d..486082e 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -372,9 +372,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+@@ -400,9 +400,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
      // Last, because it is the only question whose answer is about this *host* rather
      // than about the workspace: everything above has already decided the directory is
      // dead, and this asks whether emptying it can be shown to be ours to do.
--    if !writable_throughout(run_root) {
+-    if !can_unlink_throughout(run_root) {
 -        return Ok(Verdict::Retain(Kept::Unproven));
 -    }
      Ok(Verdict::Reclaim(lease))
  }
  
-@@ -398,10 +395,8 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+@@ -426,10 +423,8 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
      // family this user may not write to, and content it may not unlink — is decided
      // by the walk above and is a journey. What is left is the state root changing
      // between the question and the act, which no interface this crate exposes reaches.
