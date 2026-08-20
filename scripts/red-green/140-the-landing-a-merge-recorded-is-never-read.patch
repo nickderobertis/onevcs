@@ -2,21 +2,21 @@ Mutation: the landing this host recorded for a branch is never read, so the most
 Red: a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landing_it_recorded
 
 diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
-index d4d4171..8529522 100644
+index 3ec1c13..835939a 100644
 --- a/crates/onevcs/src/landed.rs
 +++ b/crates/onevcs/src/landed.rs
-@@ -165,17 +165,6 @@ pub(crate) fn decide(
+@@ -171,17 +171,6 @@ pub(crate) fn decide(
      let Some(fork) = git::merge_base(repo, compared, branch)? else {
          return Ok(inferred(!git::trees_differ(repo, compared, branch)?));
      };
 -    // Tier 1. Exact and permanent: a commit somebody recorded as this branch's
 -    // landing, which the base can reach. Nothing edited afterwards changes it.
--    if let Some(commit) = recorded.landing.as_deref() {
+-    if let Some(commit) = recorded.landing.as_ref().map(ObjectId::as_str) {
 -        if git::known_to_reach(repo, commit, compared)?
 -            && landed_all_of(repo, &fork, branch, commit)?
 -        {
 -            return Ok(landed(LandingEvidence::RecordedLanding {
--                commit: commit.to_owned(),
+-                commit: Sha(commit.to_owned()),
 -            }));
 -        }
 -    }

@@ -2,19 +2,19 @@ Mutation: the change request's number is not looked for in the base's history, s
 Red: a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its_own_paths
 
 diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
-index d4d4171..e665d54 100644
+index 3ec1c13..590f352 100644
 --- a/crates/onevcs/src/landed.rs
 +++ b/crates/onevcs/src/landed.rs
-@@ -180,16 +180,6 @@ pub(crate) fn decide(
+@@ -186,16 +186,6 @@ pub(crate) fn decide(
      // Tier 2. The host writes its own number into the squash commit it lands, so
      // this answers for anything merged through the host by anybody — no write of
      // ours required, and true however far the base has moved since.
--    if let Some(url) = recorded.change.as_deref() {
--        if let Some(commit) = names_the_change(&base_history, url) {
+-    if let Some(url) = recorded.change.as_ref() {
+-        if let Some(commit) = names_the_change(&base_history, url.as_str()) {
 -            if landed_all_of(repo, &fork, branch, &commit)? {
 -                return Ok(landed(LandingEvidence::ChangeRequest {
--                    commit,
--                    change_url: url.to_owned(),
+-                    commit: Sha(commit),
+-                    change_url: url.clone(),
 -                }));
 -            }
 -        }
