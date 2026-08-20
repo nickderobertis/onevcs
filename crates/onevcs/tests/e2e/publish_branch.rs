@@ -2224,8 +2224,11 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
     // blind loses the other. What it cost was a manager comparing two trees by hand,
     // because the refusal named neither what they differ in nor how to see it.
     // A commit date for the amended copy alone, so the pair differs in the one field
-    // that says which copy was taken second.
-    const AMENDED_AT: &str = "2026-08-19T04:42:00+00:00";
+    // that says which copy was taken second. Epoch seconds, because the assertion below
+    // reads the date back and holds it to this one: an instant has a single spelling in
+    // `%ct`, where `%cI` spells a zero UTC offset `+00:00` on one git and `Z` on
+    // another and the assertion would be about which git rendered it.
+    const AMENDED_AT: &str = "1787114520"; // 2026-08-19T04:42:00Z
     let fixture = Fixture::local(&local_direct("[\"false\"]"));
     let (_worktree, clone) = handed_back_and_still_open(&fixture, "feature/amended");
     let original = tip_of(&fixture, &clone, "feature/amended");
@@ -2242,9 +2245,10 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
     // Dated, because the two copies are made seconds apart and git records a commit
     // date to the second: two copies at one date cannot show which date belongs to
     // which, and telling them apart is what the refusal is read for.
+    let amended_at = format!("@{AMENDED_AT} +0000");
     fixture.world.git_env(
         &fixture.checkout,
-        &[("GIT_COMMITTER_DATE", AMENDED_AT)],
+        &[("GIT_COMMITTER_DATE", &amended_at)],
         &["commit", "-q", "--amend", "--no-edit"],
     );
     let amended = tip_of(&fixture, &fixture.checkout, "feature/amended");
@@ -2321,7 +2325,7 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
         .map(|(checkout, tip)| {
             fixture
                 .world
-                .git(checkout, &["log", "-1", "--format=%cI", tip])
+                .git(checkout, &["log", "-1", "--format=%ct", tip])
         })
         .collect();
     assert_eq!(
