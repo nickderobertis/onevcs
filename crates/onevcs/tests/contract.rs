@@ -907,6 +907,18 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         serde_json::to_value(Landed::Unknown).expect("an answer serializes"),
         json!({"state": "unknown"})
     );
+    // The row is read to be pasted, so the one contradiction it could carry is not a
+    // row this reads: an answer saying the work is on the base, beside the argv that
+    // publishes it again.
+    let mut contradictory = serde_json::to_value(&landed).expect("a landed recoverable");
+    contradictory["recover_command"] = json!(["onevcs", "publish-branch", "feature"]);
+    let refused = serde_json::from_value::<Recoverable>(contradictory)
+        .expect_err("a landed row carrying a command is not one this reads")
+        .to_string();
+    assert!(
+        refused.contains("a row that landed carries no command"),
+        "the refusal says what was wrong with it: {refused}"
+    );
 
     assert_eq!(
         serde_json::to_value(MergeOutcome::Merged(Sha("0f1e2d3".to_owned())))

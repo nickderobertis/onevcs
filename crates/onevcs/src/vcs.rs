@@ -73,18 +73,16 @@ pub trait Vcs {
     /// Every preserved branch in scope, whatever became of its work, each saying
     /// what did become of it and what says so.
     ///
-    /// [`recoverable`](Self::recoverable) is this without them, and is what somebody
-    /// asking "what is left to publish" wants. This is what somebody asking "what
-    /// became of all of it" wants, and it is the one place a landed branch is
-    /// reported rather than silently withheld — an exclusion nobody can see is how
-    /// preserved work goes missing.
+    /// [`recoverable`](Self::recoverable) is this without the ones whose work is on
+    /// the base, and is what somebody asking "what is left to publish" wants. This is
+    /// what somebody asking "what became of all of it" wants, and it is the one place
+    /// a withheld branch is reported rather than silently dropped — an exclusion
+    /// nobody can see is how preserved work goes missing.
     ///
-    /// It defaults to [`recoverable`](Self::recoverable), so an implementation that
-    /// predates the question answers the one it always answered rather than being
-    /// obliged to invent an answer to this one.
-    fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>> {
-        self.recoverable(scope)
-    }
+    /// Required rather than defaulted to [`recoverable`](Self::recoverable): the
+    /// default would answer the *narrower* question under this one's name, and an
+    /// implementation whose wider answer is the same one has only to say so.
+    fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>>;
 }
 
 /// The git implementation of [`Vcs`].

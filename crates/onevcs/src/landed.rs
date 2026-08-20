@@ -202,7 +202,7 @@ pub(crate) fn decide(
     // wears it now.
     for commit in &base_history {
         for carried in trailer_values(&commit.message, trailers.landed()) {
-            if git::known_to_reach(repo, &carried, branch)?
+            if git::known_to_reach(repo, carried.as_str(), branch)?
                 && landed_all_of(repo, &fork, branch, &commit.sha)?
             {
                 return Ok(landed(LandingEvidence::Trailer {
@@ -276,12 +276,17 @@ fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String>
         .map(|commit| commit.sha.clone())
 }
 
-/// Every value a message carries under one trailer key.
-fn trailer_values(message: &str, key: &str) -> Vec<String> {
+/// Every object id a message carries under one trailer key.
+///
+/// A commit message is written by whoever wrote the commit, so what sits after the
+/// key is input like any other: it goes on to be handed to git as a revision, and a
+/// line of prose — or a value shaped like an option — is not one. Read through the
+/// conversion that decides what an object id is, so a trailer nobody meant as one
+/// names no landing rather than becoming an argument.
+fn trailer_values(message: &str, key: &str) -> Vec<ObjectId> {
     message
         .lines()
         .filter_map(|line| line.trim().strip_prefix(key))
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+        .filter_map(|value| ObjectId::parse(value.trim()))
         .collect()
 }

@@ -411,6 +411,16 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
         Ok(publication)
     }
 
+    /// The same rows [`Vcs::recoverable`] answers with.
+    ///
+    /// This provider is *handed* its preserved work, and what it is handed is work
+    /// nobody published: there is no base here whose history could record a landing
+    /// and no tree to compare content against, so it withholds nothing and the wider
+    /// question has the same answer as the narrower one.
+    fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>> {
+        self.recoverable(scope)
+    }
+
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>> {
         self.store.with(|state| {
             let wanted = match &scope {

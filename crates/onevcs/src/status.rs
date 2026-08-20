@@ -251,7 +251,15 @@ pub enum BranchProvenance {
 }
 
 /// What was proposed for the work, and whether it reached the base.
+///
+/// Read through the conversion below, which is where the one thing these two fields
+/// could disagree about is settled: a document whose `state` says the work landed
+/// and whose `landed` says it did not — or the other way about — does not
+/// deserialize at all, rather than becoming a report a reader has to remember to
+/// question. The number that says which shape a report is exists to be *acted on*,
+/// and so does this.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "AnyPublication")]
 pub struct PublicationReport {
     /// Where the work has got to, which is the landing below and what the host says
     /// about a change request, in one word.
@@ -271,6 +279,42 @@ pub struct PublicationReport {
     pub change_url: Option<String>,
     /// The policy this identity's rules publish under.
     pub merge_policy: MergePolicy,
+}
+
+/// A publication section as a document spells it, before the two answers in it have
+/// been held to each other.
+///
+/// The same fields, and it exists only so that the check above has something to run
+/// on: serde gives a conversion the whole value or nothing, and what has to be
+/// checked here is one field against another.
+#[derive(Deserialize)]
+struct AnyPublication {
+    state: Landing,
+    landed: Landed,
+    #[serde(default)]
+    change_url: Option<String>,
+    merge_policy: MergePolicy,
+}
+
+impl TryFrom<AnyPublication> for PublicationReport {
+    type Error = String;
+
+    fn try_from(value: AnyPublication) -> std::result::Result<Self, Self::Error> {
+        if (value.state == Landing::Landed) != value.landed.is_landed() {
+            return Err(format!(
+                "a report says the work is {state:?} and that it landed is {landed}; those are \
+                 two answers to one question",
+                state = spell_landing(value.state),
+                landed = value.landed.is_landed(),
+            ));
+        }
+        Ok(PublicationReport {
+            state: value.state,
+            landed: value.landed,
+            change_url: value.change_url,
+            merge_policy: value.merge_policy,
+        })
+    }
 }
 
 /// Where one piece of work has got to.
@@ -1642,6 +1686,7 @@ fn spell_source(source: &CheckSource) -> &'static str {
 #[cfg(test)]
 mod round_trip {
     use super::{Landing, Report, ReportVersion, REPORT_VERSION};
+    use serde_json::json;
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
@@ -1699,6 +1744,32 @@ mod round_trip {
         assert!(minimal.branch.change_base.is_none());
         assert!(minimal.publication.change_url.is_none());
         assert!(minimal.notes.is_empty());
+    }
+
+    #[test]
+    fn a_report_whose_two_landing_answers_disagree_is_refused_where_it_is_read() {
+        // The word and the answer are one decision, and a document is where they could
+        // come apart: `state` says the work landed and `landed` says it did not, or the
+        // other way about. Neither is a report this reads.
+        for (state, landed) in [
+            ("landed", json!({"state": "no"})),
+            (
+                "unpublished",
+                json!({"state": "yes", "evidence": {"tier": "trailer",
+                                                                "commit": "0f1e2d3"}}),
+            ),
+        ] {
+            let mut document = parsed(FULL);
+            document["publication"]["state"] = Value::from(state);
+            document["publication"]["landed"] = landed;
+            let refusal = serde_json::from_value::<Report>(document)
+                .expect_err("two answers to one question are not a report this reads")
+                .to_string();
+            assert!(
+                refusal.contains("two answers to one question"),
+                "the refusal says what disagreed: {refusal}"
+            );
+        }
     }
 
     #[test]

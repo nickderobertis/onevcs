@@ -494,6 +494,13 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     let shown = row(&rows(&fixture.world, &["--all"]), "feature/landed-by-hand")
         .expect("the branch is reachable through the flag that shows them");
     assert_eq!(shown["landed"]["state"], "unknown");
+    // It keeps the argv, unlike a row that landed: nothing here can say the work
+    // reached the base, and if it did not then this is still what lands it. What the
+    // rendering withholds is the *label* that reads as "paste this".
+    assert_eq!(
+        shown["recover_command"][1], "publish-branch",
+        "an undecided row still carries what would land it: {shown}"
+    );
     let listed = fixture
         .world
         .onevcs()

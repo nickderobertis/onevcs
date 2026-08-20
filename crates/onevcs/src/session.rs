@@ -186,8 +186,15 @@ pub enum Scope {
     Repo(String),
 }
 
-/// Preserved work that has not been published, and what would land it.
+/// Preserved work, whether it reached its base, and what would land it.
+///
+/// Read through the conversion below, which is where the one thing this row could
+/// contradict itself about is settled: a row saying the work reached the base *and*
+/// carrying the argv that publishes it again does not deserialize at all. The row is
+/// read to be pasted, and the whole reason the answer is on it is that pasting one
+/// for finished work re-opens a change request for what the base has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "AnyRecoverable")]
 pub struct Recoverable {
     /// The identity the work belongs to.
     pub identity: String,
@@ -238,6 +245,53 @@ pub struct Recoverable {
     /// carries nothing here, and cannot, because [`NetNegative`] holds no such count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub net_negative: Option<NetNegative>,
+}
+
+/// A row as a document spells it, before the answer on it and the command beside it
+/// have been held to each other.
+///
+/// The same fields, and it exists only so that the check above has something to run
+/// on: serde hands a conversion the whole value or nothing, and what has to be
+/// checked here is one field against another.
+#[derive(Deserialize)]
+struct AnyRecoverable {
+    identity: String,
+    branch: PreservedBranch,
+    checkout: PathBuf,
+    #[serde(default)]
+    landed: Landed,
+    stopped_because: String,
+    recover_command: Vec<String>,
+    #[serde(default)]
+    held_by: Option<HeldBy>,
+    #[serde(default)]
+    net_negative: Option<NetNegative>,
+}
+
+impl TryFrom<AnyRecoverable> for Recoverable {
+    type Error = String;
+
+    fn try_from(value: AnyRecoverable) -> std::result::Result<Self, Self::Error> {
+        if value.landed.is_landed() && !value.recover_command.is_empty() {
+            return Err(format!(
+                "the row for branch {branch:?} says its work reached {base} and carries \
+                 {command:?} to publish it again; a row that landed carries no command",
+                branch = value.branch.branch,
+                base = value.branch.base,
+                command = value.recover_command.join(" "),
+            ));
+        }
+        Ok(Recoverable {
+            identity: value.identity,
+            branch: value.branch,
+            checkout: value.checkout,
+            landed: value.landed,
+            stopped_because: value.stopped_because,
+            recover_command: value.recover_command,
+            held_by: value.held_by,
+            net_negative: value.net_negative,
+        })
+    }
 }
 
 /// The live session that still holds a preserved branch.

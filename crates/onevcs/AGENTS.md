@@ -177,9 +177,10 @@ correct, and the absent-hook journey is what holds that.
   because `--as` is the way through and only works once those are visible.
 - **`status --json` is a versioned object whose bytes are checked in.** It declares
   `version`, an absent field is omitted rather than written as `null`, and the
-  goldens under `tests/golden/status-report-v1*.json` are compared byte for byte
-  against the real CLI. Changing what the object carries means bumping
-  `status::REPORT_VERSION` and re-making both goldens in the same change.
+  goldens under `tests/golden/` are compared byte for byte against the real CLI.
+  Changing what the object carries means bumping `status::REPORT_VERSION` — which is
+  the one place the number is stated — and re-making both goldens, named for that
+  version, in the same change.
 
 Both find a branch nobody named through `branch::locate`, which is the search the
 two publishing verbs use.
