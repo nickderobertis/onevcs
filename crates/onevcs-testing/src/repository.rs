@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map, Value};
 
 use onevcs::{
-    ChangeSpec, Error, EventKind, FailureKind, HeldBy, Holding, Hosting, Identity, Lifecycle,
-    MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome,
+    ChangeSpec, Error, EventKind, FailureKind, HeldBy, Holding, Hosting, Identity, Landed,
+    Lifecycle, MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome,
     PublishRequest, Recoverable, Result, Scope, Session, SessionRecord, SessionRequest,
     SessionToken, Sha, Vcs,
 };
@@ -243,6 +243,11 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 checkout: s.worktree.clone(),
                 stopped_because: format!("session {} was left open", s.token.0),
                 recover_command: recover_command(&s.branch, &s.worktree, provenance),
+                // Preserved work this provider was handed is work nobody published:
+                // there is no base here whose history could record a landing, and no
+                // tree to compare content against, so the one answer it can give is
+                // the one it knows.
+                landed: Landed::No,
                 // Both answered where the row is *read* rather than frozen in here:
                 // whether a session still holds its branch is a fact about the session
                 // now, and there is no tree here to count a diff's lines against.
@@ -404,6 +409,16 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             events::emit(emission);
         }
         Ok(publication)
+    }
+
+    /// The same rows [`Vcs::recoverable`] answers with.
+    ///
+    /// This provider is *handed* its preserved work, and what it is handed is work
+    /// nobody published: there is no base here whose history could record a landing
+    /// and no tree to compare content against, so it withholds nothing and the wider
+    /// question has the same answer as the narrower one.
+    fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>> {
+        self.recoverable(scope)
     }
 
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>> {

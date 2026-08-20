@@ -247,6 +247,10 @@ pub struct RecoverArgs {
 /// Arguments for `onevcs recoverable`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RecoverableArgs {
+    /// List every preserved branch, including the ones whose work reached their
+    /// base and the ones nothing here can decide about.
+    #[arg(long)]
+    pub all: bool,
     /// Report as JSON rather than as a human table.
     #[arg(long)]
     pub json: bool,

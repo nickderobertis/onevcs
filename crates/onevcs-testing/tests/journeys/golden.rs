@@ -19,7 +19,7 @@
 //! consumer's checked-in scenario, read here as that consumer's next run would read
 //! it.
 
-use onevcs::{ChangeSpec, Hosting, SessionRequest, Vcs};
+use onevcs::{ChangeSpec, Hosting, Landed, SessionRequest, Vcs};
 use onevcs_testing::{
     FileHost, FileVcs, HostState, VcsState, OLDEST_READABLE_VERSION, STATE_VERSION,
 };
@@ -27,19 +27,19 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v4-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v4-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v5-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v5-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v4.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v4.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v5.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v5.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v3.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v3.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v4.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v4.json");
 
 /// Every optional key of a repository state, as the document spells it.
 const VCS_OPTIONAL: &[&str] = &[
@@ -193,10 +193,8 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
     std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
     assert!(
-        VCS_PREVIOUS.contains(r#""version": 3"#)
-            && !VCS_PREVIOUS.contains("held_by")
-            && !VCS_PREVIOUS.contains("net_negative"),
-        "the previous document is the one that predates the fields, or it proves nothing"
+        VCS_PREVIOUS.contains(r#""version": 4"#) && !VCS_PREVIOUS.contains("landed"),
+        "the previous document is the one that predates the field, or it proves nothing"
     );
 
     let host = FileHost::create(&host_path).expect("the previous version reads");
@@ -218,9 +216,15 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     assert_eq!(repository.version, STATE_VERSION);
     assert_eq!(repository.sessions.len(), 1);
     assert_eq!(repository.publications.len(), 1);
-    assert!(
-        repository.preserved[0].held_by.is_none() && repository.preserved[0].net_negative.is_none(),
-        "a document that predates the two marks carries neither: {:?}",
+    // The one field a version 4 document could not hold, carried forward as the
+    // answer that document *was*: a list of preserved work nobody had published.
+    // Left at its own default it would read as "nothing here can say", and a
+    // consumer's scenario would start reporting work it had always called
+    // unpublished as work that may have landed.
+    assert_eq!(
+        repository.preserved[0].landed,
+        Landed::No,
+        "a document that predates the landing answer carries the one its list meant: {:?}",
         repository.preserved[0]
     );
 
@@ -258,13 +262,14 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
         drafted,
         "a field of the previous bump is written to the carried-forward document"
     );
-    // …and this bump's two are absent for the reason they are absent: the session that
-    // preserved that row is closed, so nothing holds its branch and no line count was
-    // asked for. A carried-forward document says what this build answers, not what the
-    // build that wrote it could not.
+    // …and this bump's field is written into it, carrying the answer that list meant
+    // rather than the one nothing said. A carried-forward document says what this
+    // build answers, not what the build that wrote it could not.
     let carried = std::fs::read_to_string(&vcs_path).expect("a document");
     assert!(
-        carried.contains(r#""version": 4"#) && !carried.contains("held_by"),
-        "the row this document holds is a closed session's, so nothing holds it: {carried}"
+        carried.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && carried.contains(r#""state": "no""#),
+        "a carried-forward row is written back saying what this build answers about \
+         it: {carried}"
     );
 }

@@ -1,0 +1,24 @@
+Mutation: the change request's number is not looked for in the base's history, so a branch the host merged is judged by content alone.
+Red: a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its_own_paths
+
+diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
+index 3ec1c13..590f352 100644
+--- a/crates/onevcs/src/landed.rs
++++ b/crates/onevcs/src/landed.rs
+@@ -186,16 +186,6 @@ pub(crate) fn decide(
+     // Tier 2. The host writes its own number into the squash commit it lands, so
+     // this answers for anything merged through the host by anybody — no write of
+     // ours required, and true however far the base has moved since.
+-    if let Some(url) = recorded.change.as_ref() {
+-        if let Some(commit) = names_the_change(&base_history, url.as_str()) {
+-            if landed_all_of(repo, &fork, branch, &commit)? {
+-                return Ok(landed(LandingEvidence::ChangeRequest {
+-                    commit: Sha(commit),
+-                    change_url: url.clone(),
+-                }));
+-            }
+-        }
+-    }
+     // Tier 3. A landing with no change request at all. The trailer names a commit
+     // rather than a branch name deliberately: a name is spent and re-cut, and a
+     // landing of the work that *used* to wear it must not answer for work that

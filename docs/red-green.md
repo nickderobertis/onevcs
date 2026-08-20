@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 166. Tests observed red and then green: 194.
+Patches: 178. Tests observed red and then green: 203.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpidt0rH-project-00d6f2eb2ff8/runs/<token>/clone stands on its own parent ede2ce00dc4b4e067c54a9
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpNnE0ER-project-ddf9bbe18ce2/runs/<token>/clone stands on its own parent 67d4e0780b7031be090a5a
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp01JdQN-project-66e09b86e51c/runs/<token>/clone stands on its own parent c4a473cf7bf317006d0e06
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpsh2rJc-project-0a23f69e4e1c/runs/<token>/clone stands on its own parent eea2980a1a765fe1a1c71e
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -387,7 +387,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-d13e2-18cd9365583770ad-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-3337e2-18cd9b83db0beff7-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -401,7 +401,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-d3e68-18cd936819466e4e-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-337bc5-18cd9b86e89397f4-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -421,17 +421,92 @@ the retention rule a landing enforces stops saying when it could not read the fa
 
 - RED `a_landing_says_so_when_the_family_it_would_reclaim_cannot_be_listed` — the landing says which family it could not judge:
 
+### `149-the-landing-a-merge-recorded-is-never-read`
+
+the landing this host recorded for a branch is never read, so the most certain tier answers nothing and a lower one has to.
+
+- RED `a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landing_it_recorded` — assertion `left == right` failed
+
 ### `14-an-identity-with-no-bar-is-only-diagnosed`
 
 the refusal that nothing would be attested stops naming the rules entry that answers it.
 
 - RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(<tmp>/.onevcs/rules.yml)
 
+### `150-the-change-requests-number-is-not-looked-for`
+
+the change request's number is not looked for in the base's history, so a branch the host merged is judged by content alone.
+
+- RED `a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its_own_paths` — assertion `left == right` failed
+
+### `151-a-landing-leaves-no-record-on-the-base`
+
+a publication that opens no change request leaves no landing trailer on the base, so nothing on the base says what it landed.
+
+- RED `a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_base` — assertion `left == right` failed: nothing recorded a landing for this name, and the base's own commit did: {"version":2,"ref":{"given":"pres
+
+### `152-a-landing-nothing-records-is-read-as-unpublished`
+
+the comparison of content answers no rather than unknown, so a landing nothing recorded reads as work nobody published.
+
+- RED `a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown` — assertion `left == right` failed: the base carries what it changed and nothing records that it landed: {"version":2,"ref":{"given":"feature/
+
+### `153-a-landed-row-is-offered-to-be-resumed-anyway`
+
+a row whose work reached the base carries the argv that publishes it again, and prints it as ready to resume.
+
+- RED `a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_base` — Unexpected stdout, failed var.contains(Nothing to resume)
+- RED `a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landing_it_recorded` — assertion `left == right` failed: a landed row carries no argv, in the document as in the rendering: {"identity":"<tmp>/project","branch":{"
+
+### `154-a-branch-that-landed-is-listed-as-work-to-publish`
+
+recoverable stops withholding the branches whose work reached their base, so a landed one is a row like any other.
+
+- RED `a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its_own_paths` — a branch whose change request merged is not offered to be published again: 1 preserved unpublished branch(es) across every registered identi
+
+### `155-the-tiers-travel-under-names-nothing-teaches`
+
+the tier that decided a landing travels under a spelling the surface record does not teach.
+
+- RED `the_record_names_every_word_the_landing_answer_travels_as` — docs/inferred-surface.md teaches the landing vocabulary, and "recordedLanding" is a word the types spell that it does not name
+- RED `a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landing_it_recorded` — assertion `left == right` failed
+
+### `156-work-nobody-published-is-read-as-maybe-landed`
+
+the comparison of content answers unknown whatever the base carries, so work nobody published reads as work that may have landed.
+
+- RED `a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_lands_it` — assertion `left == right` failed
+
+### `157-the-base-having-taken-the-same-change-is-no-obstacle`
+
+a base whose history already took a change under the subject a landing of this branch would have carried is no obstacle to reporting the branch as work nobody published.
+
+- RED `a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown` — assertion `left == right` failed: the base took a change under the subject a landing of this branch would have carried, so whether it landed
+
+### `158-only-the-number-a-host-parenthesises-is-looked-for`
+
+only the number a host trails in parentheses is looked for in the base's history, so a change request a merge commit names in a sentence — or one a message quotes the URL of — is a landing nothing reads.
+
+- RED `a_change_request_a_merge_commit_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history names this change request, in the sentence a merge commit spells it in: {"version":2,"r
+- RED `a_change_request_its_own_url_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history quotes this change request's own URL: {"version":2,"ref":{"given":"feature/quoted-by-ur
+
+### `159-a-landing-answers-for-work-it-never-carried`
+
+a recorded landing stops being asked whether it carried everything the branch has changed since it forked, so a landing answers for work committed onto the branch after it.
+
+- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
+
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
 an unusable stack pointer is refused as a bare name rather than as the trailer it came from.
 
 - RED `a_recorded_base_that_is_not_a_branch_names_the_trailer_that_says_so` — Unexpected stderr, failed var.contains(Onevcs-Change-Base:)
+
+### `160-a-spent-copys-landing-answers-for-the-branch`
+
+the copy that answers for a branch is whichever one shows a landing, so a run clone left at the commit that landed answers for a checkout holding commits nobody published.
+
+- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
 
 ### `16-the-trains-arguments-are-only-diagnosed`
 
@@ -623,7 +698,7 @@ recovery stops writing the attestation commit that carries the cleared marker fo
 
 the readable range narrows back to one version, so a scenario written by the build before this one is refused.
 
-- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 3; this b
+- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 4; this b
 
 ### `47-a-carried-forward-document-keeps-the-version-it-arrived-at`
 
@@ -848,7 +923,7 @@ the occupancy question is asked about a run root nobody is in.
 
 ### `77-a-base-that-carries-the-work-is-read-as-unpublished`
 
-status stops reading a landing off the base's content, which is the answer a squash-merge leaves and the one a planner got wrong.
+status stops reading the landing the base's own history records, and answers from the host and its own paperwork alone — which is how a change already squash-merged got reported as unpublished.
 
 - RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — assertion `left == right` failed
 
@@ -868,7 +943,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -1043,7 +1118,7 @@ the report's schema version stops being checked where the object is read, so a d
 
 a field the report leaves out when it holds nothing becomes one a reader requires, so the very bytes this build writes are bytes it cannot read.
 
-- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — the full golden reads back as a report: missing field `notes` at line 78 column 1
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — the full golden reads back as a report: missing field `notes` at line 81 column 1
 
 ### `90-a-commit-a-checkout-cannot-see-is-read-as-a-failure`
 

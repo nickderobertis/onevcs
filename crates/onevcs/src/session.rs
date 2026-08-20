@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::landed::Landed;
+
 /// What to open a session over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRequest {
@@ -184,8 +186,22 @@ pub enum Scope {
     Repo(String),
 }
 
-/// Preserved work that has not been published, and what would land it.
+/// Preserved work, whether it reached its base, and what would land it.
+///
+/// Read through the conversion below, which is where the one thing this row could
+/// contradict itself about is settled: a row saying the work reached the base *and*
+/// carrying the argv that publishes it again does not deserialize at all. The row is
+/// read to be pasted, and the whole reason the answer is on it is that pasting one
+/// for finished work re-opens a change request for what the base has.
+// llmlint: ignore[invalid_states_unrepresentable] the two cannot be *one* field: this
+// row's field list is the recorded public surface in docs/inferred-surface.md, which a
+// consumer parses `--json` into, and folding the answer and the argv into one value would
+// change the document every consumer already reads. What is available is what this crate
+// does everywhere a rule spans two values it must keep: the one place that builds a row
+// derives both from the same verdict, and the boundary where a row is *read* refuses a
+// document whose two halves disagree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "AnyRecoverable")]
 pub struct Recoverable {
     /// The identity the work belongs to.
     pub identity: String,
@@ -195,12 +211,26 @@ pub struct Recoverable {
     pub checkout: PathBuf,
     /// Why the workstream stopped.
     pub stopped_because: String,
+    /// Whether the work reached the base, and what says so.
+    ///
+    /// The one field on this row that decides whether the row is an instruction at
+    /// all: a row whose work reached the base carries no argv.
+    ///
+    /// Written always and defaulted on the way in, so a stored document that
+    /// predates the field reads back as the answer it gave: nothing said.
+    #[serde(default)]
+    pub landed: Landed,
     /// The argv that lands it, ready to run.
     ///
     /// Ready to run is a claim about the branch as much as about the argv, so it
     /// holds only where the two fields below say nothing: work a live session is
     /// still writing to has not stopped, and running this on it publishes a branch
     /// mid-flight.
+    ///
+    /// **Empty where nothing may be run**, which is every row whose work reached the
+    /// base: the argv would publish work that is already there. A row is read to be
+    /// pasted, so the answer is the absence of a command rather than a command with
+    /// a warning beside it.
     pub recover_command: Vec<String>,
     /// The live session still writing to this branch, when one is.
     ///
@@ -218,6 +248,53 @@ pub struct Recoverable {
     /// carries nothing here, and cannot, because [`NetNegative`] holds no such count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub net_negative: Option<NetNegative>,
+}
+
+/// A row as a document spells it, before the answer on it and the command beside it
+/// have been held to each other.
+///
+/// The same fields, and it exists only so that the check above has something to run
+/// on: serde hands a conversion the whole value or nothing, and what has to be
+/// checked here is one field against another.
+#[derive(Deserialize)]
+struct AnyRecoverable {
+    identity: String,
+    branch: PreservedBranch,
+    checkout: PathBuf,
+    #[serde(default)]
+    landed: Landed,
+    stopped_because: String,
+    recover_command: Vec<String>,
+    #[serde(default)]
+    held_by: Option<HeldBy>,
+    #[serde(default)]
+    net_negative: Option<NetNegative>,
+}
+
+impl TryFrom<AnyRecoverable> for Recoverable {
+    type Error = String;
+
+    fn try_from(value: AnyRecoverable) -> std::result::Result<Self, Self::Error> {
+        if value.landed.is_landed() && !value.recover_command.is_empty() {
+            return Err(format!(
+                "the row for branch {branch:?} says its work reached {base} and carries \
+                 {command:?} to publish it again; a row that landed carries no command",
+                branch = value.branch.branch,
+                base = value.branch.base,
+                command = value.recover_command.join(" "),
+            ));
+        }
+        Ok(Recoverable {
+            identity: value.identity,
+            branch: value.branch,
+            checkout: value.checkout,
+            landed: value.landed,
+            stopped_because: value.stopped_because,
+            recover_command: value.recover_command,
+            held_by: value.held_by,
+            net_negative: value.net_negative,
+        })
+    }
 }
 
 /// The live session that still holds a preserved branch.
