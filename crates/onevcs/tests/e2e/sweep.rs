@@ -1276,6 +1276,9 @@ fn still_running(pid: i32) -> bool {
 /// daemon's does: one still holding the gate's pipe would keep the gate from ever
 /// returning. The pid lands under `$HOME`, which the journey's world owns and the
 /// gate inherits, and therefore outside the workspace being reclaimed.
+///
+/// It sleeps far longer than any journey waits for it to go, so a run that observes
+/// it gone has observed a stop rather than a process that ran out on its own.
 fn gate_starting_a_daemon(body: &str) -> String {
     local_direct(&format!(
         "[\"sh\", \"-c\", \"{body} >/dev/null 2>&1 </dev/null & echo $! > $HOME/daemon.pid\"]"
@@ -1298,7 +1301,7 @@ fn daemon_pid(fixture: &Fixture) -> i32 {
 fn reclaiming_a_workspace_stops_the_process_the_publication_left_running() {
     // Unlinking the files a running process holds open frees none of them, so what
     // this asserts is that the process has gone and not only that the directory has.
-    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 60"));
+    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 300"));
     finished_branch(&fixture, "feature/daemonised");
     publish_branch(&fixture, "feature/daemonised");
 
@@ -1345,7 +1348,7 @@ fn a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_g
     // lock file of its own can put them down. One that does not answer is not left
     // running: it is the whole of what makes the removal a reclamation.
     let fixture = Fixture::local(&gate_starting_a_daemon(
-        "sh -c 'trap \\\"\\\" TERM; sleep 60'",
+        "sh -c 'trap \\\"\\\" TERM; sleep 300'",
     ));
     finished_branch(&fixture, "feature/stubborn");
     publish_branch(&fixture, "feature/stubborn");
@@ -1638,7 +1641,7 @@ fn a_landing_stops_the_daemon_the_landing_before_it_left_running() {
     // The incident itself: a host publishing all day, each gate leaving a daemon
     // behind, and nobody running a sweep. What reclaims the disk is the next landing,
     // and reclaiming means the process too.
-    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 60"));
+    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 300"));
     finished_branch(&fixture, "feature/one");
     publish_branch(&fixture, "feature/one");
     let earlier = only_run_root(&publications(&fixture.world));
