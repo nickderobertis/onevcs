@@ -2193,6 +2193,71 @@ fn a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefi
 }
 
 #[test]
+fn a_branch_carrying_a_landing_record_is_never_published_under_it() {
+    // A landing record's subject is short, and every other subject here is over the
+    // limit — so the record is the one candidate that *fits*. Synthesis has to skip
+    // it anyway: it says what became of a change rather than what the change is, and
+    // a publication titled by it would land under "chore: record the landing of ...".
+    // Skipping leaves nothing that fits, which is the honest answer — ask for a title.
+    //
+    // The branch is built in the state a landing leaves it in rather than by landing
+    // one: a second publication of a branch that really landed has to merge the base
+    // it advanced, and that merge commit's own subject is short enough to be picked
+    // first, so the record would never be reached and this would prove nothing.
+    let direct = Hosted::new(DIRECT);
+    let branch = "feature/landed-long";
+    direct
+        .world
+        .git(&direct.checkout, &["checkout", "-q", "-b", branch, "main"]);
+    direct
+        .world
+        .commit_file(&direct.checkout, "one.txt", "one\n", LONG_SUBJECT);
+    // Exactly what `record_landing` writes: an empty commit whose message carries the
+    // landing trailer under this host's prefix.
+    let landed_at = direct
+        .world
+        .git(&direct.origin, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    let record = format!(
+        "chore: record the landing of {branch}\n\n{} {landed_at}",
+        documented_trailer("Landed-Commit", &documented_default_prefix())
+    );
+    direct.world.git(
+        &direct.checkout,
+        &["commit", "-q", "--allow-empty", "-m", &record],
+    );
+    direct.world.git(&direct.checkout, &["checkout", "-q", "main"]);
+
+    direct
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &direct.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no commit subject on branch \"feature/landed-long\" fits the 120-character limit",
+        ));
+
+    // Nothing landed at all, and in particular nothing landed under the record.
+    let log = direct.origin_log();
+    assert!(
+        !log.iter()
+            .any(|subject| subject.starts_with("chore: record the landing of")),
+        "a landing record must never become a publication's subject: {log:?}"
+    );
+}
+
+/// A subject over `SUBJECT_LIMIT`, so the only candidate short enough to publish
+/// under is the landing record — which is the case the skip is about.
+const LONG_SUBJECT: &str = "feat: add the thing and then keep describing it at such length that no publication could hold this subject inside its limit";
+
+#[test]
 fn a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publication() {
     // The record is a footnote to a merge that has already happened. A checkout that
     // will not take the branch — this one has it checked out, and git refuses to

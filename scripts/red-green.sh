@@ -292,8 +292,7 @@ added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)
 # One run at a time under one checkout. A round applies a mutation, runs a test,
 # and reverts it, so two runs sharing a tree revert each other's mutations mid-round
 # — the loser records a test as green that was never observed, and the tree can be
-# left carrying a mutation neither of them owns. That is not theoretical: it is how
-# two of this branch's own dispatches corrupted this worktree.
+# left carrying a mutation neither of them owns.
 #
 # `mkdir` is the atomicity, rather than `flock`: creating a directory either happens
 # or fails because it is already there, in one syscall, on every filesystem this
