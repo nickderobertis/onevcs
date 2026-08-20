@@ -208,8 +208,9 @@ pub enum FailureKind {
     /// The bound on watching the host elapsed with the change still outstanding.
     /// The reason names what was: the required checks that had not settled, that
     /// the host declared none, or that it never performed the merge it took.
-    // llmlint: ignore[names_match_behavior] the vocabulary is fixed across the three
-    // libraries that route on it, and it gives the bound one kind; `reason` says which.
+    // The vocabulary is fixed across the three libraries that route on it, and it
+    // gives the bound one kind whichever of its endings this was; `reason` says which.
+    // llmlint: ignore[names_match_behavior] one fixed kind for the bound's three endings.
     ChecksUnsettled,
     /// The publishing push was refused by the merge path. The reason carries git's
     /// own per-ref refusal.
@@ -224,9 +225,10 @@ impl FailureKind {
     #[must_use]
     pub fn exit_code(self) -> u8 {
         match self {
-            // llmlint: ignore[cli_output_contract] the contract fixes `1` here and the
-            // codes are the published surface; which verification failed travels on
-            // the kind. Widening the set is an amendment, reported not taken.
+            // The contract fixes `1` for every verification failure and the codes are
+            // the published surface, so which one it was travels on the kind instead.
+            // Widening the set is an amendment, reported rather than taken here.
+            // llmlint: ignore[cli_output_contract] the approved contract fixes this code.
             FailureKind::Gate
             | FailureKind::ChecksFailed
             | FailureKind::ChecksUnsettled
@@ -1547,8 +1549,7 @@ fn unsettled(
     } else {
         "every required check it declared had settled".to_owned()
     };
-    // llmlint: ignore[names_match_behavior] one kind for the bound is the fixed
-    // vocabulary; `reason` says which of its endings this was.
+    // llmlint: ignore[names_match_behavior] one fixed kind for the bound's three endings.
     Error::ChecksUnsettled {
         reason: format!(
             "the host had not {awaited} {url} within {seconds}s; {named}",

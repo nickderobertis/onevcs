@@ -1342,8 +1342,8 @@ pub enum Integrated {
 /// what" — cannot be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
-    // llmlint: ignore[invalid_states_unrepresentable] private, with `conflict_in` its
-    // only constructor and that function answering `None` rather than an empty one.
+    // llmlint: ignore[invalid_states_unrepresentable] private; `conflict_in` is its only
+    // constructor and answers `None` rather than building an empty one.
     paths: Vec<String>,
     hunks: String,
 }

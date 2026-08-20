@@ -3733,14 +3733,15 @@ fn conflicting_over(fixture: &Fixture, branch: &str, files: usize) -> String {
 
 /// The name of one conflicting file.
 ///
-/// The first carries a space and a quote, which git renders in its *default*
-/// listing as a quoted C string — a reader that took that for a pathname would name
-/// a file the repository does not have. Every path this crate reads off a conflict
-/// is read NUL-delimited for that reason, and this is the fixture that catches it
-/// going back.
+/// The first two carry a space and a quote, and a newline — the characters git
+/// renders in its *default* listing as a quoted C string, which a reader that took
+/// it for a pathname would turn into a file the repository does not have. Every
+/// path this crate reads off a conflict is read NUL-delimited for that reason, and
+/// these are the fixtures that catch it going back.
 fn conflicted_name(file: usize) -> String {
     match file {
         0 => "shared \" 0.txt".to_owned(),
+        1 => "shared\n1.txt".to_owned(),
         other => format!("shared-{other}.txt"),
     }
 }
