@@ -2,10 +2,10 @@ Mutation: a run root's age is read from its own timestamp and its immediate entr
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 7323606..8a8d2ba 100644
+index ea25418..ad27736 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -292,21 +292,9 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+@@ -425,28 +425,9 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
  /// every other unknown here resolves the same way.
  fn last_written(path: &Path) -> SystemTime {
      let mut newest = modified(path);
@@ -15,7 +15,14 @@ index 7323606..8a8d2ba 100644
 -    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
 -        match std::fs::read_dir(path) {
 -            Ok(entries) => {
--                for entry in entries.flatten() {
+-                for entry in entries {
+-                    // An entry the listing would not name hides whatever it holds
+-                    // exactly as an unlistable directory does, so it answers the same
+-                    // way rather than being passed over: skipping it would read a
+-                    // workspace as older than the part of it nobody could see.
+-                    let Ok(entry) = entry else {
+-                        return SystemTime::now();
+-                    };
 -                    newest = newest.max(last_written(&entry.path()));
 -                }
 -            }
