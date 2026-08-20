@@ -66,6 +66,7 @@ pub(crate) struct Trailers {
     change_base: String,
     recovered: String,
     change_url: String,
+    landed: String,
 }
 
 impl Default for Trailers {
@@ -83,6 +84,7 @@ impl Trailers {
             change_base: format!("{prefix}Change-Base:"),
             recovered: format!("{prefix}Recovered-Incomplete:"),
             change_url: format!("{prefix}Change-Url:"),
+            landed: format!("{prefix}Landed-Commit:"),
         }
     }
 
@@ -110,6 +112,18 @@ impl Trailers {
     /// Records the change request a preserved branch was opened as.
     pub(crate) fn change_url(&self) -> &str {
         &self.change_url
+    }
+
+    /// Records, on the base's own landing commit, the branch commit whose work
+    /// that commit lands.
+    ///
+    /// The one provenance trailer that is written onto the *base* rather than onto
+    /// a branch, because it answers a question about the base: whether the work a
+    /// branch carries ever reached it. A commit rather than a branch name — a name
+    /// is spent and re-cut, and a landing of the work that used to wear it must not
+    /// answer for work that wears it now.
+    pub(crate) fn landed(&self) -> &str {
+        &self.landed
     }
 }
 

@@ -1103,9 +1103,17 @@ fn an_ordinary_publication_under_a_configured_prefix_records_no_provenance_at_al
     let published = fixture
         .world
         .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
-    for prefix in ["Zzz-", "Onevcs-"] {
-        assert!(!published.contains(prefix), "{published}");
+    for marker in ["Status", "Recovered-Incomplete", "Onevcs-"] {
+        assert!(!published.contains(marker), "{published}");
     }
+    // What the base's commit does carry is the landing itself, spelled under the
+    // configured prefix like everything else this crate writes: the record that this
+    // branch's work reached the base, which is what keeps it out of `recoverable`
+    // once the base has moved on and a comparison of content would no longer say so.
+    assert!(
+        published.contains(&documented_trailer("Landed-Commit", "Zzz-")),
+        "{published}"
+    );
 }
 
 #[test]

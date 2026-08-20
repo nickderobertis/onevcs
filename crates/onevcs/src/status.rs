@@ -31,10 +31,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{Date, Month, Time};
+use url::Url;
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
+use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
+use crate::landed::{self, Landed};
 use crate::registry::{Registry, RepoType, Workflow};
 use crate::rules::{Approvals, Gate, MergePolicy};
 use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
@@ -47,14 +50,19 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// A report leaves this process and is read by whatever consumes the command, which
 /// makes it a stored contract like the registry document and the rules file — and
 /// like those it *says* which shape it is, rather than leaving a consumer to infer
-/// that from which keys it can find. `1` is the initial version and deliberately not
-/// a migration boundary: nothing in this build reads a report back, so the number is
-/// what a consumer branches on and there is no older shape here to read.
+/// that from which keys it can find. It is deliberately not a migration boundary:
+/// nothing in this build reads a report back, so the number is what a consumer
+/// branches on and there is no older shape here to read.
+///
+/// `2` is `publication.landed` — whether the work reached the base, which tier of
+/// history decided that, and the commit that is the evidence — and the eighth
+/// `publication.state`, `maybe-landed`, which is the answer a version 1 report had
+/// no room for and reported as `landed` on an inference.
 ///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 1;
+pub const REPORT_VERSION: u32 = 2;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -243,16 +251,76 @@ pub enum BranchProvenance {
 }
 
 /// What was proposed for the work, and whether it reached the base.
+///
+/// Read through the conversion below, which is where the one thing these two fields
+/// could disagree about is settled: a document whose `state` says the work landed
+/// and whose `landed` says it did not — or the other way about — does not
+/// deserialize at all, rather than becoming a report a reader has to remember to
+/// question. The number that says which shape a report is exists to be *acted on*,
+/// and so does this.
+// llmlint: ignore[invalid_states_unrepresentable] the two cannot be one field: `state` is
+// the word this report has always carried and `landed` is the three-answer version of it,
+// and a consumer branching on either is why both are written. The report is a *document*
+// before it is a type — nothing in this build constructs one but `run`, which derives the
+// word from the answer in one place — so the boundary that can be held is the one where a
+// report is read, and it refuses a document whose two halves disagree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "AnyPublication")]
 pub struct PublicationReport {
-    /// Where the work is. Whether it *landed* is this and nothing beside it: a
-    /// second field saying so could disagree with the state that decided it.
+    /// Where the work has got to, which is the landing below and what the host says
+    /// about a change request, in one word.
     pub state: Landing,
+    /// Whether the work reached the base, and what says so.
+    ///
+    /// Not a second answer beside [`state`](Self::state) — it is the answer `state`
+    /// is derived from, so the two cannot disagree — but the fuller one: it carries
+    /// the tier that decided it and the commit that is the evidence, and it has a
+    /// third value `state` had no room for. `unknown` is what a branch that landed
+    /// with no change request and not through this crate leaves behind, and
+    /// reporting that as "no" is what put a resume instruction under work the base
+    /// already carries.
+    pub landed: Landed,
     /// The change request, when one is recorded or open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_url: Option<String>,
     /// The policy this identity's rules publish under.
     pub merge_policy: MergePolicy,
+}
+
+/// A publication section as a document spells it, before the two answers in it have
+/// been held to each other.
+///
+/// The same fields, and it exists only so that the check above has something to run
+/// on: serde gives a conversion the whole value or nothing, and what has to be
+/// checked here is one field against another.
+#[derive(Deserialize)]
+struct AnyPublication {
+    state: Landing,
+    landed: Landed,
+    #[serde(default)]
+    change_url: Option<String>,
+    merge_policy: MergePolicy,
+}
+
+impl TryFrom<AnyPublication> for PublicationReport {
+    type Error = String;
+
+    fn try_from(value: AnyPublication) -> std::result::Result<Self, Self::Error> {
+        if (value.state == Landing::Landed) != value.landed.is_landed() {
+            return Err(format!(
+                "a report says the work is {state:?} and that it landed is {landed}; those are \
+                 two answers to one question",
+                state = spell_landing(value.state),
+                landed = value.landed.is_landed(),
+            ));
+        }
+        Ok(PublicationReport {
+            state: value.state,
+            landed: value.landed,
+            change_url: value.change_url,
+            merge_policy: value.merge_policy,
+        })
+    }
 }
 
 /// Where one piece of work has got to.
@@ -274,17 +342,15 @@ pub enum Landing {
     /// A change request was opened, and the host could not be asked what became
     /// of it.
     Published,
+    /// The base carries everything this branch changed, and nothing in history
+    /// records that it reached it — neither a landing, nor a change request's
+    /// number, nor a landing trailer. Consistent with a landing nobody here
+    /// recorded, and with somebody else having made the same change.
+    MaybeLanded,
     /// The branch has nothing the base does not already carry.
     NothingToPublish,
     /// Nothing has been proposed for this branch.
     Unpublished,
-}
-
-impl Landing {
-    /// Whether the base already carries this branch's content.
-    pub fn landed(self) -> bool {
-        self == Landing::Landed
-    }
 }
 
 /// What the host reports about the change request's checks.
@@ -420,46 +486,11 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             worktree: record.worktree.clone(),
         });
 
-    // The copy that holds the work rather than the name, by the rule `branch::locate`
-    // takes: a copy whose content the base already carries is spent, and answering
-    // from that one would report work that sits under the same name elsewhere as
-    // work nobody has.
-    let current = vcs::base_commit(&resolution.publication, &base);
-    let mut carrier: Option<(PathBuf, String)> = None;
-    for holder in &holders {
-        let compared = vcs::judged_against(&holder.path, &base, current.as_ref());
-        let differs = git::trees_differ(&holder.path, &compared, &work.branch)?;
-        if differs {
-            carrier = Some((holder.path.clone(), compared));
-            break;
-        }
-        carrier.get_or_insert((holder.path.clone(), compared));
-    }
-
-    let mut ahead = None;
-    let mut branch_provenance = None;
-    let mut change_base = None;
-    let mut on_the_branch = OnTheBranch::Nowhere;
-    if let Some((repo, compared)) = &carrier {
-        let counted = git::log_messages(repo, compared, &work.branch)?.len();
-        ahead = Some(counted);
-        on_the_branch = if git::trees_differ(repo, compared, &work.branch)? {
-            OnTheBranch::Ahead
-        } else {
-            OnTheBranch::Carried { ahead: counted }
-        };
-        branch_provenance = Some(judge_provenance(repo, compared, &work.branch, &trailers)?);
-        // Read back out of a commit the repository carries, so it is input: a value
-        // that is not a branch name is no change base, and the branch-keyed verbs
-        // refuse one by name where they are the ones about to act on it.
-        change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
-            .and_then(|recorded| Ref::try_from(recorded).ok());
-    }
-
     // Latest-first by the envelope's own timestamp rather than by the order the
     // streams happened to be listed in: a branch published twice has two records of
     // itself, and the newer one is the one somebody is asking about.
-    let relevant = relevant_streams(&streams, &work, session.as_ref());
+    let held_by = session.as_ref().map(|session| session.token.to_string());
+    let relevant = relevant_streams(&streams, &work.identity, &work.branch, held_by.as_deref());
     let change_url = latest(
         relevant
             .iter()
@@ -467,11 +498,55 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     );
     let asked_the_host_to_land = relevant.iter().any(|record| record.asked_the_host_to_land);
     let gate = latest(relevant.iter().filter_map(|record| record.gate.clone()));
+    let recorded = landed::Recorded {
+        landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
+        // Parsed rather than passed through, for the same reason: the report prints
+        // this URL and the decision *compares* it, and a value that is no URL names
+        // no change request to look for.
+        change: change_url.as_deref().and_then(|url| Url::parse(url).ok()),
+    };
+
+    let current = vcs::base_commit(&resolution.publication, &base);
+    let mut judged: Vec<(PathBuf, String, Landed)> = Vec::new();
+    for holder in &holders {
+        let compared = vcs::judged_against(&holder.path, &base, current.as_ref());
+        let verdict = landed::decide(&holder.path, &compared, &work.branch, &recorded, &trailers)?;
+        judged.push((holder.path.clone(), compared, verdict));
+    }
+    // Which copy answers, in the order the answers are worth having. A landing is
+    // about the *work*, so a copy that can show one answers for the branch wherever
+    // it is. Failing that it is the rule `branch::locate` takes — the copy that holds
+    // work the base does not, rather than one whose content is spent, since answering
+    // from a spent copy would report work that sits under the same name elsewhere as
+    // work nobody has. Failing both, the first that holds the name at all.
+    let carrier = judged
+        .iter()
+        .find(|(_, _, verdict)| verdict.is_landed())
+        .or_else(|| judged.iter().find(|(_, _, verdict)| *verdict == Landed::No))
+        .or_else(|| judged.first());
+
+    let mut ahead = None;
+    let mut branch_provenance = None;
+    let mut change_base = None;
+    // Absent is its own answer: nothing this identity keeps work in holds the branch,
+    // so nothing here has seen the history that would decide it.
+    let mut verdict = None;
+    if let Some((repo, compared, decided)) = carrier {
+        ahead = Some(git::log_messages(repo, compared, &work.branch)?.len());
+        branch_provenance = Some(judge_provenance(repo, compared, &work.branch, &trailers)?);
+        // Read back out of a commit the repository carries, so it is input: a value
+        // that is not a branch name is no change base, and the branch-keyed verbs
+        // refuse one by name where they are the ones about to act on it.
+        change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
+            .and_then(|recorded| Ref::try_from(recorded).ok());
+        verdict = Some(decided.clone());
+    }
 
     let target = change_base.clone().unwrap_or_else(|| base.clone());
     let host = ask_the_host(&resolution.key, &work.branch, &target, hosting);
     let state = landing(
-        on_the_branch,
+        verdict.as_ref(),
+        ahead,
         host.said(),
         match (change_url.is_some(), asked_the_host_to_land) {
             (false, _) => Proposed::Never,
@@ -482,11 +557,13 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let (open, checks) = host.into_parts();
     let change_url = open.or(change_url);
 
+    let landed = verdict.unwrap_or(Landed::Unknown);
     let next = next_step(&Advance {
         resolution: &resolution,
         work: &work,
         base: &base,
         state,
+        landed: &landed,
         change_url: change_url.as_deref(),
         session: session.as_ref(),
         provenance: branch_provenance,
@@ -518,6 +595,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         },
         publication: PublicationReport {
             state,
+            landed,
             change_url,
             merge_policy: resolved.policy.publication,
         },
@@ -526,22 +604,6 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         next,
         notes,
     })
-}
-
-/// What the branch's own copies say, which is the evidence that stands whatever
-/// the host says and whoever merged it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OnTheBranch {
-    /// Nothing this identity keeps work in holds the branch.
-    Nowhere,
-    /// It has commits whose content the base does not carry.
-    Ahead,
-    /// The base already carries everything it changed, over this many commits of
-    /// its own — nought being a branch that is the base.
-    Carried {
-        /// How many commits it has that the base does not have by name.
-        ahead: usize,
-    },
 }
 
 /// What the host said about a change request from this branch.
@@ -567,17 +629,33 @@ enum Proposed {
     OpenedAndAskedToLand,
 }
 
-/// Which of the seven states the work is in.
+/// Which of the eight states the work is in.
 ///
-/// Content first, deliberately: the base carrying what a branch changed is the one
-/// answer that stays true whatever the host says and whoever merged it, and it is
-/// the answer a planner got wrong by consulting the absence of an open change
-/// request instead.
-fn landing(branch: OnTheBranch, host: OnTheHost, proposed: Proposed) -> Landing {
-    match branch {
-        OnTheBranch::Carried { ahead: 0 } => return Landing::NothingToPublish,
-        OnTheBranch::Carried { .. } => return Landing::Landed,
-        OnTheBranch::Ahead | OnTheBranch::Nowhere => {}
+/// History first, deliberately: what the base's own history records about this
+/// branch stays true whatever the host says and whoever merged it, and it is the
+/// answer a planner got wrong by consulting the absence of an open change request
+/// instead. The host is asked only where history could not decide — which is the
+/// same order [`landed::decide`] answers in, so the word this reports and the
+/// evidence beside it are one decision rather than two.
+fn landing(
+    verdict: Option<&Landed>,
+    ahead: Option<usize>,
+    host: OnTheHost,
+    proposed: Proposed,
+) -> Landing {
+    match verdict {
+        // A record of a landing is the answer whatever else is true of the branch,
+        // including a branch that is now its own base: the word and the answer are
+        // one decision, and `NothingToPublish` beside a landing would be a report
+        // this build writes and its own reader refuses.
+        Some(Landed::Yes { .. }) => return Landing::Landed,
+        // A branch that is the base has nothing to publish, which is the narrower
+        // and more useful of the two things true of it.
+        Some(Landed::Unknown) if ahead == Some(0) => return Landing::NothingToPublish,
+        Some(Landed::Unknown) => return Landing::MaybeLanded,
+        // Nothing holds the branch, or the base does not carry what it changed: the
+        // host and this host's own record are what is left to say where it got to.
+        Some(Landed::No) | None => {}
     }
     match (host, proposed) {
         (OnTheHost::Open, Proposed::OpenedAndAskedToLand) => Landing::Queued,
@@ -695,6 +773,7 @@ struct Advance<'a> {
     work: &'a Work,
     base: &'a str,
     state: Landing,
+    landed: &'a Landed,
     change_url: Option<&'a str>,
     session: Option<&'a SessionReport>,
     provenance: Option<BranchProvenance>,
@@ -712,6 +791,7 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
         work,
         base,
         state,
+        landed,
         change_url,
         session,
         provenance,
@@ -724,9 +804,26 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
     let change = change_url.unwrap_or("the change request");
     match state {
         Landing::Landed => says(format!(
-            "the work landed: {base} already carries what branch {branch:?} changed, which is what \
-             a squash-merge leaves behind. Nothing advances it",
+            "the work landed: {evidence} says branch {branch:?} reached {base}. Nothing advances \
+             it",
             branch = work.branch,
+            evidence = landed.tier(),
+        )),
+        Landing::MaybeLanded => says(format!(
+            "nothing records that branch {branch:?} reached {base}: no landing, no change \
+             request's number in the base's history, and no landing trailer. {base} does already \
+             carry everything it changed, which is what a landing nobody recorded looks like — \
+             and also what somebody else making the same change looks like. Read it with `{diff}` \
+             before publishing it",
+            branch = work.branch,
+            diff = guidance::command([
+                "git",
+                "-C",
+                &resolution.publication.to_string_lossy(),
+                "diff",
+                "--stat",
+                &format!("{base}...{branch}", branch = work.branch),
+            ]),
         )),
         Landing::NothingToPublish => says(format!(
             "branch {branch:?} has nothing {base} does not already carry, so there is nothing to \
@@ -866,11 +963,16 @@ fn holders_of(registry: &Registry, resolution: &Resolution, branch: &str) -> Res
 /// change request's URL back to the branch that opened it: the URL is the host's
 /// name for the change, and nothing on the branch carries it.
 #[derive(Debug, Clone)]
-struct Recorded {
+pub(crate) struct Recorded {
     token: String,
     identity: Option<String>,
     branch: Option<String>,
     change_url: Option<Stamped<String>>,
+    /// The commit a merge this host saw landed the work at, which is the record the
+    /// most certain landing tier reads. An object id, because a stream is a file
+    /// whichever process wrote it and this value goes on to be handed to git as a
+    /// revision.
+    landing: Option<Stamped<ObjectId>>,
     asked_the_host_to_land: bool,
     gate: Option<Stamped<GateReport>>,
 }
@@ -950,7 +1052,7 @@ fn latest<T>(recorded: impl Iterator<Item = Stamped<T>>) -> Option<T> {
 /// what a stream decides here is which change request a branch has and what its gate
 /// said, and reporting "could not look" as "there is none" is how a report about half
 /// the record reads as a report about all of it.
-fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>> {
+pub(crate) fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>> {
     let directory = home::streams_dir()?;
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
@@ -1009,6 +1111,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         identity: None,
         branch: None,
         change_url: None,
+        landing: None,
         asked_the_host_to_land: false,
         gate: None,
     };
@@ -1081,6 +1184,18 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             EventKind::MergeQueued => {
                 record.asked_the_host_to_land |= field("url").is_some();
             }
+            // Both name the commit the work landed at, and either is the record the
+            // first landing tier reads: a merge this host performed, and a merge it
+            // watched the host perform.
+            EventKind::ChangeMerged | EventKind::MergeCompleted => {
+                // Through the conversion that decides what an object id is, for the
+                // reason the branch name above goes through `Ref`: what a stream
+                // records is input, and a value that is not an id would be handed to
+                // git as a revision and could not name the commit it claims to.
+                if let Some(sha) = field("sha").as_deref().and_then(ObjectId::parse) {
+                    record.landing = Some(Stamped { at, value: sha });
+                }
+            }
             EventKind::GateVerdict => {
                 record.gate = Some(Stamped {
                     at,
@@ -1114,12 +1229,13 @@ fn text(value: &Value) -> Option<String> {
 /// ones the two branch-keyed verbs write.
 fn relevant_streams<'a>(
     streams: &'a [Recorded],
-    work: &Work,
-    session: Option<&SessionReport>,
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
 ) -> Vec<&'a Recorded> {
-    let slug = policy::branch_slug(&work.branch);
+    let slug = policy::branch_slug(branch);
     let named: BTreeSet<String> = [
-        session.map(|session| session.token.to_string()),
+        session.map(str::to_owned),
         Some(format!("publish-branch-{slug}")),
         Some(format!("recover-{slug}")),
     ]
@@ -1130,10 +1246,34 @@ fn relevant_streams<'a>(
         .iter()
         .filter(|record| {
             named.contains(&record.token)
-                || (record.branch.as_deref() == Some(&*work.branch)
-                    && record.identity.as_deref() == Some(work.identity.as_str()))
+                || (record.branch.as_deref() == Some(branch)
+                    && record.identity.as_deref() == Some(identity))
         })
         .collect()
+}
+
+/// What this host's own streams recorded about one branch: the change request it
+/// opened for it, and the landing it saw.
+///
+/// One reader, two callers. `recoverable` decides the same question about the same
+/// branch, and a change request that was one thing in one report and another in the
+/// other is exactly the disagreement the report exists to end.
+pub(crate) fn recorded_for(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> landed::Recorded {
+    let relevant = relevant_streams(streams, identity, branch, session);
+    landed::Recorded {
+        landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
+        change: latest(
+            relevant
+                .iter()
+                .filter_map(|record| record.change_url.clone()),
+        )
+        .and_then(|url| Url::parse(&url).ok()),
+    }
 }
 
 /// Read one reference as the work it names.
@@ -1397,13 +1537,27 @@ impl Report {
             "  state: {}\n",
             spell_landing(self.publication.state)
         ));
+        // Two lines rather than one, and the first is the line it always was: a
+        // reader of this report is looking for the word, and the tier that decided it
+        // is the sentence beside it rather than a qualifier bolted onto the answer.
         out.push_str(&format!(
             "  landed: {}\n",
-            if self.publication.state.landed() {
-                "yes"
-            } else {
-                "no"
-            }
+            match &self.publication.landed {
+                Landed::Yes { .. } => "yes",
+                Landed::No => "no",
+                Landed::Unknown => "unknown",
+            },
+        ));
+        out.push_str(&format!(
+            "  decided by: {}\n",
+            match &self.publication.landed {
+                Landed::Yes { evidence } => format!(
+                    "{tier} ({commit})",
+                    tier = self.publication.landed.tier(),
+                    commit = evidence.commit(),
+                ),
+                other => other.tier().to_owned(),
+            },
         ));
         out.push_str(&format!(
             "  change request: {}\n",
@@ -1482,6 +1636,9 @@ fn spell_landing(state: Landing) -> &'static str {
         Landing::Open => "open",
         Landing::Closed => "closed without landing",
         Landing::Published => "published (the host could not be asked what became of it)",
+        Landing::MaybeLanded => {
+            "maybe landed (the base carries it and nothing records that it did)"
+        }
         Landing::NothingToPublish => "nothing to publish",
         Landing::Unpublished => "unpublished",
     }
@@ -1536,12 +1693,13 @@ fn spell_source(source: &CheckSource) -> &'static str {
 /// halves read the same two files, so neither can drift from the other.
 #[cfg(test)]
 mod round_trip {
-    use super::{Report, ReportVersion, REPORT_VERSION};
+    use super::{Landing, Report, ReportVersion, REPORT_VERSION};
+    use serde_json::json;
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v1.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v1-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v2.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v2-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -1577,12 +1735,49 @@ mod round_trip {
 
         // …and a field the minimal golden omits reads back as absent rather than as
         // a value, which is the other half of writing it out only when it is held.
+        // The word and the answer are one decision, so a golden cannot carry a
+        // `state` that says one thing and a `landed` that says another.
+        for (name, golden) in [("full", FULL), ("minimal", MINIMAL)] {
+            let report: Report = serde_json::from_str(golden).expect("a golden reads back");
+            assert_eq!(
+                report.publication.state == Landing::Landed,
+                report.publication.landed.is_landed(),
+                "the {name} golden's publication state and its landing answer disagree"
+            );
+        }
+
         let minimal: Report = serde_json::from_str(MINIMAL).expect("the minimal golden");
         assert!(minimal.session.is_none());
         assert!(minimal.gate.is_none());
         assert!(minimal.branch.change_base.is_none());
         assert!(minimal.publication.change_url.is_none());
         assert!(minimal.notes.is_empty());
+    }
+
+    #[test]
+    fn a_report_whose_two_landing_answers_disagree_is_refused_where_it_is_read() {
+        // The word and the answer are one decision, and a document is where they could
+        // come apart: `state` says the work landed and `landed` says it did not, or the
+        // other way about. Neither is a report this reads.
+        for (state, landed) in [
+            ("landed", json!({"state": "no"})),
+            (
+                "unpublished",
+                json!({"state": "yes", "evidence": {"tier": "trailer",
+                                                                "commit": "0f1e2d3"}}),
+            ),
+        ] {
+            let mut document = parsed(FULL);
+            document["publication"]["state"] = Value::from(state);
+            document["publication"]["landed"] = landed;
+            let refusal = serde_json::from_value::<Report>(document)
+                .expect_err("two answers to one question are not a report this reads")
+                .to_string();
+            assert!(
+                refusal.contains("two answers to one question"),
+                "the refusal says what disagreed: {refusal}"
+            );
+        }
     }
 
     #[test]

@@ -25,7 +25,17 @@ the same way it reconciles the text below.
 version 2.** The contract requires `Recovered-Incomplete` trailers and an
 incomplete-step commit but fixes no keys, so this crate spells them
 `<prefix>Status: incomplete`, `<prefix>Change-Base:`,
-`<prefix>Recovered-Incomplete:`, and `<prefix>Change-Url:`.
+`<prefix>Recovered-Incomplete:`, `<prefix>Change-Url:`, and
+`<prefix>Landed-Commit:`.
+
+The last is the one written onto a *base* rather than onto a branch, and it is
+written by the one landing that opens no change request: a `local-direct`
+publication squashes a branch onto its base, and the commit it lands carries that
+key with the branch commit whose work it landed as its value.
+Everything the host lands carries the change request's own number instead, which
+the host writes. A commit rather than a branch name, because a branch name is spent
+and re-cut and a landing of the work that used to wear it must not answer for work
+that wears it now.
 
 The prefix is the rules file's optional `trailer_prefix` key, unset `Onevcs-`.
 

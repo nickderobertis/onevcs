@@ -36,10 +36,14 @@ cleared it. Whichever of the three refuses a branch names the one that takes it.
 `onevcs status REF` answers what became of a piece of work, asked by whichever
 name you hold — a change request's URL, a session token, a branch, or a commit. It
 reports the identity's resolved policy, the session, every checkout and per-run
-clone holding the branch, whether the change **landed**, the host's checks, the
-last gate verdict, and the command that advances it. A change that squash-merged
-reads as landed rather than as unpublished, and a host that cannot be reached
-leaves its section unavailable instead of failing the command.
+clone holding the branch, whether the change **landed** and what says so, the
+host's checks, the last gate verdict, and the command that advances it. Landing is
+decided from the base's own history — a recorded landing, the change request's
+number in the base's log, or a landing trailer — so a change that squash-merged
+reads as landed rather than as unpublished however far the base has moved since,
+and one that history cannot decide reads as `unknown` rather than as work nobody
+published. A host that cannot be reached leaves its section unavailable instead of
+failing the command.
 
 `onevcs import BRANCH --repo PATH [--from SOURCE] [--as NAME]` makes a branch
 reachable from an identity's registered checkouts, so a later run's clone can see

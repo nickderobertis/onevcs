@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "ref": {
     "given": "feature/full",
     "kind": "branch"
@@ -44,6 +44,9 @@
   },
   "publication": {
     "state": "open",
+    "landed": {
+      "state": "no"
+    },
     "change_url": "https://github.com/acme-corp/hosted/pull/1",
     "merge_policy": "change-open"
   },

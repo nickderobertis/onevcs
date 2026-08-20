@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 5,
   "identities": [
     {
       "origin": "github.com/acme-corp/widgets",
@@ -31,11 +31,23 @@
       },
       "checkout": "/scratch/widgets",
       "stopped_because": "the run was interrupted",
+      "landed": {
+        "state": "no"
+      },
       "recover_command": [
         "onevcs",
         "recover",
         "feature/seeded"
-      ]
+      ],
+      "held_by": {
+        "token": "s-testing-1",
+        "worktree": "/scratch/s-testing-1/worktree",
+        "holding": "owner-running"
+      },
+      "net_negative": {
+        "added": 3,
+        "removed": 481
+      }
     }
   ],
   "closed_sessions": [

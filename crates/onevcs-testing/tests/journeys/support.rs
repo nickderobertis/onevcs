@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, HeldBy, Holding, Identity, LineChange,
+    ChangeId, ChangeRequest, Check, CheckSource, HeldBy, Holding, Identity, Landed, LineChange,
     MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
     PublishOutcome, Recoverable, Session, SessionToken, Sha, Url,
 };
@@ -124,6 +124,7 @@ pub fn full_vcs_state() -> VcsState {
                 change_base: Some("feature/below".to_owned()),
             },
             checkout: PathBuf::from("/scratch/widgets"),
+            landed: Landed::No,
             stopped_because: "the run was interrupted".to_owned(),
             recover_command: vec![
                 "onevcs".to_owned(),
