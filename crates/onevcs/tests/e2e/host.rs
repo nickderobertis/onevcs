@@ -2227,7 +2227,9 @@ fn a_branch_carrying_a_landing_record_is_never_published_under_it() {
         &direct.checkout,
         &["commit", "-q", "--allow-empty", "-m", &record],
     );
-    direct.world.git(&direct.checkout, &["checkout", "-q", "main"]);
+    direct
+        .world
+        .git(&direct.checkout, &["checkout", "-q", "main"]);
 
     direct
         .world
