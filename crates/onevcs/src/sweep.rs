@@ -386,7 +386,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
 fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
     let bytes = size_of(&run_root);
     if report.dry_run {
-        report.reclaimed.push(Reclaimed {
+        report.reclaimed.push(Reclaim {
             path: run_root,
             bytes,
         });
@@ -404,7 +404,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
             e,
         ));
     }
-    report.reclaimed.push(Reclaimed {
+    report.reclaimed.push(Reclaim {
         path: run_root,
         bytes,
     });
@@ -496,8 +496,12 @@ struct Skipped {
     reason: String,
 }
 
-/// A run root that was removed, or that a rehearsal would have removed.
-struct Reclaimed {
+/// One run root this sweep decided to reclaim, and what it accounts for.
+///
+/// The decision rather than the act, because a rehearsal takes the same one and
+/// removes nothing: what makes the difference is `dry_run`, which the report reads to
+/// say whether it reclaimed or would.
+struct Reclaim {
     path: PathBuf,
     bytes: u64,
 }
@@ -567,7 +571,7 @@ pub struct Report {
     min_age: Duration,
     examined: Vec<Examined>,
     skipped: Vec<Skipped>,
-    reclaimed: Vec<Reclaimed>,
+    reclaimed: Vec<Reclaim>,
     retained: Vec<Retained>,
 }
 

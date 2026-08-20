@@ -197,7 +197,9 @@ pub fn prepare(
     home::ensure_dir(&run_root)?;
     // Taken the moment the directory exists, before anything is cloned into it: a
     // sweep running beside a landing that had not taken it yet reads a directory
-    // being filled as one nobody wants.
+    // being filled as one nobody wants. Nothing else can be holding it — the name
+    // carries `ids::unique()` — so a lease that will not come is a state root
+    // somebody other than onevcs is writing in, and no journey can build one.
     let lease = lock::try_shared(&workspace::occupancy_identity(&run_root))?.ok_or_else(|| {
         Error::Invalid {
             reason: format!(
