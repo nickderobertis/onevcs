@@ -292,21 +292,26 @@ fn probe(directory: &Path) -> std::io::Result<()> {
     )
 }
 
+/// The flag an open of a directory takes, which each platform spells for itself:
+/// `O_DIRECTORY` refuses to open anything that is not one, and `CreateFileW` hands a
+/// directory back only to a caller that asks for the backup semantics one takes —
+/// `FILE_FLAG_BACKUP_SEMANTICS`, which the `windows-sys` features this crate takes do
+/// not carry.
+#[cfg(unix)]
+const OPEN_DIRECTORY: i32 = libc::O_DIRECTORY;
+#[cfg(windows)]
+const OPEN_DIRECTORY: u32 = 0x0200_0000;
+
 /// A directory, open as the handle whose timestamps can be set.
-///
-/// `CreateFileW` hands one back only to a caller that asks for the backup semantics a
-/// directory handle takes, and refuses every other open of one outright.
 fn open_dir(directory: &Path) -> std::io::Result<File> {
-    let mut options = File::options();
-    options.read(true);
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // `FILE_FLAG_BACKUP_SEMANTICS`, which the `windows-sys` features this crate
-        // takes do not carry.
-        options.custom_flags(0x0200_0000);
-    }
-    options.open(directory)
+    use std::os::windows::fs::OpenOptionsExt;
+    File::options()
+        .read(true)
+        .custom_flags(OPEN_DIRECTORY)
+        .open(directory)
 }
 
 /// Why a directory under the workspaces root is none of this verb's business.
