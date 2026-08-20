@@ -1,5 +1,5 @@
 Mutation: the writability probe stops putting a directory's timestamps back, so every workspace it asks about looks freshly written and the age floor keeps it for another day.
-Red: the_age_floor_bounds_what_a_sweep_considers
+Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
 index c828fad..5f499d0 100644

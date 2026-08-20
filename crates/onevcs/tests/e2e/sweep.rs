@@ -576,7 +576,6 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
     std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o555))
         .expect("a directory this user may not unlink from");
     let (inside, quiet) = swept_with_diagnosis(&fixture, &[]);
-    std::fs::set_permissions(&theirs, closed).expect("the built directory is restored");
     assert!(
         run_root.is_dir(),
         "a workspace holding something this user may not unlink is not reaped:\n{inside}"
@@ -588,6 +587,16 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
     assert!(
         theirs.join("output.log").is_file(),
         "asked before anything is removed, so nothing under it went:\n{inside}"
+    );
+    // And asking left no mark: the question is put to a directory by writing in it,
+    // so a sweep that did not put the clock back would make every workspace it asked
+    // about look freshly written — and the next one would keep it for a day, for a
+    // reason that is not the true one.
+    let again = swept(&fixture, &[]);
+    std::fs::set_permissions(&theirs, closed).expect("the built directory is restored");
+    assert!(
+        retained_reason(&again, &run_root).starts_with("this host cannot remove it: "),
+        "asking again gives the same answer, not one about the clock:\n{again}"
     );
     assert_eq!(
         quiet, "",
