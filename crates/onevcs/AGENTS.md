@@ -356,9 +356,7 @@ script written beside them that answered to what they asked.
 ## The disk is a resource, and `sweep` is the only verb that frees it
 
 Every branch-keyed landing cuts a run root, and `sweep` is the only thing that
-removes one. Its surface and the reasoning behind it are in
-[`docs/inferred-surface.md`](../../docs/inferred-surface.md); three rules govern how
-it decides.
+removes one. Three rules govern how it decides.
 
 - **Proof, never inference.** A workspace is removed only where this crate can show
   it is finished. Every other answer retains, reports why, and terminates nothing.
