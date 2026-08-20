@@ -2965,63 +2965,70 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
     // to work that has already reached the base; refusing over it would send
     // somebody to land what is already landed.
     //
-    // Behind a `pre-push` gate, so the push is the only thing storing an artifact:
-    // a `command:` gate stores its own verdict before the push is ever made, and
-    // this is a claim about the push.
+    // Its two halves fail independently — the artifact beside the stream, and the
+    // log preserved where it outlives the tree the push was made in — so each is
+    // driven on its own. Behind a `pre-push` gate, so the push is the only thing
+    // storing an artifact: a `command:` gate stores its own verdict before the push
+    // is ever made, and this is a claim about the push.
     let unrecordable =
         Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
     unrecordable
         .world
         .install_pre_push(&unrecordable.checkout, "exit 0");
-    let (second, worktree) = unrecordable.open(&["--branch", "feature/unrecordable"]);
-    unrecordable
-        .world
-        .commit_file(&worktree, "two.txt", "two\n", "feat: add the other thing");
     let artifacts = unrecordable.world.home().join("artifacts");
     std::fs::create_dir_all(&artifacts).expect("an artifact directory");
-    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o500))
-        .expect("a directory nothing may write into");
-    // Both halves of the record, independently: the artifact beside the stream and
-    // the log preserved where it outlives the tree the push was made in. Neither is
-    // the publication.
-    let logs = run_root_of(&unrecordable.world, &second).join("gate-logs");
-    std::fs::create_dir_all(&logs).expect("a preserved-log directory");
-    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o500))
-        .expect("a directory nothing may write into");
 
-    unrecordable
-        .world
-        .onevcs()
-        .args(["publish", &second])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "is recorded without what it wrote",
-        ));
+    for (half, landed) in [("artifact", 2), ("preserved-log", 3)] {
+        let branch = format!("feature/no-{half}");
+        let (token, worktree) = unrecordable.open(&["--branch", &branch]);
+        unrecordable.world.commit_file(
+            &worktree,
+            &format!("{half}.txt"),
+            "one\n",
+            &format!("feat: add {half}"),
+        );
+        let logs = run_root_of(&unrecordable.world, &token).join("gate-logs");
+        let closed = match half {
+            "artifact" => artifacts.clone(),
+            _ => {
+                std::fs::create_dir_all(&logs).expect("a preserved-log directory");
+                logs.clone()
+            }
+        };
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o500))
+            .expect("a directory nothing may write into");
 
-    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700))
-        .expect("the artifact directory is restored");
-    std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o700))
-        .expect("the preserved-log directory is restored");
-    assert_eq!(
-        unrecordable.origin_log().len(),
-        2,
-        "the publication reached the base whatever became of the record of its push"
-    );
-    let pushes = unrecordable.world.events_of(&second, "push");
-    assert!(
-        pushes[0]["artifacts"]
+        unrecordable
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(
+                "is recorded without what it wrote",
+            ));
+
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700))
+            .expect("the directory is restored");
+        assert_eq!(
+            unrecordable.origin_log().len(),
+            landed,
+            "{half}: the publication reached the base whatever became of its record"
+        );
+        let pushes = unrecordable.world.events_of(&token, "push");
+        let stored = !pushes[0]["artifacts"]
             .as_array()
             .expect("an array")
-            .is_empty(),
-        "evidence that was not stored is no artifact reference: {pushes:?}"
-    );
-    // …and a field nothing could write is absent rather than empty: a path in the
-    // payload is a promise that a file is at it.
-    assert!(
-        pushes[0]["payload"].get("preserved_log").is_none(),
-        "{pushes:?}"
-    );
+            .is_empty();
+        // The half that could still be written was, and the half that could not is
+        // absent rather than naming a file that is not there.
+        assert_eq!(stored, half != "artifact", "{half}: {pushes:?}");
+        assert_eq!(
+            pushes[0]["payload"].get("preserved_log").is_some(),
+            half == "artifact",
+            "{half}: {pushes:?}"
+        );
+    }
 }
 
 /// The run root one session works in, read out of the record that names it.

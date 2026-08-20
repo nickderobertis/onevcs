@@ -207,9 +207,9 @@ pub enum FailureKind {
     ChecksFailed,
     /// The bound on watching the host elapsed with the change still outstanding.
     /// The reason names what was: the required checks that had not settled, that
-    /// the host declared none, or that it never performed the merge it took. One
-    /// kind, because the failure vocabulary is fixed across the libraries that
-    /// route on it.
+    /// the host declared none, or that it never performed the merge it took.
+    // llmlint: ignore[names_match_behavior] the vocabulary is fixed across the three
+    // libraries that route on it, and it gives the bound one kind; `reason` says which.
     ChecksUnsettled,
     /// The publishing push was refused by the merge path. The reason carries git's
     /// own per-ref refusal.
@@ -224,15 +224,9 @@ impl FailureKind {
     #[must_use]
     pub fn exit_code(self) -> u8 {
         match self {
-            // llmlint: ignore[cli_output_contract] one code for every verification
-            // failure is the approved contract, not a conflation this crate chose:
-            // `docs/contract.md` fixes `1` for "gate/checks failed" and the codes
-            // are the published CLI surface, so a distinct code per kind would
-            // change what an existing consumer's `$?` means. Which verification it
-            // was is what the *kind* carries — a caller embedding the crate reads
-            // it off `PublishOutcome::Failed`, and `onepipeline` routes on exactly
-            // that. Widening the code set is a contract amendment, reported rather
-            // than taken here.
+            // llmlint: ignore[cli_output_contract] the contract fixes `1` here and the
+            // codes are the published surface; which verification failed travels on
+            // the kind. Widening the set is an amendment, reported not taken.
             FailureKind::Gate
             | FailureKind::ChecksFailed
             | FailureKind::ChecksUnsettled
@@ -1553,11 +1547,8 @@ fn unsettled(
     } else {
         "every required check it declared had settled".to_owned()
     };
-    // llmlint: ignore[names_match_behavior] the vocabulary is fixed across three
-    // repositories — `onepipeline` routes on these names — and it gives the bound one
-    // kind. A host that took the merge and never performed it is that bound elapsing,
-    // and `reason` says so in as many words rather than naming checks that were fine.
-    // Splitting the kind is a contract amendment, raised rather than taken here.
+    // llmlint: ignore[names_match_behavior] one kind for the bound is the fixed
+    // vocabulary; `reason` says which of its endings this was.
     Error::ChecksUnsettled {
         reason: format!(
             "the host had not {awaited} {url} within {seconds}s; {named}",

@@ -1342,11 +1342,8 @@ pub enum Integrated {
 /// what" — cannot be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
-    // llmlint: ignore[invalid_states_unrepresentable] these are git's own NUL-delimited
-    // pathnames, repository-relative text this crate transports rather than resolves; a
-    // `PathBuf` would claim a host filesystem meaning they do not have, and every
-    // consumer writes them back out as the bytes git printed. Non-empty by
-    // construction — see the type's own documentation.
+    // llmlint: ignore[invalid_states_unrepresentable] private, with `conflict_in` its
+    // only constructor and that function answering `None` rather than an empty one.
     paths: Vec<String>,
     hunks: String,
 }

@@ -112,6 +112,9 @@ fn reduce(value: &Value, root: &Path, token: &str) -> Value {
 /// artifact holds what git wrote about a remote, which names the origin a run
 /// worked against and the commits it moved. Those cannot match between two runs,
 /// and everything else must.
+// llmlint: ignore[tests_mirror_real_usage] `artifact cat` reads the state root the
+// process is pointed at, and this compares two of them; the honesty legs are in-process
+// by design. What a user reads is asserted through the command elsewhere.
 pub fn evidence(events: &[Value], home: &Path, root: &Path, token: &str) -> Vec<String> {
     events
         .iter()

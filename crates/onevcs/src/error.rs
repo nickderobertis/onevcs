@@ -64,6 +64,8 @@ pub enum Error {
     /// because the failure vocabulary is fixed across the three libraries that
     /// route on it. Distinct from [`Error::ChecksFailed`] because the operator's
     /// next move differs: nothing has failed, and the publication stopped watching.
+    // llmlint: ignore[names_match_behavior] the vocabulary is fixed across the three
+    // libraries that route on it, and it gives the bound one kind; `reason` says which.
     #[error("checks unsettled: {reason}")]
     ChecksUnsettled {
         /// What was still outstanding when the bound elapsed: the required checks
