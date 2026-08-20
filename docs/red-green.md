@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 158. Tests observed red and then green: 182.
+Patches: 157. Tests observed red and then green: 181.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpzskzXw-project-621ec260a638/runs/<token>/clone stands on its own parent 2b8011c5800ee5e4d9412f
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpZCJFhv-project-d1339cc675ad/runs/<token>/clone stands on its own parent bd95aa19ba461e54af5a34
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpujHgQW-project-43466f79a173/runs/<token>/clone stands on its own parent 9062b458a5c0d3c93cfcbe
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpskEDxI-project-df96f220449f/runs/<token>/clone stands on its own parent 8613163a461a9477f6c654
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -332,12 +332,6 @@ the writability probe stops putting a directory's timestamps back, so every work
 the writability probe writes into a directory before it has put the clock back once, so a directory whose timestamps it cannot set is left aged by having been asked about.
 
 - RED `a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking` — a workspace is as old as the work in it, not as old as the last sweep:
-
-### `136-an-unreadable-state-root-is-read-as-an-empty-one`
-
-a state root that is there and unreadable is read as one nobody has published from, so a sweep that could not run answers as one that found nothing to do.
-
-- RED `a_state_root_this_host_cannot_read_is_a_sweep_that_could_not_run` — Unexpected return code, failed var == 2
 
 ### `137-a-directory-that-hands-unlinks-to-owners-is-answered-for-anyway`
 
@@ -810,7 +804,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
