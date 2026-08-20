@@ -1,13 +1,14 @@
 Mutation: the age floor stops bounding what a sweep considers, so a workspace written moments ago is reaped by a sweep that was told to leave a day's work alone.
 Red: the_age_floor_bounds_what_a_sweep_considers
+Red: a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index b5bb42b..bc575c6 100644
+index e0754cb..82698f4 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -364,12 +364,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+@@ -478,12 +478,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
      let age = SystemTime::now()
-         .duration_since(last_written(run_root))
+         .duration_since(written)
          .unwrap_or(Duration::ZERO);
 -    if age < min_age {
 -        return Ok(Verdict::Retain(Kept::Fresh {
@@ -15,6 +16,6 @@ index b5bb42b..bc575c6 100644
 -            floor: min_age,
 -        }));
 -    }
-     // Last, because it is the only question whose answer is about this *host* rather
-     // than about the workspace: everything above has already decided the directory is
+     // Because it is the only question whose answer is about this *host* rather than
+     // about the workspace: everything above has already decided the directory is
      // dead, and this asks whether emptying it can be shown to be ours to do.

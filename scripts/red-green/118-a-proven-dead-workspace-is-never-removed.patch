@@ -1,7 +1,6 @@
 Mutation: a sweep reports what it reclaimed and removes none of it, which is the state before this verb: the directories are named and every one of them is still there.
 Red: a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed
 Red: a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication
-Red: a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other
 Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: the_age_floor_bounds_what_a_sweep_considers
 

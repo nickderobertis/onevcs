@@ -1,0 +1,16 @@
+Mutation: the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
+Red: the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index e0754cb..56e842c 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -242,7 +242,7 @@ fn family(report: &mut Report, verb: Verb, min_age: Duration) -> Result<()> {
+     // the clock the age floor already read, so the two cannot come to disagree about
+     // which workspace is the recent one. The bound keeps the front of that order:
+     // the failure an operator is asking about is the one that just happened.
+-    holding.sort_by_key(|holds| std::cmp::Reverse(holds.written));
++    holding.sort_by_key(|holds| holds.written);
+     for (older, holds) in holding.into_iter().enumerate() {
+         let Holding {
+             path,

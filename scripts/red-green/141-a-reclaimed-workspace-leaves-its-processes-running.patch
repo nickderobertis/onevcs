@@ -1,0 +1,41 @@
+Mutation: reclaiming a workspace stops asking which processes it left running, so the directory is unlinked while a daemon goes on holding everything that was in it.
+Red: reclaiming_a_workspace_stops_the_process_the_publication_left_running
+Red: a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index e0754cb..fa12dcd 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -552,7 +552,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+     // Measured before anything is stopped: what a daemon holds open is part of what
+     // this workspace is costing, and it is the reason stopping it is what reclaims.
+     let bytes = size_of(&run_root);
+-    let holding = processes::holding(&run_root);
++    let holding: Vec<processes::Holder> = Vec::new();
+     if report.dry_run {
+         report.reclaimed.push(Reclaimed {
+             path: run_root,
+@@ -561,7 +561,6 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+         });
+         return Ok(());
+     }
+-    let left = processes::stop(&holding, &run_root);
+     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
+     // still working inside the run root after it has been asked to stop and then
+     // killed. What survives `SIGKILL` is a process this user may not signal at all —
+@@ -571,15 +570,6 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+     // removed for the reason the module's own note gives: unlinking a file a live
+     // process holds open frees nothing, so the report would name a figure the disk
+     // never gets back.
+-    if !left.is_empty() {
+-        report.retained.push(Retained {
+-            path: run_root,
+-            why: Kept::StillRunning {
+-                pids: left.iter().map(|holder| holder.pid).collect(),
+-            },
+-        });
+-        return Ok(());
+-    }
+     // llmlint: ignore-end[changed_behavior_has_e2e]
+     // An `Err` rather than a line in the report: the report says what this sweep
+     // *decided*, and a removal it had proved it could make and then could not is the

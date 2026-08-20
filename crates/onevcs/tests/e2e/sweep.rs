@@ -1316,13 +1316,16 @@ fn reclaiming_a_workspace_stops_the_process_the_publication_left_running() {
         !run_root.exists(),
         "the finished workspace is reclaimed:\n{report}"
     );
-    World::until("the process the publication left running has gone", || {
-        !still_running(pid)
-    });
     assert!(
         report.contains(&format!("and stopped 1 process(es) (pid {pid})")),
         "the report says what it stopped beside what it freed:\n{report}"
     );
+    // The sweep does not return until what it signalled has stopped holding the run
+    // root, so this is asked rather than waited for — bounded only because a pid the
+    // kernel has not reaped yet still answers a signal of nought.
+    World::until("the process the publication left running has gone", || {
+        !still_running(pid)
+    });
 }
 
 #[test]
@@ -1349,6 +1352,11 @@ fn a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_g
     assert!(
         !run_root.exists(),
         "a workspace whose daemon ignored the first signal is still reclaimed:\n{report}"
+    );
+    assert!(
+        report.contains("and stopped ") && report.contains(&format!("pid {pid}")),
+        "the report names the daemon it stopped — the shell holding the trap, and the \
+         sleep under it, are both working in there:\n{report}"
     );
     World::until("the daemon that ignored the first signal has gone", || {
         !still_running(pid)
