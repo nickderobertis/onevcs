@@ -568,7 +568,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     }
     // Before a single file is unlinked, because unlinking one a process holds open
     // frees nothing: what comes back from this is what would not go.
-    let left = processes::stop(&holding, &run_root);
+    let processes::Stopped { stopped, left } = processes::stop(&holding, &run_root);
     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
     // still working inside the run root after it has been asked to stop and then
     // killed. What survives `SIGKILL` is a process this user may not signal at all —
@@ -603,7 +603,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,
-        stopped: holding.iter().map(Holder::pid).collect(),
+        stopped,
     });
     drop(lease);
     Ok(())
@@ -694,8 +694,9 @@ struct Skipped {
 struct Reclaimed {
     path: PathBuf,
     bytes: u64,
-    /// Every process that was working inside it, which removing it stopped — or,
-    /// under a rehearsal, would have stopped.
+    /// Every process removing it stopped — which under a rehearsal is every one
+    /// found working inside it, since a rehearsal signals nothing and can only say
+    /// what it would have reached for.
     stopped: Vec<processes::Pid>,
 }
 

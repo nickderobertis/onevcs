@@ -1348,18 +1348,18 @@ fn a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_g
     // lock file of its own can put them down. One that does not answer is not left
     // running: it is the whole of what makes the removal a reclamation.
     let fixture = Fixture::local(&gate_starting_a_daemon(
-        "sh -c 'trap \\\"\\\" TERM; sleep 300'",
+        "sh -c 'trap \\\"\\\" TERM; touch $HOME/trapped; sleep 300'",
     ));
     finished_branch(&fixture, "feature/stubborn");
     publish_branch(&fixture, "feature/stubborn");
 
     let run_root = only_run_root(&publications(&fixture.world));
     let pid = daemon_pid(&fixture);
-    World::until("the daemon has installed its handler", || {
-        // The trap is in place once the shell has reached its sleep; before that a
-        // signal would land on a shell still parsing, which proves nothing.
-        still_running(pid)
-    });
+    // Said by the daemon itself, after the trap is installed and before it sleeps: a
+    // journey that only waited for the pid to exist could signal a shell still
+    // parsing, and would pass having exercised nothing but the first signal.
+    let trapped = fixture.world.path("trapped");
+    World::until("the daemon has installed its handler", || trapped.exists());
     backdate(&run_root, 72);
 
     let report = swept(&fixture, &[]);

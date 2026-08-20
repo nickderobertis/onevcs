@@ -113,14 +113,25 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
     found
 }
 
-/// Stop them, and answer the ones still working inside the run root afterwards.
+/// What one attempt to stop a run root's processes actually did.
+pub struct Stopped {
+    /// The ones this signalled and that then stopped holding the run root. Only
+    /// those: a process that had already gone when its turn came was never signalled,
+    /// and a report naming it would be claiming something this did not do.
+    pub stopped: Vec<Pid>,
+    /// The ones still working inside it.
+    pub left: Vec<Holder>,
+}
+
+/// Stop them, and answer what that did.
 ///
 /// `SIGTERM` first and `SIGKILL` only after the grace, because the daemon this is
 /// about has state of its own to put down. A caller decides what a survivor means;
-/// what this promises is that everything it does not name has stopped holding the
-/// directory.
-pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Holder> {
+/// what this promises is that everything it does not leave in `left` has stopped
+/// holding the directory.
+pub fn stop(holders: &[Holder], run_root: &Path) -> Stopped {
     let mut left: Vec<Holder> = holders.to_vec();
+    let mut signalled: Vec<Pid> = Vec::new();
     for signal in [Signal::Terminate, Signal::Kill] {
         // Asked again rather than assumed: a process that has already gone, or whose
         // pid has been taken over by something working elsewhere, is not this run
@@ -134,6 +145,9 @@ pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Holder> {
         left.retain(|holder| still_holding(holder, run_root));
         for holder in &left {
             signal_to(holder.pid, signal);
+            if !signalled.contains(&holder.pid) {
+                signalled.push(holder.pid);
+            }
         }
         let deadline = Instant::now() + GRACE;
         while !left.is_empty() && Instant::now() < deadline {
@@ -144,7 +158,13 @@ pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Holder> {
             break;
         }
     }
-    left
+    Stopped {
+        stopped: signalled
+            .into_iter()
+            .filter(|pid| !left.iter().any(|holder| holder.pid == *pid))
+            .collect(),
+        left,
+    }
 }
 
 /// Whether this pid is still the process that was found working inside the run root.
