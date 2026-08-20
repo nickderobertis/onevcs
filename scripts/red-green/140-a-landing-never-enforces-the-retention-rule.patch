@@ -3,6 +3,7 @@ Red: a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind
 Red: a_landing_never_reclaims_a_workspace_somebody_holds_the_lease_on
 Red: a_landing_says_so_when_the_retention_rule_could_not_run_and_lands_anyway
 Red: a_recovery_enforces_the_rule_over_its_own_family_and_not_the_publications
+Red: a_landing_stops_the_daemon_the_landing_before_it_left_running
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
 index 4d2965f..ca871a6 100644

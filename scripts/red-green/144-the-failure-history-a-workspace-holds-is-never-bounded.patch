@@ -1,5 +1,6 @@
 Mutation: the bound on workspaces holding work no origin has stops being applied, so a scratch root keeps every failed publication for ever.
 Red: the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes
+Red: a_landing_applies_the_same_bound_to_the_workspaces_holding_work_no_origin_has
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
 index e0754cb..60f623e 100644

@@ -1,0 +1,19 @@
+Mutation: a run clone's branch is read as work that never reached the origin whenever a ref does not carry it, so every finished publication looks like a failure worth keeping.
+Red: a_workspace_whose_branch_the_base_already_carries_takes_no_place_in_the_bound
+Red: a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index eb70190..f54eb7c 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -538,9 +538,7 @@ fn unpublished_work(clone: &Path) -> Result<Vec<String>> {
+     let compared = crate::vcs::base_ref(clone, &base);
+     let mut holding = Vec::new();
+     for branch in git::unpublished_branches(clone)? {
+-        if git::trees_differ(clone, &compared, &branch)? {
+-            holding.push(branch);
+-        }
++        holding.push(branch);
+     }
+     Ok(holding)
+ }

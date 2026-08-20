@@ -1,6 +1,7 @@
 Mutation: reclaiming a workspace stops asking which processes it left running, so the directory is unlinked while a daemon goes on holding everything that was in it.
 Red: reclaiming_a_workspace_stops_the_process_the_publication_left_running
 Red: a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes
+Red: a_landing_stops_the_daemon_the_landing_before_it_left_running
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
 index 4a2e893..b78efed 100644
