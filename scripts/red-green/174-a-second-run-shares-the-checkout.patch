@@ -1,0 +1,21 @@
+Mutation: the lock is taken but never contended, so a second run under one checkout joins the first rather than being turned away.
+Red: a_second_run_under_one_checkout_is_refused_rather_than_joining_in
+
+diff --git a/scripts/red-green.sh b/scripts/red-green.sh
+index 760bf96..f693f38 100755
+--- a/scripts/red-green.sh
++++ b/scripts/red-green.sh
+@@ -309,12 +309,7 @@ if ! mkdir -p .logs; then
+   echo "ACTION: make the repository root writable by this user (.logs is gitignored and owner-only), then re-run" >&2
+   exit 1
+ fi
+-if ! mkdir "$lock" 2>/dev/null; then
+-  holder="$(cat "$lock/pid" 2>/dev/null || true)"
+-  echo "red-green: another run holds $lock${holder:+, as pid $holder}" >&2
+-  echo "ACTION: wait for it to finish — two runs under one checkout mutate the same files. If nothing is running, remove $lock and re-run" >&2
+-  exit 1
+-fi
++mkdir -p "$lock"
+ # Best effort, and the run proceeds without it: the directory is the lock, and this
+ # only lets the refusal above name who is holding it.
+ printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
