@@ -1,0 +1,22 @@
+Mutation: the comparison of content answers no rather than unknown, so a landing nothing recorded reads as work nobody published.
+Red: a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown
+
+diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
+index d4d4171..9b82c88 100644
+--- a/crates/onevcs/src/landed.rs
++++ b/crates/onevcs/src/landed.rs
+@@ -235,12 +235,8 @@ fn landed(evidence: LandingEvidence) -> Landed {
+ }
+ 
+ /// The two answers the content comparison may give, and neither is a `yes`.
+-fn inferred(carried: bool) -> Landed {
+-    if carried {
+-        Landed::Unknown
+-    } else {
+-        Landed::No
+-    }
++fn inferred(_carried: bool) -> Landed {
++    Landed::No
+ }
+ 
+ /// The base commit that names this change request, when one does.

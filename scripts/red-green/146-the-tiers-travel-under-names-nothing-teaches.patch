@@ -1,0 +1,17 @@
+Mutation: the tier that decided a landing travels under a spelling the surface record does not teach.
+Red: the_record_names_every_word_the_landing_answer_travels_as
+Red: a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landing_it_recorded
+
+diff --git a/crates/onevcs/src/landed.rs b/crates/onevcs/src/landed.rs
+index d4d4171..77d1b61 100644
+--- a/crates/onevcs/src/landed.rs
++++ b/crates/onevcs/src/landed.rs
+@@ -87,7 +87,7 @@ impl Landed {
+ 
+ /// Which tier decided a landing, and the commit that is its evidence.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+-#[serde(tag = "tier", rename_all = "kebab-case")]
++#[serde(tag = "tier", rename_all = "camelCase")]
+ pub enum LandingEvidence {
+     /// A landing commit recorded for this branch, which the base carries.
+     RecordedLanding {
