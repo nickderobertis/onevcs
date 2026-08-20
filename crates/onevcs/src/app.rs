@@ -458,6 +458,12 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         if let Some(scoped) = &scoped {
             eprintln!("onevcs: this answer covers {scoped}. {widen}");
         }
+        // Said to a parser's operator as well, and in the same place: a consumer
+        // reading this document is deciding what to publish, and a branch missing
+        // from it because it landed reads exactly like one nothing found.
+        if !args.include_landed {
+            eprintln!("onevcs: {landed_too}");
+        }
         println!("{}", serde_json::to_string(&rows).map_err(serialization)?);
         return Ok(0);
     }

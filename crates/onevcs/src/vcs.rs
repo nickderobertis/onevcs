@@ -357,15 +357,15 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                     ..recorded
                 };
                 let verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
-                let landed = verdict != Landed::No;
-                if landed && reporting == Reporting::UnpublishedOnly {
+                let reached_the_base = verdict != Landed::No;
+                if reached_the_base && reporting == Reporting::UnpublishedOnly {
                     continue;
                 }
                 // Marked seen only once it is a row this report is answering with, so
                 // that one repository's spent copy of a name cannot answer for
                 // another's: a branch published out of the checkout and re-cut in a
                 // later run has both, and the first has nothing left in it.
-                if !landed {
+                if !reached_the_base {
                     seen.push(key);
                 }
                 let row = preserved_row(
@@ -381,7 +381,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                     &sessions,
                     &trailers,
                 )?;
-                if landed {
+                if reached_the_base {
                     spent.push(row);
                 } else {
                     rows.push(row);

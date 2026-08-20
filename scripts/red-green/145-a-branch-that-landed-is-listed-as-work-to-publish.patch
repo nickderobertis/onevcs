@@ -2,15 +2,15 @@ Mutation: recoverable stops withholding the branches whose work reached their ba
 Red: a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its_own_paths
 
 diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
-index 98eda2c..7943d46 100644
+index 69a4a58..5ac2a19 100644
 --- a/crates/onevcs/src/vcs.rs
 +++ b/crates/onevcs/src/vcs.rs
 @@ -357,7 +357,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>>
                      ..recorded
                  };
                  let verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
--                let landed = verdict != Landed::No;
-+                let landed = false;
-                 if landed && reporting == Reporting::UnpublishedOnly {
+-                let reached_the_base = verdict != Landed::No;
++                let reached_the_base = false;
+                 if reached_the_base && reporting == Reporting::UnpublishedOnly {
                      continue;
                  }

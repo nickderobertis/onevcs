@@ -76,7 +76,9 @@ impl Landed {
         matches!(self, Landed::Yes { .. })
     }
 
-    /// The tier that decided it, spelled the way the report writes it.
+    /// The tier that decided it, in the words a rendering names it by — which are
+    /// prose rather than the kebab-case the answer serializes as, because the one
+    /// place they are read is a sentence.
     pub fn tier(&self) -> &'static str {
         match self {
             Landed::Yes { evidence } => evidence.tier(),
@@ -111,7 +113,7 @@ pub enum LandingEvidence {
 }
 
 impl LandingEvidence {
-    /// The tier this is, as the report spells it.
+    /// The tier this is, in the words a rendering names it by.
     fn tier(&self) -> &'static str {
         match self {
             LandingEvidence::RecordedLanding { .. } => "a recorded landing",

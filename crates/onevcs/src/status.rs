@@ -437,8 +437,8 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     // Latest-first by the envelope's own timestamp rather than by the order the
     // streams happened to be listed in: a branch published twice has two records of
     // itself, and the newer one is the one somebody is asking about.
-    let holder = session.as_ref().map(|session| session.token.to_string());
-    let relevant = relevant_streams(&streams, &work.identity, &work.branch, holder.as_deref());
+    let held_by = session.as_ref().map(|session| session.token.to_string());
+    let relevant = relevant_streams(&streams, &work.identity, &work.branch, held_by.as_deref());
     let change_url = latest(
         relevant
             .iter()
