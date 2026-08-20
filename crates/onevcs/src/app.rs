@@ -635,7 +635,7 @@ fn sync(args: &SyncArgs) -> Result<u8> {
 /// not remove, is a line in the report rather than a failure — the report is the
 /// answer, and a caller that got a non-zero code for a directory somebody else is
 /// inside would have no way to tell that from a sweep that never happened.
-// llmlint: ignore[cli_output_contract] the exit code is the half of this verb's
+// llmlint: ignore-block[cli_output_contract] the exit code is the half of this verb's
 // surface that `ai-orchestrator`'s composed `just sweep-scratch` reads, and it is
 // fixed: nought when the sweep ran, non-zero when it could not run at all. A
 // workspace this host may not remove is a normal, expected outcome on a state root
@@ -648,6 +648,7 @@ fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
     println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
     Ok(0)
 }
+// llmlint: ignore-end[cli_output_contract]
 
 fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
     let token = args.token.as_str();
