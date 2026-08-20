@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 171. Tests observed red and then green: 202.
+Patches: 193. Tests observed red and then green: 224.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -100,7 +100,7 @@ a session may name its own branch as its base again, and publish it into itself.
 
 the refusal a continued branch's conflict gives names neither the copy it is in nor the command that lands it.
 
-- RED `a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it` — Unexpected stderr, failed var.contains(<tmp>/project)
+- RED `a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it` — Unexpected stderr, failed var.contains(in "shared.txt")
 
 ### `103-a-run-root-somebody-is-working-in-is-read-as-abandoned`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpPS9vqr-project-1f7ce93ecf54/runs/<token>/clone stands on its own parent 4a0fd9501a30dd617ab62b
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpcqbDBM-project-a82149de002f/runs/<token>/clone stands on its own parent ee3c4d4ff671c2e70773cb
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpRKUH0C-project-da51226d459b/runs/<token>/clone stands on its own parent 21010db63313dc74aee450
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpSroPMx-project-bd286999f69c/runs/<token>/clone stands on its own parent da40124e9e3b0bf33ff559
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -387,7 +387,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-3337e2-18cd9b83db0beff7-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-f760a-18cda4461fa0a14f-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -401,7 +401,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-337bc5-18cd9b86e89397f4-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-fb67a-18cda44fed7dddcb-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -502,6 +502,12 @@ an unusable stack pointer is refused as a bare name rather than as the trailer i
 
 - RED `a_recorded_base_that_is_not_a_branch_names_the_trailer_that_says_so` — Unexpected stderr, failed var.contains(Onevcs-Change-Base:)
 
+### `160-a-spent-copys-landing-answers-for-the-branch`
+
+the copy that answers for a branch is whichever one shows a landing, so a run clone left at the commit that landed answers for a checkout holding commits nobody published.
+
+- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
+
 ### `160-push-evidence-is-conditional-again`
 
 a publishing push records what it wrote only where the policy names a pre-push gate, which is where it used to.
@@ -514,7 +520,7 @@ a publishing push records what it wrote only where the policy names a pre-push g
 a conflict stops carrying the paths git left unmerged, so every refusal about one says only that something conflicted.
 
 - RED `a_conflict_across_more_files_than_a_refusal_can_name_says_how_many_it_left_out` — Unexpected stderr, failed var.contains(and 2 more)
-- RED `a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict` — Unexpected stderr, failed var.contains(in "shared-0.txt")
+- RED `a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict` — Unexpected stderr, failed var.contains(shared \" 0.txt)
 - RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(in "shared.txt")
 - RED `a_train_reports_each_way_a_candidate_can_fail_without_stopping` — Unexpected stdout, failed var.contains(claude/clashes-remote: skipped (conflict with the current base in "shared.txt"))
 
@@ -581,11 +587,6 @@ a landing that could not be written down fails the publication, which reports a 
 the amendment stops naming one of the failures a publication can end with.
 
 - RED `the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_code` — assertion `left == right` failed: exactly one `rust` amendment must declare "ChecksFailed, ChecksUnsettled, PushRejected }"; found 0
-### `160-a-spent-copys-landing-answers-for-the-branch`
-
-the copy that answers for a branch is whichever one shows a landing, so a run clone left at the commit that landed answers for a checkout holding commits nobody published.
-
-- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
 
 ### `16-the-trains-arguments-are-only-diagnosed`
 
@@ -617,6 +618,12 @@ a host that queues a direct merge is reported as having left the change open, wh
 the amendment states an interval this build does not poll at.
 
 - RED `the_amendment_states_the_interval_this_build_asks_the_host_at` — the amendment no longer states the 30-second interval this build polls at
+
+### `174-a-second-run-shares-the-checkout`
+
+the lock is taken but never contended, so a second run under one checkout joins the first rather than being turned away.
+
+- RED `a_second_run_under_one_checkout_is_refused_rather_than_joining_in` — the refusal owes the lock it met and what to do about it:
 
 ### `17-a-branch-nobody-has-is-only-diagnosed`
 
@@ -1046,7 +1053,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
