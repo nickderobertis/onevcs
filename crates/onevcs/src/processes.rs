@@ -23,10 +23,6 @@
 //! holds a directory. It does not need one to be safe — a removal there fails while a
 //! process holds the tree, which the sweep reports as the failure it is — and this
 //! crate's own journeys run on Unix, where both answers below are real.
-//!
-//! The Linux answers and the macOS ones are covered by the same journeys rather than
-//! by different ones: none of the daemon journeys in `tests/e2e/sweep.rs` is gated by
-//! platform, and CI's `cross` job runs that whole offline suite on macOS.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -105,7 +101,6 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
         .filter_map(|pid| working_dir(pid).map(|cwd| Holder { pid, cwd }))
         .filter(|holder| holder.cwd.starts_with(run_root))
         .collect();
-    // By pid, so a report naming several reads the same way twice.
     found.sort_by_key(|holder| holder.pid.0);
     found
 }
