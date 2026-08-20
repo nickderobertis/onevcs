@@ -489,7 +489,6 @@ fn size_of(path: &Path) -> u64 {
 }
 // llmlint: ignore-end[changed_behavior_has_e2e]
 
-/// One family of run roots, as it was found.
 struct Examined {
     name: &'static str,
     path: PathBuf,
@@ -500,19 +499,16 @@ struct Examined {
     unreadable: Vec<String>,
 }
 
-/// A directory under the workspaces root this verb did not examine, and why.
 struct Skipped {
     path: PathBuf,
     reason: String,
 }
 
-/// A run root that was removed, or that a rehearsal would have removed.
 struct Reclaimed {
     path: PathBuf,
     bytes: u64,
 }
 
-/// A run root that was left where it is, and why.
 struct Retained {
     path: PathBuf,
     why: Kept,
