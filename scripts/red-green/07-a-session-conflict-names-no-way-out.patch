@@ -2,15 +2,17 @@ Mutation: the publication path's sync conflict goes back to stating that the bra
 Red: a_base_that_conflicts_with_the_branch_reports_its_own_exit_code
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index b38dea0..675ba3c 100644
+index cd7532f..e0d305a 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -644,8 +644,7 @@ fn sync(context: &Context<'_>, stream: &mut Stream, compared: &str) -> Result<()
+@@ -953,9 +953,8 @@ fn sync(
+                 )
              }
              Reconciliation::Merge => format!(
-                 "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
--                 branch is retained. Resolve the conflict on it — merge {compared} into {branch} — \
--                 and then land it with `{land}`",
+-                "{compared} conflicts with {branch:?} in {conflicting} after {SYNC_ATTEMPTS} \
+-                 bounded attempts; the branch is retained. Resolve the conflict on it — merge \
+-                 {compared} into {branch} — and then land it with `{land}`",
++                "{compared} conflicts with {branch:?} after {SYNC_ATTEMPTS} bounded attempts; the \
 +                 branch is retained for recovery",
                  branch = context.branch,
              ),

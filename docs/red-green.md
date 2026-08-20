@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 166. Tests observed red and then green: 194.
+Patches: 171. Tests observed red and then green: 202.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -14,7 +14,7 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 - RED `a_complete_branch_of_a_local_identity_lands_on_its_base` — Unexpected failure.
 - RED `a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_require` — Unexpected failure.
 - RED `a_complete_branch_of_a_remote_identity_is_landed_by_the_host` — Unexpected failure.
-- RED `a_branch_the_host_holds_reports_the_merge_it_queued` — Unexpected failure.
+- RED `a_branch_the_host_holds_is_watched_until_it_lands` — Unexpected failure.
 - RED `a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body_for` — Unexpected stderr, failed var.contains(RemoteHost for a host other than github.com is not implemented yet)
 - RED `an_identity_with_no_rules_file_publishes_under_the_built_in_default` — Unexpected failure.
 - RED `publishing_a_branch_refuses_interrupted_work_and_names_the_verb_that_lands_it` — Unexpected return code, failed var == 2
@@ -69,7 +69,7 @@ the branch-keyed sync conflict goes back to stating that the two conflict.
 
 the publication path's sync conflict goes back to stating that the branch is retained.
 
-- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(land it with `onevcs publish-branch feature/conflicting --repo <tmp>/project`)
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(in "shared.txt")
 
 ### `08-printed-commands-are-not-quoted`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpidt0rH-project-00d6f2eb2ff8/runs/<token>/clone stands on its own parent ede2ce00dc4b4e067c54a9
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpPS9vqr-project-1f7ce93ecf54/runs/<token>/clone stands on its own parent 4a0fd9501a30dd617ab62b
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp01JdQN-project-66e09b86e51c/runs/<token>/clone stands on its own parent c4a473cf7bf317006d0e06
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpRKUH0C-project-da51226d459b/runs/<token>/clone stands on its own parent 21010db63313dc74aee450
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -433,12 +433,116 @@ an unusable stack pointer is refused as a bare name rather than as the trailer i
 
 - RED `a_recorded_base_that_is_not_a_branch_names_the_trailer_that_says_so` — Unexpected stderr, failed var.contains(Onevcs-Change-Base:)
 
+### `160-push-evidence-is-conditional-again`
+
+a publishing push records what it wrote only where the policy names a pre-push gate, which is where it used to.
+
+- RED `a_push_a_hook_refuses_records_what_the_hook_wrote_whatever_the_policy_calls_its_gate` — every publishing push records what it wrote
+- RED `a_push_that_is_accepted_records_what_it_wrote_too` — an accepted push records what it wrote as well
+
+### `161-a-conflict-names-nothing-it-conflicts-over`
+
+a conflict stops carrying the paths git left unmerged, so every refusal about one says only that something conflicted.
+
+- RED `a_conflict_across_more_files_than_a_refusal_can_name_says_how_many_it_left_out` — Unexpected stderr, failed var.contains(and 2 more)
+- RED `a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict` — Unexpected stderr, failed var.contains(in "shared-0.txt")
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stderr, failed var.contains(in "shared.txt")
+- RED `a_train_reports_each_way_a_candidate_can_fail_without_stopping` — Unexpected stdout, failed var.contains(claude/clashes-remote: skipped (conflict with the current base in "shared.txt"))
+
+### `162-a-conflict-shows-none-of-its-hunks`
+
+a conflict stops carrying the hunks git renders for it, so the evidence beside it is empty.
+
+- RED `a_base_that_conflicts_with_the_branch_reports_its_own_exit_code` — Unexpected stdout, failed var.contains(from the session)
+
+### `163-a-red-required-check-quotes-nothing`
+
+a required check that concluded red is named and its log is not quoted, leaving the reason reachable only by fetching the artifact by hand.
+
+- RED `a_red_required_check_ends_an_auto_merge_publication_and_quotes_the_log` — Unexpected stderr, failed var.contains(error: the regression is here)
+
+### `164-the-bound-stops-without-saying-what`
+
+the bound on watching the host stops without naming what was still unsettled, which is the silent failure it used to be.
+
+- RED `a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending` — Unexpected stderr, failed var.contains(still unsettled: "gate")
+- RED `a_branch_the_host_never_lands_is_bounded_and_says_what_was_pending` — Unexpected stderr, failed var.contains(still unsettled: "gate")
+- RED `an_auto_merge_the_host_takes_and_never_performs_is_bounded_and_says_the_checks_were_fine` — Unexpected stderr, failed var.contains(every required check it declared had settled)
+- RED `a_required_check_that_never_settles_is_bounded_rather_than_waited_on_forever` — Unexpected stderr, failed var.contains(still unsettled: "gate")
+- RED `a_repository_that_declares_no_required_check_is_not_read_as_having_passed` — Unexpected stderr, failed var.contains(the host declared no required check on it at all)
+- RED `a_change_request_the_host_reports_no_checks_on_is_bounded_rather_than_merged` — Unexpected stderr, failed var.contains(the host declared no required check on it at all)
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected stderr, failed var.contains(still unsettled: "gate")
+
+### `165-a-change-auto-publication-settles-at-queued`
+
+a change-auto publication arms the host's merge and settles at queued, which is where it left a change blocked with nobody alive to report it.
+
+- RED `a_change_the_host_holds_is_watched_until_it_lands_and_reports_the_commit` — Unexpected stdout, failed var.contains(merged at)
+- RED `a_branch_the_host_holds_is_watched_until_it_lands` — Unexpected stdout, failed var.contains(merged at)
+- RED `a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending` — Unexpected return code, failed var == 1
+- RED `a_branch_the_host_never_lands_is_bounded_and_says_what_was_pending` — Unexpected return code, failed var == 1
+- RED `a_red_required_check_ends_an_auto_merge_publication_and_quotes_the_log` — Unexpected return code, failed var == 1
+- RED `an_auto_merge_the_host_takes_and_never_performs_is_bounded_and_says_the_checks_were_fine` — Unexpected return code, failed var == 1
+- RED `a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefix` — Unexpected stdout, failed var.contains(merged at)
+- RED `a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publication` — Unexpected stdout, failed var.contains(merged at)
+- RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected stdout, failed var.contains(merged at)
+
+### `166-checks-are-observed-only-where-the-gate-names-them`
+
+a change-direct publication consults the host's checks only where the resolved policy names them as its gate, which on a host whose rules name commands is no repository at all.
+
+- RED `a_host_that_will_not_describe_a_change_requests_checks_still_opens_one` — Unexpected return code, failed var == 2
+- RED `a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed` — assertion `left == right` failed: []
+
+### `167-a-landing-is-never-recorded`
+
+a merge the host reports is not recorded on the branch, so whether it landed can only be inferred from what the base happens to carry.
+
+- RED `a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefix` — git log --format=%B -1 feature/recorded failed in <tmp>/hosted:
+- RED `a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publication` — Unexpected stderr, failed var.contains(the landing was not recorded)
+
+### `168-a-landing-that-cannot-be-written-fails-the-publication`
+
+a landing that could not be written down fails the publication, which reports a merge that has already happened as one that did not.
+
+- RED `a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publication` — Unexpected failure.
+
+### `169-the-amendment-stops-naming-a-failure`
+
+the amendment stops naming one of the failures a publication can end with.
+
+- RED `the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_code` — assertion `left == right` failed: exactly one `rust` amendment must declare "ChecksFailed, ChecksUnsettled, PushRejected }"; found 0
+
 ### `16-the-trains-arguments-are-only-diagnosed`
 
 integrate's argument refusals go back to stating what is wrong and nothing else.
 
 - RED `a_train_offered_something_it_cannot_run_says_which_and_why` — Unexpected stderr, failed var.contains(`onevcs recoverable`)
 - RED `a_train_asked_to_push_a_checkout_with_no_origin_says_what_to_run_instead` — Unexpected stderr, failed var.contains(re-run `onevcs integrate` without --push)
+
+### `170-a-host-that-cannot-answer-says-not-yet`
+
+a host that was never taught where a change landed answers "not yet" instead of refusing, so a publication watches to its bound and blames checks that were never the reason.
+
+- RED `the_amendment_declares_the_question_a_watched_publication_asks_its_host` — a host that was never taught to answer must refuse rather than say `not yet`
+
+### `171-the-amendment-stops-declaring-the-question-a-watch-asks`
+
+the amendment declares the question a watching publication asks its host in a shape that cannot say "not yet".
+
+- RED `the_amendment_declares_the_question_a_watched_publication_asks_its_host` — the amendment no longer declares the method a watch asks: pub trait RemoteHost {                       // the six above, unchanged, plus:
+
+### `172-a-queued-direct-merge-is-reported-as-open`
+
+a host that queues a direct merge is reported as having left the change open, which is a different thing from a merge it will perform later.
+
+- RED `a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed` — a queued merge is not a landing: Publication { session: SessionToken("<token>"), branch: "feature/queueing", policy: ChangeDirect, outcome: 
+
+### `173-the-amendment-states-an-interval-nothing-polls-at`
+
+the amendment states an interval this build does not poll at.
+
+- RED `the_amendment_states_the_interval_this_build_asks_the_host_at` — the amendment no longer states the 30-second interval this build polls at
 
 ### `17-a-branch-nobody-has-is-only-diagnosed`
 

@@ -1,0 +1,16 @@
+Mutation: the amendment stops naming one of the failures a publication can end with.
+Red: the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_code
+
+diff --git a/docs/contract.md b/docs/contract.md
+index 937d163..d4c5fd3 100644
+--- a/docs/contract.md
++++ b/docs/contract.md
+@@ -413,7 +413,7 @@ Which failure it was is a case rather than a sentence:
+ 
+ ```rust
+ pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented,
+-                       ChecksFailed, ChecksUnsettled, PushRejected }  // 1 | 2 | 3 | 70 | 1 | 1 | 1
++                       ChecksFailed, ChecksUnsettled }  // 1 | 2 | 3 | 70 | 1 | 1
+ ```
+ 
+ `ChecksFailed` is a required check that concluded red, and its `reason` names the

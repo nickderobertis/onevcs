@@ -1326,13 +1326,89 @@ pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) 
 /// Named rather than a `bool`, because "it conflicted" is a domain answer every
 /// caller acts on — it decides a refusal, a skipped candidate, another bounded
 /// attempt — and the one thing a caller must never read it as is a failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Integrated {
     /// The branch carries it now.
     Settled,
-    /// It conflicted, and the branch is as it was found.
-    Conflicted,
+    /// It conflicted, and the branch is as it was found — carrying what conflicted.
+    Conflicted(Conflict),
 }
+
+/// What conflicted: the paths git left unmerged, and the hunks it renders for them.
+///
+/// Both are taken while the conflicted tree still stands, because after the abort
+/// neither exists. Its fields are private and [`conflict_in`] is its only
+/// constructor, so a `Conflict` with no paths — "it conflicted" without "and here is
+/// what" — cannot be built.
+///
+/// A pathname is git's own bytes, decoded the way this module decodes every other
+/// thing git prints: lossily. That is not a choice made here — the paths travel to
+/// a consumer in a JSON event payload, which has no other representation — and a
+/// listing this process cannot decode has journeys of its own.
+// llmlint: ignore-block[invalid_states_unrepresentable] the fields are private and
+// `conflict_in` is their only constructor, answering `None` rather than building an
+// empty one; the decode is the module's, and JSON has no bytes.
+// llmlint: ignore-block[boundary_inputs_validated] git's own output, decoded here as it
+// is at every other call in this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    paths: Vec<String>,
+    hunks: String,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+// llmlint: ignore-end[boundary_inputs_validated]
+
+impl Conflict {
+    /// The paths git left unmerged, in the order it listed them. Never empty.
+    pub fn paths(&self) -> &[String] {
+        &self.paths
+    }
+
+    /// The conflicting hunks, as git renders them. Empty where it would not print
+    /// them.
+    pub fn hunks(&self) -> &str {
+        &self.hunks
+    }
+}
+
+/// What git left unmerged in a tree it has just stopped in, or `None` where it left
+/// nothing unmerged — which is a failure that is not a conflict.
+///
+/// Both callers below ask this the moment their attempt fails and before they abort
+/// it, because both questions are only answerable while the conflicted tree stands.
+///
+/// `-z` rather than the default listing: git renders a pathname carrying a newline,
+/// a quote, or a leading space as a *quoted* C string, and one read back as plain
+/// text would name a file the repository does not have. NUL-delimited, each record
+/// is the pathname's own bytes and nothing has to be unquoted or trimmed.
+// llmlint: ignore-block[changed_behavior_has_e2e] what a listing this process cannot
+// decode does is the subject of its own journeys, and is this module's answer rather
+// than this function's.
+fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
+    let unmerged = run(&["diff", "--name-only", "-z", "--diff-filter=U"], Some(cwd))?;
+    if !unmerged.ok() {
+        return Ok(None);
+    }
+    let paths: Vec<String> = unmerged
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    // Best effort, and deliberately not an error: the paths are the answer this
+    // exists for, and a git that would not render the hunks for them has still said
+    // what conflicts.
+    let hunks = run(&["diff", "--diff-filter=U"], Some(cwd))
+        .ok()
+        .filter(Output::ok)
+        .map(|out| out.stdout)
+        .unwrap_or_default();
+    Ok(Some(Conflict { paths, hunks }))
+}
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// Replay `branch`'s commits after `upstream` onto `onto`, keeping nothing else.
 ///
@@ -1344,13 +1420,12 @@ pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Resu
     if replayed.ok() {
         return Ok(Integrated::Settled);
     }
-    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
-    let conflicted = unmerged.ok() && !unmerged.trimmed().is_empty();
+    let conflict = conflict_in(cwd)?;
     // Whatever stopped it, the tree is left as it was found: a replay that halted
     // mid-way is a repository nothing else in this crate knows how to read.
     run(&["rebase", "--abort"], Some(cwd))?;
-    if conflicted {
-        return Ok(Integrated::Conflicted);
+    if let Some(conflict) = conflict {
+        return Ok(Integrated::Conflicted(conflict));
     }
     Err(Error::Invalid {
         reason: format!(
@@ -1412,14 +1487,13 @@ pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<I
     if merged.ok() {
         return Ok(Integrated::Settled);
     }
-    let unmerged = run(&["diff", "--name-only", "--diff-filter=U"], Some(cwd))?;
-    if !unmerged.ok() || unmerged.trimmed().is_empty() {
+    let Some(conflict) = conflict_in(cwd)? else {
         return Err(Error::Invalid {
             reason: format!("git merge {reference} failed: {}", merged.diagnostic()),
         });
-    }
+    };
     run(&["merge", "--abort"], Some(cwd))?;
-    Ok(Integrated::Conflicted)
+    Ok(Integrated::Conflicted(conflict))
 }
 
 /// Squash-merge a ref and commit it, or report that it added no content.

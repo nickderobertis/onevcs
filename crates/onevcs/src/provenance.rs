@@ -66,6 +66,7 @@ pub(crate) struct Trailers {
     change_base: String,
     recovered: String,
     change_url: String,
+    landed: String,
 }
 
 impl Default for Trailers {
@@ -83,6 +84,7 @@ impl Trailers {
             change_base: format!("{prefix}Change-Base:"),
             recovered: format!("{prefix}Recovered-Incomplete:"),
             change_url: format!("{prefix}Change-Url:"),
+            landed: format!("{prefix}Landed-Commit:"),
         }
     }
 
@@ -110,6 +112,17 @@ impl Trailers {
     /// Records the change request a preserved branch was opened as.
     pub(crate) fn change_url(&self) -> &str {
         &self.change_url
+    }
+
+    /// Records the commit a change request reached its base at.
+    ///
+    /// The one thing a branch can carry that answers "did this land" without
+    /// inferring it: content equality says the base carries the same change, which
+    /// is also true of a change somebody else landed by hand, and an open change
+    /// request says nothing about a merged one. This is written the moment the host
+    /// reports the merge and read back under the same configured prefix.
+    pub(crate) fn landed_commit(&self) -> &str {
+        &self.landed
     }
 }
 
@@ -181,7 +194,13 @@ pub(crate) fn is_incomplete(message: &str, trailers: &Trailers) -> bool {
 /// a valid conventional commit, so a synthesizer that reads every commit folds the
 /// marker's own text into what it publishes.
 pub(crate) fn is_provenance(message: &str, trailers: &Trailers) -> bool {
-    is_incomplete(message, trailers) || message.contains(trailers.recovered())
+    is_incomplete(message, trailers)
+        || message.contains(trailers.recovered())
+        // A landing record describes what became of the change rather than what the
+        // change is, so a later synthesis of a subject must skip it exactly as it
+        // skips a marker — otherwise a branch that landed and was published again
+        // would land under "chore: record the landing of ...".
+        || message.contains(trailers.landed_commit())
 }
 
 /// The message an incomplete-step commit carries.

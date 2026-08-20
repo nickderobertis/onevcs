@@ -1158,7 +1158,30 @@ fn a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved()
         .assert()
         .code(3)
         .stderr(predicate::str::contains("re-running will conflict again"))
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains(format!("land it with `{again}`")));
+
+    // The branch-keyed verbs report a conflict through the same emitter the
+    // publication path does, so the event carries the paths and the hunks beside
+    // them here too.
+    let conflicts = fixture
+        .world
+        .events_of("publish-branch-feature-clashing", "sync-conflict");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"],
+        serde_json::json!(["shared.txt"]),
+        "{conflicts:?}"
+    );
+    let id = conflicts[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("the conflict carries its hunks");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from the base"));
 
     // Resolve it once where the branch is retained, and the named command lands it.
     fixture
@@ -1509,11 +1532,13 @@ fn a_gate_that_rejects_a_branch_keeps_it_where_it_was_found() {
 }
 
 #[test]
-fn a_branch_the_host_holds_reports_the_merge_it_queued() {
-    // `change-auto` behind a gate this crate runs itself: the publication does not
-    // wait for the host, so the host takes the change and lands it when its own
-    // required check settles. The verb answers with what it left behind rather than
-    // claiming a merge.
+fn a_branch_the_host_holds_is_watched_until_it_lands() {
+    // `change-auto` behind a gate this crate runs itself: the host takes the change
+    // and lands it when its own required check settles, and the verb stays live
+    // until it does rather than answering with what it left behind. The branch-keyed
+    // verbs reach the same watch `publish` does — there is one publication path, and
+    // a change landed by `publish-branch` is reported exactly as one landed by
+    // `publish`.
     let hosted =
         Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
@@ -1523,6 +1548,15 @@ fn a_branch_the_host_holds_reports_the_merge_it_queued() {
         conclusion: None,
         required: true,
     }]);
+    hosted.world.host_checks_after(
+        1,
+        &[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }],
+    );
     finished_hosted_branch(&hosted, "feature/held", "feat: add the held thing");
 
     hosted
@@ -1536,15 +1570,73 @@ fn a_branch_the_host_holds_reports_the_merge_it_queued() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("merge queued for"));
+        .stdout(predicate::str::contains("merged at"));
     assert_eq!(
         hosted.origin_log().len(),
-        1,
-        "the host has not landed it yet"
+        2,
+        "the host landed it while the verb watched"
     );
     let stream = "publish-branch-feature-held";
     assert!(!hosted.world.events_of(stream, "merge-queued").is_empty());
-    assert!(hosted.world.events_of(stream, "change-merged").is_empty());
+    assert!(!hosted.world.events_of(stream, "change-merged").is_empty());
+
+    // And the landing is recorded where this verb keeps the branch: the clone it
+    // published from goes with its run root, so a record only that one carried would
+    // be gone with it. A session's record reaches the *execution* checkout; a
+    // branch-keyed landing's reaches the checkout it read the branch out of.
+    let sha = hosted
+        .world
+        .git(&hosted.origin, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    let recorded = hosted.world.git(
+        &hosted.checkout,
+        &["log", "--format=%B", "-1", "feature/held"],
+    );
+    assert!(
+        recorded.contains(&format!(
+            "{} {sha}",
+            documented_trailer("Landed-Commit", &documented_default_prefix())
+        )),
+        "the source checkout keeps the branch, so it keeps the record: {recorded:?}"
+    );
+}
+
+#[test]
+fn a_branch_the_host_never_lands_is_bounded_and_says_what_was_pending() {
+    // The same verb against a host that never settles the check it is holding the
+    // change for. It ends at the bound rather than reporting a merge that has not
+    // happened, and names the check — and the branch is retained where it was found,
+    // because a publication that did not land must not also lose the work.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    finished_hosted_branch(&hosted, "feature/never", "feat: add the unheld thing");
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args([
+            "publish-branch",
+            "feature/never",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("still unsettled: \"gate\""));
+    assert_eq!(hosted.origin_log().len(), 1);
+    assert!(hosted
+        .world
+        .git(&hosted.checkout, &["branch", "--list", "feature/never"])
+        .contains("feature/never"));
 }
 
 #[test]

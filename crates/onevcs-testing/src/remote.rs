@@ -223,13 +223,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             if let Some(decided) = state.merges.get(&cr.id) {
                 return Ok(decided.clone());
             }
-            let landed = |state: &mut HostState| {
-                let sha = Sha(events::stable_sha(&["merge", &cr.id.0, cr.url.as_str()]));
-                state
-                    .merges
-                    .insert(cr.id.clone(), MergeOutcome::Merged(sha.clone()));
-                MergeOutcome::Merged(sha)
-            };
+            let landed = |state: &mut HostState| MergeOutcome::Merged(land(state, cr));
             Ok(match policy {
                 // Nothing is asked of the host, so nothing is recorded — the same
                 // answer the real implementation gives without a call.
@@ -248,6 +242,38 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             })
         })
     }
+
+    fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {
+        self.store.with(|state| {
+            // Native auto-merge, modelled rather than skipped: a change this host is
+            // holding lands the moment its own required checks are green, on the
+            // host's clock and not on the caller's. Asking is what makes that
+            // observable — which is exactly the shape a publication watching the
+            // real GitHub meets, and the reason a journey can drive a change request
+            // from queued to merged without a second process.
+            if matches!(state.merges.get(&cr.id), Some(MergeOutcome::Queued))
+                && required_checks_green(state, &cr.id)
+            {
+                return Ok(Some(land(state, cr)));
+            }
+            Ok(match state.merges.get(&cr.id) {
+                Some(MergeOutcome::Merged(sha)) => Some(sha.clone()),
+                _ => None,
+            })
+        })
+    }
+}
+
+/// Record this change request as merged, and answer with the commit it merged at.
+///
+/// One place, so the merge a policy performs and the merge the host completes on
+/// its own report the same commit for the same change.
+fn land(state: &mut HostState, cr: &ChangeRequest) -> Sha {
+    let sha = Sha(events::stable_sha(&["merge", &cr.id.0, cr.url.as_str()]));
+    state
+        .merges
+        .insert(cr.id.clone(), MergeOutcome::Merged(sha.clone()));
+    sha
 }
 
 /// What a host that was not told otherwise answers about where its checks came

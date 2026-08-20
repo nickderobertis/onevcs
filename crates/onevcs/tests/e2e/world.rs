@@ -408,6 +408,23 @@ impl World {
     /// proceed from the same rows, so what it reports and what it acts on cannot
     /// disagree.
     pub fn host_checks(&self, checks: &[Check]) {
+        self.write_rows("gh-state/checks.rows", checks);
+    }
+
+    /// What the substituted host reports once it has been asked for its check
+    /// rollup `after` times, so a journey can drive a check that *moves* while a
+    /// publication watches it.
+    ///
+    /// Counted in readings rather than timed, because a race a journey cannot state
+    /// is a journey that fails on a slow machine. `1` is "from the second reading
+    /// on", which is the smallest thing a watcher can observe moving.
+    pub fn host_checks_after(&self, after: usize, then: &[Check]) {
+        self.write_rows("gh-state/checks.rows.next", then);
+        std::fs::write(self.path("gh-state/checks-flip-after"), after.to_string())
+            .expect("a call count the rollup changes after");
+    }
+
+    fn write_rows(&self, at: &str, checks: &[Check]) {
         let rows: String = checks
             .iter()
             .map(|check| {
@@ -421,7 +438,7 @@ impl World {
             })
             .collect();
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
-        std::fs::write(self.path("gh-state/checks.rows"), rows).expect("a check rollup");
+        std::fs::write(self.path(at), rows).expect("a check rollup");
     }
 
     /// Make the substituted host answer in a shape it has no business answering in.
@@ -659,6 +676,18 @@ fi
 
 ORIGIN="$(cat "$STATE/origin")"
 CHECKS="$STATE/checks.rows"
+# A repository's checks move while something is watching them, which is the whole
+# premise of watching. This world says so by writing a second rollup and the number
+# of *readings of the rollup* after which it takes over — counted off the call log
+# above, which already holds this call, so `1` means "from the second reading on".
+# Counted in readings rather than in wall-clock time so a journey states the moment
+# it means instead of racing for it.
+if [ -f "$STATE/checks-flip-after" ] && [ -f "$STATE/checks.rows.next" ]; then
+  if [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+       -gt "$(cat "$STATE/checks-flip-after")" ]; then
+    CHECKS="$STATE/checks.rows.next"
+  fi
+fi
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
 
 # What a credential GitHub will not let read a change request's check runs is told,
@@ -884,6 +913,57 @@ verdict() {
   else printf 'pending'; fi
 }
 
+# Perform the merge of one change request, with real git against the real bare
+# origin, and record it as merged.
+land_pr() {
+  . "$STATE/pr-$1.env"
+  work="$STATE/merge-$PR_NUMBER"
+  rm -rf "$work"
+  git clone -q "$ORIGIN" "$work"
+  git -C "$work" checkout -q "$PR_BASE"
+  git -C "$work" merge -q --squash "origin/$PR_HEAD"
+  git -C "$work" commit -q -m "$(cat "$STATE/pr-$PR_NUMBER.title") (#$PR_NUMBER)"
+  git -C "$work" push -q origin "$PR_BASE"
+  oid="$(git -C "$work" rev-parse HEAD)"
+  {
+    printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
+    printf 'PR_URL=%s\n' "$PR_URL"
+    printf 'PR_STATE=MERGED\n'
+    printf 'PR_HEAD=%s\n' "$PR_HEAD"
+    printf 'PR_BASE=%s\n' "$PR_BASE"
+    printf 'PR_HEAD_SHA=%s\n' "$PR_HEAD_SHA"
+    printf 'PR_MERGE_COMMIT=%s\n' "$oid"
+  } >"$STATE/pr-$PR_NUMBER.env"
+  rm -rf "$work"
+}
+
+# GitHub's native auto-merge, on GitHub's own clock: a change this host was asked to
+# hold lands the moment its required checks go green, whether or not anybody asks it
+# to again. Every call is such a moment, which is what lets a publication that is
+# watching the change observe the landing without a second process driving it.
+settle_auto_merges() {
+  local armed pr
+  for armed in "$STATE"/auto-*; do
+    [ -e "$armed" ] || continue
+    pr="${armed##*/auto-}"
+    [ -f "$STATE/pr-$pr.env" ] || continue
+    [ ! -f "$STATE/closed-$pr" ] || continue
+    [ ! -f "$STATE/refuse-merge" ] || continue
+    [ "$(verdict)" = "green" ] || continue
+    ( . "$STATE/pr-$pr.env"; [ "$PR_STATE" = "OPEN" ] ) || continue
+    # Silenced, because this runs *inside* whatever call happened to be the moment
+    # the host landed it: `git merge --squash` prints a line even under `-q`, and on
+    # a `pr view --json` call that line would arrive ahead of the JSON.
+    ( land_pr "$pr" ) >/dev/null
+  done
+}
+# On the calls that *observe* the change request, never on the one that arms the
+# hold: GitHub lands a held change between calls, and landing it during the very
+# call that asked it to hold would leave that call merging something already merged.
+case "$subcommand" in
+  view|checks|list) settle_auto_merges ;;
+esac
+
 case "$subcommand" in
   checks)
     # Where `gh` reports whether a check blocks the merge, and where each check
@@ -1054,7 +1134,9 @@ case "$subcommand" in
     fi
     if [ "$auto" = "1" ] && [ "$(verdict)" != "green" ]; then
       # Native auto-merge: the host holds the change and lands it when its own
-      # required checks pass. Nothing merges now.
+      # required checks pass. Nothing merges now, and the hold is recorded so a
+      # later call can land it the way GitHub would.
+      : >"$STATE/auto-$PR_NUMBER"
       exit 0
     fi
     if [ -f "$STATE/refuse-merge" ]; then
@@ -1062,24 +1144,7 @@ case "$subcommand" in
       # merge that worked without asking the host again.
       exit 0
     fi
-    work="$STATE/merge-$PR_NUMBER"
-    rm -rf "$work"
-    git clone -q "$ORIGIN" "$work"
-    git -C "$work" checkout -q "$PR_BASE"
-    git -C "$work" merge -q --squash "origin/$PR_HEAD"
-    git -C "$work" commit -q -m "$(cat "$STATE/pr-$PR_NUMBER.title") (#$PR_NUMBER)"
-    git -C "$work" push -q origin "$PR_BASE"
-    oid="$(git -C "$work" rev-parse HEAD)"
-    {
-      printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
-      printf 'PR_URL=%s\n' "$PR_URL"
-      printf 'PR_STATE=MERGED\n'
-      printf 'PR_HEAD=%s\n' "$PR_HEAD"
-      printf 'PR_BASE=%s\n' "$PR_BASE"
-      printf 'PR_HEAD_SHA=%s\n' "$PR_HEAD_SHA"
-      printf 'PR_MERGE_COMMIT=%s\n' "$oid"
-    } >"$STATE/pr-$PR_NUMBER.env"
-    rm -rf "$work"
+    ( land_pr "$PR_NUMBER" ) >/dev/null
     ;;
   *)
     printf 'fake gh: unsupported pr subcommand %s\n' "$subcommand" >&2

@@ -124,6 +124,27 @@ pub trait RemoteHost {
 
     /// Merge a change request under a policy.
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome>;
+
+    /// The commit a change request reached its base at, or `None` while the host
+    /// has not merged it.
+    ///
+    /// What a publication under `change-auto` watches. The host performs that merge
+    /// on its own clock — `merge` arms it and answers
+    /// [`MergeOutcome::Queued`] — so the only way to learn that it happened, and at
+    /// which commit, is to ask again. `None` is "not yet" and never "somewhere
+    /// else": an implementation that cannot say must refuse rather than answer it.
+    ///
+    /// Defaulted so that an implementation written against the earlier surface
+    /// still compiles, and defaulted to the refusal this crate reserves for a seam
+    /// with no body rather than to `None` — a host that was never taught to answer
+    /// this has not said a change is unmerged, and a publication that read it that
+    /// way would watch until its bound and then report checks that were never the
+    /// reason.
+    fn merged_at(&self, _cr: &ChangeRequest) -> Result<Option<Sha>> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::merged_at",
+        })
+    }
 }
 
 /// Where a [`RemoteHost`] for one repository comes from.
@@ -1036,6 +1057,14 @@ impl RemoteHost for GitHub {
                 }
             }
         }
+    }
+
+    /// One `gh pr view`, reading exactly the two fields a merge is decided from —
+    /// the same read `merge` makes, through the same parser, so watching a change
+    /// request and merging one cannot come to disagree about what merged means.
+    fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {
+        addressable(&cr.id.0, "change request id")?;
+        merged_sha(&self.view(&cr.id.0, MERGE_FIELDS)?, cr)
     }
 }
 

@@ -22,11 +22,12 @@ pub enum Error {
         operation: &'static str,
     },
 
-    /// A verification gate, or the host's required checks, reported failure.
-    /// The CLI reports this as exit code 1.
+    /// The gate this crate runs itself reported failure. The CLI reports this as
+    /// exit code 1. What the *host's* checks reported is [`Error::ChecksFailed`] or
+    /// [`Error::ChecksUnsettled`].
     #[error("gate failed: {reason}")]
     GateFailed {
-        /// What failed, naming the check where the host reported one.
+        /// What failed, naming the command that judged it.
         reason: String,
     },
 
@@ -44,6 +45,41 @@ pub enum Error {
     #[error("sync conflict: {reason}")]
     SyncConflict {
         /// The conflict that survived the bounded retry.
+        reason: String,
+    },
+
+    /// A required check the host reports concluded red. The CLI reports this as
+    /// exit code 1, which is the code the contract fixes for a verification
+    /// failure — this says *which* verification failed, not a different one.
+    #[error("required check failed: {reason}")]
+    ChecksFailed {
+        /// The check that concluded red, named, and a bounded excerpt of its log.
+        reason: String,
+    },
+
+    /// The bound on watching the host elapsed with the change still outstanding.
+    /// The CLI reports this as exit code 1.
+    ///
+    /// Named for the commonest way that happens and shared with the others,
+    /// because the failure vocabulary is fixed across the three libraries that
+    /// route on it. Distinct from [`Error::ChecksFailed`] because the operator's
+    /// next move differs: nothing has failed, and the publication stopped watching.
+    // The vocabulary is fixed across the three libraries that route on it, and gives
+    // the bound one kind whichever of its endings this was; `reason` says which.
+    #[error("checks unsettled: {reason}")]
+    // llmlint: ignore[names_match_behavior] one fixed kind for the bound's three endings.
+    ChecksUnsettled {
+        /// What was still outstanding when the bound elapsed: the required checks
+        /// that had not settled, that the host declared none at all, or — where
+        /// every one of them had settled — that it never performed the merge.
+        reason: String,
+    },
+
+    /// The publishing push was refused by the merge path. The CLI reports this as
+    /// exit code 1.
+    #[error("push rejected: {reason}")]
+    PushRejected {
+        /// git's own per-ref refusal, which is what an operator acts on.
         reason: String,
     },
 }
