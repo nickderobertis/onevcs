@@ -1384,8 +1384,6 @@ fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
 
 #[test]
 fn a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land() {
-    // The state that cost a three-day run: a paste-ready `publish-branch` offered for
-    // a branch a live node was still committing to.
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     // llmlint: ignore-block[tests_mirror_real_usage] no verb holds an occupancy lease
     // across time — each takes it, works, and releases it before the process that opened

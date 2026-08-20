@@ -185,14 +185,12 @@ and what a name already means are each stated rather than left to be inferred.
 
 - **A row is a command only when the branch is ready for it.** `recoverable` is read
   to be trusted without checking, so a branch a live session still holds withholds its
-  `Resume:` line rather than carrying a warning beside one. Live is asked two ways —
-  the process that opened the session is still running, or its run root's occupancy
-  lease is held right now — because each is the true one at a different time: no verb
-  holds a lease across time, and a consumer embedding the crate holds the process. A
-  net-negative branch is marked instead of withheld: stripping work may be exactly
-  right, and this report does not decide. Both are measured against the base the branch
-  would be published into, so this report and that publication cannot disagree about
-  what it would land.
+  command rather than annotating it. Live is asked two ways — the process that opened
+  the session, and its run root's occupancy lease — because each is the true one at a
+  different time. A net-negative branch is marked instead of withheld: stripping work
+  may be exactly right, and this report does not decide. Both are measured against the
+  base the branch would be published into, so this report and that publication cannot
+  disagree about what it would land.
 - **A scoped answer names its scope.** `recoverable` answers for one identity when it
   is run inside a registered checkout and for every identity when it is not, and nobody
   types which — the directory decides. Unsaid, a scoped answer reads as the whole
@@ -254,9 +252,9 @@ other way. `just smoke-real` runs it. It never skips and never substitutes `gh`:
 missing credential or a repository whose name does not end in `-smoke` is a loud
 failure, because a smoke that can pass without talking to GitHub proves nothing.
 
-**One journey mounts a filesystem, so a host that runs the suite needs `fuse3`.**
-Linux only, provisioned by `just bootstrap`, and absent it refuses rather than skips:
-a journey that passes without building its own premise proves nothing.
+**One journey mounts a filesystem of its own, so a Linux host running the suite needs
+`fuse3`.** `just bootstrap` provisions it, and absent it that journey refuses rather
+than skips: one that passed without building its own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
@@ -373,9 +371,8 @@ removes one. Three rules govern how it decides.
   reads, through the same function, so the two cannot come to disagree about who is
   inside a workspace.
 
-The flag surface is shared with `oneagentgraph sweep`; neither side may amend it
-alone, and why the half outside this repository cannot be gated from here is
-written at `sweep::DEFAULT_MIN_AGE_HOURS`.
+The flag surface is shared with `oneagentgraph sweep`, spelling for spelling and
+default for default; neither side may amend it alone.
 
 ## Everything durable lives under one state root
 
