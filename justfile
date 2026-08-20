@@ -45,13 +45,10 @@ _crate-bootstrap:
     @just _ensure-fuse
     @cargo fetch --locked --quiet
 
-# One sweep journey mounts a filesystem of its own, because the boundary it is about
-# — a directory that takes an entry and will not give it back — is a filesystem
-# answering and nothing unprivileged can build one otherwise. The unprivileged mount
-# goes through `fusermount3`. Linux only, which is where that journey is gated, and
-# provisioned here rather than in the workflow so a clean clone and CI set up through
-# the one command. A host that cannot install it is told what to install: the journey
-# refuses rather than skipping, and a suite that skipped would prove nothing.
+# One sweep journey mounts a filesystem of its own through `fusermount3`; Linux is
+# where it is gated. Provisioned here rather than in the workflow, so a clean clone
+# and CI set up through the one command, and a host that cannot install it is told
+# what to — that journey refuses rather than skipping.
 # Install what the journey that mounts its own filesystem needs. Quiet when present.
 _ensure-fuse:
     @[ "$(uname -s)" = "Linux" ] || exit 0; \
