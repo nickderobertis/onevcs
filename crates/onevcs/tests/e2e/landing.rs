@@ -104,13 +104,46 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
         .assert()
         .success();
 
+    // Somebody else's change lands first, and its own number is in the base's history
+    // — a number, not *this* number. Each is matched with its own punctuation around
+    // it, so `#1` is not answered for by `#12`.
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "after");
+    hosted.world.commit_file(
+        &elsewhere,
+        "somebody-elses.txt",
+        "theirs\n",
+        "feat: somebody else's change (#12)",
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+    hosted
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+    let theirs = hosted
+        .world
+        .git(&elsewhere, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    let before = report(&hosted.world, "feature/merged-on-the-host");
+    assert_eq!(
+        before["publication"]["landed"]["state"], "no",
+        "the base carries a change request's number, and it is not this one's: {before}"
+    );
+
     squash_merged_on_the_host(
         &hosted,
         "feature/merged-on-the-host",
         "feat: add the thing",
         1,
     );
-    let elsewhere = hosted.world.clone_of(&hosted.origin, "after");
+    hosted
+        .world
+        .git(&elsewhere, &["pull", "-q", "--ff-only", "origin", "main"]);
     hosted.world.commit_file(
         &elsewhere,
         "one.txt",
@@ -140,6 +173,14 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     assert_eq!(
         report["publication"]["landed"]["evidence"]["change_url"],
         "https://github.com/acme-corp/hosted/pull/1"
+    );
+    // …and it is the commit that names *this* change request. Somebody else's `(#12)`
+    // is older, so a search that matched a number without its punctuation would have
+    // answered with theirs.
+    assert_ne!(
+        report["publication"]["landed"]["evidence"]["commit"], theirs,
+        "the evidence is the commit naming this change request, not one whose number \
+         merely begins with its digits: {report}"
     );
     assert_eq!(report["publication"]["state"], "landed");
     // …and it decides it whatever the host says. The change request is still open on
@@ -229,11 +270,8 @@ fn a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landi
     // The row is withheld from the default view and carries no command when it is
     // shown, because the row is read to be pasted.
     assert!(row(&rows(&fixture.world, &[]), "feature/landed-locally").is_none());
-    let shown = row(
-        &rows(&fixture.world, &["--include-landed"]),
-        "feature/landed-locally",
-    )
-    .expect("`--include-landed` is how a landed branch is seen at all");
+    let shown = row(&rows(&fixture.world, &["--all"]), "feature/landed-locally")
+        .expect("`--all` is how a branch this report withholds is seen at all");
     assert_eq!(shown["landed"]["state"], "yes");
     assert_eq!(
         shown["recover_command"],
@@ -243,7 +281,7 @@ fn a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landi
     let listed = fixture
         .world
         .onevcs()
-        .args(["recoverable", "--include-landed"])
+        .args(["recoverable", "--all"])
         .assert()
         .success()
         .get_output()
@@ -330,13 +368,22 @@ fn a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_
     assert_eq!(report["publication"]["state"], "landed");
 
     // The row is withheld from the default view and carries no command when it is
-    // shown, because the row is read to be pasted.
+    // shown, because the row is read to be pasted. Both copies of this work landed,
+    // so what the default view has to say is that there is nothing left — and which
+    // flag says otherwise.
     assert!(row(&rows(&fixture.world, &[]), "preserved/spent-name").is_none());
-    let shown = row(
-        &rows(&fixture.world, &["--include-landed"]),
-        "preserved/spent-name",
-    )
-    .expect("`--include-landed` is how a landed branch is seen at all");
+    fixture
+        .world
+        .onevcs()
+        .arg("recoverable")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No preserved unpublished branches",
+        ))
+        .stdout(predicate::str::contains("onevcs recoverable --all"));
+    let shown = row(&rows(&fixture.world, &["--all"]), "preserved/spent-name")
+        .expect("`--all` is how a branch this report withholds is seen at all");
     assert_eq!(shown["landed"]["state"], "yes");
     assert_eq!(
         shown["recover_command"],
@@ -346,7 +393,7 @@ fn a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_
     let listed = fixture
         .world
         .onevcs()
-        .args(["recoverable", "--include-landed"])
+        .args(["recoverable", "--all"])
         .assert()
         .success()
         .get_output()
@@ -444,16 +491,13 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     // Withheld from the default view for the reason a landed row is — publishing it
     // may re-do work the base has — and shown, when asked for, saying exactly that.
     assert!(row(&rows(&fixture.world, &[]), "feature/landed-by-hand").is_none());
-    let shown = row(
-        &rows(&fixture.world, &["--include-landed"]),
-        "feature/landed-by-hand",
-    )
-    .expect("the branch is reachable through the flag that shows them");
+    let shown = row(&rows(&fixture.world, &["--all"]), "feature/landed-by-hand")
+        .expect("the branch is reachable through the flag that shows them");
     assert_eq!(shown["landed"]["state"], "unknown");
     let listed = fixture
         .world
         .onevcs()
-        .args(["recoverable", "--include-landed"])
+        .args(["recoverable", "--all"])
         .assert()
         .success()
         .get_output()
@@ -503,5 +547,16 @@ fn a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_land
         .success()
         .stdout(predicate::str::contains(
             "Resume: onevcs publish-branch feature/nobody-published",
-        ));
+        ))
+        // What a report leaves out is exactly what nobody can see it left out, so it
+        // says so beside the rows it does carry — and says it to a parser's operator
+        // too, where a parser will not meet it.
+        .stdout(predicate::str::contains("onevcs recoverable --all"));
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("onevcs recoverable --all"));
 }

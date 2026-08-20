@@ -875,8 +875,9 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     let landed = Recoverable {
         landed: Landed::Yes {
             evidence: LandingEvidence::ChangeRequest {
-                commit: "0f1e2d3".to_owned(),
-                change_url: "https://github.com/nickderobertis/onevcs/pull/58".to_owned(),
+                commit: Sha("0f1e2d3".to_owned()),
+                change_url: Url::parse("https://github.com/nickderobertis/onevcs/pull/58")
+                    .expect("a URL"),
             },
         },
         recover_command: Vec::new(),
@@ -1116,18 +1117,18 @@ fn the_record_names_every_word_the_landing_answer_travels_as() {
         Landed::Unknown,
         Landed::Yes {
             evidence: LandingEvidence::RecordedLanding {
-                commit: "0f1e2d3".to_owned(),
+                commit: Sha("0f1e2d3".to_owned()),
             },
         },
         Landed::Yes {
             evidence: LandingEvidence::ChangeRequest {
-                commit: "0f1e2d3".to_owned(),
-                change_url: "https://example.invalid/changes/1".to_owned(),
+                commit: Sha("0f1e2d3".to_owned()),
+                change_url: Url::parse("https://example.invalid/changes/1").expect("a URL"),
             },
         },
         Landed::Yes {
             evidence: LandingEvidence::Trailer {
-                commit: "0f1e2d3".to_owned(),
+                commit: Sha("0f1e2d3".to_owned()),
             },
         },
     ] {

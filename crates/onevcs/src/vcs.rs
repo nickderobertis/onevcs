@@ -70,8 +70,8 @@ pub trait Vcs {
     /// change request for work the base already carries.
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>>;
 
-    /// Every preserved branch in scope, the ones whose work reached the base
-    /// included, each saying whether it did and what says so.
+    /// Every preserved branch in scope, whatever became of its work, each saying
+    /// what did become of it and what says so.
     ///
     /// [`recoverable`](Self::recoverable) is this without them, and is what somebody
     /// asking "what is left to publish" wants. This is what somebody asking "what
@@ -151,7 +151,7 @@ impl Vcs for Git {
     }
 
     fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>> {
-        collect(&scope, Reporting::LandedToo)
+        collect(&scope, Reporting::Everything)
     }
 }
 
@@ -268,12 +268,13 @@ pub fn base_commit(checkout: &Path, base: &str) -> Option<Sha> {
 /// Which branches a report is asked to carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reporting {
-    /// Only the ones whose work has not reached the base, which is what
+    /// Only the ones the base does not carry the work of, which is what
     /// [`Vcs::recoverable`] answers.
     UnpublishedOnly,
-    /// Those, and the ones whose work did reach it, which is what
+    /// Every preserved branch, whatever became of its work — the ones that reached
+    /// the base and the ones nothing can decide about included, which is what
     /// [`Vcs::preserved`] answers.
-    LandedToo,
+    Everything,
 }
 
 /// Every preserved branch in scope, newest first, and whether its work landed.
@@ -298,9 +299,9 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
     };
 
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
-    // The branches whose work reached the base, kept aside rather than dropped: they
-    // are what `preserved` adds, and a copy of a name that landed must not answer for
-    // a copy of it elsewhere that still holds work — so they join the answer only
+    // The branches this report withholds, kept aside rather than dropped: they are
+    // what `preserved` adds, and a copy of a name whose work is spent must not answer
+    // for a copy of it elsewhere that still holds work — so they join the answer only
     // where no such copy did.
     let mut spent: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
@@ -350,22 +351,25 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                     session_holding(&sessions, identity, &branch),
                 );
                 let recorded = landed::Recorded {
-                    change: recorded.change.or_else(|| {
-                        change_url_of(&repo, &compared, &branch, &trailers)
-                            .map(|url| url.to_string())
-                    }),
+                    change: recorded
+                        .change
+                        .or_else(|| change_url_of(&repo, &compared, &branch, &trailers)),
                     ..recorded
                 };
                 let verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
-                let reached_the_base = verdict != Landed::No;
-                if reached_the_base && reporting == Reporting::UnpublishedOnly {
+                // Withheld unless every branch was asked for: a row this report
+                // offers is a row somebody publishes, and both of the other two
+                // answers — it landed, and nothing here can tell — are answers that
+                // must not be acted on by pasting a command.
+                let withheld = verdict != Landed::No;
+                if withheld && reporting == Reporting::UnpublishedOnly {
                     continue;
                 }
                 // Marked seen only once it is a row this report is answering with, so
                 // that one repository's spent copy of a name cannot answer for
                 // another's: a branch published out of the checkout and re-cut in a
                 // later run has both, and the first has nothing left in it.
-                if !reached_the_base {
+                if !withheld {
                     seen.push(key);
                 }
                 let row = preserved_row(
@@ -381,7 +385,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                     &sessions,
                     &trailers,
                 )?;
-                if reached_the_base {
+                if withheld {
                     spent.push(row);
                 } else {
                     rows.push(row);

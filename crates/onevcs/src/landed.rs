@@ -33,9 +33,11 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::error::Result;
-use crate::git;
+use crate::git::{self, ObjectId};
+use crate::host::Sha;
 use crate::provenance::Trailers;
 
 /// Whether the work reached the base, and — where it did — what says so.
@@ -94,21 +96,21 @@ pub enum LandingEvidence {
     /// A landing commit recorded for this branch, which the base carries.
     RecordedLanding {
         /// The commit the record names.
-        commit: String,
+        commit: Sha,
     },
     /// The change request's own number, in a commit the base carries — which is
     /// what a host writes into the subject of the squash commit it lands.
     ChangeRequest {
         /// The commit on the base that names it.
-        commit: String,
+        commit: Sha,
         /// The change request that commit names.
-        change_url: String,
+        change_url: Url,
     },
     /// A landing trailer naming a commit of this branch, in a commit the base
     /// carries. What a landing with no change request leaves behind.
     Trailer {
         /// The commit on the base that carries the trailer.
-        commit: String,
+        commit: Sha,
     },
 }
 
@@ -122,12 +124,12 @@ impl LandingEvidence {
         }
     }
 
-    /// The commit that is the evidence.
+    /// The commit that is the evidence, as a rendering prints it.
     pub fn commit(&self) -> &str {
         match self {
             LandingEvidence::RecordedLanding { commit }
             | LandingEvidence::ChangeRequest { commit, .. }
-            | LandingEvidence::Trailer { commit } => commit,
+            | LandingEvidence::Trailer { commit } => &commit.0,
         }
     }
 }
@@ -135,17 +137,19 @@ impl LandingEvidence {
 /// What this host recorded about a branch before the question was asked.
 ///
 /// Both are read rather than derived, and both may be absent: the record falls
-/// through to the next tier rather than deciding anything by its absence.
+/// through to the next tier rather than deciding anything by its absence. Both are
+/// also *external* — an event stream is a file whichever process wrote it — so each
+/// arrives through the conversion that decides what it is, and a value that is
+/// neither an object id nor a URL is no record rather than one this goes on to hand
+/// git as a revision.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Recorded {
-    /// The landing commit a record names for this branch.
-    ///
-    /// Defined here and read here; nothing in this build writes one yet, so the
-    /// tier that reads it falls through until something does. Its shape is fixed by
-    /// what a landing *is* — the commit on the base that carries the work.
-    pub landing: Option<String>,
+    /// The commit a landing this host saw put the work on the base at. What a merge
+    /// this crate performed records, and where a merge it only waited for would
+    /// record one too.
+    pub landing: Option<ObjectId>,
     /// The change request opened for this branch.
-    pub change: Option<String>,
+    pub change: Option<Url>,
 }
 
 /// Which of the three answers a branch's history gives, and what decided it.
@@ -169,12 +173,12 @@ pub(crate) fn decide(
     };
     // Tier 1. Exact and permanent: a commit somebody recorded as this branch's
     // landing, which the base can reach. Nothing edited afterwards changes it.
-    if let Some(commit) = recorded.landing.as_deref() {
+    if let Some(commit) = recorded.landing.as_ref().map(ObjectId::as_str) {
         if git::known_to_reach(repo, commit, compared)?
             && landed_all_of(repo, &fork, branch, commit)?
         {
             return Ok(landed(LandingEvidence::RecordedLanding {
-                commit: commit.to_owned(),
+                commit: Sha(commit.to_owned()),
             }));
         }
     }
@@ -182,12 +186,12 @@ pub(crate) fn decide(
     // Tier 2. The host writes its own number into the squash commit it lands, so
     // this answers for anything merged through the host by anybody — no write of
     // ours required, and true however far the base has moved since.
-    if let Some(url) = recorded.change.as_deref() {
-        if let Some(commit) = names_the_change(&base_history, url) {
+    if let Some(url) = recorded.change.as_ref() {
+        if let Some(commit) = names_the_change(&base_history, url.as_str()) {
             if landed_all_of(repo, &fork, branch, &commit)? {
                 return Ok(landed(LandingEvidence::ChangeRequest {
-                    commit,
-                    change_url: url.to_owned(),
+                    commit: Sha(commit),
+                    change_url: url.clone(),
                 }));
             }
         }
@@ -202,7 +206,7 @@ pub(crate) fn decide(
                 && landed_all_of(repo, &fork, branch, &commit.sha)?
             {
                 return Ok(landed(LandingEvidence::Trailer {
-                    commit: commit.sha.clone(),
+                    commit: Sha(commit.sha.clone()),
                 }));
             }
         }

@@ -31,9 +31,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{Date, Month, Time};
+use url::Url;
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
+use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
 use crate::registry::{Registry, RepoType, Workflow};
@@ -448,7 +450,10 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let gate = latest(relevant.iter().filter_map(|record| record.gate.clone()));
     let recorded = landed::Recorded {
         landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
-        change: change_url.clone(),
+        // Parsed rather than passed through, for the same reason: the report prints
+        // this URL and the decision *compares* it, and a value that is no URL names
+        // no change request to look for.
+        change: change_url.as_deref().and_then(|url| Url::parse(url).ok()),
     };
 
     let current = vcs::base_commit(&resolution.publication, &base);
@@ -912,8 +917,10 @@ pub(crate) struct Recorded {
     branch: Option<String>,
     change_url: Option<Stamped<String>>,
     /// The commit a merge this host saw landed the work at, which is the record the
-    /// most certain landing tier reads.
-    landing: Option<Stamped<String>>,
+    /// most certain landing tier reads. An object id, because a stream is a file
+    /// whichever process wrote it and this value goes on to be handed to git as a
+    /// revision.
+    landing: Option<Stamped<ObjectId>>,
     asked_the_host_to_land: bool,
     gate: Option<Stamped<GateReport>>,
 }
@@ -1129,7 +1136,11 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // first landing tier reads: a merge this host performed, and a merge it
             // watched the host perform.
             EventKind::ChangeMerged | EventKind::MergeCompleted => {
-                if let Some(sha) = field("sha") {
+                // Through the conversion that decides what an object id is, for the
+                // reason the branch name above goes through `Ref`: what a stream
+                // records is input, and a value that is not an id would be handed to
+                // git as a revision and could not name the commit it claims to.
+                if let Some(sha) = field("sha").as_deref().and_then(ObjectId::parse) {
                     record.landing = Some(Stamped { at, value: sha });
                 }
             }
@@ -1208,7 +1219,8 @@ pub(crate) fn recorded_for(
             relevant
                 .iter()
                 .filter_map(|record| record.change_url.clone()),
-        ),
+        )
+        .and_then(|url| Url::parse(&url).ok()),
     }
 }
 

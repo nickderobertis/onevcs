@@ -428,7 +428,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
         None => Scope::All,
     };
-    let rows = match args.include_landed {
+    let rows = match args.all {
         true => providers.vcs.preserved(scope)?,
         false => providers.vcs.recoverable(scope)?,
     };
@@ -447,10 +447,10 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // Named whether or not anything was withheld, because what a report leaves out
     // is exactly what nobody can see it left out: this answer is about work that has
     // *not* reached its base, and a branch missing from it because it landed reads
-    // identically to one missing because nothing found it.
-    let landed_too = "Branches whose work reached their base are not listed; \
-                      `onevcs recoverable --include-landed` lists them too, each saying what \
-                      says so.";
+    // identically to one missing because nothing found it at all.
+    let withheld = "Branches whose work reached their base, and ones nothing here can decide \
+                    about, are not listed; `onevcs recoverable --all` lists every preserved \
+                    branch, each saying which of the three it is.";
     if args.json {
         // The document itself is the answer and stays exactly what a consumer
         // parses; the scope it was answered under is *about* the answer, so it goes
@@ -461,21 +461,19 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         // Said to a parser's operator as well, and in the same place: a consumer
         // reading this document is deciding what to publish, and a branch missing
         // from it because it landed reads exactly like one nothing found.
-        if !args.include_landed {
-            eprintln!("onevcs: {landed_too}");
+        if !args.all {
+            eprintln!("onevcs: {withheld}");
         }
         println!("{}", serde_json::to_string(&rows).map_err(serialization)?);
         return Ok(0);
     }
-    // What the rows are: the same report either way, over a wider set of branches.
-    let what = match args.include_landed {
-        true => "preserved branch(es), landed ones included",
+    let what = match args.all {
+        true => "preserved branch(es), whatever became of the work",
         false => "preserved unpublished branch(es)",
     };
     if rows.is_empty() {
-        // Spelled without the count's parenthetical, because there is no count: the
-        // sentence is about there being none of them at all.
-        let none = match args.include_landed {
+        // Spelled without the count's parenthetical, because there is no count.
+        let none = match args.all {
             true => "No preserved branches",
             false => "No preserved unpublished branches",
         };
@@ -488,8 +486,8 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
                  or a remote."
             ),
         }
-        if !args.include_landed {
-            println!("{landed_too}");
+        if !args.all {
+            println!("{withheld}");
         }
         if scoped.is_some() {
             println!("{widen}");
@@ -602,8 +600,8 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             None => println!("    Resume: {command}"),
         }
     }
-    if !args.include_landed {
-        println!("{landed_too}");
+    if !args.all {
+        println!("{withheld}");
     }
     // After the rows as well as before them: a scoped answer long enough to scroll
     // is exactly the one whose header has gone by unread.
