@@ -2,15 +2,15 @@ Mutation: a process that does not answer the first signal is never ended, so a w
 Red: a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes
 
 diff --git a/crates/onevcs/src/processes.rs b/crates/onevcs/src/processes.rs
-index 7f944a4..d9e429e 100644
+index 2264de2..c7212fd 100644
 --- a/crates/onevcs/src/processes.rs
 +++ b/crates/onevcs/src/processes.rs
-@@ -72,7 +72,7 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
+@@ -121,7 +121,7 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
  /// directory.
  pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Holder> {
      let mut left: Vec<Holder> = holders.to_vec();
--    for signal in [terminate_signal(), kill_signal()] {
-+    for signal in [terminate_signal()] {
+-    for signal in [Signal::Terminate, Signal::Kill] {
++    for signal in [Signal::Terminate] {
          // Asked again rather than assumed: a process that has already gone, or whose
          // pid has been taken over by something working elsewhere, is not this run
          // root's to signal.
