@@ -2,7 +2,7 @@ Mutation: --dry-run stops being a rehearsal: the run that was asked to report wh
 Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index e0754cb..2aa8fbd 100644
+index 52b086b..1d62bd1 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -553,14 +553,6 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
@@ -17,6 +17,6 @@ index e0754cb..2aa8fbd 100644
 -        });
 -        return Ok(());
 -    }
-     let left = processes::stop(&holding, &run_root);
-     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a process that is
-     // still working inside the run root after it has been asked to stop and then
+     // Asked to stop and then ended, before a single file is unlinked: what comes back
+     // is what would not go, and a workspace that still has one of those is not one
+     // this could claim to have reclaimed.
