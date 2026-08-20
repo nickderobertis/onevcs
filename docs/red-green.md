@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmplKPPvY-project-bd9759e6c3eb/runs/<token>/clone stands on its own parent 89d04e06db1b9f67d41084
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpZH36cT-project-e52051d59032/runs/<token>/clone stands on its own parent df8d87a3f73415e95b7d51
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpOvOBR7-project-8321edf393ca/runs/<token>/clone stands on its own parent 50ce95f1f3cdeb051b0fb3
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmppkjL9a-project-0e1614bc583c/runs/<token>/clone stands on its own parent 16a2a64a7e6daf489ce4a5
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -373,13 +373,13 @@ a branch-keyed landing stops enforcing the retention rule over its own family, s
 
 reclaiming a workspace stops asking which processes it left running, so the directory is unlinked while a daemon goes on holding everything that was in it.
 
-- RED `reclaiming_a_workspace_stops_the_process_the_publication_left_running` — the rehearsal names the process the removal would stop:
-- RED `a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes` — the report names the daemon it stopped — the shell holding the trap, and the sleep under it, are both working in there:
+- RED `reclaiming_a_workspace_stops_the_process_the_publication_left_running` — the rehearsal names the process the removal would reach for:
+- RED `a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes` — the report names the daemon it signalled — the shell holding the trap, and the sleep under it, are both working in there:
 - RED `a_landing_stops_the_daemon_the_landing_before_it_left_running` — timed out after 60s waiting until the daemon the earlier landing left running has gone
 
 ### `142-a-process-that-ignores-the-first-signal-is-left-running`
 
-a process that does not answer the first signal is never ended, so a workspace whose daemon ignores SIGTERM is one nothing can ever reclaim.
+the signal that ends a process which would not stop is the one it has already ignored, so a workspace whose daemon ignores SIGTERM is one nothing can ever reclaim.
 
 - RED `a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_goes` — a workspace whose daemon ignored the first signal is still reclaimed:
 
@@ -387,7 +387,7 @@ a process that does not answer the first signal is never ended, so a workspace w
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-1f7a20-18cd8cca0679e68c-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-3e86db-18cd8f21ba6c474d-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -401,7 +401,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-1fab14-18cd8ccd7773ea0e-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-3ebf07-18cd8f241c662fef-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -868,7 +868,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
