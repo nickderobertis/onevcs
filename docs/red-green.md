@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpEqAUYS-project-94a9f2bf0621/runs/<token>/clone stands on its own parent ea96830372d8bce531ce6b
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpRRbuNu-project-952d4a931732/runs/<token>/clone stands on its own parent 9d95f70eeb34c024e39d5d
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpj6r2nw-project-26e04837e6bb/runs/<token>/clone stands on its own parent 71035c7829191a8d3f386a
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp7zuRFL-project-c9bd672f0997/runs/<token>/clone stands on its own parent ac429303d88f911e560e32
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -264,7 +264,7 @@ the age floor stops bounding what a sweep considers, so a workspace written mome
 
 the sweep reaches into the per-run lifecycle clone root, which is the bounded recovery history that keeps a dead run's branch reachable.
 
-- RED `the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into` — nothing under a per-run lifecycle clone root is this verb's to reap:
+- RED `the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into` — the report names the family it did not examine, and why:
 
 ### `126-an-age-floor-no-window-can-hold-is-accepted`
 
@@ -297,11 +297,11 @@ the sweep stops asking whether what it found is a directory at all, so a file le
 
 - RED `a_per_run_policy_narrows_the_rules_resolved_one_and_never_widens_it` — Unexpected return code, failed var == 2
 
-### `130-a-removal-that-did-not-happen-is-reported-as-done`
+### `130-a-workspace-nobody-here-could-remove-is-taken-apart-to-find-out`
 
-a workspace this host may not remove is reported as reclaimed anyway, so a report says the disk was freed by a directory that is still there.
+the sweep stops asking whether removing a workspace is this host's to do and finds out by trying, which destroys everything above the first thing it cannot unlink.
 
-- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — a removal that did not happen is retained with what the system said:
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — nothing under a workspace this host may not remove was touched:
 
 ### `131-the-shared-age-floor-moves-on-its-own`
 
@@ -321,11 +321,11 @@ a run root's age is read from its own timestamp and its immediate entries alone,
 
 - RED `the_age_floor_bounds_what_a_sweep_considers` — a workspace written inside a moment ago is not a day old:
 
-### `134-a-sweep-that-did-not-finish-reports-as-one-that-did`
+### `134-a-probe-leaves-the-clock-it-moved`
 
-a sweep that proved a workspace dead and could not remove it says so nowhere but in the retained list, so its headline and its stderr both read as a run that did everything it set out to.
+the writability probe stops putting a directory's timestamps back, so every workspace it asks about looks freshly written and the age floor keeps it for another day.
 
-- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — the headline says the run was partial:
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — asking again gives the same answer, not one about the clock:
 
 ### `13-the-gate-does-not-run`
 
