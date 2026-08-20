@@ -228,11 +228,12 @@ impl FailureKind {
             // The contract fixes `1` for every verification failure and the codes are
             // the published surface, so which one it was travels on the kind instead.
             // Widening the set is an amendment, reported rather than taken here.
-            // llmlint: ignore[cli_output_contract] the approved contract fixes this code.
+            // llmlint: ignore-block[cli_output_contract] the approved contract fixes this code.
             FailureKind::Gate
             | FailureKind::ChecksFailed
             | FailureKind::ChecksUnsettled
             | FailureKind::PushRejected => 1,
+            // llmlint: ignore-end[cli_output_contract]
             FailureKind::Invalid => 2,
             FailureKind::SyncConflict => 3,
             FailureKind::NotImplemented => 70,
