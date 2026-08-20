@@ -159,6 +159,11 @@ fn publish_branch(fixture: &Fixture, branch: &str) {
 
 /// What one `onevcs sweep` printed, and its exit code asserted at nought.
 fn swept(fixture: &Fixture, extra: &[&str]) -> String {
+    swept_with_diagnosis(fixture, extra).0
+}
+
+/// The report and the diagnosis beside it, with the exit code asserted at nought.
+fn swept_with_diagnosis(fixture: &Fixture, extra: &[&str]) -> (String, String) {
     let assert = fixture
         .world
         .onevcs()
@@ -166,7 +171,11 @@ fn swept(fixture: &Fixture, extra: &[&str]) -> String {
         .args(extra)
         .assert()
         .success();
-    String::from_utf8(assert.get_output().stdout.clone()).expect("the report is UTF-8")
+    let output = assert.get_output();
+    (
+        String::from_utf8(output.stdout.clone()).expect("the report is UTF-8"),
+        String::from_utf8(output.stderr.clone()).expect("the diagnosis is UTF-8"),
+    )
 }
 
 /// The reason the report gives for retaining one directory.
@@ -198,10 +207,14 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
     backdate(&run_root, 72);
 
     // An ordinary sweep: no flags, so the age floor is the documented default.
-    let report = swept(&fixture, &[]);
+    let (report, diagnosis) = swept_with_diagnosis(&fixture, &[]);
     assert!(
         !run_root.exists(),
         "a publication that was gated and is nobody's is reclaimed:\n{report}"
+    );
+    assert_eq!(
+        diagnosis, "",
+        "a sweep that did everything it set out to diagnoses nothing"
     );
     assert!(
         report.contains(&format!("  {} — ", run_root.display())),
@@ -502,7 +515,7 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
          ordinary user rather than as root"
     );
 
-    let report = swept(&fixture, &[]);
+    let (report, diagnosis) = swept_with_diagnosis(&fixture, &[]);
     std::fs::set_permissions(&family, original.clone()).expect("the family is restored");
 
     assert!(
@@ -516,6 +529,20 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
     assert!(
         report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
         "and it is not counted as reclaimed:\n{report}"
+    );
+    // The exit code says the sweep *ran*, so what did not happen has to be said
+    // rather than encoded in it — on the headline, and in the stream every other
+    // diagnosis this binary writes goes to.
+    assert!(
+        report.contains(
+            "This sweep was incomplete: 1 workspace(s) it proved dead could not be removed"
+        ),
+        "the headline says the run was partial:\n{report}"
+    );
+    assert!(
+        diagnosis.contains("onevcs: warning: this sweep was incomplete")
+            && diagnosis.contains(&run_root.display().to_string()),
+        "and stderr carries the same, naming the workspace:\n{diagnosis}"
     );
 
     // The other half of the same permission: a family this user may not even list.

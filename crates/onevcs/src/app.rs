@@ -629,26 +629,38 @@ fn sync(args: &SyncArgs) -> Result<u8> {
     Ok(0)
 }
 
-/// Reap the publication workspaces this host has finished with.
+/// Reap the publication workspaces this host has finished with, and say what of it
+/// did not happen.
 ///
-/// Exit 0 whenever the sweep *ran*: a run root it could not prove dead, or could
-/// not remove, is a line in the report rather than a failure — the report is the
-/// answer, and a caller that got a non-zero code for a directory somebody else is
-/// inside would have no way to tell that from a sweep that never happened.
-// llmlint: ignore-block[cli_output_contract] the exit code is the half of this verb's
-// surface that `ai-orchestrator`'s composed `just sweep-scratch` reads, and it is
-// fixed: nought when the sweep ran, non-zero when it could not run at all. A
-// workspace this host may not remove is a normal, expected outcome on a state root
-// several managers share — it is *why* the retained list exists — so exiting
-// non-zero for one would make "somebody else owns a directory" indistinguishable
-// from "the sweep never happened", and a caller forwarding one argument set to two
-// tools would stop on the first. What went wrong is in the report, named per
-// directory with its reason, which is where a caller can act on it.
+/// **The exit code answers whether the sweep ran, and nothing else** — `0` when it
+/// did, non-zero when it could not. That is the contract `ai-orchestrator`'s composed
+/// `just sweep-scratch` reads, and it is what a state root several managers share
+/// requires: a workspace another manager owns is an expected, recurring outcome on
+/// every run, so failing on one would make "somebody else's directory is still
+/// there" indistinguishable from "the sweep never happened" and would stop a caller
+/// that forwards one argument set to two tools.
+///
+/// So the *partial* outcome is reported rather than encoded in the status. It is
+/// said three times, in the three places something reads: the report's headline says
+/// the run was incomplete, the retained list names each directory with what the
+/// system said about it, and a warning goes to stderr — which is where this binary
+/// puts every other diagnosis, and where a caller that reads no further than the
+/// stream looks.
 fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
-    println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
+    let report = sweep::run(args.dry_run, args.min_age_hours)?;
+    println!("{report}");
+    let unremovable = report.unremovable();
+    if let Some(first) = unremovable.first() {
+        eprintln!(
+            "onevcs: warning: this sweep was incomplete — {count} workspace(s) it proved dead \
+             could not be removed, the first being {first}. The report on stdout names each one \
+             and what the system said; a workspace another manager owns is left to them.",
+            count = unremovable.len(),
+            first = first.display(),
+        );
+    }
     Ok(0)
 }
-// llmlint: ignore-end[cli_output_contract]
 
 fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
     let token = args.token.as_str();

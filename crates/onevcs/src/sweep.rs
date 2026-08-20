@@ -167,9 +167,9 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
         });
         for run_root in run_roots {
             match judge(&run_root, min_age)? {
-                Verdict::Retain(reason) => report.retained.push(Retained {
+                Verdict::Retain(why) => report.retained.push(Retained {
                     path: run_root,
-                    reason,
+                    why,
                 }),
                 Verdict::Reclaim(lease) => reclaim(&mut report, run_root, lease),
             }
@@ -194,8 +194,8 @@ enum Verdict {
     /// Provably dead, with the exclusive take that proved nobody is inside it still
     /// held: dropping it before the removal would reopen the window this closes.
     Reclaim(lock::Guard),
-    /// Kept, and the reason a report states.
-    Retain(String),
+    /// Kept, and why.
+    Retain(Kept),
 }
 
 /// Decide one run root, asking the cheapest question that can retain it first.
@@ -206,46 +206,35 @@ enum Verdict {
 /// wrong; the gate verdict and the age floor are the two proofs of deadness.
 fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     if !run_root.is_dir() {
-        return Ok(Verdict::Retain(
-            "its owner cannot be proven: it is not a directory, and every run root is one"
-                .to_owned(),
-        ));
+        return Ok(Verdict::Retain(Kept::OwnerUnproven(
+            "it is not a directory, and every run root is one",
+        )));
     }
     // The one thing `branch::prepare` always leaves: a run clone. A directory under
     // this family carrying none is somebody else's, or one somebody has already
     // taken apart by hand, and either way this verb cannot show it made it.
     if !git::is_repo(&run_root.join("clone")) {
-        return Ok(Verdict::Retain(
-            "its owner cannot be proven: it holds no run clone this crate would have cut"
-                .to_owned(),
-        ));
+        return Ok(Verdict::Retain(Kept::OwnerUnproven(
+            "it holds no run clone this crate would have cut",
+        )));
     }
     // An exclusive take succeeds only while no shared occupancy lease is held, which
     // is what a landing holds for the whole of its run. Held, the answer is that
     // somebody is publishing in here — reported, and nothing about them touched.
     let Some(lease) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
-        return Ok(Verdict::Retain(
-            "a live session holds its occupancy lease; nothing was removed and nothing was \
-             terminated"
-                .to_owned(),
-        ));
+        return Ok(Verdict::Retain(Kept::Occupied));
     };
     if !gate::has_recorded_verdict(run_root) {
-        return Ok(Verdict::Retain(format!(
-            "its gate has recorded no verdict under {}, so nothing here can say the \
-             publication finished",
-            gate::PRESERVED_LOG_DIRNAME
-        )));
+        return Ok(Verdict::Retain(Kept::NoVerdict));
     }
     let age = SystemTime::now()
         .duration_since(last_written(run_root))
         .unwrap_or(Duration::ZERO);
     if age < min_age {
-        return Ok(Verdict::Retain(format!(
-            "it was written {} ago, inside the {} the age floor leaves alone",
-            describe_duration(age),
-            describe_duration(min_age),
-        )));
+        return Ok(Verdict::Retain(Kept::Fresh {
+            age,
+            floor: min_age,
+        }));
     }
     Ok(Verdict::Reclaim(lease))
 }
@@ -273,7 +262,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
         // the retained list is for.
         Err(e) => report.retained.push(Retained {
             path: run_root,
-            reason: format!("it could not be removed: {e}"),
+            why: Kept::NotRemoved(e.to_string()),
         }),
     }
     drop(lease);
@@ -372,7 +361,53 @@ struct Reclaimed {
 /// A run root that was left where it is, and why.
 struct Retained {
     path: PathBuf,
-    reason: String,
+    why: Kept,
+}
+
+/// The sentence a run root somebody is inside is reported with.
+const OCCUPIED: &str =
+    "a live session holds its occupancy lease; nothing was removed and nothing was terminated";
+
+/// The sentence a run root nothing ever judged is reported with, with `{}` standing
+/// in for the directory a verdict would have been preserved under.
+const NO_VERDICT: &str =
+    "its gate has recorded no verdict under {}, so nothing here can say the publication finished";
+
+/// Why one run root was kept.
+///
+/// A type rather than a sentence, because two of these are not the same kind of
+/// answer: every variant but the last is this verb *deciding* to keep a directory,
+/// and the last is it failing to remove one it had already decided was dead. A
+/// caller has to be able to tell those apart, so nothing downstream reads it back
+/// out of prose.
+enum Kept {
+    /// Nothing here can show this crate cut it.
+    OwnerUnproven(&'static str),
+    /// Somebody holds its occupancy lease right now.
+    Occupied,
+    /// No gate ever recorded a verdict under it.
+    NoVerdict,
+    /// It was written inside the age floor.
+    Fresh { age: Duration, floor: Duration },
+    /// It was proven dead, and the removal did not go through.
+    NotRemoved(String),
+}
+
+impl Kept {
+    /// The reason as the report states it.
+    fn describe(&self) -> String {
+        match self {
+            Kept::OwnerUnproven(what) => format!("its owner cannot be proven: {what}"),
+            Kept::Occupied => OCCUPIED.to_owned(),
+            Kept::NoVerdict => NO_VERDICT.replace("{}", gate::PRESERVED_LOG_DIRNAME),
+            Kept::Fresh { age, floor } => format!(
+                "it was written {} ago, inside the {} the age floor leaves alone",
+                describe_duration(*age),
+                describe_duration(*floor),
+            ),
+            Kept::NotRemoved(said) => format!("it could not be removed: {said}"),
+        }
+    }
 }
 
 /// What one sweep examined, reclaimed, and retained.
@@ -394,6 +429,20 @@ impl Report {
     fn bytes(&self) -> u64 {
         self.reclaimed.iter().map(|entry| entry.bytes).sum()
     }
+
+    /// Every workspace this sweep proved dead and then could not remove.
+    ///
+    /// The one kind of retention that is a *failure* rather than a decision, which
+    /// is why it is answered as a list rather than read back out of the report's
+    /// prose: `onevcs sweep` warns about these on stderr, and a sweep that had
+    /// nothing to warn about must be able to say so without matching a sentence.
+    pub fn unremovable(&self) -> Vec<&Path> {
+        self.retained
+            .iter()
+            .filter(|retained| matches!(retained.why, Kept::NotRemoved(_)))
+            .map(|retained| retained.path.as_path())
+            .collect()
+    }
 }
 
 impl fmt::Display for Report {
@@ -409,6 +458,18 @@ impl fmt::Display for Report {
             describe_bytes(self.bytes()),
             describe_duration(self.min_age),
         )?;
+        // On the headline as well as in the retained list below, because the headline
+        // is the line a reader takes the run's outcome from — and a sweep that proved
+        // a workspace dead and then could not remove it did not do what it set out to.
+        let unremovable = self.unremovable();
+        if !unremovable.is_empty() {
+            writeln!(
+                f,
+                "This sweep was incomplete: {} workspace(s) it proved dead could not be \
+                 removed, and are listed below with what the system said.",
+                unremovable.len()
+            )?;
+        }
         if self.dry_run {
             writeln!(f, "Nothing was removed: this was a rehearsal.")?;
         }
@@ -463,7 +524,12 @@ impl fmt::Display for Report {
             writeln!(f, "  none")?;
         }
         for retained in &self.retained {
-            writeln!(f, "  {} — {}", retained.path.display(), retained.reason)?;
+            writeln!(
+                f,
+                "  {} — {}",
+                retained.path.display(),
+                retained.why.describe()
+            )?;
         }
 
         // The scope, said the way `recoverable` says its own: unstated, a report
