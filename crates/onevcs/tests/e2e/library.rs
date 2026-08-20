@@ -476,124 +476,6 @@ fn ready_to_publish(world: &World, rules: &str, branch: &str, pre_push: &str) ->
     session
 }
 
-#[test]
-fn the_failure_a_publication_ends_with_is_the_kind_a_caller_routes_on() {
-    // Which verification failed is the thing a consumer branches on, and the exit
-    // code cannot carry it: the contract fixes `1` for every verification failure,
-    // so a process reading `$?` sees one answer where a caller embedding the crate
-    // has to see four. These are the three new ones, each driven to its own ending
-    // through the typed entry point against real git.
-    const AUTOMATED: &str =
-        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}";
-
-    // A required check the host concluded red. The publication stops there, names
-    // the check, and quotes what it printed.
-    let world = World::new();
-    inhabit(&world);
-    let session = ready_to_publish(&world, AUTOMATED, "feature/reddened", "exit 0");
-    world.host_checks(&[crate::world::Check {
-        name: "gate",
-        status: "completed",
-        conclusion: Some("failure"),
-        required: true,
-    }]);
-    let published = onevcs::publish(
-        &Providers::real(),
-        &session.token,
-        &PublishRequest::default(),
-    )
-    .expect("a red check is an outcome, not a refusal to start");
-    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
-        panic!("a red required check must fail the publication: {published:?}");
-    };
-    assert_eq!(*kind, FailureKind::ChecksFailed);
-    assert_eq!(kind.exit_code(), 1, "the contract's code is unchanged");
-    assert!(reason.contains("required check \"gate\""), "{reason}");
-
-    // A host that never settles the check it is holding the change for. Nothing
-    // failed; nobody answered, and the two are different next moves.
-    let world = World::new();
-    inhabit(&world);
-    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1");
-    let session = ready_to_publish(&world, AUTOMATED, "feature/pending", "exit 0");
-    world.host_checks(&[crate::world::Check {
-        name: "gate",
-        status: "in_progress",
-        conclusion: None,
-        required: true,
-    }]);
-    let published = onevcs::publish(
-        &Providers::real(),
-        &session.token,
-        &PublishRequest::default(),
-    )
-    .expect("a bound that elapsed is an outcome");
-    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");
-    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
-        panic!("the bound must end the publication: {published:?}");
-    };
-    assert_eq!(*kind, FailureKind::ChecksUnsettled);
-    assert_eq!(kind.exit_code(), 1);
-    assert!(reason.contains("still unsettled: \"gate\""), "{reason}");
-
-    // And a push the merge path refused, which is neither of those: git turned the
-    // ref down, and its own per-ref summary is the answer.
-    let world = World::new();
-    inhabit(&world);
-    let session = ready_to_publish(
-        &world,
-        AUTOMATED,
-        "feature/refused-push",
-        "echo 'the hook found a secret in the diff' >&2; exit 1",
-    );
-    let published = onevcs::publish(
-        &Providers::real(),
-        &session.token,
-        &PublishRequest::default(),
-    )
-    .expect("a refused push is an outcome");
-    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
-        panic!("a refused push must fail the publication: {published:?}");
-    };
-    assert_eq!(*kind, FailureKind::PushRejected);
-    assert_eq!(kind.exit_code(), 1);
-    assert!(reason.contains("rejected by the merge path"), "{reason}");
-}
-
-#[test]
-fn a_host_that_cannot_say_where_a_change_landed_refuses_rather_than_saying_not_yet() {
-    // `merged_at` is defaulted, so a `RemoteHost` written against the six methods
-    // the contract fixed still compiles — and defaults to the refusal this
-    // repository reserves for a seam with no body. A host that answered `None`
-    // instead would be saying "not yet" about a change it cannot see, and the
-    // publication would watch to its bound and then blame checks that were never
-    // the reason.
-    let world = World::new();
-    inhabit(&world);
-    let session = ready_to_publish(
-        &world,
-        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}",
-        "feature/unanswerable",
-        "exit 0",
-    );
-
-    let published = onevcs::publish(
-        &Providers {
-            vcs: &Git,
-            hosting: &Earlier,
-        },
-        &session.token,
-        &PublishRequest::default(),
-    )
-    .expect("a seam with no body is an outcome, not a refusal to start");
-    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
-        panic!("a host that cannot answer must fail the publication: {published:?}");
-    };
-    assert_eq!(*kind, FailureKind::NotImplemented);
-    assert_eq!(kind.exit_code(), 70, "this repository's own code");
-    assert!(reason.contains("merged_at"), "{reason}");
-}
-
 /// A host written against the six methods the approved contract fixed, and nothing
 /// since: it opens and merges change requests and was never taught where one
 /// landed.
@@ -1104,6 +986,123 @@ fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() 
         branches.contains("feature/refused"),
         "the checkout it names carries the branch: {branches:?}"
     );
+
+    // The gate this crate runs is one of the verifications a publication can fail,
+    // and the exit code cannot tell them apart: the contract fixes `1` for all of
+    // them, so a process reading `$?` sees one answer where a caller embedding the
+    // crate has to see four. They are asserted here, together, because *which* one
+    // it was is the thing a caller routes on and the thing a single code hides.
+    // Which verification failed is the thing a consumer branches on, and the exit
+    // code cannot carry it: the contract fixes `1` for every verification failure,
+    // so a process reading `$?` sees one answer where a caller embedding the crate
+    // has to see four. These are the three new ones, each driven to its own ending
+    // through the typed entry point against real git.
+    const AUTOMATED: &str =
+        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}";
+
+    // A required check the host concluded red. The publication stops there, names
+    // the check, and quotes what it printed.
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(&world, AUTOMATED, "feature/reddened", "exit 0");
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("failure"),
+        required: true,
+    }]);
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a red check is an outcome, not a refusal to start");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a red required check must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksFailed);
+    assert_eq!(kind.exit_code(), 1, "the contract's code is unchanged");
+    assert!(reason.contains("required check \"gate\""), "{reason}");
+
+    // A host that never settles the check it is holding the change for. Nothing
+    // failed; nobody answered, and the two are different next moves.
+    let world = World::new();
+    inhabit(&world);
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1");
+    let session = ready_to_publish(&world, AUTOMATED, "feature/pending", "exit 0");
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a bound that elapsed is an outcome");
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("the bound must end the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksUnsettled);
+    assert_eq!(kind.exit_code(), 1);
+    assert!(reason.contains("still unsettled: \"gate\""), "{reason}");
+
+    // And a push the merge path refused, which is neither of those: git turned the
+    // ref down, and its own per-ref summary is the answer.
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(
+        &world,
+        AUTOMATED,
+        "feature/refused-push",
+        "echo 'the hook found a secret in the diff' >&2; exit 1",
+    );
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a refused push is an outcome");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a refused push must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::PushRejected);
+    assert_eq!(kind.exit_code(), 1);
+    assert!(reason.contains("rejected by the merge path"), "{reason}");
+
+    // `merged_at` is defaulted, so a `RemoteHost` written against the six methods
+    // the contract fixed still compiles — and defaults to the refusal this
+    // repository reserves for a seam with no body. A host that answered `None`
+    // instead would be saying "not yet" about a change it cannot see, and the
+    // publication would watch to its bound and then blame checks that were never
+    // the reason.
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(
+        &world,
+        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}",
+        "feature/unanswerable",
+        "exit 0",
+    );
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &Earlier,
+        },
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a seam with no body is an outcome, not a refusal to start");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a host that cannot answer must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::NotImplemented);
+    assert_eq!(kind.exit_code(), 70, "this repository's own code");
+    assert!(reason.contains("merged_at"), "{reason}");
 }
 
 #[test]

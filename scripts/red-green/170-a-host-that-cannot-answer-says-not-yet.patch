@@ -1,6 +1,5 @@
 Mutation: a host that was never taught where a change landed answers "not yet" instead of refusing, so a publication watches to its bound and blames checks that were never the reason.
 Red: the_amendment_declares_the_question_a_watched_publication_asks_its_host
-Red: a_host_that_cannot_say_where_a_change_landed_refuses_rather_than_saying_not_yet
 
 diff --git a/crates/onevcs/src/host.rs b/crates/onevcs/src/host.rs
 index caa29b0..66afac8 100644
