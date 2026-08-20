@@ -293,24 +293,20 @@ fn probe(directory: &Path) -> std::io::Result<()> {
 }
 
 /// A directory, open as the handle whose timestamps can be set.
-#[cfg(not(windows))]
+///
+/// `CreateFileW` hands one back only to a caller that asks for the backup semantics a
+/// directory handle takes, and refuses every other open of one outright.
 fn open_dir(directory: &Path) -> std::io::Result<File> {
-    File::open(directory)
-}
-
-/// `CreateFileW` hands back a directory only to a caller that asks for the backup
-/// semantics one takes, and refuses every other open outright — so without this the
-/// probe would report every directory on that host as one it could not ask about.
-#[cfg(windows)]
-fn open_dir(directory: &Path) -> std::io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    /// `FILE_FLAG_BACKUP_SEMANTICS`, which the `windows-sys` features this crate
-    /// takes do not carry.
-    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    File::options()
-        .read(true)
-        .custom_flags(BACKUP_SEMANTICS)
-        .open(directory)
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // `FILE_FLAG_BACKUP_SEMANTICS`, which the `windows-sys` features this crate
+        // takes do not carry.
+        options.custom_flags(0x0200_0000);
+    }
+    options.open(directory)
 }
 
 /// Why a directory under the workspaces root is none of this verb's business.
@@ -356,7 +352,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     let Some(lease) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
         return Ok(Verdict::Retain(Kept::Occupied));
     };
-    if !gate::has_recorded_verdict(run_root) {
+    if !gate::shows_a_recorded_verdict(run_root) {
         return Ok(Verdict::Retain(Kept::NoVerdict));
     }
     let age = SystemTime::now()
