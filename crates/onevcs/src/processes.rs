@@ -24,12 +24,9 @@
 //! process holds the tree, which the sweep reports as the failure it is — and this
 //! crate's own journeys run on Unix, where both answers below are real.
 //!
-// llmlint: ignore[changed_behavior_has_e2e] the Linux answers and the macOS ones below
-// are covered by the same journeys and not by different ones: none of the daemon
-// journeys in `tests/e2e/sweep.rs` is gated by platform, and CI's `cross` job runs that
-// whole offline suite on macOS. A journey written *for* this file's macOS half would be
-// the same journey a second time, and there is no third platform these answers are
-// reachable from — Windows runs neither, which the note above is about.
+//! The Linux answers and the macOS ones are covered by the same journeys rather than
+//! by different ones: none of the daemon journeys in `tests/e2e/sweep.rs` is gated by
+//! platform, and CI's `cross` job runs that whole offline suite on macOS.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -142,13 +139,14 @@ pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Outcome> {
         // Asked again rather than assumed: a process that has already gone, or whose
         // pid has been taken over by something working elsewhere, is not this run
         // root's to signal.
-        // llmlint: ignore[changed_behavior_has_e2e] the *re*-ask before a signal is
-        // uncovered and unbuildable as a journey: it is about a process exiting inside
-        // the window between being found and being signalled, which nothing outside
-        // that process can time. The same question after each signal is what every
-        // daemon journey observes the process gone by, so what is untested here is the
-        // window and not the answer.
+        // llmlint: ignore-block[changed_behavior_has_e2e] this *re*-ask before a signal
+        // is unbuildable as a journey: it is about a process exiting inside the window
+        // between being found and being signalled, which nothing outside that process
+        // can time. The same question *after* each signal is what every daemon journey
+        // observes the process gone by, so what no journey reaches is the window and
+        // never the answer.
         left.retain(|holder| still_holding(holder, run_root));
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         for holder in &left {
             signal_to(holder.pid, signal);
             if !signalled.contains(&holder.pid) {
@@ -190,14 +188,14 @@ fn still_holding(holder: &Holder, run_root: &Path) -> bool {
 /// daemon and is not this verb's to end. A chain that repeats a pid or runs longer
 /// than any real one stops where it is — an answer this could not finish is one that
 /// protects fewer processes, never more.
-// llmlint: ignore[changed_behavior_has_e2e] the two stopping conditions below —
-// sixty-four generations, and a parent chain that comes back to a pid it already
-// named — are uncovered and unbuildable as journeys: no host answers a `ppid` cycle,
-// and a process tree that deep is a fixture standing in for the kernel. Both stop the
-// walk where it is, which is the answer that protects *fewer* processes: what they
-// bound is the loop, never who may be signalled.
 fn ancestry() -> Vec<u32> {
     let mut chain = vec![std::process::id()];
+    // llmlint: ignore-block[changed_behavior_has_e2e] the two stopping conditions —
+    // sixty-four generations, and a chain that comes back to a pid it already named —
+    // are unbuildable as journeys: no host answers a `ppid` cycle, and a process tree
+    // that deep is a fixture standing in for the kernel. Both stop the walk where it
+    // is, which is the answer that protects *fewer* processes: what they bound is this
+    // loop, never who may be signalled.
     while chain.len() < 64 {
         let Some(parent) = chain.last().copied().and_then(parent_of) else {
             break;
@@ -207,19 +205,21 @@ fn ancestry() -> Vec<u32> {
         }
         chain.push(parent);
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     chain
 }
 
 #[cfg(target_os = "linux")]
 fn live_pids() -> Vec<u32> {
-    // llmlint: ignore[changed_behavior_has_e2e] uncovered, and unbuildable as a
-    // journey: a Linux host whose `/proc` cannot be listed is one no interface this
-    // crate exposes can make. What it answers is the same thing every host with no
-    // process listing at all answers — nothing is named, so nothing is stopped and
-    // the removal goes ahead, exactly as the module's note says of Windows.
+    // llmlint: ignore-block[changed_behavior_has_e2e] unbuildable as a journey: a
+    // Linux host whose `/proc` cannot be listed is one no interface this crate exposes
+    // can make. What it answers is what every host with no process listing at all
+    // answers — nothing is named, so nothing is signalled and the removal goes ahead,
+    // exactly as the module's note says of Windows.
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     entries
         .flatten()
         .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
@@ -255,6 +255,13 @@ fn parent_of(pid: u32) -> Option<u32> {
 /// the larger reading, is zeroed before the call, and is read to its end. A slot the
 /// kernel did not fill holds `0`, which is not a pid any signal may name and which
 /// [`Pid`] refuses.
+// llmlint: ignore-block[changed_behavior_has_e2e] every refusal these three answers
+// can meet — a listing the kernel would not size, a size no `c_int` can hold, a call
+// that failed, a short read — is a question this host declined, and each answers by
+// naming one process fewer. None is buildable as a journey: they are the kernel
+// refusing, not an input any interface here takes. What they *do* is covered, and by
+// the same journeys the Linux answers are: no daemon journey in `tests/e2e/sweep.rs`
+// is gated by platform, and CI's `cross` job runs that suite on macOS.
 #[cfg(target_os = "macos")]
 fn live_pids() -> Vec<u32> {
     use std::ffi::c_int;
@@ -349,6 +356,8 @@ fn parent_of(pid: u32) -> Option<u32> {
     // SAFETY: the call above filled every byte of it.
     Some(unsafe { info.assume_init() }.pbi_ppid)
 }
+
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// No supported way to ask which process holds a directory, so nothing is claimed.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

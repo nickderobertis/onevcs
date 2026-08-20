@@ -510,13 +510,14 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
             written,
             lease,
         })),
-        // llmlint: ignore[changed_behavior_has_e2e] uncovered: a clone the ownership
-        // proof above has already read as a repository, that `git` then declines to
-        // answer about. No interface this crate exposes leaves one, and it retains —
-        // the answer every other unknown in this module resolves to, and the only safe
-        // one here, because what could not be asked about may be the only copy of
-        // somebody's work.
+        // llmlint: ignore-block[changed_behavior_has_e2e] a clone the ownership proof
+        // above has already read as a repository, that `git` then declines to answer
+        // about: no interface this crate exposes leaves one. It retains — the answer
+        // every other unknown in this module resolves to, and the only safe one here,
+        // because what could not be asked about may be the only copy of somebody's
+        // work.
         Err(_) => Ok(Verdict::Retain(Kept::WorkUnknown)),
+        // llmlint: ignore-end[changed_behavior_has_e2e]
     }
 }
 
@@ -596,8 +597,8 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     // An `Err` rather than a line in the report: the report says what this sweep
     // *decided*, and a removal it had proved it could make and then could not is the
     // sweep failing to run.
-    // llmlint: ignore[changed_behavior_has_e2e] every shape an operator meets — a
-    // family this user may not write to, and content it may not unlink — is decided
+    // llmlint: ignore-block[changed_behavior_has_e2e] every shape an operator meets —
+    // a family this user may not write to, and content it may not unlink — is decided
     // by the walk above and is a journey. What is left is the state root changing
     // between the question and the act, which no interface this crate exposes reaches.
     if let Err(e) = std::fs::remove_dir_all(&run_root) {
@@ -605,6 +606,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
             e,
         ));
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,

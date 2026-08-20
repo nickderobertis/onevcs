@@ -66,7 +66,8 @@ clones a session keeps as recovery history are outside it entirely.
 Two things a proven-finished workspace still gets to keep. Its preserved gate logs
 last at least as long as the age floor, because they are what an operator reads
 after a publication failed; and a clone still holding work that never reached the
-origin is kept past the floor too, until three newer ones stand in front of it.
+origin is kept past the floor too, until enough newer ones stand in front of it —
+under the same bound the per-run lifecycle clones a session keeps are kept under.
 Reclaiming a workspace also **stops the processes that publication left running** —
 a gate is the repository's own verification and verifications start daemons, and
 unlinking files a live process holds open frees none of their blocks.
