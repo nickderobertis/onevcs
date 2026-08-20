@@ -354,22 +354,6 @@ fn parent_of(pid: u32) -> Option<u32> {
 
 // llmlint: ignore-end[changed_behavior_has_e2e]
 
-/// No supported way to ask which process holds a directory, so nothing is claimed.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn live_pids() -> Vec<u32> {
-    Vec::new()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn working_dir(_pid: Pid) -> Option<PathBuf> {
-    None
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn parent_of(_pid: u32) -> Option<u32> {
-    None
-}
-
 /// Signal one process, and only ever one — which is what [`Pid`] guarantees.
 #[cfg(unix)]
 fn signal_to(pid: Pid, signal: Signal) {
@@ -386,5 +370,38 @@ fn signal_to(pid: Pid, signal: Signal) {
     }
 }
 
+/// What this crate answers on a host it has no supported way to ask: nothing, and it
+/// signals nothing. Claiming a process holds a run root, or ending one, on the
+/// strength of a question this host never answered is the one thing worse than
+/// leaving the directory where it is.
+// llmlint: ignore-block[changed_behavior_has_e2e] `x86_64-pc-windows-msvc` is the one
+// released target that compiles these four, and no journey can reach them there.
+// Nothing outside the crate can: `processes` is private and `docs/contract.md` fixes
+// the public surface, so publishing it in order to reach it is the change the contract
+// forbids. Nothing inside it can either: their only caller is `sweep`, and every
+// fixture that builds a run root for it hangs off `tests/e2e/world.rs`, which is
+// `#![cfg(unix)]` because the `gh` it substitutes and the gates it installs are POSIX
+// shell — so on the platform these serve, the suite that would drive them does not
+// exist. What they answer is what Windows is safe with anyway: a directory a live
+// process holds open refuses to be unlinked there, and a run root the sweep could not
+// empty is retained and reported rather than half-emptied, which
+// `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep`
+// covers on the platform it can be built on.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn live_pids() -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn working_dir(_pid: Pid) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn parent_of(_pid: u32) -> Option<u32> {
+    None
+}
+
 #[cfg(not(unix))]
 fn signal_to(_pid: Pid, _signal: Signal) {}
+// llmlint: ignore-end[changed_behavior_has_e2e]

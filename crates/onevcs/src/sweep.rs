@@ -18,9 +18,10 @@
 //! root's preserved gate logs are what an operator reads *after* a publication
 //! failed, and reclamation is the only thing that takes them: they are written under
 //! the run root, which outlives the worktree the gate ran in. So nothing written
-//! inside the floor — 24 hours where a caller says nothing — is removed by either
-//! way of asking, and a run root whose clone holds a commit no origin has is kept
-//! past it too, until [`RETAINED_UNPUBLISHED`] newer ones stand in front of it.
+//! inside the floor — [`DEFAULT_MIN_AGE_HOURS`] where a caller says nothing — is
+//! removed by either way of asking, and a run root whose clone holds a commit no
+//! origin has is kept past it too, until [`RETAINED_UNPUBLISHED`] newer ones stand in
+//! front of it.
 //!
 //! **Anything not proven dead is retained and reported.** This root is shared by
 //! several managers on one host, so a run root whose owner cannot be proven is left

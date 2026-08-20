@@ -380,9 +380,10 @@ Six rules govern how it decides.
   reads, through the same function, so the two cannot come to disagree about who is
   inside a workspace. Nothing a lease is held on is removed, and nothing inside it is
   signalled.
-- **The evidence outlives the failure by the age floor**, which is 24 hours where
-  nobody says otherwise. Preserved gate logs live under the run root — which outlives
-  the worktree the gate ran in — so reclamation is the only thing that takes them.
+- **The evidence outlives the failure by the age floor**, which is
+  `sweep::DEFAULT_MIN_AGE_HOURS` where nobody says otherwise. Preserved gate logs live
+  under the run root — which outlives the worktree the gate ran in — so reclamation is
+  the only thing that takes them.
   Work no origin has keeps its workspace past the floor as well, bounded by
   `workspace::RETAINED_DEAD_RUNS` itself: one bound on one question, asked of the
   lifecycle clones there and of the landings' workspaces here.
