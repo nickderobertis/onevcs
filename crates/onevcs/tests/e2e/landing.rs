@@ -191,7 +191,24 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
         "the host was asked and answered: {report}"
     );
 
-    // Which is the whole point: no row, and therefore no instruction to run.
+    // Which is the whole point, and it is the copy no remote tracks that matters:
+    // GitHub deletes the head branch when it merges one, and the next fetch prunes
+    // the ref that tracked it — which is when a branch whose work is already on the
+    // base comes back into this report's view carrying an instruction to publish it.
+    hosted.world.git(
+        &elsewhere,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "--delete",
+            "feature/merged-on-the-host",
+        ],
+    );
+    hosted
+        .world
+        .git(&hosted.checkout, &["fetch", "-q", "--prune", "origin"]);
+
     let listed = hosted
         .world
         .onevcs()
@@ -209,6 +226,19 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     assert!(
         row(&rows(&hosted.world, &[]), "feature/merged-on-the-host").is_none(),
         "nor to a consumer parsing the document"
+    );
+    // …and where it *is* shown, it says what landed it and carries no argv at all.
+    let shown = row(
+        &rows(&hosted.world, &["--all"]),
+        "feature/merged-on-the-host",
+    )
+    .expect("`--all` is how a branch this report withholds is seen at all");
+    assert_eq!(shown["landed"]["state"], "yes");
+    assert_eq!(shown["landed"]["evidence"]["tier"], "change-request");
+    assert_eq!(
+        shown["recover_command"],
+        serde_json::json!([]),
+        "a row whose change request merged carries no command: {shown}"
     );
 }
 
