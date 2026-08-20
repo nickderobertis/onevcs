@@ -62,10 +62,10 @@ fn row(rows: &[Value], branch: &str) -> Option<Value> {
         .cloned()
 }
 
-/// What GitHub does when somebody presses the button: one commit on the base
-/// carrying the branch's whole content, its subject ending in the change request's
-/// number, and no trace of the branch's own commits.
-fn squash_merged_on_the_host(hosted: &Hosted, branch: &str, subject: &str, number: usize) {
+/// The branch's whole content on the base in one commit, under whatever message the
+/// host wrote — and no trace of the branch's own commits, which is what makes a
+/// landing unreadable from ancestry afterwards.
+fn landed_on_the_host_saying(hosted: &Hosted, branch: &str, message: &str) {
     let elsewhere = hosted.world.clone_of(&hosted.origin, "the-host");
     hosted
         .world
@@ -73,13 +73,19 @@ fn squash_merged_on_the_host(hosted: &Hosted, branch: &str, subject: &str, numbe
     hosted
         .world
         .git(&elsewhere, &["merge", "-q", "--squash", "FETCH_HEAD"]);
-    hosted.world.git(
-        &elsewhere,
-        &["commit", "-q", "-m", &format!("{subject} (#{number})")],
-    );
+    hosted
+        .world
+        .git(&elsewhere, &["commit", "-q", "-m", message]);
     hosted
         .world
         .git(&elsewhere, &["push", "-q", "origin", "main"]);
+}
+
+/// What GitHub does when somebody presses the button: one commit on the base
+/// carrying the branch's whole content, its subject ending in the change request's
+/// number, and no trace of the branch's own commits.
+fn squash_merged_on_the_host(hosted: &Hosted, branch: &str, subject: &str, number: usize) {
+    landed_on_the_host_saying(hosted, branch, &format!("{subject} (#{number})"));
 }
 
 #[test]
@@ -665,4 +671,181 @@ fn a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_land
         .assert()
         .success()
         .stderr(predicate::str::contains("onevcs recoverable --all"));
+}
+
+#[test]
+fn a_change_request_a_merge_commit_names_is_read_off_the_bases_history() {
+    // The host does not always squash. A merge commit spells the number out in a
+    // sentence instead of trailing it in parentheses, and it is the same change
+    // request reaching the same base — so it is the same answer, from the same tier.
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted.change("feature/merged-by-sentence", "feat: add the thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    landed_on_the_host_saying(
+        &hosted,
+        "feature/merged-by-sentence",
+        "Merge pull request #1 from acme-corp/feature/merged-by-sentence\n\nfeat: add the thing",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+
+    let report = report(&hosted.world, "feature/merged-by-sentence");
+    assert_eq!(
+        report["publication"]["landed"]["state"], "yes",
+        "the base's history names this change request, in the sentence a merge \
+         commit spells it in: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"],
+        "change-request"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["change_url"],
+        "https://github.com/acme-corp/hosted/pull/1"
+    );
+    assert!(
+        row(&rows(&hosted.world, &[]), "feature/merged-by-sentence").is_none(),
+        "and it is not offered to be published a second time"
+    );
+}
+
+#[test]
+fn a_change_request_its_own_url_names_is_read_off_the_bases_history() {
+    // The third spelling, and the one nothing about GitHub's own wording produces:
+    // whatever landed the work quoted the change request itself. The number is
+    // nowhere in this message — neither trailing in parentheses nor in a merge
+    // commit's sentence — so only the URL can answer.
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted.change("feature/quoted-by-url", "feat: add the thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    landed_on_the_host_saying(
+        &hosted,
+        "feature/quoted-by-url",
+        "feat: add the thing\n\nLanded from https://github.com/acme-corp/hosted/pull/1",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+
+    let report = report(&hosted.world, "feature/quoted-by-url");
+    assert_eq!(
+        report["publication"]["landed"]["state"], "yes",
+        "the base's history quotes this change request's own URL: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"],
+        "change-request"
+    );
+    assert!(
+        row(&rows(&hosted.world, &[]), "feature/quoted-by-url").is_none(),
+        "and it is not offered to be published a second time"
+    );
+}
+
+#[test]
+fn a_landing_never_answers_for_work_the_branch_gained_after_it() {
+    // A branch does not stop when it lands. A session continuing a name that already
+    // means something commits onto the same branch, and the landing recorded for it
+    // landed what the branch carried *then* — so a report that read the record and
+    // stopped there would hide the work committed since, which is the one direction
+    // this must never fail in.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/landed-then-more"]);
+    fixture
+        .world
+        .commit_file(&worktree, "e.txt", "e\n", "feat: land the first half");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // …and then the name is picked up again and carries something the landing above
+    // never saw.
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "feature/landed-then-more"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "f.txt",
+        "f\n",
+        "feat: and then the second half",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    let report = report(&fixture.world, "feature/landed-then-more");
+    assert_ne!(
+        report["publication"]["landed"]["state"], "yes",
+        "a landing answers for the work it carried, and this branch has since gained \
+         work it did not: {report}"
+    );
+
+    // Which is the whole point: the row is in the report that says what is left to
+    // publish, and it carries the command that publishes it.
+    let shown = row(&rows(&fixture.world, &[]), "feature/landed-then-more")
+        .expect("a branch holding work no landing carried is work left to publish");
+    assert_eq!(
+        shown["recover_command"][1], "publish-branch",
+        "and the row is an instruction again: {shown}"
+    );
+    let listed = fixture
+        .world
+        .onevcs()
+        .arg("recoverable")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed = String::from_utf8_lossy(&listed).into_owned();
+    assert!(
+        listed.contains("feature/landed-then-more") && !listed.contains("Nothing to resume"),
+        "the branch is listed, and not as one whose work is already on the base: {listed}"
+    );
 }

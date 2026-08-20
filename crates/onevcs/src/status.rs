@@ -275,10 +275,7 @@ pub struct PublicationReport {
     /// Not a second answer beside [`state`](Self::state) — it is the answer `state`
     /// is derived from, so the two cannot disagree — but the fuller one: it carries
     /// the tier that decided it and the commit that is the evidence, and it has a
-    /// third value `state` had no room for. `unknown` is what a branch that landed
-    /// with no change request and not through this crate leaves behind, and
-    /// reporting that as "no" is what put a resume instruction under work the base
-    /// already carries.
+    /// third value `state` had no room for.
     pub landed: Landed,
     /// The change request, when one is recorded or open.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -513,17 +510,20 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         let verdict = landed::decide(&holder.path, &compared, &work.branch, &recorded, &trailers)?;
         judged.push((holder.path.clone(), compared, verdict));
     }
-    // Which copy answers, in the order the answers are worth having. A landing is
-    // about the *work*, so a copy that can show one answers for the branch wherever
-    // it is. Failing that it is the rule `branch::locate` takes — the copy that holds
-    // work the base does not, rather than one whose content is spent, since answering
-    // from a spent copy would report work that sits under the same name elsewhere as
-    // work nobody has. Failing both, the first that holds the name at all.
-    let carrier = judged
-        .iter()
-        .find(|(_, _, verdict)| verdict.is_landed())
-        .or_else(|| judged.iter().find(|(_, _, verdict)| *verdict == Landed::No))
-        .or_else(|| judged.first());
+    // Which copy answers, and it is the one a landing accounts for least. A branch
+    // does not stop when it lands — a session continuing a name that already means
+    // something commits onto the same branch — so where two copies disagree, the copy
+    // still holding work is the one whose answer is true of the *work*. Each tier
+    // already guards its own answer that way: a copy reads anything but `yes` exactly
+    // when it carries something no record covers. Ranking the three and taking the
+    // least certain is what carries that guard across copies, so a spent run clone's
+    // landing cannot answer for a checkout holding commits nobody published — the one
+    // direction this must never fail in. Ties go to the first holder.
+    let carrier = judged.iter().min_by_key(|(_, _, verdict)| match verdict {
+        Landed::No => 0,
+        Landed::Unknown => 1,
+        Landed::Yes { .. } => 2,
+    });
 
     let mut ahead = None;
     let mut branch_provenance = None;
