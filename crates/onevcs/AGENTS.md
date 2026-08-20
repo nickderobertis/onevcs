@@ -184,43 +184,35 @@ could not reach it, so what a report has withheld, what scope it answered under,
 and what a name already means are each stated rather than left to be inferred.
 
 - **A row is a command only when the branch is ready for it.** `recoverable` is read
-  to be trusted without checking, so it withholds rather than annotates. A branch a
-  live session still holds carries `held_by`, loses its `Resume:` line for one naming
-  the session and the `session close` that ends the hold, and says that nothing has
-  stopped. Live is asked two ways — the process that opened the session is still
-  running, or its run root's occupancy lease is held right now — because each is the
-  true one at a different time: no verb holds a lease across time, and a consumer
-  embedding the crate holds the process. A net-negative branch is marked instead of
-  withheld: stripping work may be exactly right, and this report does not decide. Both
-  are measured against the base the branch would be published into, so this report and
-  that publication cannot disagree about what it would land.
+  to be trusted without checking, so a branch a live session still holds withholds its
+  `Resume:` line rather than carrying a warning beside one. Live is asked two ways —
+  the process that opened the session is still running, or its run root's occupancy
+  lease is held right now — because each is the true one at a different time: no verb
+  holds a lease across time, and a consumer embedding the crate holds the process. A
+  net-negative branch is marked instead of withheld: stripping work may be exactly
+  right, and this report does not decide. Both are measured against the base the branch
+  would be published into, so this report and that publication cannot disagree about
+  what it would land.
 - **A scoped answer names its scope.** `recoverable` answers for one identity when it
   is run inside a registered checkout and for every identity when it is not, and nobody
   types which — the directory decides. Unsaid, a scoped answer reads as the whole
-  host's. Every rendering names it, `--json` included (on stderr, where a parser does
-  not meet it).
-- **A branch pin that names something is continued, never cut fresh over it.** A name
-  a repository of the identity carries *means* the work on it, and `worktree add -b`
-  over it produces an empty second branch of that name which cannot even be handed
-  back. So every repository the identity keeps branches in — the run clones included —
-  and origin's own copy are asked, the worktree opens at that branch's tip, and the
-  opening says `"continued": true`. A name nothing carries is cut from the base.
+  host's, so every rendering names it.
+- **A branch pin that names something is continued, never cut fresh over it.** A name a
+  repository of the identity carries *means* the work on it, and cutting a branch over
+  it produces an empty second branch of that name which cannot even be handed back. So
+  every repository the identity keeps branches in — the run clones included — and
+  origin's own copy are asked before a name is treated as new. Which copy is continued
+  is a comparison one has to win: one must carry the other or the session is refused,
+  because taking either otherwise opens on a tree that drops the commits of the one
+  passed over.
 - **…which makes `base` the integration target and not the starting point.** For a
-  continued branch it is only what the work is merged with and published into. The
-  merge is `publish::reconcile` at `session open`, the same one every landing syncs
-  with, and a conflict refuses the session rather than leaving one in a worktree nobody
-  asked to resolve — the branch is untouched, and the refusal names that copy and the
-  `publish-branch` that lands it as it stands. Naming the branch as its own base is
-  refused by name: it would publish the branch into itself.
-- **Which copy is continued is `branch::locate`'s comparison, plus origin's.** One has
-  to carry the other or the session is refused, in the session's own clone where both
-  commits can be reached; taking either would open on a tree that drops the commits of
-  the one passed over.
-- **…and a pin an *open* session already holds is that session, resumed** (`"reused":
-  true`): the same base — an unnamed one being the identity's root as it stands now —
-  the same execution checkout, and a run root that is there and free. Closed is not one
-  of them, because closing hands the branch back and means finished. Everything else
-  opens the ordinary way, which continues the branch rather than refusing it.
+  continued branch it is only what the work is merged with and published into, through
+  the same reconciliation every landing syncs with; a conflict refuses the session
+  rather than leaving one in a worktree nobody asked to resolve, and a branch named as
+  its own base is refused, because it would publish the branch into itself.
+- **…and a pin an *open* session already holds is that session, resumed** — the same
+  base, the same execution checkout, and a run root that is there and free. Closed is
+  not one of them, because closing hands the branch back and means finished.
 
 ## Tests are journeys, and the four unit tests say why they are not
 
@@ -364,13 +356,18 @@ script written beside them that answered to what they asked.
 ## The disk is a resource, and `sweep` is the only verb that frees it
 
 Every branch-keyed landing cuts a run root, and `sweep` is the only thing that
-removes one. Three rules about it are load-bearing.
+removes one. Four rules about it are load-bearing.
 
 - **Proof, never inference.** A workspace is removed only where this crate can show
   it is finished; every other answer — including one it cannot decide — retains,
   reports the reason, and terminates nothing. The state root is shared by several
   managers on one host, so a sweep that guessed would destroy another one's live
-  work, and a *partial* removal is a real outcome the report has to be able to say.
+  work.
+- **A question that could not be finished is not an answer.** Whether emptying a
+  workspace is this host's to do is asked by writing into every directory the removal
+  would have to empty and leaving each as it was found. A probe that stopped part way
+  proves nothing and retains — and it must never leave a directory looking freshly
+  written, because the age floor reads that clock on the next run.
 - **A landing holds its own run root's lease**, which is what there is to read.
   Take that away and a sweep running beside a publication reaps the worktree it is
   gating. It is the same lease `recoverable` reads to decide a branch is being
