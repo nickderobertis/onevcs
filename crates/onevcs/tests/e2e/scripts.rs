@@ -1570,6 +1570,15 @@ fn a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest() {
         .failed()
         .said("the mutated files could not be restored")
         .said("ACTION: run 'git checkout --");
+
+    // …and the lock still comes off. A restore that failed is the moment the next
+    // run is most needed — the tree is carrying a mutation somebody has to clear by
+    // hand — so a run that gave up at the restore and kept the lock would turn that
+    // run away over a run that is no longer there.
+    assert!(
+        !harness.root().join(".logs/red-green.lock").exists(),
+        "the lock is released even when the tree could not be put back"
+    );
 }
 
 #[test]

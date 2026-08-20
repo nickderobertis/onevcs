@@ -325,9 +325,30 @@ fi
 # only lets the refusal above name who is holding it.
 printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
 release_lock() {
-  rm -rf "$lock"
+  # A lock that outlives its run turns away every run after it, in the words of a
+  # collision with a run that is not there. So a removal that did not happen is the
+  # operator's to clear, and is said rather than assumed.
+  if ! rm -rf "$lock"; then
+    echo "red-green: $lock could not be removed" >&2
+    echo "ACTION: remove $lock by hand — until it is gone every run is turned away as if one were still in progress" >&2
+    return 1
+  fi
 }
-trap release_lock EXIT
+# One handler for every way out, carrying the run's status by hand, because `set -e`
+# ends a trap at its first failing command: a handler that simply listed a failing
+# `restore` ahead of `release_lock` would stop there and leave the lock held by
+# exactly the run that could not put the tree back — the run whose mess the next one
+# most needs to be let in to clean up.
+restore_armed=0
+on_exit() {
+  status=$?
+  if [ "$restore_armed" = 1 ]; then
+    restore || status=1
+  fi
+  release_lock || status=1
+  exit "$status"
+}
+trap on_exit EXIT
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "red-green: the working tree has uncommitted changes" >&2
@@ -421,10 +442,10 @@ restore() {
     return 1
   fi
 }
-# Both, because one `trap ... EXIT` replaces the other: the lock taken above is
-# still held, and a run that put the tree back but kept the lock would turn away
-# every run after it.
-trap 'restore; release_lock' EXIT
+# From here out the handler installed with the lock puts the tree back too: the
+# mutated paths are known and `restore` is defined, and a run that ends past this
+# point owes both — the tree as it was found, and the lock off it either way.
+restore_armed=1
 
 for patch in "${patches[@]}"; do
   name="$(basename "$patch" .patch)"
