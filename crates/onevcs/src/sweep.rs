@@ -597,10 +597,9 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
     // An `Err` rather than a line in the report: the report says what this sweep
     // *decided*, and a removal it had proved it could make and then could not is the
     // sweep failing to run.
-    // llmlint: ignore-block[changed_behavior_has_e2e] every shape an operator meets —
-    // a family this user may not write to, and content it may not unlink — is decided
-    // by the walk above and is a journey. What is left is the state root changing
-    // between the question and the act, which no interface this crate exposes reaches.
+    // llmlint: ignore-block[changed_behavior_has_e2e] the shapes an operator meets — a
+    // family this user may not write to, content it may not unlink — are decided above
+    // and are journeys; what is left is the root changing between question and act.
     if let Err(e) = std::fs::remove_dir_all(&run_root) {
         return Err(error::at("remove the reclaimable workspace at", &run_root)(
             e,
