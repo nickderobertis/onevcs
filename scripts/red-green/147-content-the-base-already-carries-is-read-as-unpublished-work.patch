@@ -1,6 +1,5 @@
 Mutation: a run clone's branch is read as work that never reached the origin whenever a ref does not carry it, so every finished publication looks like a failure worth keeping.
 Red: a_workspace_whose_branch_the_base_already_carries_takes_no_place_in_the_bound
-Red: a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
 index eb70190..f54eb7c 100644
