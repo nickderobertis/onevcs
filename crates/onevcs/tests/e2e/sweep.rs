@@ -1282,7 +1282,6 @@ fn gate_starting_a_daemon(body: &str) -> String {
     ))
 }
 
-/// The pid the gate's daemon wrote down, once it has written it.
 fn daemon_pid(fixture: &Fixture) -> i32 {
     let pidfile = fixture.world.path("daemon.pid");
     World::until("the gate's daemon has recorded its pid", || {
@@ -1373,6 +1372,93 @@ fn a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_g
     World::until("the daemon that ignored the first signal has gone", || {
         !still_running(pid)
     });
+}
+
+#[test]
+fn an_operator_sweeping_from_inside_a_workspace_is_not_stopped_by_their_own_sweep() {
+    // A process is named by its working directory being inside the run root, and a
+    // shell somebody left in one answers that description exactly. It is not a daemon
+    // and it is not this verb's to end, so the sweep is run *from* the workspace it
+    // reclaims and the shell that ran it has to come back.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/stood-in");
+    publish_branch(&fixture, "feature/stood-in");
+    let run_root = only_run_root(&publications(&fixture.world));
+    backdate(&run_root, 72);
+
+    let assert = fixture
+        .world
+        .shell(&format!(
+            "cd {worktree} && onevcs sweep && echo the-shell-came-back",
+            worktree = run_root.join("worktree").to_string_lossy(),
+        ))
+        .assert()
+        .success();
+    let printed = String::from_utf8(assert.get_output().stdout.clone()).expect("UTF-8");
+    assert!(
+        printed.contains("the-shell-came-back"),
+        "the shell the sweep was run from outlives it:\n{printed}"
+    );
+    assert!(
+        !run_root.exists(),
+        "and the workspace it was standing in was still reclaimed:\n{printed}"
+    );
+}
+
+#[test]
+fn a_workspace_whose_branch_the_base_already_carries_takes_no_place_in_the_bound() {
+    // Work that never reached the origin is not the same as a branch carrying commits
+    // no origin ref names. Publication squashes, so a branch of two commits lands as
+    // one it is not an ancestor of and keeps both of them for ever — and reading that
+    // as unpublished work would keep every finished workspace on the disk.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/two-commits"]);
+    for (file, subject) in [
+        ("a.txt", "feat: the first half"),
+        ("b.txt", "feat: the second"),
+    ] {
+        fixture.world.commit_file(&worktree, file, "one\n", subject);
+    }
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    publish_branch(&fixture, "feature/two-commits");
+
+    let run_root = only_run_root(&publications(&fixture.world));
+    assert_eq!(
+        fixture
+            .world
+            .git(
+                &run_root.join("clone"),
+                &[
+                    "rev-list",
+                    "--count",
+                    "feature/two-commits",
+                    "--not",
+                    "--remotes=origin",
+                ],
+            )
+            .trim(),
+        "2",
+        "the premise: what landed is a squash, so the branch keeps commits no origin \
+         ref names"
+    );
+    backdate(&run_root, 72);
+
+    let report = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "a workspace whose branch the base already carries is spent, whatever its own \
+         commits are:\n{report}"
+    );
+    assert_eq!(
+        fixture.origin_log().len(),
+        2,
+        "and what it landed is on the base"
+    );
 }
 
 #[test]
@@ -1496,7 +1582,6 @@ fn a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind() {
     );
 }
 
-/// Recover one interrupted branch, leaving the run root that recovery cut behind.
 fn recover_branch(fixture: &Fixture, branch: &str) {
     fixture
         .world
@@ -1546,6 +1631,104 @@ fn a_recovery_enforces_the_rule_over_its_own_family_and_not_the_publications() {
         !publication.exists(),
         "the publication family is reclaimed by the verb that fills it"
     );
+}
+
+#[test]
+fn a_landing_stops_the_daemon_the_landing_before_it_left_running() {
+    // The incident itself: a host publishing all day, each gate leaving a daemon
+    // behind, and nobody running a sweep. What reclaims the disk is the next landing,
+    // and reclaiming means the process too.
+    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 60"));
+    finished_branch(&fixture, "feature/one");
+    publish_branch(&fixture, "feature/one");
+    let earlier = only_run_root(&publications(&fixture.world));
+    let daemon = daemon_pid(&fixture);
+    assert!(
+        still_running(daemon),
+        "the premise: the gate left it running"
+    );
+    backdate(&earlier, 72);
+
+    finished_branch(&fixture, "feature/two");
+    publish_branch(&fixture, "feature/two");
+    assert!(
+        !earlier.exists(),
+        "the landing reclaimed the workspace before it"
+    );
+    World::until(
+        "the daemon the earlier landing left running has gone",
+        || !still_running(daemon),
+    );
+    // And the landing that did the reclaiming left its own daemon alone: what is
+    // stopped is what a *reclaimed* workspace was holding, never what is live.
+    assert!(
+        still_running(daemon_pid(&fixture)),
+        "this landing's own daemon is working in a workspace nothing has reclaimed"
+    );
+}
+
+#[test]
+fn a_landing_applies_the_same_bound_to_the_workspaces_holding_work_no_origin_has() {
+    // The bound is the rule's, not the verb's: a host that never runs `onevcs sweep`
+    // keeps the same failure history and no more of it.
+    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for branch in ["feature/a", "feature/b", "feature/c", "feature/d"] {
+        finished_branch(&fixture, branch);
+        fixture
+            .world
+            .onevcs()
+            .args([
+                "publish-branch",
+                branch,
+                "--repo",
+                &fixture.checkout.to_string_lossy(),
+            ])
+            .assert()
+            // 1 is the contract's code for a gate that rejected the change.
+            .code(1);
+        let cut: Vec<PathBuf> = run_roots(&publications(&fixture.world))
+            .into_iter()
+            .filter(|root| !roots.contains(root))
+            .collect();
+        let [root] = cut.as_slice() else {
+            panic!("one publication cuts one run root, not {cut:?}");
+        };
+        roots.push(root.clone());
+    }
+    for (index, root) in roots.iter().enumerate() {
+        backdate(root, 100 - index as u64 * 10);
+    }
+
+    // A fifth landing, which enforces the rule as it cuts its own workspace — before
+    // the gate this identity's rules turn every one of them down with, because the
+    // rule is about the workspaces already there and not about how this one ends.
+    finished_branch(&fixture, "feature/e");
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/e",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1);
+    let [oldest, older, newer, newest] = roots.as_slice() else {
+        panic!("four refused publications cut four run roots: {roots:?}");
+    };
+    assert!(
+        !oldest.exists(),
+        "the landing bounded the failure history it found"
+    );
+    for kept in [older, newer, newest] {
+        assert!(
+            kept.is_dir(),
+            "{} is one of the three newest workspaces holding unlanded work",
+            kept.display()
+        );
+    }
 }
 
 #[test]
@@ -1612,6 +1795,48 @@ fn a_landing_never_reclaims_a_workspace_somebody_holds_the_lease_on() {
         !occupied.exists(),
         "released, the workspace the lease was protecting is reclaimed like any other"
     );
+}
+
+#[test]
+fn a_landing_says_so_when_the_family_it_would_reclaim_cannot_be_listed() {
+    // The other way the pass does not happen: a family this user may write into and
+    // may not list. The landing has a directory to cut and nothing it can judge, and
+    // saying nothing would leave the disk filling with no word anywhere.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/before");
+    publish_branch(&fixture, "feature/before");
+    let family = publications(&fixture.world);
+    let readable = std::fs::metadata(&family)
+        .expect("the family")
+        .permissions();
+    std::fs::set_permissions(&family, std::fs::Permissions::from_mode(0o300))
+        .expect("a family this user may write into and may not list");
+
+    finished_branch(&fixture, "feature/after");
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/after",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+    let diagnosis = String::from_utf8(assert.get_output().stderr.clone()).expect("UTF-8");
+    std::fs::set_permissions(&family, readable).expect("the family is listable again");
+    assert!(
+        diagnosis.contains("could not be reclaimed before this landing")
+            && diagnosis.contains("cannot read this family of run roots"),
+        "the landing says which family it could not judge:\n{diagnosis}"
+    );
+    assert_eq!(
+        run_roots(&family).len(),
+        2,
+        "and both landings have their workspace"
+    );
+    assert_eq!(fixture.origin_log().len(), 3, "and both reached the base");
 }
 
 #[test]

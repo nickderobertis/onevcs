@@ -73,7 +73,6 @@ impl Holder {
 /// well-behaved one needs and what the sweep waits before deciding this one is not.
 const GRACE: Duration = Duration::from_secs(2);
 
-/// How often a signalled process is asked again whether it has gone.
 const POLL: Duration = Duration::from_millis(20);
 
 /// Every process this host can show is working inside `run_root`.
@@ -106,6 +105,12 @@ pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Holder> {
         // Asked again rather than assumed: a process that has already gone, or whose
         // pid has been taken over by something working elsewhere, is not this run
         // root's to signal.
+        // llmlint: ignore[changed_behavior_has_e2e] the *re*-ask before a signal is
+        // uncovered and unbuildable as a journey: it is about a process exiting inside
+        // the window between being found and being signalled, which nothing outside
+        // that process can time. The same question after each signal is what every
+        // daemon journey observes the process gone by, so what is untested here is the
+        // window and not the answer.
         left.retain(|holder| still_holding(holder, run_root));
         for holder in &left {
             signal_to(holder.pid, signal);
@@ -159,14 +164,13 @@ fn ancestry() -> Vec<u32> {
     chain
 }
 
-/// Every process id this host is running right now.
 #[cfg(target_os = "linux")]
 fn live_pids() -> Vec<u32> {
-    // llmlint: ignore[changed_behavior_has_e2e] uncovered: a Linux host whose `/proc`
-    // cannot be listed. Nothing this crate exposes makes one, and a journey for it
-    // would be a fixture standing in for the kernel. Answering "no processes" is the
-    // conservative answer everywhere in this reaping: it stops nothing, and a
-    // workspace whose holders could not be named is one the caller then keeps.
+    // llmlint: ignore[changed_behavior_has_e2e] uncovered, and unbuildable as a
+    // journey: a Linux host whose `/proc` cannot be listed is one no interface this
+    // crate exposes can make. What it answers is the same thing every host with no
+    // process listing at all answers — nothing is named, so nothing is stopped and
+    // the removal goes ahead, exactly as the module's note says of Windows.
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
@@ -176,13 +180,11 @@ fn live_pids() -> Vec<u32> {
         .collect()
 }
 
-/// Where one process is working, or `None` where this host will not say.
 #[cfg(target_os = "linux")]
 fn working_dir(pid: Pid) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{}/cwd", pid.0)).ok()
 }
 
-/// The process that started one, or `None` where this host will not say.
 #[cfg(target_os = "linux")]
 fn parent_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -309,13 +311,11 @@ fn parent_of(_pid: u32) -> Option<u32> {
     None
 }
 
-/// Ask a process to stop.
 #[cfg(unix)]
 fn terminate_signal() -> i32 {
     libc::SIGTERM
 }
 
-/// End one that did not.
 #[cfg(unix)]
 fn kill_signal() -> i32 {
     libc::SIGKILL
@@ -333,7 +333,6 @@ fn signal_to(pid: Pid, signal: i32) {
     }
 }
 
-/// Nothing is signalled where nothing could be found to signal.
 #[cfg(not(unix))]
 fn terminate_signal() -> i32 {
     0

@@ -175,10 +175,20 @@ pub fn enforce(verb: Verb) -> Result<()> {
         reclaimed: Vec::new(),
         retained: Vec::new(),
     };
-    family(&mut report, verb, min_age)
+    family(&mut report, verb, min_age)?;
+    // A family this pass could not read is a pass that did not happen, and the caller
+    // is told so: the verb has a report to say it in and this has only its answer, so
+    // silence here would be a landing leaving the disk to fill with nothing said.
+    match report.skipped.first() {
+        Some(skipped) => Err(error::invalid(format!(
+            "{}: {}",
+            skipped.path.display(),
+            skipped.reason
+        ))),
+        None => Ok(()),
+    }
 }
 
-/// Judge every run root under one verb's family, and act on each verdict.
 fn family(report: &mut Report, verb: Verb, min_age: Duration) -> Result<()> {
     let directory = report.root.join(verb.runs());
     let entries = match std::fs::read_dir(&directory) {
@@ -767,7 +777,6 @@ impl Kept {
     }
 }
 
-/// Branch names as the report lists them.
 fn describe_branches(branches: &[String]) -> String {
     branches
         .iter()
