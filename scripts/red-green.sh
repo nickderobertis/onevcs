@@ -304,9 +304,16 @@ added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)
 # the first has a mutation applied would otherwise be turned away for uncommitted
 # changes, which names the symptom of the collision instead of the collision.
 lock=".logs/red-green.lock"
-if ! mkdir -p .logs; then
-  echo "red-green: .logs cannot be created, so this run cannot take $lock" >&2
-  echo "ACTION: make the repository root writable by this user (.logs is gitignored and owner-only), then re-run" >&2
+# The lock lives beside the log, so the directory has to be there before it is taken
+# — but only the directory. The log itself is truncated further down, *after* the
+# lock, so a run turned away here does not blank the log of the run holding it.
+#
+# A `.logs` that cannot be created is reported in the words the log check below uses:
+# it is the same condition with the same remedy, and the operator is owed the
+# consequence they have to fix rather than which of the two met it first.
+if ! mkdir -p .logs 2>/dev/null; then
+  echo "red-green: .logs/red-green.log cannot be written" >&2
+  echo "ACTION: make .logs/ writable by this user (it is gitignored and owner-only), then re-run" >&2
   exit 1
 fi
 if ! mkdir "$lock" 2>/dev/null; then
