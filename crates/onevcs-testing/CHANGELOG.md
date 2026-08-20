@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.2.6...onevcs-testing-v0.2.7) - 2026-08-20
+
+### Added
+
+- *(session)* continue a pinned branch that already exists ([#57](https://github.com/nickderobertis/onevcs/pull/57))
+
 ## [0.2.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.2.0...onevcs-testing-v0.2.1) - 2026-08-16
 
 ### Added
