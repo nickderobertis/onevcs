@@ -2,10 +2,10 @@ Mutation: the harness reverts best-effort, so a tree left carrying a mutation sa
 Red: a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index c33cfee..12a8aec 100755
+index 760bf96..902f930 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -232,14 +232,7 @@ while IFS= read -r line; do touched+=("$line"); done < <(sort -u <<<"$paths" | g
+@@ -406,14 +406,7 @@ while IFS= read -r line; do touched+=("$line"); done < <(sort -u <<<"$paths" | g
  # Loud rather than best-effort: a run that cannot put the tree back has left a
  # mutation in it, which is the one failure here that outlives the run.
  restore() {
@@ -19,5 +19,5 @@ index c33cfee..12a8aec 100755
 -  fi
 +  git checkout -- ${touched[@]+"${touched[@]}"} 2>/dev/null || true
  }
- trap restore EXIT
- 
+ # Both, because one `trap ... EXIT` replaces the other: the lock taken above is
+ # still held, and a run that put the tree back but kept the lock would turn away

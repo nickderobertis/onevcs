@@ -2,10 +2,10 @@ Mutation: the harness stops checking that the base it was given can be read.
 Red: a_base_the_run_cannot_read_is_refused_where_it_is_named
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index c33cfee..8648782 100755
+index 760bf96..05bd1bc 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -144,19 +144,10 @@ fi
+@@ -274,19 +274,10 @@ fi
  # What this branch adds, read before any round runs: a `--base` nobody can resolve
  # is an argument to fix, and meeting that after minutes of rounds is meeting it too
  # late.
@@ -25,4 +25,4 @@ index c33cfee..8648782 100755
 +diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*' ':(exclude)*/fixture/*' 2>/dev/null || true)"
  added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)"
  
- if [ -n "$(git status --porcelain)" ]; then
+ # One run at a time under one checkout. A round applies a mutation, runs a test,
