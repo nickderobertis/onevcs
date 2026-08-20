@@ -2,7 +2,7 @@ Mutation: --dry-run stops being a rehearsal: the run that was asked to report wh
 Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 1beb2ad..b01b426 100644
+index b5bb42b..3b93635 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -385,13 +385,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
@@ -10,7 +10,7 @@ index 1beb2ad..b01b426 100644
  fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
      let bytes = size_of(&run_root);
 -    if report.dry_run {
--        report.reclaimed.push(Reclaim {
+-        report.reclaimed.push(Reclaimed {
 -            path: run_root,
 -            bytes,
 -        });

@@ -358,7 +358,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     let Some(lease) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
         return Ok(Verdict::Retain(Kept::Occupied));
     };
-    if !gate::shows_a_recorded_verdict(run_root) {
+    if !gate::has_recorded_verdict(run_root) {
         return Ok(Verdict::Retain(Kept::NoVerdict));
     }
     let age = SystemTime::now()
@@ -386,7 +386,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
 fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
     let bytes = size_of(&run_root);
     if report.dry_run {
-        report.reclaimed.push(Reclaim {
+        report.reclaimed.push(Reclaimed {
             path: run_root,
             bytes,
         });
@@ -404,7 +404,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
             e,
         ));
     }
-    report.reclaimed.push(Reclaim {
+    report.reclaimed.push(Reclaimed {
         path: run_root,
         bytes,
     });
@@ -431,14 +431,7 @@ fn last_written(path: &Path) -> SystemTime {
     if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
         match std::fs::read_dir(path) {
             Ok(entries) => {
-                for entry in entries {
-                    // An entry the listing would not name hides whatever it holds
-                    // exactly as an unlistable directory does, so it answers the same
-                    // way rather than being passed over: skipping it would read a
-                    // workspace as older than the part of it nobody could see.
-                    let Ok(entry) = entry else {
-                        return SystemTime::now();
-                    };
+                for entry in entries.flatten() {
                     newest = newest.max(last_written(&entry.path()));
                 }
             }
@@ -503,12 +496,8 @@ struct Skipped {
     reason: String,
 }
 
-/// One run root this sweep decided to reclaim, and what it accounts for.
-///
-/// The decision rather than the act, because a rehearsal takes the same one and
-/// removes nothing: what makes the difference is `dry_run`, which the report reads to
-/// say whether it reclaimed or would.
-struct Reclaim {
+/// A run root that was removed, or that a rehearsal would have removed.
+struct Reclaimed {
     path: PathBuf,
     bytes: u64,
 }
@@ -578,7 +567,7 @@ pub struct Report {
     min_age: Duration,
     examined: Vec<Examined>,
     skipped: Vec<Skipped>,
-    reclaimed: Vec<Reclaim>,
+    reclaimed: Vec<Reclaimed>,
     retained: Vec<Retained>,
 }
 

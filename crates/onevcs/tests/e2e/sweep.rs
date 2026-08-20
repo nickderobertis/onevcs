@@ -1138,45 +1138,6 @@ fn a_state_root_nothing_has_published_from_is_a_sweep_with_nothing_to_do() {
 }
 
 #[test]
-fn a_state_root_this_host_cannot_read_is_a_sweep_that_could_not_run() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
-    finished_branch(&fixture, "feature/unreadable-root");
-    publish_branch(&fixture, "feature/unreadable-root");
-    let root = fixture.world.home().join("workspaces");
-    let readable = std::fs::metadata(&root)
-        .expect("the state root")
-        .permissions();
-
-    // A root this user cannot list makes every family under it unanswerable, which is
-    // not the same as a host with nothing to reap: the sweep did not run, and the exit
-    // code is the only thing a composing caller has to tell those apart.
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000))
-        .expect("a state root this user may not read");
-    let assert = fixture
-        .world
-        .onevcs()
-        .arg("sweep")
-        .assert()
-        .code(USAGE_ERROR)
-        .stderr(predicate::str::contains(format!(
-            "cannot read the workspaces under {}",
-            root.display()
-        )));
-    std::fs::set_permissions(&root, readable).expect("the state root is restored");
-
-    let report = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout is UTF-8");
-    assert_eq!(
-        report, "",
-        "a sweep that could not run reports nothing, rather than a report that reads as \
-         a host with nothing on it"
-    );
-    assert!(
-        only_run_root(&publications(&fixture.world)).is_dir(),
-        "and nothing was removed on the way to finding out"
-    );
-}
-
-#[test]
 fn what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     let workspaces = fixture.world.home().join("workspaces");

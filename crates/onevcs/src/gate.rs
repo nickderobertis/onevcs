@@ -192,19 +192,19 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
     )("ten thousand attempts is not a branch's history"))
 }
 
-/// Whether anything under one run root shows that a gate recorded a verdict.
+/// Whether a gate has recorded any verdict at all under one run root.
 ///
 /// The proof that a landing got as far as being judged, which is half of what makes
 /// its run root reclaimable. A preserved log is written for a verdict either way —
-/// the gate that passed and the gate that rejected — so nothing shown here is either
-/// a gate that never reached one or a directory this process cannot read, and a run
-/// root that cannot show it was judged is retained rather than reaped.
+/// the gate that passed and the gate that rejected — so its absence means no gate
+/// this crate runs ever reached one there, and a run root that cannot show it was
+/// judged is retained rather than reaped.
 ///
 /// What counts is a **regular file** at the path [`preserve_log`] writes one to, and
 /// nothing about its contents: that path is written by that function alone, and a
 /// gate whose output was empty said as much as one that printed a page. A directory
 /// wearing the name would otherwise answer for a verdict nobody reached.
-pub fn shows_a_recorded_verdict(run_root: &Path) -> bool {
+pub fn has_recorded_verdict(run_root: &Path) -> bool {
     let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
         return false;
     };

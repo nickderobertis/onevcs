@@ -6,7 +6,7 @@ Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index 1beb2ad..dae007d 100644
+index b5bb42b..f4b0907 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
 @@ -399,11 +399,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
@@ -19,6 +19,6 @@ index 1beb2ad..dae007d 100644
 -        ));
 -    }
 +
-     report.reclaimed.push(Reclaim {
+     report.reclaimed.push(Reclaimed {
          path: run_root,
          bytes,
