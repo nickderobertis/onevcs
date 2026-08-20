@@ -21,7 +21,7 @@
 //! family it does not reach into rather than reaping it.
 
 use std::fmt;
-use std::fs::{File, FileTimes, Metadata};
+use std::fs::{File, FileTimes};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -224,29 +224,26 @@ fn names_a_run(run_root: &Path) -> bool {
     hex(counter) && hex(nanos) && hex(pid) && parts.next().is_some_and(|slug| !slug.is_empty())
 }
 
-/// Whether this host could remove a run root outright — the family it sits in, and
-/// every directory under it that a removal would have to empty.
+/// Whether every directory a removal of this run root would have to empty — the
+/// family it sits in included — answered that this user may write into it.
 ///
-/// Asked *before* anything is removed, and that is the whole point.
-/// `remove_dir_all` works inwards: it deletes what it can reach and fails at the
-/// first thing it cannot, so a sweep that found out by trying would have destroyed
-/// another manager's work in order to learn it was not its to destroy. The incident
-/// that motivated this verb left root-owned build output inside otherwise ordinary
-/// workspaces, which is exactly that shape. Asked in full, the removal below has
-/// nothing left to discover, and every outcome this verb reports is a decision it
-/// took rather than an operation that failed.
+/// That is what the removal needs, and not the whole of what it takes: a sticky
+/// directory hands each unlink back to the entry's owner, and nothing here asks who
+/// owns what. So the name claims the permission and not the removal, and a directory
+/// that refused — or that could not be asked without being left changed — is
+/// unproven, which retains like every other unknown in this module.
 ///
-/// A rehearsal asks it too: it leaves nothing behind, and a `--dry-run` that skipped
-/// it would report a decision the real run would not take.
-///
-/// It is the *last* question `judge` asks, so this walk is only ever paid for a
-/// workspace already proven dead by the four cheaper ones.
-fn can_remove(run_root: &Path) -> bool {
-    run_root.parent().is_some_and(can_write_into) && can_empty(run_root)
+/// Asked *before* anything is removed. `remove_dir_all` works inwards: it deletes
+/// what it can reach and fails at the first thing it cannot, so a sweep that found
+/// out by trying would have destroyed another manager's work in order to learn it was
+/// not its to destroy. A rehearsal asks it too: it leaves nothing behind, and a
+/// `--dry-run` that skipped it would report a decision the real run would not take.
+fn writable_throughout(run_root: &Path) -> bool {
+    run_root.parent().is_some_and(can_write_into) && writable_within(run_root)
 }
 
-/// Whether every directory under `path` is one this user could unlink an entry from.
-fn can_empty(path: &Path) -> bool {
+/// Whether `path` and every directory under it answered the same.
+fn writable_within(path: &Path) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
@@ -261,43 +258,63 @@ fn can_empty(path: &Path) -> bool {
         return false;
     };
     entries
-        .map(|entry| entry.map(|entry| can_empty(&entry.path())))
+        .map(|entry| entry.map(|entry| writable_within(&entry.path())))
         .all(|answer| answer.unwrap_or(false))
 }
 
-/// Ask one directory whether this user may add an entry to it.
+/// Ask one directory whether this user may add an entry to it, and leave it as it
+/// was found.
 ///
 /// By doing it, because the permission bits do not answer on their own: what decides
 /// is the effective user, its groups, and whatever the filesystem enforces over both
-/// — which is the question the removal itself asks. What is created is removed
-/// again, and the directory's timestamps are put back, because creating an entry
-/// moves the modified time and this verb's own age floor reads that on the next run:
-/// a probe that left it moved would retain, for a day, every workspace it had just
-/// decided was too old to keep.
+/// — which is the question the removal itself asks.
+///
+/// A probe that stopped part way answers `false`: it has shown nothing about the
+/// directory, and what it did before stopping may have left a mark on one. Creating
+/// an entry moves the modified time and this verb's own age floor reads that on the
+/// next run, so a probe that left it moved would retain, for a day, every workspace
+/// it had just decided was too old to keep.
 fn can_write_into(directory: &Path) -> bool {
-    let Ok(before) = std::fs::metadata(directory) else {
-        return false;
-    };
-    let probe = directory.join(format!(".sweep-probe-{}", ids::unique()));
-    if std::fs::create_dir(&probe).is_err() {
-        return false;
-    }
-    let _ = std::fs::remove_dir(&probe);
-    restore_times(directory, &before);
-    true
+    probe(directory).is_ok()
 }
 
-fn restore_times(directory: &Path, before: &Metadata) {
-    let (Ok(accessed), Ok(modified)) = (before.accessed(), before.modified()) else {
-        return;
-    };
-    if let Ok(handle) = File::open(directory) {
-        let _ = handle.set_times(
-            FileTimes::new()
-                .set_accessed(accessed)
-                .set_modified(modified),
-        );
-    }
+/// Hold the directory open, add an entry to it, take that away again, and put the
+/// clock back — every step part of the answer rather than an attempt beside it.
+///
+/// The handle comes first, before anything is written, so nothing is ever created in
+/// a directory whose timestamps this could not then restore.
+fn probe(directory: &Path) -> std::io::Result<()> {
+    let handle = open_dir(directory)?;
+    let before = handle.metadata()?;
+    let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
+    std::fs::create_dir(&entry)?;
+    std::fs::remove_dir(&entry)?;
+    handle.set_times(
+        FileTimes::new()
+            .set_accessed(before.accessed()?)
+            .set_modified(before.modified()?),
+    )
+}
+
+/// A directory, open as the handle whose timestamps can be set.
+#[cfg(not(windows))]
+fn open_dir(directory: &Path) -> std::io::Result<File> {
+    File::open(directory)
+}
+
+/// `CreateFileW` hands back a directory only to a caller that asks for the backup
+/// semantics one takes, and refuses every other open outright — so without this the
+/// probe would report every directory on that host as one it could not ask about.
+#[cfg(windows)]
+fn open_dir(directory: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// `FILE_FLAG_BACKUP_SEMANTICS`, which the `windows-sys` features this crate
+    /// takes do not carry.
+    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    File::options()
+        .read(true)
+        .custom_flags(BACKUP_SEMANTICS)
+        .open(directory)
 }
 
 /// Why a directory under the workspaces root is none of this verb's business.
@@ -357,9 +374,9 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     }
     // Last, because it is the only question whose answer is about this *host* rather
     // than about the workspace: everything above has already decided the directory is
-    // dead, and this decides whether reaping it is ours to do.
-    if !can_remove(run_root) {
-        return Ok(Verdict::Retain(Kept::NotOurs));
+    // dead, and this asks whether emptying it can be shown to be ours to do.
+    if !writable_throughout(run_root) {
+        return Ok(Verdict::Retain(Kept::Unproven));
     }
     Ok(Verdict::Reclaim(lease))
 }
@@ -377,16 +394,13 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
         });
         return Ok(());
     }
-    // A failure here is one `can_remove` has already ruled out: it asked every
-    // directory this removal would touch, so the two shapes an operator meets — a
-    // family this user may not write to, and content under a workspace it may not
-    // unlink — are both decided above and are journeys. What is left is the state
-    // root changing between the question and the act, or a file the kernel refuses
-    // for a reason of its own. Which is why it is an `Err` rather than a line in the
-    // report: the report says what this sweep *decided*, and a removal it had proved
-    // it could make and then could not is the sweep failing to run — the one thing a
-    // non-zero code means here.
-    // llmlint: ignore[changed_behavior_has_e2e] no interface this crate exposes reaches it; the note above says what a fixture for it would be standing in for.
+    // An `Err` rather than a line in the report: the report says what this sweep
+    // *decided*, and a removal it had proved it could make and then could not is the
+    // sweep failing to run.
+    // llmlint: ignore[changed_behavior_has_e2e] every shape an operator meets — a
+    // family this user may not write to, and content it may not unlink — is decided
+    // by the walk above and is a journey. What is left is the state root changing
+    // between the question and the act, which no interface this crate exposes reaches.
     if let Err(e) = std::fs::remove_dir_all(&run_root) {
         return Err(error::at("remove the reclaimable workspace at", &run_root)(
             e,
@@ -505,16 +519,16 @@ const OCCUPIED: &str =
 const NO_VERDICT: &str =
     "its gate has recorded no verdict under {}, so nothing here can say the publication finished";
 
-/// Why a run root this host could not remove outright is not this host's.
-const NOT_OURS: &str = "something it holds, or the directory it sits in, is not one this user may write to — so removing it belongs to whoever can, and nothing under it was touched";
+/// Why a run root nothing here could show this host may empty was kept.
+const UNPROVEN: &str = "something it holds, or the directory it sits in, did not answer that this user may write into it — so removing it belongs to whoever can, and nothing under it was touched";
 
 /// Why one run root was kept.
 ///
 /// A type rather than a sentence, because two of these are not the same kind of
 /// answer: every variant but the last is this verb *deciding* to keep a directory,
-/// and the last is it failing to remove one it had already decided was dead. A
-/// caller has to be able to tell those apart, so nothing downstream reads it back
-/// out of prose.
+/// and the last is one it had already decided was dead and could not show it may
+/// empty. A caller has to be able to tell those apart, so nothing downstream reads it
+/// back out of prose.
 enum Kept {
     /// Nothing here can show this crate cut it.
     OwnerUnproven(&'static str),
@@ -524,8 +538,8 @@ enum Kept {
     NoVerdict,
     /// It was written inside the age floor.
     Fresh { age: Duration, floor: Duration },
-    /// It is dead, and reaping it is not something this host can do.
-    NotOurs,
+    /// It is dead, and nothing here could show this host may empty it.
+    Unproven,
 }
 
 impl Kept {
@@ -540,7 +554,7 @@ impl Kept {
                 describe_duration(*age),
                 describe_duration(*floor),
             ),
-            Kept::NotOurs => format!("this host cannot remove it: {NOT_OURS}"),
+            Kept::Unproven => format!("this host cannot show it may remove it: {UNPROVEN}"),
         }
     }
 }

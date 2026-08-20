@@ -531,9 +531,9 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
     );
     assert_eq!(
         retained_reason(&report, &run_root),
-        "this host cannot remove it: something it holds, or the directory it sits in, is not \
-         one this user may write to — so removing it belongs to whoever can, and nothing \
-         under it was touched",
+        "this host cannot show it may remove it: something it holds, or the directory it \
+         sits in, did not answer that this user may write into it — so removing it belongs \
+         to whoever can, and nothing under it was touched",
     );
     assert!(
         report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
@@ -581,7 +581,7 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
         "a workspace holding something this user may not unlink is not reaped:\n{inside}"
     );
     assert!(
-        retained_reason(&inside, &run_root).starts_with("this host cannot remove it: "),
+        retained_reason(&inside, &run_root).starts_with("this host cannot show it may remove it: "),
         "and it is the same answer, for the same reason:\n{inside}"
     );
     assert!(
@@ -595,7 +595,7 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
     let again = swept(&fixture, &[]);
     std::fs::set_permissions(&theirs, closed).expect("the built directory is restored");
     assert!(
-        retained_reason(&again, &run_root).starts_with("this host cannot remove it: "),
+        retained_reason(&again, &run_root).starts_with("this host cannot show it may remove it: "),
         "asking again gives the same answer, not one about the clock:\n{again}"
     );
     assert_eq!(
@@ -605,6 +605,64 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
     assert!(
         inside.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
         "and nothing is counted as reclaimed:\n{inside}"
+    );
+}
+
+#[test]
+fn a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking() {
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    finished_branch(&fixture, "feature/asked-about");
+    publish_branch(&fixture, "feature/asked-about");
+    let run_root = only_run_root(&publications(&fixture.world));
+    let spool = run_root.join("worktree/spool");
+    std::fs::create_dir_all(&spool).expect("a directory the gate left");
+    backdate(&run_root, 72);
+
+    // Whether emptying a workspace is this host's to do is asked by writing into every
+    // directory under it, and putting the clock back afterwards needs that directory
+    // open. One this user may write into and may not list is therefore the shape that
+    // separates a question asked and undone from one asked and left behind — and it is
+    // an ordinary thing to meet on a state root several managers share.
+    let listable = std::fs::metadata(&spool)
+        .expect("the directory the gate left")
+        .permissions();
+    std::fs::set_permissions(&spool, std::fs::Permissions::from_mode(0o333))
+        .expect("a directory this user may write into and may not list");
+    assert!(
+        std::fs::read_dir(&spool).is_err(),
+        "the premise: this user cannot list the directory. Run the suite as an ordinary \
+         user rather than as root"
+    );
+
+    // The operator's "reclaim what you can, now": the age floor is out of the way, so
+    // the only question left about this workspace is whether emptying it is ours.
+    let asked = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(
+        run_root.is_dir(),
+        "a workspace holding a directory that could not be asked is kept:\n{asked}"
+    );
+    assert_eq!(
+        retained_reason(&asked, &run_root),
+        "this host cannot show it may remove it: something it holds, or the directory it \
+         sits in, did not answer that this user may write into it — so removing it belongs \
+         to whoever can, and nothing under it was touched",
+        "and it is kept for the question that could not be finished:\n{asked}"
+    );
+
+    // The operator opens the directory the sweep could not ask about, and the next
+    // ordinary sweep meets a workspace that is three days old and answerable. Had the
+    // asking written into that directory, its clock would now say this sweep was the
+    // last thing to touch the workspace — and the age floor would keep it for another
+    // day, for a reason that is not the true one.
+    std::fs::set_permissions(&spool, listable).expect("the directory is restored");
+    let after = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "a workspace is as old as the work in it, not as old as the last sweep:\n{after}"
+    );
+    assert!(
+        after.starts_with("onevcs sweep: reclaimed 1 workspace(s), "),
+        "and it is reclaimed on its own age:\n{after}"
     );
 }
 
