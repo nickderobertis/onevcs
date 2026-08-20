@@ -1,0 +1,16 @@
+Mutation: the writability probe shrugs at an entry it could not take away again, so a directory it left something in answers that emptying it is this host's to do.
+Red: a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index dd6dc13..4a56677 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -311,7 +311,7 @@ fn probe(directory: &Path) -> std::io::Result<()> {
+     filetime::set_file_times(directory, accessed, modified)?;
+     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
+     std::fs::create_dir(&entry)?;
+-    std::fs::remove_dir(&entry)?;
++    let _ = std::fs::remove_dir(&entry);
+     filetime::set_file_times(directory, accessed, modified)
+ }
+ 

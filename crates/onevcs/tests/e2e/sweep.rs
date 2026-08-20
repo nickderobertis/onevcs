@@ -965,8 +965,8 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
     finished_branch(&fixture, "feature/probe-stays");
     publish_branch(&fixture, "feature/probe-stays");
-    let run_root = only_run_root(&publications(&fixture.world));
     let family = publications(&fixture.world);
+    let run_root = only_run_root(&family);
     backdate(&run_root, 72);
 
     // Everything about this workspace is finished and old, so the only question left
@@ -989,6 +989,12 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
     assert!(
         retained_reason(&report, &run_root).starts_with("this host cannot show it may remove it: "),
         "and the workspace is kept for the question that could not be finished:\n{report}"
+    );
+    assert!(
+        probes_left_in(&run_root).is_empty()
+            && probes_left_in(&run_root.join("worktree")).is_empty(),
+        "and the asking stopped at the directory it could not finish asking about, so \
+         nothing under the workspace was written into either:\n{report}"
     );
     assert!(
         report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),

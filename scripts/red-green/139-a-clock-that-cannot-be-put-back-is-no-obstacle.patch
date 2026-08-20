@@ -1,0 +1,22 @@
+Mutation: the writability probe stops treating a clock it cannot put back as an answer, so it writes into a directory it cannot leave as it found and reports what it wrote in as removable.
+Red: a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index dd6dc13..8b7b10a 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -308,11 +308,12 @@ fn probe(directory: &Path) -> std::io::Result<()> {
+         FileTime::from_last_access_time(&before),
+         FileTime::from_last_modification_time(&before),
+     );
+-    filetime::set_file_times(directory, accessed, modified)?;
++    let _ = filetime::set_file_times(directory, accessed, modified);
+     let entry = directory.join(format!(".sweep-probe-{}", ids::unique()));
+     std::fs::create_dir(&entry)?;
+     std::fs::remove_dir(&entry)?;
+-    filetime::set_file_times(directory, accessed, modified)
++    let _ = filetime::set_file_times(directory, accessed, modified);
++    Ok(())
+ }
+ 
+ /// Why a directory under the workspaces root is none of this verb's business.
