@@ -1473,13 +1473,19 @@ impl Report {
             "  state: {}\n",
             spell_landing(self.publication.state)
         ));
+        // Two lines rather than one, and the first is the line it always was: a
+        // reader of this report is looking for the word, and the tier that decided it
+        // is the sentence beside it rather than a qualifier bolted onto the answer.
         out.push_str(&format!(
-            "  landed: {}, by {}\n",
+            "  landed: {}\n",
             match &self.publication.landed {
                 Landed::Yes { .. } => "yes",
                 Landed::No => "no",
                 Landed::Unknown => "unknown",
             },
+        ));
+        out.push_str(&format!(
+            "  decided by: {}\n",
             match &self.publication.landed {
                 Landed::Yes { evidence } => format!(
                     "{tier} ({commit})",
