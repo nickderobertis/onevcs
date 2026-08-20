@@ -367,7 +367,7 @@ publishes all day. A pass that could not run is a warning on stderr and never a
 refused landing: what it reclaims is the *previous* runs' leftovers, and losing a
 publication to those is the failure the rule exists to prevent.
 
-Five rules govern how it decides.
+Six rules govern how it decides.
 
 - **Proof, never inference.** A workspace is removed only where this crate can show
   it is finished. Every other answer retains and reports why.
@@ -382,22 +382,19 @@ Five rules govern how it decides.
   signalled.
 - **The evidence outlives the failure by the age floor**, which is 24 hours where
   nobody says otherwise. Preserved gate logs live under the run root — which outlives
-  the worktree the gate ran in — so reclamation is the only thing that takes them,
-  and a run root written inside the floor is kept whichever way the rule is asked. A
-  clone still holding work no origin has is kept past the floor as well, bounded by
-  `workspace::RETAINED_DEAD_RUNS` itself — one bound on one question, asked of the
-  lifecycle clones there and of the landings' workspaces here. What "no origin has" means is `vcs::collect`'s own two
-  questions — commits no `origin` ref carries, *and* content the base does not
-  already carry — because publication squashes, so ancestry alone would call every
-  finished workspace unpublished work and content alone would call a branch spent
-  whose commits change nothing.
+  the worktree the gate ran in — so reclamation is the only thing that takes them.
+  Work no origin has keeps its workspace past the floor as well, bounded by
+  `workspace::RETAINED_DEAD_RUNS` itself: one bound on one question, asked of the
+  lifecycle clones there and of the landings' workspaces here.
+- **What "no origin has" means is `vcs::collect`'s question and not a second one**,
+  so the report that offers work for recovery and the rule that keeps its workspace
+  cannot come to disagree. Publication squashes, which is why neither half of it can
+  be dropped.
 - **Reclaiming a workspace stops what it left running** (`processes.rs`), because
   unlinking files a live process holds open frees none of their blocks — a gate is
   the repository's own verification, and verifications start daemons that outlive it.
-  A process is named by its *working directory* being inside the run root, never by a
-  name or a command line; it is asked with `SIGTERM` and ended with `SIGKILL`; and
-  this process and its ancestors are never signalled, nor is any pid a signal cannot
-  name one process by — `processes::Pid` is where that stops being representable. A
+  Nothing live is signalled, and neither is this process or anything it descends
+  from: an operator who ran a sweep from inside a workspace is not a daemon. A
   workspace whose holders would not stop is kept and reported rather than
   half-emptied.
 

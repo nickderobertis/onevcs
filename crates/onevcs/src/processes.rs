@@ -23,6 +23,13 @@
 //! holds a directory. It does not need one to be safe — a removal there fails while a
 //! process holds the tree, which the sweep reports as the failure it is — and this
 //! crate's own journeys run on Unix, where both answers below are real.
+//!
+// llmlint: ignore[changed_behavior_has_e2e] the Linux answers and the macOS ones below
+// are covered by the same journeys and not by different ones: none of the daemon
+// journeys in `tests/e2e/sweep.rs` is gated by platform, and CI's `cross` job runs that
+// whole offline suite on macOS. A journey written *for* this file's macOS half would be
+// the same journey a second time, and there is no third platform these answers are
+// reachable from — Windows runs neither, which the note above is about.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -47,6 +54,19 @@ impl fmt::Display for Pid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "pid {}", self.0)
     }
+}
+
+/// What this crate asks a process to do, which is the whole of what it ever asks.
+///
+/// Two, and no way to spell a third: what a reclamation may do to a process it did
+/// not start is ask it to stop and then end it, and a number at that boundary is a
+/// signal this crate has no business sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    /// Put your state down and go.
+    Terminate,
+    /// You did not.
+    Kill,
 }
 
 /// One process working inside a run root.
@@ -101,7 +121,7 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
 /// directory.
 pub fn stop(holders: &[Holder], run_root: &Path) -> Vec<Holder> {
     let mut left: Vec<Holder> = holders.to_vec();
-    for signal in [terminate_signal(), kill_signal()] {
+    for signal in [Signal::Terminate, Signal::Kill] {
         // Asked again rather than assumed: a process that has already gone, or whose
         // pid has been taken over by something working elsewhere, is not this run
         // root's to signal.
@@ -199,20 +219,30 @@ fn parent_of(pid: u32) -> Option<u32> {
         .ok()
 }
 
+/// Every process id this host is running right now.
+///
+/// The answer's *length* is deliberately not taken from what the call returns.
+/// `proc_listallpids` reports a figure both readings of which are in circulation —
+/// a count of pids, and the bytes those pids fill — and the two differ by four, so
+/// taking the wrong one either misses three processes in four or reads past what was
+/// filled. Neither is a question this crate needs to settle: the buffer is sized from
+/// the larger reading, is zeroed before the call, and is read to its end. A slot the
+/// kernel did not fill holds `0`, which is not a pid any signal may name and which
+/// [`Pid`] refuses.
 #[cfg(target_os = "macos")]
 fn live_pids() -> Vec<u32> {
     use std::ffi::c_int;
 
     // SAFETY: a null buffer with a zero size is how this call is asked for the size
     // it would fill, and it borrows nothing.
-    let bytes = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-    let Ok(bytes) = usize::try_from(bytes) else {
+    let needed = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(needed) = usize::try_from(needed) else {
         return Vec::new();
     };
-    // Room for the processes started between the two calls: what does not fit is
-    // silently left out by the kernel, and a pid left out is one this crate does not
-    // stop.
-    let room = bytes / std::mem::size_of::<c_int>() + 64;
+    // One slot per pid under the larger reading, and sixty-four more for the
+    // processes started between the two calls: what does not fit is silently left out
+    // by the kernel, and a pid left out is one this crate does not stop.
+    let room = needed + 64;
     let mut buffer = vec![0 as c_int; room];
     let Ok(size) = c_int::try_from(room * std::mem::size_of::<c_int>()) else {
         return Vec::new();
@@ -220,12 +250,11 @@ fn live_pids() -> Vec<u32> {
     // SAFETY: `buffer` is writable for exactly `size` bytes and outlives the call,
     // which borrows it for its duration alone.
     let filled = unsafe { libc::proc_listallpids(buffer.as_mut_ptr().cast(), size) };
-    let Ok(filled) = usize::try_from(filled) else {
+    if filled <= 0 {
         return Vec::new();
-    };
+    }
     buffer
         .into_iter()
-        .take(filled / std::mem::size_of::<c_int>())
         .filter_map(|pid| u32::try_from(pid).ok())
         .collect()
 }
@@ -311,19 +340,13 @@ fn parent_of(_pid: u32) -> Option<u32> {
     None
 }
 
-#[cfg(unix)]
-fn terminate_signal() -> i32 {
-    libc::SIGTERM
-}
-
-#[cfg(unix)]
-fn kill_signal() -> i32 {
-    libc::SIGKILL
-}
-
 /// Signal one process, and only ever one — which is what [`Pid`] guarantees.
 #[cfg(unix)]
-fn signal_to(pid: Pid, signal: i32) {
+fn signal_to(pid: Pid, signal: Signal) {
+    let signal = match signal {
+        Signal::Terminate => libc::SIGTERM,
+        Signal::Kill => libc::SIGKILL,
+    };
     // SAFETY: `kill` with a pid above `1` signals that one process and borrows
     // nothing. A refusal — a process this user may not signal, or one that has
     // already gone — is answered by the caller asking again whether it still holds
@@ -334,14 +357,4 @@ fn signal_to(pid: Pid, signal: i32) {
 }
 
 #[cfg(not(unix))]
-fn terminate_signal() -> i32 {
-    0
-}
-
-#[cfg(not(unix))]
-fn kill_signal() -> i32 {
-    0
-}
-
-#[cfg(not(unix))]
-fn signal_to(_pid: Pid, _signal: i32) {}
+fn signal_to(_pid: Pid, _signal: Signal) {}
