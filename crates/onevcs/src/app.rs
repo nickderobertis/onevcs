@@ -12,7 +12,7 @@ use crate::cli::{
     ArtifactCommand, Command, EventsArgs, ImportArgs, IntegrateArgs, PublishArgs,
     PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReposArgs, ResolveArgs,
     RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StatusArgs, SyncArgs,
+    SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
@@ -24,7 +24,7 @@ use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::{
     git, guidance, import, integrate, lock, policy, provenance, publish, publish_branch, recover,
-    status, stream, workspace,
+    status, stream, sweep, workspace,
 };
 
 /// Run one parsed command, returning its exit code.
@@ -62,6 +62,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::Import(args) => import_branch(args),
         Command::Integrate(args) => integrate_branches(args),
         Command::Sync(args) => sync(args),
+        Command::Sweep(args) => sweep_workspaces(args),
         Command::Events(args) => events(args, providers),
         Command::Artifact { command } => match command {
             ArtifactCommand::Cat(args) => artifact(&args.id),
@@ -477,16 +478,63 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             Provenance::IncompleteStep => "incomplete step (provenance marker)",
             Provenance::Complete => "complete",
         };
-        println!("{}  [{}]  {kind}", row.branch.branch, row.identity);
+        // On the header line as well as in a line of their own below, because the
+        // header is what somebody reads before deciding whether to read the rest.
+        let mut marks: Vec<String> = Vec::new();
+        if row.held_by.is_some() {
+            marks.push("held by a live session".to_owned());
+        }
+        if let Some(net) = row.net_negative {
+            marks.push(format!(
+                "net-negative: {added} added, {removed} removed",
+                added = net.added(),
+                removed = net.removed(),
+            ));
+        }
+        let marked = match marks.is_empty() {
+            true => String::new(),
+            false => format!("  — {}", marks.join("; ")),
+        };
+        println!("{}  [{}]  {kind}{marked}", row.branch.branch, row.identity);
         println!("    Found in: {}", row.checkout.display());
         println!("    Stopped because: {}", row.stopped_because);
-        // Quoted, because this line is read to be pasted: the argv is the answer,
+        if let Some(net) = row.net_negative {
+            println!(
+                "    Net-negative: it removes {removed} line(s) and adds {added} since it forked \
+                 from {base}, so landing it unread would strip work. Read it first with \
+                 `{diff}`",
+                removed = net.removed(),
+                added = net.added(),
+                base = row.branch.base,
+                diff = guidance::command([
+                    "git",
+                    "-C",
+                    &row.checkout.to_string_lossy(),
+                    "diff",
+                    "--stat",
+                    &format!("{}...{}", row.branch.base, row.branch.branch),
+                ]),
+            );
+        }
+        // Quoted, because these lines are read to be pasted: the argv is the answer,
         // and a checkout whose path a shell would split turns it into a command
         // that names a different repository.
-        println!(
-            "    Resume: {}",
-            guidance::command(row.recover_command.iter().map(String::as_str))
-        );
+        let command = guidance::command(row.recover_command.iter().map(String::as_str));
+        match &row.held_by {
+            // Deliberately not spelled `Resume:` — the one label on this report that
+            // is read as "paste this" belongs to a row whose work has stopped, and
+            // this row's has not.
+            Some(held) => println!(
+                "    Not ready: session {token} still holds this branch and {because}, so \
+                 running `{command}` now would publish a branch mid-flight. Its worktree is \
+                  {worktree}; wait for it, or close it with `{close}`, and then run that command",
+                token = held.token.0,
+                because = held.holding.because(),
+                worktree = held.worktree.display(),
+                close = guidance::command(["onevcs", "session", "close", &held.token.0]),
+            ),
+            None => println!("    Resume: {command}"),
+        }
     }
     // After the rows as well as before them: a scoped answer long enough to scroll
     // is exactly the one whose header has gone by unread.
@@ -578,6 +626,18 @@ fn sync(args: &SyncArgs) -> Result<u8> {
     git::fetch(checkout, "origin")?;
     git::merge_ff_only(checkout, &format!("origin/{branch}"))?;
     println!("{branch} fast-forwarded to origin/{branch}");
+    Ok(0)
+}
+
+/// Reap the publication workspaces this host has finished with.
+///
+/// `0` means the sweep ran and did what it decided to do; non-zero means it could
+/// not run — an unusable `--min-age-hours`, or a state root it cannot read. Every
+/// outcome it reports is a decision, so a directory somebody else owns is an expected
+/// outcome of a shared state root rather than a failure, and a status code that fell
+/// over on one would say nothing a composing caller could act on.
+fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
+    println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
     Ok(0)
 }
 

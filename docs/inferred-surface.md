@@ -17,12 +17,12 @@ quietly in passing.
 | `Identity` | `origin`, `workflow`, `repo_type`, `gate` | The contract says the registry is "v5 = ai-orchestrator's v4 identities/checkouts + rules reference", so the identity record is v4's, field for field. The identity *key* is not a field: it is the normalized origin, which is the map key in the document. |
 | `Checkout` | `path`, `identity` | v4's checkout record. |
 | `Registry` | `version`, `identities`, `checkouts`, `rules` | v4's document plus the rules reference the contract adds. `rules` is optional: absent means the built-in default policy. |
-| `SessionRequest` | `repo`, `branch`, `base`, `execution_checkout` | Exactly the operands and options `onevcs session open` takes. |
+| `SessionRequest` | `repo`, `branch`, `base`, `execution_checkout` | Exactly the operands and options `onevcs session open` takes. What each of `branch` and `base` *means* is inferred too, and is open question 12 below. |
 | `SessionToken` | newtype over `String` | Opaque by design; the CLI takes and prints it as text. |
 | `Provenance` | `complete` / `incomplete-step` | The contract's ported invariant, "dirty adoption -> incomplete-step commit", gives the two cases, and `commit-preserved` carries "provenance kind". |
 | `PreservedBranch` | `branch`, `base`, `provenance`, `change_url`, `change_base` | The last two are named explicitly as the host-neutral stack metadata; the first three are what `preserve` must return to be usable. |
 | `Scope` | `all` / `repo(String)` | `recoverable` is documented both across every registered identity and for one repository (`onevcs recover BRANCH --repo PATH`). |
-| `Recoverable` | `identity`, `branch`, `checkout`, `stopped_because`, `recover_command` | What a "recoverable" view has to answer: where the work is, why its workstream stopped, and the exact command that lands it. |
+| `Recoverable` | `identity`, `branch`, `checkout`, `stopped_because`, `recover_command`, `held_by`, `net_negative` | What a "recoverable" view has to answer: where the work is, why its workstream stopped, and the exact command that lands it. The last two are what make "the exact command" true of the branch as well as of the argv, and are recorded below. |
 | `ChangeSpec` | `head`, `base`, `title`, `body` | `open_change` must say what to open from, into what, and under what title — `--title` is a `publish` option. `body` is optional so the host's own template applies when nothing is supplied. |
 | `MergeOutcome` | `merged(Sha)` / `queued` / `open` | The three ways `publish` exits 0, plus the `merge-queued` / `merge-completed` events. |
 | `Check.status` / `Check.conclusion` | `String` / `Option<String>` | See the open question below. |
@@ -158,6 +158,24 @@ already printed — so what this record holds is why the surface is drawn where 
 | `SessionHolder` | `token`, `identity`, `branch`, `worktree`, `owner_pid`, `state`, `liveness` | Field for field what `--json` printed, so the two surfaces cannot diverge and a consumer can parse the command's output into the type. `token` is a `SessionToken` rather than the `String` the private type carried: it is the value the rest of the surface takes, and its `transparent` serialization leaves the JSON identical. |
 | `Liveness` | `live` / `stale` | Reported rather than derived. A caller holding `owner_pid` cannot answer it — pids are reused, so a later process wearing a dead session's number reads as its owner — and the creation identity that settles it is on the private record. `as_str` is public with it so a caller renders the words the command does rather than inventing a second spelling. |
 | `session_holders(repo)` | `&str` in, `Vec<SessionHolder>` out | The command's operand and its output. It takes no `Providers`: the holders are the records under this host's state root, so there is nothing here for a supplied implementation to answer. |
+
+**A row that offers a command has to say when the command must not be run.** The
+inferred shape above was a row and a verb, and for two releases that was read as "this
+is ready to land" — so `recoverable` offered a paste-ready `publish-branch` for a branch
+a live session was still committing to (four more commits followed the row), and for two
+branches that would have stripped hundreds of lines. Neither is a wrong *row*: the work
+is real and the verb is right. What was missing is the part of the answer that says
+whether to run it now, so two optional fields carry it, and both are omitted when they
+say nothing — a consumer that predates them reads the document it always read.
+
+| Item | Shape | Why |
+| --- | --- | --- |
+| `Recoverable.held_by` | `Option<HeldBy>` | Present is the whole answer: the work has not stopped. Excluding the row instead would hide live work from the one report that lists work nobody has, which is the failure this report exists for. |
+| `HeldBy` | `token`, `worktree`, `holding` | The token because acting on it means waiting for that session or closing it by name, and the worktree because that is where the work is being made. |
+| `Holding` | `owner-running` / `run-root-occupied` | Reported rather than derived, and two values because the two are true at different times: a consumer holding a `Session` keeps the process that opened it (which is `Liveness::Live`), while the CLI takes an occupancy lease per command and outlives none of them, so what says a command is in there *now* is the lease. `because` is public with it so a caller renders the crate's own clause rather than inventing a second one. |
+| `Recoverable.net_negative` | `Option<NetNegative>` | Marked, never excluded: a branch that deletes far more than it adds may be exactly right, and this report is not the thing that decides. Present only when it is net-negative, so absence is the other answer rather than a number a consumer has to compare. |
+| `NetNegative` | a `LineChange` that removes more than it adds | The mark and its evidence are one value, so a row cannot carry a count saying the opposite of the field it is in, and the rule lives in one place rather than at the site that measures a branch and at every consumer reading one back. It serializes as the `LineChange` it holds, so `--json` carries the two counts either way, and a document naming a count that is not net-negative is refused where it is read. |
+| `LineChange` | `added`, `removed` | Counted from the commit the branch forked from, because that is what the branch did; against a base that has moved on, every line the base gained would read as a line the branch removed and never touched. |
 
 **Reading a session's events takes a filter, and the grammar was approved rather
 than inferred.** The matcher fields, what conjoins, and which of `include` and
@@ -315,6 +333,85 @@ could be *read* rather than anything about the work.
 | ref writes only | no checkout, no working tree | It fetches into a scratch ref, judges there, and points the destination's ref at it. A name the destination has checked out is refused rather than written: moving that ref leaves git holding a tree that describes a commit the branch no longer names. |
 | the non-fast-forward refusal | names the commits that would be lost | A branch in a registered checkout is the durable record of whatever wrote it, and this verb is reached by somebody who wants a *second* copy reachable. `--as` is the way through, and it is only the right way through once an operator can see what the name they asked for already holds. |
 
+## One more: the disk this tool fills, and the verb that empties it
+
+The same gap again, one layer down. Every branch-keyed landing cuts a run root
+under the state root — `workspaces/publications/<slug>-<unique>` for
+`publish-branch` and `workspaces/recoveries/<slug>-<unique>` for `recover`, each
+holding a clone, a worktree, and the gate's preserved logs — and **nothing has
+ever removed one**. Measured on the host that motivated this: thirty-one
+directories, forty-nine gigabytes, none of them ever reaped, because no verb this
+tool has knew the directory existed. A full disk took that host down twice during
+one three-day run and stopped the operator issuing any command at all.
+
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] the half of this
+surface the repository can reach is gated: `sweep::DEFAULT_MIN_AGE_HOURS` is the crate's
+one source for the default, `cli.rs` takes the parser's from it, and the contract suite
+holds it to the sentence below. The other half is a value in a repository this one does
+not depend on and cannot build, so a check here would either vendor a copy of it — the
+second source the rule exists to prevent — or reach the network from an offline gate.
+Recording the shared surface is what lets the composing caller reconcile it, and is why
+neither side may amend it alone. -->
+
+```
+onevcs sweep [--dry-run] [--min-age-hours HOURS]
+```
+
+The flag surface is **shared with `oneagentgraph sweep`**, spelling for spelling
+and default for default, because one composing caller (`ai-orchestrator`'s
+`just sweep-scratch`) forwards its own arguments to both unchanged. Neither side
+may depart from it alone.
+
+**Why the verb is here rather than in a general-purpose sweeper.** What makes a
+publication workspace reclaimable is `onevcs` state: its gate has recorded a
+verdict under it, and no live session holds its occupancy lease. Both are facts
+this crate can read, and neither is one a caller should be asked to supply — a
+caller-supplied liveness proof that is wrong deletes a publication worktree
+somebody is still gating, and it is a seam no other crate could honestly test.
+`lock::try_exclusive` over `workspace::occupancy_identity` answers the second, and
+it is the same evidence `recoverable` uses to decide a branch is not being written
+to; `branch::prepare` takes that lease for the whole of a landing so there is
+something to read.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| `sweep` with no operand | the two families this crate cuts run roots under, and nothing else | It is asked about this tool's own disk, and a path operand would make it a general-purpose remover pointed at whatever a caller typed. `branch::Verb::ALL` is the list, so the verbs that make the directories and the verb that reaps them cannot come to disagree about where they are. |
+| `--dry-run` | reports the same decisions and removes nothing | What a caller wants from a rehearsal is what the real run would decide, so the two runs differ in the removal alone. |
+| `--min-age-hours HOURS` | a window, defaulting to 24 hours | Parsed into a `Duration` at the boundary, so nothing past the parser can be handed hours that are negative, infinite, or not a number. |
+| the exit code | `0` whenever the sweep *ran* | A run root it could not prove dead, or could not remove, is a line in the report. A caller that got a non-zero code for a directory somebody else is inside could not tell that from a sweep that never happened. |
+| the report | every family examined, every family it did not examine and why, what it reclaimed, and every retained directory with its reason | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. |
+
+**Retain rather than remove whenever the answer is not proven, and never kill.**
+The state root is shared by several managers on one host. A run root whose owner
+cannot be proven — one holding no run clone this crate would have cut — is
+retained and reported; a run root a live session holds is retained, reported, and
+never terminated. During the incident, 41 GB in a sibling orchestrator's root had
+to be left untouched for exactly that reason, and a sweep that guessed would have
+destroyed another manager's live work.
+
+**One boundary is deliberately outside it.** `workspaces/<identity>/runs` is the
+per-run lifecycle clone root, which `workspace::reclaim` keeps as a bounded
+recovery history so a dead run's branch stays reachable. This verb reports it as a
+family it does not reach into rather than reaping it. **`recoveries` is inside**,
+and that was a decision rather than an oversight: it is the same directory shape
+cut by the same function under the same two proofs, and leaving it out would mean
+one of two families filling a disk that the other no longer does.
+
+The age floor's default is `24` hours, and that number is the half of the shared
+surface a caller never types — so it is the half that can drift without anybody
+noticing. `the_sweep_age_floor_defaults_to_the_number_the_record_states` in
+`tests/contract.rs` reads it back out of this sentence and holds clap's own default
+to it, which means moving the number here or in the parser alone fails the gate.
+What this repository cannot check is the *other* side of the shared surface: that
+`oneagentgraph sweep` still spells the same option and answers to the same default.
+That reconciliation belongs to the caller that composes the two, and is why neither
+side may amend the surface alone.
+
+The verb adds no public library item: `sweep` is a private module, and what the
+CLI gains is the verb and its two options.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] the shared-surface
+record ends here. -->
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.
@@ -430,3 +527,32 @@ question was:
    unchanged. Nothing else moved — no body is composed when none is given, and the
    provenance trailers stay on the commit — so confirming this means one amendment
    striking that sentence, not a new shape to approve.
+12. **A pinned branch that already exists is continued, and `base` is the branch a
+   session publishes into rather than the one it is cut from.** The contract spells
+   `onevcs session open REPO [--branch B] [--base B]` and leaves what a pin means to
+   inference. It was read as "cut this name from that base", and a pin naming a
+   branch that already carried work was refused — so the only way a caller could
+   express "continue this work" was to pass the branch as its own base. That session
+   then published the branch into itself: `nothing to publish: the base already
+   carries this branch's content`, whatever it had committed. It stranded four
+   workstreams across three runs on one host, each recovered by hand. So a `--branch`
+   naming a branch a checkout of the identity or origin already carries now opens the
+   worktree at that branch's tip, `--base` is what the work is merged with and
+   published into, and `--branch` equal to `--base` is refused by name. A `--branch`
+   naming nothing is unchanged. The three shapes a caller can have written are
+   therefore: a pin naming nothing, which behaves exactly as before; a pin naming an
+   existing branch, which was a refusal and is now a continuation; and `base ==
+   branch`, which was the workaround and is now a refusal naming the spelling that
+   replaced it. Confirming this means an amendment saying what the two options mean,
+   not a new shape to approve — no public item changed.
+13. **`Recoverable` gained two fields, and the contract lays out none of its
+   fields.** `held_by` and `net_negative` extend the inferred shape recorded in the
+   first table rather than any approved text, and they are what make the row's
+   `recover_command` honest: a report whose value is that its output can be trusted
+   without checking offered a command that would have published a branch a live
+   agent was still writing to. Both are optional and omitted when empty, so nothing
+   that reads the old document reads a different one — but a field added to a
+   published struct is a constructor break for anyone building a `Recoverable` by
+   hand (`onevcs-testing` does, and moved in the same change). Confirming it means
+   one amendment naming the two fields and the four types they carry, not a new
+   answer to approve.

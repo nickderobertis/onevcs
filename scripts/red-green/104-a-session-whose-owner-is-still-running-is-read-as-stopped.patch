@@ -1,0 +1,16 @@
+Mutation: a session whose own process is still running stops counting as holding its branch, so a consumer embedding the crate is offered its own live work.
+Red: a_branch_the_calling_process_still_holds_is_reported_as_held_rather_than_ready
+
+diff --git a/crates/onevcs/src/vcs.rs b/crates/onevcs/src/vcs.rs
+index c657126..2cb67be 100644
+--- a/crates/onevcs/src/vcs.rs
++++ b/crates/onevcs/src/vcs.rs
+@@ -414,7 +414,7 @@ fn held_by(sessions: &[workspace::Record], identity: &str, branch: &str) -> Resu
+             continue;
+         }
+         let holding = match record.liveness() {
+-            Liveness::Live => Some(Holding::OwnerRunning),
++            Liveness::Live => None,
+             Liveness::Stale => {
+                 lock::is_occupied(&record.lease())?.then_some(Holding::RunRootOccupied)
+             }

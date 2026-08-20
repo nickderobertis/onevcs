@@ -26,9 +26,9 @@
 // journey in this suite uses.
 
 use onevcs::{
-    CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub, Identity,
-    MergePolicy, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Session,
-    SessionRequest, SessionToken, Source, Vcs,
+    CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub, Holding,
+    Identity, MergePolicy, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope,
+    Session, SessionRequest, SessionToken, Source, Vcs,
 };
 use onevcs_testing::{MemoryHost, MemoryVcs, VcsState};
 
@@ -1358,4 +1358,61 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
         .read()
         .expect_err("a line that is not an envelope is refused, filter or no filter");
     assert!(refused.to_string().contains("line 1"), "{refused}");
+}
+
+#[test]
+fn a_branch_the_calling_process_still_holds_is_reported_as_held_rather_than_ready() {
+    // The shape of the incident this answers: the manager that reads `recoverable` is a
+    // consumer embedding this crate, and the node still writing to the branch is a
+    // process that opened a session and has not let it go. Nothing has stopped, so the
+    // command that lands preserved work must not be offered for it — and this is the
+    // half of that question no journey driving the CLI can hold, because a session a
+    // command opened is a session whose process has already exited.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let session = open(&Git, "feature/in-flight");
+    world.commit_file(
+        &session.worktree,
+        "work.txt",
+        "work\n",
+        "feat: what the node has written so far",
+    );
+
+    let rows = Git.recoverable(Scope::All).expect("the report answers");
+    let row = rows
+        .iter()
+        .find(|row| row.branch.branch == "feature/in-flight")
+        .unwrap_or_else(|| panic!("the branch is in the report: {rows:#?}"));
+    let held = row
+        .held_by
+        .as_ref()
+        .unwrap_or_else(|| panic!("a live session's hold is reported: {row:#?}"));
+    assert_eq!(held.token, session.token);
+    assert_eq!(held.worktree, session.worktree);
+    assert_eq!(held.holding, Holding::OwnerRunning);
+    assert!(
+        row.stopped_because.contains("nothing has stopped"),
+        "the row says the work has not stopped: {row:#?}"
+    );
+
+    // Closing the session is the statement that it is finished — and only then is the
+    // row one an operator may act on.
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+    let rows = Git
+        .recoverable(Scope::All)
+        .expect("the report answers again");
+    let row = rows
+        .iter()
+        .find(|row| row.branch.branch == "feature/in-flight")
+        .unwrap_or_else(|| panic!("the branch is still in the report: {rows:#?}"));
+    assert!(
+        row.held_by.is_none(),
+        "a closed session holds nothing: {row:#?}"
+    );
+    assert!(
+        row.recover_command
+            .starts_with(&["onevcs".to_owned(), "publish-branch".to_owned()]),
+        "…and the row offers the verb its provenance earns: {row:#?}"
+    );
 }

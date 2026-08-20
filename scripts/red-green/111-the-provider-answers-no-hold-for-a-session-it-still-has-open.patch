@@ -1,0 +1,20 @@
+Mutation: the provider stops answering which of its own open sessions holds a preserved branch, so a consumer's suite is offered work its session is still in.
+Red: preserved_work_is_what_recoverable_reports
+
+diff --git a/crates/onevcs-testing/src/repository.rs b/crates/onevcs-testing/src/repository.rs
+index 44d1579..999b5e2 100644
+--- a/crates/onevcs-testing/src/repository.rs
++++ b/crates/onevcs-testing/src/repository.rs
+@@ -447,11 +447,7 @@ fn held(state: &VcsState, row: Recoverable) -> Recoverable {
+     if row.held_by.is_some() {
+         return row;
+     }
+-    let holder = state.sessions.iter().find(|session| {
+-        session.branch == row.branch.branch
+-            && state.session_identities.get(&session.token) == Some(&row.identity)
+-            && !state.closed_sessions.contains(&session.token)
+-    });
++    let holder = None::<&onevcs::Session>;
+     Recoverable {
+         held_by: holder.map(|session| HeldBy {
+             token: session.token.clone(),

@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 117. Tests observed red and then green: 149.
+Patches: 157. Tests observed red and then green: 182.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -83,11 +83,144 @@ an argument a shell would split is printed as it is.
 
 - RED `a_repository_path_that_is_not_text_is_refused_as_the_argument_it_is` — Unexpected stderr, failed var.contains(is not valid UTF-8)
 
+### `100-a-copy-is-taken-rather-than-compared`
+
+the copies of a continued branch stop being compared — a checkout's is taken whatever origin holds.
+
+- RED `a_continued_branch_opens_at_whichever_copy_carries_the_other` — the session opens at origin's copy, which carries this checkout's
+- RED `copies_of_a_continued_branch_that_diverged_are_refused_rather_than_one_being_chosen` — Unexpected return code, failed var == 2
+
+### `101-a-branch-may-be-its-own-base-again`
+
+a session may name its own branch as its base again, and publish it into itself.
+
+- RED `a_session_whose_base_is_its_own_branch_is_refused_naming_the_spelling_that_replaced_it` — Unexpected return code, failed var == 2
+
+### `102-a-continued-session-conflict-names-no-way-out`
+
+the refusal a continued branch's conflict gives names neither the copy it is in nor the command that lands it.
+
+- RED `a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it` — Unexpected stderr, failed var.contains(<tmp>/project)
+
+### `103-a-run-root-somebody-is-working-in-is-read-as-abandoned`
+
+the occupancy lease on a session's run root stops being consulted, so a command working in there reads as nobody.
+
+- RED `a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land` — assertion `left == right` failed: [
+
+### `104-a-session-whose-owner-is-still-running-is-read-as-stopped`
+
+a session whose own process is still running stops counting as holding its branch, so a consumer embedding the crate is offered its own live work.
+
+- RED `a_branch_the_calling_process_still_holds_is_reported_as_held_rather_than_ready` — a live session's hold is reported: Recoverable {
+
+### `105-a-held-branch-is-offered-to-be-resumed-anyway`
+
+the row of a branch a live session holds is printed as ready to resume, with the same paste-ready command as every other row.
+
+- RED `a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land` — a branch a live session holds is not offered to be resumed:
+
+### `106-a-branch-that-strips-more-than-it-adds-is-reported-as-any-other`
+
+a preserved branch's lines stop being weighed, so one that removes far more than it adds is reported exactly as a healthy one.
+
+- RED `a_branch_that_removes_more_than_it_adds_is_marked_in_both_renderings` — assertion `left == right` failed: the lines it would land, counted from where it forked: [
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — assertion `left == right` failed: the count is of the lines git counted: [
+
+### `107-a-diverged-pair-is-refused-without-saying-how-the-copies-differ`
+
+the refusal a diverged pair produces stops saying how the two copies differ and stops printing the diff between them.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — the refusal says how the two differ:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the refusal says how the two copies differ:
+
+### `108-a-file-with-no-line-count-is-read-as-a-number`
+
+a file git compares as binary stops being left out of the line count, so its `-` is read as a number and the whole report fails on it.
+
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — Unexpected failure.
+
+### `109-the-net-negative-boundary-takes-a-branch-that-is-even`
+
+the net-negative boundary stops being strict, so a branch that adds exactly as much as it removes is a mark this type will hold.
+
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — feature/one-for-one is not net-negative: [
+- RED `the_reported_shapes_serialize_the_way_a_json_consumer_reads_them` — (5, 5) added and removed is not a net-negative change
+
 ### `10-the-subject-is-checked-after-the-attestation`
 
 recover stops asking whether a subject exists before it writes to the branch.
 
 - RED `a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long` — Unexpected failure.
+
+### `110-a-branch-that-shares-no-history-is-measured-against-the-base-anyway`
+
+a branch sharing no history with the base stops being left unmeasured, so it is compared with the base's tip and reads as removing everything the base has.
+
+- RED `what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked` — feature/unrelated is not net-negative: [
+
+### `111-the-provider-answers-no-hold-for-a-session-it-still-has-open`
+
+the provider stops answering which of its own open sessions holds a preserved branch, so a consumer's suite is offered work its session is still in.
+
+- RED `preserved_work_is_what_recoverable_reports` — an open session still holds its branch: Recoverable {
+
+### `112-a-hold-naming-a-session-nobody-opened-is-taken-on-trust`
+
+a seeded row held by a session nobody opened stops being refused, so a provider answers a hold out of a session that never existed.
+
+- RED `a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_name` — preserved work held by a session that was never opened describes a run nothing could have made
+
+### `113-a-copys-parent-is-left-out-of-the-refusal`
+
+the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpiJyviV-project-ebaf7596b3b9/runs/<token>/clone stands on its own parent 8903d5e3263c1e8844b98b
+
+### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
+
+the refusal stops naming when each copy was committed, so nothing says which of the two was taken second.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — …and names when it was committed:
+
+### `115-the-two-copies-facts-are-crossed`
+
+each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
+
+- RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpCuMerX-project-52516511ea2e/runs/<token>/clone stands on its own parent 6a1df9f2c36dc56bc3c9bb
+
+### `116-a-branch-only-origin-carries-is-not-looked-for`
+
+the copy origin holds stops being one of the copies a pin is continued from, so a branch no checkout here has ever seen is cut fresh over it.
+
+- RED `a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh` — the branch only origin carries is continued at the commit origin has
+- RED `a_continued_branch_opens_at_whichever_copy_carries_the_other` — the session opens at origin's copy, which carries this checkout's
+
+### `117-a-continued-session-says-it-cut-the-branch-fresh`
+
+the opening of a continued session stops saying so, so a follower reading the stream cannot tell a session that found the work from one that started over.
+
+- RED `a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh` — assertion `left == right` failed
+- RED `a_continued_branch_opens_at_whichever_copy_carries_the_other` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("<time>"), "stream": String("<token>"), "seq": Number(2), "source": 
+
+### `118-a-proven-dead-workspace-is-never-removed`
+
+a sweep reports what it reclaimed and removes none of it, which is the state before this verb: the directories are named and every one of them is still there.
+
+- RED `a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed` — a publication that was gated and is nobody's is reclaimed:
+- RED `a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication` — a recovery cuts the same shape of run root and is reaped by the same verb:
+- RED `a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other` — a verdict is a verdict whichever way it went:
+- RED `a_dry_run_reports_what_it_would_reclaim_and_removes_nothing` — the real run reclaims what the rehearsal named:
+- RED `the_age_floor_bounds_what_a_sweep_considers` — a floor of nought considers what was written moments ago:
+
+### `119-occupancy-is-asked-in-the-mode-that-cannot-answer-it`
+
+the sweep asks for a run root's lease in the shared mode every occupant already holds it in, so a directory somebody is publishing in answers that nobody is.
+
+- RED `a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated` — assertion `left == right` failed
 
 ### `11-an-explicit-title-is-dropped`
 
@@ -97,11 +230,127 @@ the branch-keyed verbs stop carrying --title into the publication.
 - RED `a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change` — Unexpected failure.
 - RED `a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long` — Unexpected failure.
 
+### `120-a-landing-leases-something-other-than-its-run-root`
+
+a landing's occupancy lease names something other than the run root it works in, so nothing it holds says a publication is being made there.
+
+- RED `a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated` — assertion `left == right` failed
+
+### `121-a-gate-that-recorded-nothing-is-read-as-a-verdict`
+
+a run root nothing ever judged answers that its gate reached a verdict, so an unfinished publication is read as a finished one.
+
+- RED `a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason` — a workspace nothing judged is not one this verb can prove is finished:
+
+### `122-a-directory-nobody-can-vouch-for-is-taken-on-trust`
+
+the sweep stops asking whether a directory under its families is one this crate cut, so somebody else's workspace is judged as if it were onevcs's own.
+
+- RED `a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason` — assertion `left == right` failed
+
+### `123-a-rehearsal-removes-what-it-only-reports`
+
+--dry-run stops being a rehearsal: the run that was asked to report what it would do does it.
+
+- RED `a_dry_run_reports_what_it_would_reclaim_and_removes_nothing` — a rehearsal removes nothing:
+
+### `124-the-age-floor-is-never-consulted`
+
+the age floor stops bounding what a sweep considers, so a workspace written moments ago is reaped by a sweep that was told to leave a day's work alone.
+
+- RED `the_age_floor_bounds_what_a_sweep_considers` — the default floor retains it:
+
+### `125-the-lifecycle-clone-root-is-reached-into`
+
+the sweep reaches into the per-run lifecycle clone root, which is the bounded recovery history that keeps a dead run's branch reachable.
+
+- RED `the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into` — the report names the family it did not examine, and why:
+
+### `126-an-age-floor-no-window-can-hold-is-accepted`
+
+--min-age-hours takes a value no window can hold and answers with one anyway, so a floor nobody typed decides what is reaped.
+
+- RED `an_age_floor_no_window_can_hold_is_refused_at_the_boundary` — Unexpected return code, failed var == 2
+
+### `127-a-state-root-with-no-workspaces-is-a-failure`
+
+a state root nothing has published from is read as a sweep that could not run, rather than as one with nothing to do.
+
+- RED `a_state_root_nothing_has_published_from_is_a_sweep_with_nothing_to_do` — Unexpected failure.
+
+### `128-the-report-stops-naming-what-it-did-not-examine`
+
+the report stops naming the directories under its own root that it did not examine, so a reader cannot tell what was covered from what was passed over.
+
+- RED `the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into` — the report names the family it did not examine, and why:
+- RED `what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched` — the report names what it did not examine, and why:
+
+### `129-a-run-root-that-is-not-a-directory-is-judged-as-one`
+
+the sweep stops asking whether what it found is a directory at all, so a file left under a family is judged as a run root.
+
+- RED `what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched` — assertion `left == right` failed
+
 ### `12-a-per-run-policy-is-ignored`
 
 --policy stops narrowing the policy the rules resolved.
 
 - RED `a_per_run_policy_narrows_the_rules_resolved_one_and_never_widens_it` — Unexpected return code, failed var == 2
+
+### `130-a-workspace-nobody-here-could-remove-is-taken-apart-to-find-out`
+
+the sweep stops asking whether removing a workspace is this host's to do and finds out by trying, which destroys everything above the first thing it cannot unlink.
+
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — nothing under a workspace this host may not remove was touched:
+
+### `131-the-shared-age-floor-moves-on-its-own`
+
+the age floor's default moves in the parser alone, which is how one caller forwarding one argument set to two tools comes to get two different windows.
+
+- RED `the_sweep_age_floor_defaults_to_the_number_the_record_states` — assertion `left == right` failed: docs/inferred-surface.md states an age floor of "24" and the parser defaults to ["48"]; the number is shar
+
+### `132-a-family-this-sweep-could-not-read-is-passed-over-in-silence`
+
+a family of run roots this sweep could not even list is left out of the report, so a directory full of workspaces reads as one holding none.
+
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — a family this sweep could not examine is named as one:
+
+### `133-a-workspaces-age-is-read-off-the-top-of-it`
+
+a run root's age is read from its own timestamp and its immediate entries alone, so a gate rewriting a file deep inside the clone leaves the workspace looking a day old.
+
+- RED `the_age_floor_bounds_what_a_sweep_considers` — a workspace written inside a moment ago is not a day old:
+
+### `134-a-probe-leaves-the-clock-it-moved`
+
+the writability probe stops putting a directory's timestamps back, so every workspace it asks about looks freshly written and the age floor keeps it for another day.
+
+- RED `what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep` — asking again gives the same answer, not one about the clock:
+
+### `135-a-probe-writes-before-it-can-put-the-clock-back`
+
+the writability probe writes into a directory before it has put the clock back once, so a directory whose timestamps it cannot set is left aged by having been asked about.
+
+- RED `a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking` — a workspace is as old as the work in it, not as old as the last sweep:
+
+### `137-a-directory-that-hands-unlinks-to-owners-is-answered-for-anyway`
+
+the sweep answers for a directory whose entries only their owners may unlink, so a workspace it cannot show it may empty is emptied on a permission that says nothing about it.
+
+- RED `a_workspace_holding_a_directory_that_hands_unlinks_to_owners_is_retained` — a workspace holding one is kept rather than emptied on a permission that does not answer for it:
+
+### `138-a-probe-entry-that-could-not-be-taken-away-is-shrugged-at`
+
+the writability probe shrugs at an entry it could not take away again, so it goes on asking inside what it left behind rather than answering that it could not finish.
+
+- RED `a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace` — assertion `left == right` failed: and the asking stopped there rather than going on inside the entry it could not take away:
+- RED `a_probe_file_this_host_could_not_unlink_is_no_answer_about_the_workspace` — Unexpected failure.
+
+### `139-a-clock-that-cannot-be-put-back-is-no-obstacle`
+
+the writability probe stops treating a clock it cannot put back as an answer, so it writes into a directory it cannot leave as it found and reports what it wrote in as removable.
+
+- RED `a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into` — a directory this could not leave as it found it is no answer, so nothing was removed:
 
 ### `13-the-gate-does-not-run`
 
@@ -248,23 +497,17 @@ the report does not say which identity it answered for.
 
 - RED `a_scoped_recoverable_answer_names_the_identity_it_covers` — Unexpected stdout, failed var.contains(No preserved unpublished branches in)
 
-### `36-a-pin-is-cut-fresh-and-says-nothing`
-
-a pinned branch name is taken on trust.
-
-- RED `a_branch_pin_the_session_could_not_carry_is_refused_rather_than_cut_fresh` — Unexpected return code, failed var == 2
-
 ### `37-a-spent-name-answers-for-a-live-one`
 
 the first repository to hold a name answers for it, spent or not.
 
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — No preserved unpublished branches. Every branch across the registered identities has reached its base or a remote.
 
 ### `38-a-spent-copy-of-a-name-is-published`
 
 a branch is located by name alone, spent copy or not.
 
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — git show main:b.txt failed in <tmp>/project.git:
 
 ### `39-a-base-nobody-can-reach-judges-the-branch`
 
@@ -317,7 +560,7 @@ recovery stops writing the attestation commit that carries the cleared marker fo
 
 the readable range narrows back to one version, so a scenario written by the build before this one is refused.
 
-- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 2; this b
+- RED `a_document_at_the_previous_version_is_read_and_written_back_at_this_one` — the previous version reads: Invalid { reason: "the provider state at <tmp>/host.json: invalid input: the document declares version 3; this b
 
 ### `47-a-carried-forward-document-keeps-the-version-it-arrived-at`
 
@@ -387,6 +630,7 @@ a path list this process could not take whole is answered as a commit that chang
 the tip a session was cut from is never written down, so no session records a stack.
 
 - RED `a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_life` — assertion `left == right` failed: {"version":3,"token":"<token>","identity":"<tmp>/project","alias":"project","branch":"feature/above","base
+- RED `a_continued_stacked_branch_records_where_its_own_work_begins_and_lands_only_that` — assertion `left == right` failed: the recorded tip is where the branch forked from the change below it, not its own tip: {"version":3,"token
 
 ### `57-a-recorded-stack-is-taken-on-trust`
 
@@ -515,17 +759,17 @@ the clone takes the lender's local branches for origin's own refs.
 
 - RED `a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch` — assertion `left == right` failed: the worktree is cut at what origin holds, not at what the lender remembers
 
-### `75-a-pinned-resume-cuts-a-second-worktree`
-
-a pinned branch a session already holds is not resumed.
-
-- RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — Unexpected failure.
-
 ### `75-an-ambiguous-reference-answers-with-the-first-candidate`
 
 status answers about whichever piece of work a reference matched first, rather than refusing and naming them.
 
 - RED `an_ambiguous_reference_is_refused_by_naming_the_candidates` — Unexpected return code, failed var == 2
+
+### `75-a-pinned-resume-cuts-a-second-worktree`
+
+a pinned branch a session already holds is not resumed.
+
+- RED `a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree` — assertion `left == right` failed: a pinned branch a session holds is that session
 
 ### `76-a-branch-a-session-still-holds-is-handed-to-the-verb-for-preserved-work`
 
@@ -561,7 +805,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
@@ -631,18 +875,18 @@ the copy a landing chose is no longer said, so a stale selection and a current o
 - RED `every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them` — the copy that was published is named:
 - RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — the copy the answer came from is named:
 
-### `82-a-wordless-refusal-is-reported-as-nothing`
-
-a hook that refuses without writing anything is reported as a refusal with nothing after it.
-
-- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
-
 ### `82-an-alternate-name-is-dropped`
 
 import writes the branch's own name whatever --as asked for, so work whose name is already spent has nowhere to go.
 
 - RED `a_spent_name_does_not_block_an_import_under_another` — Unexpected stdout, failed var.contains(imported preserved/held)
 - RED `a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree` — Unexpected return code, failed var == 2
+
+### `82-a-wordless-refusal-is-reported-as-nothing`
+
+a hook that refuses without writing anything is reported as a refusal with nothing after it.
+
+- RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected stderr, failed var.contains(The hook said:
 
 ### `83-a-choice-nobody-made-is-announced-anyway`
 
@@ -712,7 +956,6 @@ a filesystem that will not say whether a hook is there is read as saying there i
 the copies whose content the base already carries are left out of the comparison, so a lone work-carrying copy is chosen beside a tip nothing descends from.
 
 - RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected return code, failed var == 2
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — Unexpected return code, failed var == 2
 
 ### `86-the-report-does-not-say-which-shape-it-is`
 
@@ -749,7 +992,7 @@ the copies whose commit a checkout cannot see are asked about anyway, so an abse
 - RED `a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_landing` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_to_it` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
-- RED `a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone` — the spent copy is compared like any other:
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — Unexpected failure.
 
 ### `91-a-character-that-renders-as-nothing-is-passed-through`
 
@@ -795,4 +1038,19 @@ the branch-keyed verbs stop carrying the caller's body into the publication.
 the record stops quoting the approved sentence the branch-keyed body options depart from.
 
 - RED `the_record_names_the_body_sentence_the_branch_keyed_verbs_depart_from` — docs/inferred-surface.md must quote the sentence the branch-keyed body options depart from, so a reader of either document finds the other
+
+### `98-a-pinned-branch-is-cut-fresh-over-the-work`
+
+a pinned branch goes back to being cut fresh from the base whatever already carries it.
+
+- RED `a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh` — the work is in the worktree: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+- RED `a_continued_branch_publishes_the_commits_its_base_does_not_carry` — the session continues the branch's own work
+- RED `a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it` — the second use opens on the branch the first one left, with the base it has since landed on merged in
+
+### `99-a-continued-session-never-merges-its-base`
+
+a continued session stops merging the base it publishes into.
+
+- RED `a_continued_branch_publishes_the_commits_its_base_does_not_carry` — and the base it publishes into is merged in
+- RED `a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it` — Unexpected return code, failed var == 3
 

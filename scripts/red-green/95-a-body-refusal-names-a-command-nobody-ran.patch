@@ -4,16 +4,16 @@ Red: naming_a_branchs_body_twice_is_refused_by_the_invocation_that_keeps_each_on
 Red: naming_a_recoverys_body_twice_is_refused_before_anything_is_attested
 
 diff --git a/crates/onevcs/src/app.rs b/crates/onevcs/src/app.rs
-index a40dc8e..4c2f7b3 100644
+index 6b371e3..12b1747 100644
 --- a/crates/onevcs/src/app.rs
 +++ b/crates/onevcs/src/app.rs
-@@ -329,7 +329,8 @@ fn explicit_body(
+@@ -334,7 +334,8 @@ fn explicit_body(
          (Some(_), Some(path)) => {
              let named = path.to_string_lossy();
              let keeping = |option: &str, value: &str| {
--                let mut argv = invocation.to_vec();
+-                let mut argv = command_prefix.to_vec();
 +                let mut argv = vec!["onevcs", "publish"];
-+                let _ = invocation;
++                let _ = command_prefix;
                  argv.extend([option, value]);
                  guidance::command(argv)
              };

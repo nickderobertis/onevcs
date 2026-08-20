@@ -97,12 +97,19 @@ that there is nothing to publish, from the first in search order. Whichever way 
 the answer names every checkout holding the name — a stale selection and a current one
 read identically otherwise.
 
-**Refusing a copy nothing descends from costs two workflows**, both recorded as journeys
-rather than described here. A rewrite is one: selecting it would guess that a rewrite
-supersedes what it rewrote, so replaying where `sync_change_base` sends an operator leaves
-a pair this refuses. A name reused after its first use landed is the other: the spent copy
-and the fresh one are no relation. Both end the same way — one copy has to be left behind,
-and no verb here does that.
+**And the refusal says how the two copies differ.** A refusal is terminal for an
+unattended run, so one that only says the copies disagree leaves a person diffing
+checkouts by hand. `branch::diverged` names, per copy, its checkout, tip, parent,
+subject, tree, and commit date; says whether the pair is amend-shaped (one parent and
+one subject over two trees) or two separate commits; and prints the fetch and the diff
+between the two commits. Each commit is read out of the checkout that holds it, so the
+answer never depends on one checkout being able to see the other's objects. What it must
+not do is choose: publishing either copy loses the other.
+
+**A copy nothing descends from is refused rather than superseded.** Selecting it would
+guess that a rewrite supersedes what it rewrote. The workflow that reaches this — a
+replay from where `sync_change_base` sends an operator — is recorded as a journey rather
+than described here.
 
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
@@ -173,33 +180,37 @@ two publishing verbs use.
 ## What a report answers about, and what a name already means
 
 Preserved work goes missing through silence rather than through a search that
-could not reach it, so two things are stated rather than left to be inferred.
+could not reach it, so what a report has withheld, what scope it answered under,
+and what a name already means are each stated rather than left to be inferred.
 
-- **A scoped answer names its scope.** `recoverable` answers for one identity when
-  it is run inside a registered checkout and for every identity when it is not, and
-  nobody types which — the directory decides. An answer that does not say so reads
-  as the whole host's, and another identity's preserved work then reads as work
-  nobody has. Every rendering names the scope, `--json` included (on stderr, where
-  a parser does not meet it).
-- **A branch pin is honoured or refused, never quietly cut fresh.** A session's
-  branch is cut from the base with `worktree add -b`, so a pin naming a branch that
-  already carries work produces a second, empty branch of that name: the session
-  reports the pinned name, carries none of the commits, and cannot hand the name
-  back either, since a branch is only ever copied out fast-forward. `workspace::open`
-  asks every repository the identity keeps branches in — the run clones included —
-  and origin's own copy, and refuses unless the base already carries what the name
-  means. The bar is not that the name is unused; it is that the session carries
-  whatever the name refers to.
-- **…and a pin an *open* session already holds is that session, resumed.** Cutting a
-  retry its own run root leaves two directories answering to one branch, one of them
-  at an older tip. So `workspace::open` re-attaches through `workspace::adopt` when
-  exactly one open session of the identity holds that name, on the same base — an
-  unnamed one being the identity's root as it stands now — and the same execution
-  checkout, with its run root there and nobody holding it against them, and says
-  `"reused": true`. Closed is not one of them: closing hands the branch back and
-  means finished. Every other case falls through to the ordinary cut rather than
-  being refused, so reuse decides only whether a second run root is cut; the rule
-  above still refuses the pins it always refused.
+- **A row is a command only when the branch is ready for it.** `recoverable` is read
+  to be trusted without checking, so a branch a live session still holds withholds its
+  command rather than annotating it. Live is asked two ways — the process that opened
+  the session, and its run root's occupancy lease — because each is the true one at a
+  different time. A net-negative branch is marked instead of withheld: stripping work
+  may be exactly right, and this report does not decide. Both are measured against the
+  base the branch would be published into, so this report and that publication cannot
+  disagree about what it would land.
+- **A scoped answer names its scope.** `recoverable` answers for one identity when it
+  is run inside a registered checkout and for every identity when it is not, and nobody
+  types which — the directory decides. Unsaid, a scoped answer reads as the whole
+  host's, so every rendering names it.
+- **A branch pin that names something is continued, never cut fresh over it.** A name a
+  repository of the identity carries *means* the work on it, and cutting a branch over
+  it produces an empty second branch of that name which cannot even be handed back. So
+  every repository the identity keeps branches in — the run clones included — and
+  origin's own copy are asked before a name is treated as new. Which copy is continued
+  is a comparison one has to win: one must carry the other or the session is refused,
+  because taking either otherwise opens on a tree that drops the commits of the one
+  passed over.
+- **…which makes `base` the integration target and not the starting point.** For a
+  continued branch it is only what the work is merged with and published into, through
+  the same reconciliation every landing syncs with; a conflict refuses the session
+  rather than leaving one in a worktree nobody asked to resolve, and a branch named as
+  its own base is refused, because it would publish the branch into itself.
+- **…and a pin an *open* session already holds is that session, resumed** — the same
+  base, the same execution checkout, and a run root that is there and free. Closed is
+  not one of them, because closing hands the branch back and means finished.
 
 ## Tests are journeys, and the four unit tests say why they are not
 
@@ -240,6 +251,11 @@ interfaces, and `Vcs::preserve` and every direct `RemoteHost` call are reachable
 other way. `just smoke-real` runs it. It never skips and never substitutes `gh`: a
 missing credential or a repository whose name does not end in `-smoke` is a loud
 failure, because a smoke that can pass without talking to GitHub proves nothing.
+
+**A Linux host running this suite needs `fuse3`**, because one journey mounts a
+filesystem of its own to make a real removal fail. `just bootstrap` provisions the
+package; without it that journey refuses rather than skips, since one that passed
+without building its own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
@@ -339,6 +355,25 @@ script written beside them that answered to what they asked.
   reads as what the check printed. `publish` says so on stderr and records the check
   without its log rather than failing, because the log is evidence and `conclusion`
   is what decided the merge.
+
+## The disk is a resource, and `sweep` is the only verb that frees it
+
+Every branch-keyed landing cuts a run root, and `sweep` is the only thing that
+removes one. Three rules govern how it decides.
+
+- **Proof, never inference.** A workspace is removed only where this crate can show
+  it is finished. Every other answer retains, reports why, and terminates nothing.
+- **A question that could not be finished is not an answer.** Whether emptying a
+  workspace is this host's to do is asked by writing into every directory the removal
+  would have to empty; a probe that could not be undone proves nothing and retains,
+  and none of them may be left looking freshly written — the age floor reads that
+  clock on the next run.
+- **A landing holds its own run root's lease**, and it is the lease `recoverable`
+  reads, through the same function, so the two cannot come to disagree about who is
+  inside a workspace.
+
+The flag surface is shared with `oneagentgraph sweep`, spelling for spelling and
+default for default; neither side may amend it alone.
 
 ## Everything durable lives under one state root
 

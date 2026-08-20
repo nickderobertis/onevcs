@@ -1,5 +1,5 @@
 Mutation: a branch is located by name alone, spent copy or not.
-Red: a_name_the_checkout_has_spent_blocks_the_run_clone_that_reuses_it_until_it_is_gone
+Red: a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it
 
 diff --git a/crates/onevcs/src/branch.rs b/crates/onevcs/src/branch.rs
 index a2d4af7..30f0a19 100644

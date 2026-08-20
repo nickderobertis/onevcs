@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map, Value};
 
 use onevcs::{
-    ChangeSpec, Error, EventKind, FailureKind, Hosting, Identity, Lifecycle, MergeOutcome,
-    MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest,
-    Recoverable, Result, Scope, Session, SessionRecord, SessionRequest, SessionToken, Sha, Vcs,
+    ChangeSpec, Error, EventKind, FailureKind, HeldBy, Holding, Hosting, Identity, Lifecycle,
+    MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome,
+    PublishRequest, Recoverable, Result, Scope, Session, SessionRecord, SessionRequest,
+    SessionToken, Sha, Vcs,
 };
 
 use crate::events::{self, Emission};
@@ -242,6 +243,11 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 checkout: s.worktree.clone(),
                 stopped_because: format!("session {} was left open", s.token.0),
                 recover_command: recover_command(&s.branch, &s.worktree, provenance),
+                // Both answered where the row is *read* rather than frozen in here:
+                // whether a session still holds its branch is a fact about the session
+                // now, and there is no tree here to count a diff's lines against.
+                held_by: None,
+                net_negative: None,
             };
             // Preserving the same branch twice replaces its row rather than listing
             // it twice, which is what `recoverable` does across the checkouts a
@@ -422,8 +428,37 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 .rev()
                 .filter(|row| wanted.as_ref().is_none_or(|key| *key == row.identity))
                 .cloned()
+                .map(|row| held(state, row))
                 .collect())
         })
+    }
+}
+
+/// Say which live session still holds a row's branch, when one of this provider's
+/// does.
+///
+/// Read here rather than written when the work was preserved, because closing the
+/// session is what ends the hold and a row that had frozen the answer would go on
+/// saying somebody is in there. What makes it *live* is the same thing that makes it
+/// live for the real implementation in-process: the session is open, and the process
+/// that opened it is this one. A row a scenario seeded the answer into keeps it — a
+/// hand-written state says what it means to say.
+fn held(state: &VcsState, row: Recoverable) -> Recoverable {
+    if row.held_by.is_some() {
+        return row;
+    }
+    let holder = state.sessions.iter().find(|session| {
+        session.branch == row.branch.branch
+            && state.session_identities.get(&session.token) == Some(&row.identity)
+            && !state.closed_sessions.contains(&session.token)
+    });
+    Recoverable {
+        held_by: holder.map(|session| HeldBy {
+            token: session.token.clone(),
+            worktree: session.worktree.clone(),
+            holding: Holding::OwnerRunning,
+        }),
+        ..row
     }
 }
 

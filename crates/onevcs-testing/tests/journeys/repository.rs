@@ -9,7 +9,7 @@
 
 use clap::Parser;
 use onevcs::cli::Cli;
-use onevcs::{Provenance, Providers, Scope, SessionRequest, SessionToken, Vcs};
+use onevcs::{Holding, Provenance, Providers, Scope, SessionRequest, SessionToken, Vcs};
 use onevcs_testing::{FileVcs, MemoryHost, MemoryVcs};
 
 use crate::support::{identity, one_repository, Home};
@@ -127,6 +127,16 @@ fn preserved_work_is_what_recoverable_reports() {
             .len(),
         1
     );
+    // Preserving work does not finish the session, and the real implementation says so
+    // for exactly this state: the process holding the session is this one, so the branch
+    // is still being written to and the command beside it must not be run yet.
+    let held = rows[0]
+        .held_by
+        .as_ref()
+        .unwrap_or_else(|| panic!("an open session still holds its branch: {:#?}", rows[0]));
+    assert_eq!(held.token, session.token);
+    assert_eq!(held.worktree, session.worktree);
+    assert_eq!(held.holding, Holding::OwnerRunning);
 
     // The event the real implementation writes when it commits preserved work.
     let events = home.events(&session.token.0);
@@ -146,6 +156,20 @@ fn preserved_work_is_what_recoverable_reports() {
 
     // And the command that reads it runs against the same provider.
     assert_eq!(run(&vcs, &["onevcs", "recoverable", "--json"]), 0);
+
+    // Closing the session is what ends the hold, which is why the answer is read when
+    // the report is asked rather than frozen when the work was preserved. Last, because
+    // closing writes an event of its own onto the stream counted above.
+    vcs.close_session(&session.token)
+        .expect("the session closes");
+    let rows = vcs
+        .recoverable(Scope::All)
+        .expect("the preserved work again");
+    assert!(
+        rows[0].held_by.is_none(),
+        "a closed session holds nothing: {:#?}",
+        rows[0]
+    );
 }
 
 #[test]

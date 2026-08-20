@@ -1,0 +1,21 @@
+Mutation: --dry-run stops being a rehearsal: the run that was asked to report what it would do does it.
+Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index b5bb42b..3b93635 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -385,13 +385,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+ /// can take the run root up between the proof and the act.
+ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
+     let bytes = size_of(&run_root);
+-    if report.dry_run {
+-        report.reclaimed.push(Reclaimed {
+-            path: run_root,
+-            bytes,
+-        });
+-        return Ok(());
+-    }
+     // An `Err` rather than a line in the report: the report says what this sweep
+     // *decided*, and a removal it had proved it could make and then could not is the
+     // sweep failing to run.

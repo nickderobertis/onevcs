@@ -41,6 +41,20 @@ url = { version = "2", features = ["serde"] }
 # is the only one of those that survives a holder being killed. Cross-platform so
 # the coordination is not a Unix-only feature of the same binary.
 fs4 = { version = "0.13", default-features = false, features = ["sync"] }
+# A filesystem of this journey suite's own, so one boundary a sweep has to answer for
+# — a directory that takes an entry and will not give it up — can be a real mount
+# rather than something stood in for. Built without libfuse: the pure-Rust mount goes
+# through `fusermount3`, so a clean clone needs the `fuse3` package and no headers.
+# `default-features = false` is stated rather than relied on being the default — the
+# crate's `libfuse` feature is additive, and a dependency that turned it on would
+# link headers a clean clone does not have. The floor is 0.16 because RUSTSEC-2021-0154
+# is unsound below it; this takes the newest, which is where the fix has stayed.
+fuser = { version = "0.18", default-features = false }
+# Setting a directory's timestamps, which `std` can only do through a handle it has
+# no portable way to open one with — Windows hands a directory back on no terms but
+# the backup semantics, and a `#[cfg]` for that would be a second implementation of
+# the sweep's probe on the one platform its journeys cannot run.
+filetime = "0.2"
 # A lock file is named by a digest of the identity it guards, because that identity
 # is a filesystem path and a path is not a filename.
 sha2 = "0.10"

@@ -10,9 +10,9 @@ use std::path::PathBuf;
 
 use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, Identity, MergeOutcome, MergePolicy,
-    PreservedBranch, Provenance, Publication, PublishOutcome, Recoverable, Session, SessionToken,
-    Sha, Url,
+    ChangeId, ChangeRequest, Check, CheckSource, HeldBy, Holding, Identity, LineChange,
+    MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
+    PublishOutcome, Recoverable, Session, SessionToken, Sha, Url,
 };
 use onevcs_testing::{HostState, VcsState};
 
@@ -107,7 +107,7 @@ pub fn full_vcs_state() -> VcsState {
         closed_sessions: BTreeSet::from([token.clone()]),
         policy: Some(MergePolicy::ChangeAuto),
         publications: vec![Publication {
-            session: token,
+            session: token.clone(),
             branch: "feature/seeded".to_owned(),
             policy: MergePolicy::ChangeAuto,
             outcome: PublishOutcome::Merged(Sha("abc123".to_owned())),
@@ -130,6 +130,20 @@ pub fn full_vcs_state() -> VcsState {
                 "recover".to_owned(),
                 "feature/seeded".to_owned(),
             ],
+            // Both marks stated rather than left out, because this state is the one
+            // the goldens prove every field of. A hold a document names is the
+            // document's own answer and is kept — which is how a consumer writes down
+            // the scenario its manager has to skip — and it names a session this state
+            // opened, because a hold on a session nobody opened is refused.
+            held_by: Some(HeldBy {
+                token: token.clone(),
+                worktree: PathBuf::from("/scratch/s-testing-1/worktree"),
+                holding: Holding::OwnerRunning,
+            }),
+            net_negative: NetNegative::new(LineChange {
+                added: 3,
+                removed: 481,
+            }),
         }],
     }
 }

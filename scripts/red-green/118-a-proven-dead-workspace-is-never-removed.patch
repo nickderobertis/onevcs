@@ -1,0 +1,24 @@
+Mutation: a sweep reports what it reclaimed and removes none of it, which is the state before this verb: the directories are named and every one of them is still there.
+Red: a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed
+Red: a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication
+Red: a_workspace_whose_gate_rejected_the_change_is_reclaimed_like_any_other
+Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
+Red: the_age_floor_bounds_what_a_sweep_considers
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index b5bb42b..f4b0907 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -399,11 +399,7 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+     // family this user may not write to, and content it may not unlink — is decided
+     // by the walk above and is a journey. What is left is the state root changing
+     // between the question and the act, which no interface this crate exposes reaches.
+-    if let Err(e) = std::fs::remove_dir_all(&run_root) {
+-        return Err(error::at("remove the reclaimable workspace at", &run_root)(
+-            e,
+-        ));
+-    }
++
+     report.reclaimed.push(Reclaimed {
+         path: run_root,
+         bytes,

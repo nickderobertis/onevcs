@@ -30,6 +30,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+filetime = { workspace = true }
 fs4 = { workspace = true }
 icu_properties = { workspace = true }
 serde = { workspace = true }
@@ -58,6 +59,12 @@ windows-sys = { version = "0.61.2", features = [
 # this process's own descriptor.
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }
+
+# The mounted filesystem one sweep journey needs, which only Linux here can mount
+# without a package outside the distribution's own: `tests/e2e/refusing_fs.rs` says
+# what it is for and `crates/onevcs/AGENTS.md` says what a host needs to run it.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+fuser = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

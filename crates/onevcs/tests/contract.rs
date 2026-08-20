@@ -27,10 +27,11 @@ use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
-    Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, Labels,
-    Lifecycle, Liveness, MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication,
-    PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session,
-    SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
+    Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy,
+    Holding, Labels, Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative,
+    PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest, Recoverable,
+    RemoteHost, Retention, Scope, Session, SessionHolder, SessionRecord, SessionRequest,
+    SessionToken, Sha, Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -801,11 +802,66 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             "recover".to_owned(),
             "feature".to_owned(),
         ],
+        held_by: None,
+        net_negative: None,
     };
     let value = serde_json::to_value(&recoverable).expect("a recoverable serializes");
     assert_eq!(value["branch"]["provenance"], json!("complete"));
     assert_eq!(value["recover_command"][0], json!("onevcs"));
     assert_eq!(value["stopped_because"], json!("the run's driver died"));
+    // A row with nothing to warn about is the document a consumer that predates both
+    // marks already reads: absent rather than written as null, the way every other
+    // optional field in this crate's reported shapes is.
+    assert!(
+        value.get("held_by").is_none() && value.get("net_negative").is_none(),
+        "an unmarked row carries neither mark: {value}"
+    );
+    // …and a marked one reads back as what it said, so a caller that parses `--json`
+    // into the type keeps both marks rather than dropping them into a lossy read.
+    let marked = Recoverable {
+        held_by: Some(HeldBy {
+            token: SessionToken("s-0123456789ab".to_owned()),
+            worktree: PathBuf::from("/home/agent/.onevcs/workspaces/run/worktree"),
+            holding: Holding::OwnerRunning,
+        }),
+        net_negative: NetNegative::new(LineChange {
+            added: 3,
+            removed: 481,
+        }),
+        ..recoverable
+    };
+    let value = serde_json::to_value(&marked).expect("a marked recoverable serializes");
+    assert_eq!(value["held_by"]["holding"], json!("owner-running"));
+    assert_eq!(value["held_by"]["token"], json!("s-0123456789ab"));
+    assert_eq!(value["net_negative"], json!({"added": 3, "removed": 481}));
+    assert_eq!(
+        serde_json::from_value::<Recoverable>(value.clone()).expect("a marked row reads back"),
+        marked
+    );
+    // The mark carries its own rule, so a count that is not net-negative is not a mark
+    // this reads back — neither from a document nor from a caller holding the type.
+    let mut lying = value;
+    lying["net_negative"] = json!({"added": 481, "removed": 3});
+    let refused = serde_json::from_value::<Recoverable>(lying)
+        .expect_err("a mark that is not net-negative is not one this reads")
+        .to_string();
+    assert!(
+        refused.contains("not a net-negative change"),
+        "the refusal says what was wrong with it: {refused}"
+    );
+    // Both sides of the boundary, because the boundary is the rule: a change that
+    // removes fewer lines than it adds is not a mark, and neither is one that trades a
+    // line for a line.
+    for lines in [(481, 3), (5, 5)] {
+        assert!(
+            NetNegative::new(LineChange {
+                added: lines.0,
+                removed: lines.1,
+            })
+            .is_none(),
+            "{lines:?} added and removed is not a net-negative change"
+        );
+    }
 
     assert_eq!(
         serde_json::to_value(MergeOutcome::Merged(Sha("0f1e2d3".to_owned())))
@@ -954,6 +1010,49 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     for sub in command.get_subcommands() {
         collect_long_flags(sub, into);
     }
+}
+
+/// The age floor `onevcs sweep` applies when a caller says nothing.
+///
+/// Read out of the record rather than repeated here, and held to the parser below.
+/// It is the half of a surface shared with `oneagentgraph sweep` that nobody ever
+/// types, which makes it the half that can move without a reader noticing — and a
+/// caller forwarding one argument set to two tools would then get two different
+/// windows from the same invocation.
+#[test]
+fn the_sweep_age_floor_defaults_to_the_number_the_record_states() {
+    const OPENS: &str = "The age floor's default is ";
+    let record = repo_file("docs/inferred-surface.md");
+    let line = record
+        .lines()
+        .find(|line| line.starts_with(OPENS))
+        .expect("docs/inferred-surface.md states the age floor's default");
+    let documented = line[OPENS.len()..]
+        .split('`')
+        .nth(1)
+        .expect("the documented default is written in backticks");
+
+    let cli = Cli::command();
+    let sweep = cli
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "sweep")
+        .expect("the parser has a sweep to take an age floor");
+    let argument = sweep
+        .get_arguments()
+        .find(|arg| arg.get_long() == Some("min-age-hours"))
+        .expect("`onevcs sweep` takes --min-age-hours");
+    let defaults: Vec<String> = argument
+        .get_default_values()
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        defaults,
+        vec![documented.to_owned()],
+        "docs/inferred-surface.md states an age floor of {documented:?} and the parser \
+         defaults to {defaults:?}; the number is shared with `oneagentgraph sweep`, so \
+         moving it in one place alone is how the two come to answer differently"
+    );
 }
 
 /// The one sentence of approved text the command surface deliberately departs

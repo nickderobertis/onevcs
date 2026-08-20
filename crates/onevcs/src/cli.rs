@@ -5,11 +5,13 @@
 //! with exit code 70, because nothing behind the contract is implemented yet.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use url::Url;
 
 use crate::rules::MergePolicy;
+use crate::sweep;
 
 /// Version control and its remote host, behind one host-neutral vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -51,6 +53,8 @@ pub enum Command {
     Integrate(IntegrateArgs),
     /// Fast-forward a publication checkout to its origin.
     Sync(SyncArgs),
+    /// Reclaim the publication workspaces this host has finished with.
+    Sweep(SweepArgs),
     /// Read a session's event stream.
     Events(EventsArgs),
     /// Work with stored artifacts.
@@ -112,10 +116,12 @@ pub enum SessionCommand {
 pub struct SessionOpenArgs {
     /// An identity key, a registered alias, an origin URL, or a path.
     pub repo: String,
-    /// The branch to work on. Omitted, one is derived.
+    /// The branch to work on. One that already exists is continued from its own
+    /// tip; one that does not is cut from the base. Omitted, one is derived.
     #[arg(long, value_name = "B")]
     pub branch: Option<String>,
-    /// The base to cut it from. Omitted, the identity's registered base is used.
+    /// The branch this work is merged with and published into, and the one a new
+    /// branch is cut from. Omitted, the identity's registered base is used.
     #[arg(long, value_name = "B")]
     pub base: Option<String>,
     /// Which registered checkout to clone from.
@@ -305,6 +311,34 @@ pub struct SyncArgs {
     /// The branch to fast-forward. Omitted, the registered base is used.
     pub branch: Option<String>,
 }
+
+/// Arguments for `onevcs sweep`.
+///
+/// Both the spelling and the default are shared with `oneagentgraph sweep`, because
+/// one composing caller forwards its own arguments to each unchanged. Neither side
+/// may depart from them alone.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] the default is not
+// restated here: it comes from `sweep::DEFAULT_MIN_AGE_HOURS`, which is the crate's one
+// source for it and is gated against `docs/inferred-surface.md`. Why the other side of
+// the surface cannot be gated from this repository is written out at that constant.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct SweepArgs {
+    /// Report what would be reclaimed and remove nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Leave anything written inside this many hours alone.
+    // A window rather than a number, so nothing past the parser can be handed hours
+    // that are negative, infinite, or not a number: `sweep::hours` refuses those
+    // here, where clap's own usage error names the option that carried them.
+    #[arg(
+        long,
+        value_name = "HOURS",
+        default_value = sweep::DEFAULT_MIN_AGE_HOURS,
+        value_parser = sweep::hours,
+    )]
+    pub min_age_hours: Duration,
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// Arguments for `onevcs events`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]

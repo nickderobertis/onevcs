@@ -1,0 +1,30 @@
+Mutation: the sweep stops asking whether removing a workspace is this host's to do and finds out by trying, which destroys everything above the first thing it cannot unlink.
+Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index b5bb42b..d41231d 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -373,9 +373,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+     // Last, because it is the only question whose answer is about this *host* rather
+     // than about the workspace: everything above has already decided the directory is
+     // dead, and this asks whether emptying it can be shown to be ours to do.
+-    if !shows_it_may_empty(run_root) {
+-        return Ok(Verdict::Retain(Kept::Unproven));
+-    }
+     Ok(Verdict::Reclaim(lease))
+ }
+ 
+@@ -399,10 +396,8 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result
+     // family this user may not write to, and content it may not unlink — is decided
+     // by the walk above and is a journey. What is left is the state root changing
+     // between the question and the act, which no interface this crate exposes reaches.
+-    if let Err(e) = std::fs::remove_dir_all(&run_root) {
+-        return Err(error::at("remove the reclaimable workspace at", &run_root)(
+-            e,
+-        ));
++    if std::fs::remove_dir_all(&run_root).is_err() {
++        return Ok(());
+     }
+     report.reclaimed.push(Reclaimed {
+         path: run_root,

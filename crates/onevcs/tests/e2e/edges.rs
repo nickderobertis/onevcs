@@ -3077,6 +3077,111 @@ fn a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_li
 }
 
 #[test]
+fn a_continued_stacked_branch_records_where_its_own_work_begins_and_lands_only_that() {
+    // A branch that already exists, opened on the change below it. There is no cut to
+    // read the stack off — the branch was cut from that base by something this session
+    // never saw — so what is written down is where the two forked, and it has to be
+    // read before the base is merged in: afterwards they share the base's tip and the
+    // fork point is gone.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/below"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "below.txt",
+        "below\n",
+        "feat: the change below",
+    );
+    // Two commits, so what lands is a squash of both: a change below that is one
+    // commit can land as a commit git gives the same identity, and then it *is* on
+    // the root under its own name and there is nothing for a replay to be about.
+    world.commit_file(
+        &fixture.checkout,
+        "below.txt",
+        "below\nand the rest of it\n",
+        "fix: the rest of the change below",
+    );
+    let below = world.git(&fixture.checkout, &["rev-parse", "HEAD"]);
+    // Pushed, because the change below is a change somebody opened: a session's clone
+    // fetches its origin and prunes, so a base only this checkout has is a base the
+    // publication would go looking for and not find.
+    world.git(
+        &fixture.checkout,
+        &["push", "-q", "origin", "feature/below"],
+    );
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/above"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "above.txt",
+        "above\n",
+        "feat: the change above",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/above", "--base", "feature/below"]);
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("sessions").join(format!("{token}.json")))
+            .expect("a session record"),
+    )
+    .expect("the record is JSON");
+    assert_eq!(
+        record["stack_tip"], below,
+        "the recorded tip is where the branch forked from the change below it, not its \
+         own tip: {record}"
+    );
+    assert!(
+        worktree.join("above.txt").is_file(),
+        "and the session continues the branch's own work"
+    );
+
+    world.commit_file(
+        &worktree,
+        "above-more.txt",
+        "more\n",
+        "fix: finish the change above",
+    );
+
+    // The change below lands, as a squash — so the root carries what it changed while
+    // carrying none of its commits, which is exactly the state the recorded tip is
+    // there to be read in.
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/below",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        world.git(&fixture.origin, &["show", "main:above-more.txt"]),
+        "more",
+        "the work done in the continued session reached the root"
+    );
+    assert_eq!(
+        fixture.origin_log().len(),
+        3,
+        "one commit for the change below and one for the change above, and no second \
+         copy of the change below: {:?}",
+        fixture.origin_log()
+    );
+}
+
+#[test]
 fn a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name() {
     // The field decides which of a branch's commits belong to the change below it, so
     // a record naming a commit the session's own clone does not have cannot be read as

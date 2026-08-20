@@ -68,6 +68,10 @@ jobs:
         with:
           tool: nextest,cargo-llvm-cov
       - uses: ./.github/actions/setup-just
+      # `just bootstrap` provisions everything this job runs on, `fuse3` included —
+      # one sweep journey mounts a filesystem of its own through `fusermount3`, and
+      # declaring it there rather than as a step here is what keeps a clean clone and
+      # this runner set up through the same command.
       - name: Bootstrap
         run: just bootstrap
       - name: Quality gate (affected projects)

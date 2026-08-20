@@ -62,6 +62,7 @@ mod session;
 mod status;
 mod store;
 mod stream;
+mod sweep;
 mod vcs;
 mod workspace;
 
@@ -78,8 +79,8 @@ pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Rete
 pub use registry::Identity;
 pub use rules::MergePolicy;
 pub use session::{
-    Lifecycle, Liveness, PreservedBranch, Provenance, Recoverable, Scope, Session, SessionHolder,
-    SessionRecord, SessionRequest, SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
+    Recoverable, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken,
 };
 pub use stream::EventStream;
 pub use vcs::{Git, Vcs};

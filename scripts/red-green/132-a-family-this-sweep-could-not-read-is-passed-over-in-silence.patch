@@ -1,0 +1,22 @@
+Mutation: a family of run roots this sweep could not even list is left out of the report, so a directory full of workspaces reads as one holding none.
+Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
+
+diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
+index cd01192..c4ec542 100644
+--- a/crates/onevcs/src/sweep.rs
++++ b/crates/onevcs/src/sweep.rs
+@@ -126,13 +126,7 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
+                 });
+                 continue;
+             }
+-            Err(e) => {
+-                report.skipped.push(Skipped {
+-                    path: family.clone(),
+-                    reason: format!("cannot read this family of run roots: {e}"),
+-                });
+-                continue;
+-            }
++            Err(_) => continue,
+         };
+         let mut run_roots: Vec<PathBuf> = Vec::new();
+         let mut unreadable: Vec<String> = Vec::new();

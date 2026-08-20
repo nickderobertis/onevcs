@@ -8,12 +8,12 @@ use crate::host::{Hosting, Sha};
 use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
-    PreservedBranch, Provenance, Recoverable, Scope, Session, SessionRecord, SessionRequest,
-    SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
+    Recoverable, Scope, Session, SessionRecord, SessionRequest, SessionToken,
 };
 use crate::stream::Stream;
 use crate::workspace::{self, object};
-use crate::{git, provenance, publish, store};
+use crate::{git, lock, provenance, publish, store};
 
 use serde_json::json;
 use url::Url;
@@ -312,20 +312,32 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                 let incomplete = kind == Provenance::IncompleteStep;
                 let change_base =
                     provenance::recorded_change_base(&repo, &compared, &branch, &trailers)?;
-                let mut stopped = sessions
-                    .iter()
-                    .find(|record| *record.branch == *branch)
-                    .map(|record| {
-                        if record.state == crate::session::Lifecycle::Open {
-                            format!("session {} was left open", record.token)
-                        } else {
-                            format!("session {} closed without publishing", record.token)
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        "no session record names this branch; it stopped before recording one"
-                            .to_owned()
-                    });
+                // Asked before the row says anything about why the work stopped,
+                // because a branch a live session is still writing to has not stopped.
+                let held_by = held_by(&sessions, identity, &branch)?;
+                let mut stopped = match &held_by {
+                    Some(held) => format!(
+                        "nothing has stopped: session {token} still holds this branch and \
+                         {because}. Its work is being made in {worktree}",
+                        token = held.token.0,
+                        because = held.holding.because(),
+                        worktree = held.worktree.display(),
+                    ),
+                    None => sessions
+                        .iter()
+                        .find(|record| *record.branch == *branch)
+                        .map(|record| {
+                            if record.state == Lifecycle::Open {
+                                format!("session {} was left open", record.token)
+                            } else {
+                                format!("session {} closed without publishing", record.token)
+                            }
+                        })
+                        .unwrap_or_else(|| {
+                            "no session record names this branch; it stopped before recording one"
+                                .to_owned()
+                        }),
+                };
                 if let Some(prefix) = unrecognized.first() {
                     stopped.push_str(&format!(
                         ". Its provenance is written under the trailer prefix {prefix:?}, which \
@@ -366,6 +378,8 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
                         checkout: repo.clone(),
                         stopped_because: stopped,
                         recover_command,
+                        held_by,
+                        net_negative: net_negative(&repo, &compared, &branch)?,
                     },
                 ));
             }
@@ -378,6 +392,64 @@ pub fn collect(scope: &Scope) -> Result<Vec<Recoverable>> {
         )
     });
     Ok(rows.into_iter().map(|(_, row)| row).collect())
+}
+
+/// The live session still writing to a preserved branch, when one is.
+///
+/// Two ways of being live, because the two are true at different times and a report
+/// that knew only one would offer somebody a branch mid-flight. A consumer holding a
+/// [`Session`] keeps the process that opened it, which is the question
+/// [`Liveness`] already answers; the CLI takes an occupancy lease per command and
+/// outlives none of them, so what says a command is in there *now* is the lease
+/// itself. Either one means the same thing about the branch.
+///
+/// Only an open session is asked about: closing one hands its branch back and means
+/// finished, and its run root going on being occupied afterwards says nothing about
+/// work nobody is doing on that branch any more.
+fn held_by(sessions: &[workspace::Record], identity: &str, branch: &str) -> Result<Option<HeldBy>> {
+    for record in sessions {
+        if record.identity != identity
+            || *record.branch != *branch
+            || record.state != Lifecycle::Open
+        {
+            continue;
+        }
+        let holding = match record.liveness() {
+            Liveness::Live => Some(Holding::OwnerRunning),
+            Liveness::Stale => {
+                lock::is_occupied(&record.lease())?.then_some(Holding::RunRootOccupied)
+            }
+        };
+        if let Some(holding) = holding {
+            return Ok(Some(HeldBy {
+                token: SessionToken(record.token.to_string()),
+                worktree: record.worktree.clone(),
+                holding,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// What a branch would land, when it removes more lines than it adds.
+///
+/// Measured from the commit the branch forked from rather than from `compared`
+/// itself: what the branch did is what it did to the tree it started on, and against
+/// a base that has moved on every line that base gained would read as a line this
+/// branch removed and never touched. A branch sharing no history with the base is
+/// not measured — there is no point it forked from to measure against.
+fn net_negative(repo: &Path, compared: &str, branch: &str) -> Result<Option<NetNegative>> {
+    let Some(fork) = git::merge_base(repo, compared, branch)? else {
+        return Ok(None);
+    };
+    let counted = git::line_change(repo, &fork, branch)?;
+    // Which counts are net-negative is `NetNegative`'s own rule, asked here rather
+    // than restated: a second spelling of it is how a row comes to be marked by one
+    // rule and read back under another.
+    Ok(NetNegative::new(LineChange {
+        added: counted.added,
+        removed: counted.removed,
+    }))
 }
 
 /// The change request a preserved branch recorded, when one was opened for it.
