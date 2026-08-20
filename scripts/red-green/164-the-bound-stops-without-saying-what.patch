@@ -8,10 +8,10 @@ Red: a_change_request_the_host_reports_no_checks_on_is_bounded_rather_than_merge
 Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 2482b91..f8f0e7a 100644
+index 23395da..ee7f9a6 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -1540,19 +1540,8 @@ fn unsettled(
+@@ -1547,19 +1547,8 @@ fn unsettled(
      bound: std::time::Duration,
      awaited: &str,
  ) -> Error {
@@ -30,6 +30,6 @@ index 2482b91..f8f0e7a 100644
 -    };
 +    let _ = checks;
 +    let named = "it did not";
-     // llmlint: ignore[names_match_behavior] the vocabulary is fixed across three
-     // repositories — `onepipeline` routes on these names — and it gives the bound one
-     // kind. A host that took the merge and never performed it is that bound elapsing,
+     // llmlint: ignore[names_match_behavior] one fixed kind for the bound's three endings.
+     Error::ChecksUnsettled {
+         reason: format!(

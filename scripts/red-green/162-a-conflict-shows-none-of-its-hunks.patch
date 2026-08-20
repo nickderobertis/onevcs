@@ -2,10 +2,10 @@ Mutation: a conflict stops carrying the hunks git renders for it, so the evidenc
 Red: a_base_that_conflicts_with_the_branch_reports_its_own_exit_code
 
 diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
-index bab9207..fda3a54 100644
+index fe6e4e4..24ba2e9 100644
 --- a/crates/onevcs/src/git.rs
 +++ b/crates/onevcs/src/git.rs
-@@ -1391,11 +1391,7 @@ fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
+@@ -1401,11 +1401,7 @@ fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
      // Best effort, and deliberately not an error: the paths are the answer this
      // exists for, and a git that would not render the hunks for them has still said
      // what conflicts.
@@ -17,4 +17,4 @@ index bab9207..fda3a54 100644
 +    let hunks = String::new();
      Ok(Some(Conflict { paths, hunks }))
  }
- 
+ // llmlint: ignore-end[changed_behavior_has_e2e]
