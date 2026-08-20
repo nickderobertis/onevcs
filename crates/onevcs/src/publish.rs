@@ -702,6 +702,16 @@ fn describe(context: &Context<'_>, compared: &str) -> Result<(String, Vec<String
         &context.branch,
         &context.provenance,
     )?);
+    // What this commit lands, named on the base itself. A squash leaves the base
+    // carrying the branch's content under no name it kept, so whether the work
+    // reached the base could only ever be *inferred* from content afterwards — and
+    // that inference stops being true the moment anything edits those paths. This is
+    // the record that answers it instead, and it is written here because this path is
+    // the one landing that opens no change request: everything the host lands carries
+    // the change request's own number.
+    if let Some(tip) = git::tip(&context.repo, &context.branch) {
+        trailers.push(format!("{} {tip}", context.provenance.landed()));
+    }
     Ok((subject, trailers))
 }
 

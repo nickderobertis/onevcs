@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, Error, Identity, MergeOutcome, Recoverable, Result,
+    ChangeId, ChangeRequest, Check, CheckSource, Error, Identity, Landed, MergeOutcome,
+    Recoverable, Result,
 };
 use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
 
@@ -21,7 +22,7 @@ use crate::store::Checked;
 /// A file-backed state outlives the process that wrote it and is read by the next
 /// one, which makes it a stored contract like `onevcs`'s own registry document —
 /// and like that document, the version a document declares decides what is done
-/// with it rather than being guessed at. `3` is the shape the goldens in
+/// with it rather than being guessed at. [`STATE_VERSION`] is the shape the goldens in
 /// `tests/golden/` hold, and those goldens are compared byte for byte, so a change
 /// to the document cannot reach a consumer without the diff saying so.
 ///
@@ -31,6 +32,8 @@ use crate::store::Checked;
 /// [`HostState::bodies`], the body a change request was opened with. `4` is the two
 /// fields a `Recoverable` gained inside [`VcsState::preserved`] — the live session
 /// holding a branch, and the lines it would land when it removes more than it adds.
+/// `5` is one more of those: whether the branch's work reached its base, and what
+/// says so.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -40,7 +43,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 4;
+pub const STATE_VERSION: u32 = 5;
 
 /// The oldest document version this build reads.
 ///
@@ -51,7 +54,10 @@ pub const STATE_VERSION: u32 = 4;
 /// and changed none, so a version 2 document reads as one whose change requests
 /// were opened with no body — which is what they were; `3` to `4` added two the same
 /// way, so a version 3 document reads as one whose preserved rows say nothing about a
-/// hold or a line count, which is what they said.
+/// hold or a line count, which is what they said. `4` to `5` added one that every row
+/// answers rather than one that appears when it holds something, so a version 4
+/// document's rows are carried forward as the answer that list *was*: preserved work
+/// nobody published, which is work that did not land.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -441,11 +447,23 @@ impl Checked for VcsState {
         Ok(())
     }
 
-    /// Nothing but the version: every field an older readable document could hold
-    /// means here what it meant there, and the two the repository side gained in
-    /// version 4 are absent from one written before them — which is the answer, since
-    /// that build held no hold and counted no lines.
+    /// Every field an older readable document could hold means here what it meant
+    /// there, and the two the repository side gained in version 4 are absent from one
+    /// written before them — which is the answer, since that build held no hold and
+    /// counted no lines.
+    ///
+    /// Version 5's field is the exception, and it is carried rather than left at its
+    /// default: a document written before it *listed preserved work nobody had
+    /// published*, which is the `no` this build spells out. Left at the default it
+    /// would read as "nothing here can say", and a consumer's checked-in scenario
+    /// would start reporting work it had always called unpublished as work that may
+    /// have landed.
     fn carry_forward(&mut self) {
+        if self.version < 5 {
+            for row in &mut self.preserved {
+                row.landed = Landed::No;
+            }
+        }
         self.version = STATE_VERSION;
     }
 }

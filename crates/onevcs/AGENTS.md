@@ -155,12 +155,21 @@ correct, and the absent-hook journey is what holds that.
 
 ## `status` and `import`, and the three things easy to undo
 
-- **`status` reads landing off content, never off ancestry or off the host.**
-  Publication squashes, so a branch that landed is an ancestor of nothing — the base
-  carries what it changed, which is the question `vcs::collect` excludes a branch on.
-  Reading the absence of an open change request instead reports a merged change as
-  unpublished. What `status` adds over `recoverable` is that the *exclusion reason* —
-  landed, held by an open session, or genuinely preserved — is stated.
+- **Landing is decided from history, never from content and never from the host**
+  (`landed.rs`, asked by both `status` and `vcs::collect` so the two cannot disagree
+  about one branch). Publication squashes, so a branch that landed is an ancestor of
+  nothing, and reading the absence of an open change request reports a merged change
+  as unpublished. The content comparison that answered it instead is an *inference*,
+  and it is wrong the moment anything else lands on the base — which is how
+  `recoverable` came to print a paste-ready `publish-branch` under three just-merged
+  branches. Four tiers now, most certain first: a recorded landing, the change
+  request's number in the base's history, a `Landed-Commit:` trailer on the base, and
+  the content comparison last — which never answers `yes`, only `no` or `unknown`.
+  Three answers, because a branch that landed with no change request and not through
+  this crate is undecidable from history, and reporting that as `no` is the dangerous
+  half of this. What `status` adds over `recoverable` is that the *exclusion reason* —
+  landed, held by an open session, or genuinely preserved — is stated, with the tier
+  that decided it.
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.
@@ -185,7 +194,9 @@ and what a name already means are each stated rather than left to be inferred.
 
 - **A row is a command only when the branch is ready for it.** `recoverable` is read
   to be trusted without checking, so a branch a live session still holds withholds its
-  command rather than annotating it. Live is asked two ways — the process that opened
+  command rather than annotating it — and so does one whose work already reached the
+  base, which is listed only under `--include-landed` and carries an empty
+  `recover_command` when it is. Live is asked two ways — the process that opened
   the session, and its run root's occupancy lease — because each is the true one at a
   different time. A net-negative branch is marked instead of withheld: stripping work
   may be exactly right, and this report does not decide. Both are measured against the

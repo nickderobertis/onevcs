@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "ref": {
     "given": "feature/plain",
     "kind": "branch"
@@ -28,6 +28,9 @@
   },
   "publication": {
     "state": "unpublished",
+    "landed": {
+      "state": "no"
+    },
     "merge_policy": "change-open"
   },
   "checks": {

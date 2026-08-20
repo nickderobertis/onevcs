@@ -48,6 +48,7 @@ mod host;
 mod ids;
 mod import;
 mod integrate;
+mod landed;
 mod lock;
 mod policy;
 pub mod provenance;
@@ -74,6 +75,7 @@ pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, GitHub, Hosting,
     MergeOutcome, RemoteHost, Sha,
 };
+pub use landed::{Landed, LandingEvidence};
 pub use providers::Providers;
 pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject};
 pub use registry::Identity;

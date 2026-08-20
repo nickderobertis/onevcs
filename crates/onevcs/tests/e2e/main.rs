@@ -40,6 +40,12 @@ mod holders;
 mod honesty;
 #[cfg(unix)]
 mod host;
+// Unix only: its hosted journeys publish through the same substituted `gh` as
+// `host.rs`, and two of them land a branch on a base without this crate at all. Its
+// own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod landing;
 // `library` drives the typed library surface on both backends: half of what it
 // compares is a supplied implementation by construction, and the other half is the
 // real `Git` and the substituted `gh`. Its own header carries the reason in full.

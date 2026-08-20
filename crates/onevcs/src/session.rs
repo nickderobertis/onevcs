@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::landed::Landed;
+
 /// What to open a session over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRequest {
@@ -195,12 +197,30 @@ pub struct Recoverable {
     pub checkout: PathBuf,
     /// Why the workstream stopped.
     pub stopped_because: String,
+    /// Whether the work reached the base, and what says so.
+    ///
+    /// The one field on this row that decides whether the row is an instruction at
+    /// all. It used to be answered by comparing the base's whole tree with the
+    /// branch's, which is an inference and is wrong the moment anything else lands
+    /// on the base — so a branch that had landed read as work nobody published, and
+    /// this row offered a command that re-opens a change request for work the base
+    /// already carries.
+    ///
+    /// Written always and defaulted on the way in, so a stored document that
+    /// predates the field reads back as the answer it gave: nothing said.
+    #[serde(default)]
+    pub landed: Landed,
     /// The argv that lands it, ready to run.
     ///
     /// Ready to run is a claim about the branch as much as about the argv, so it
     /// holds only where the two fields below say nothing: work a live session is
     /// still writing to has not stopped, and running this on it publishes a branch
     /// mid-flight.
+    ///
+    /// **Empty where nothing may be run**, which is every row whose work reached the
+    /// base: the argv would publish work that is already there. A row is read to be
+    /// pasted, so the answer is the absence of a command rather than a command with
+    /// a warning beside it.
     pub recover_command: Vec<String>,
     /// The live session still writing to this branch, when one is.
     ///

@@ -22,7 +22,7 @@ quietly in passing.
 | `Provenance` | `complete` / `incomplete-step` | The contract's ported invariant, "dirty adoption -> incomplete-step commit", gives the two cases, and `commit-preserved` carries "provenance kind". |
 | `PreservedBranch` | `branch`, `base`, `provenance`, `change_url`, `change_base` | The last two are named explicitly as the host-neutral stack metadata; the first three are what `preserve` must return to be usable. |
 | `Scope` | `all` / `repo(String)` | `recoverable` is documented both across every registered identity and for one repository (`onevcs recover BRANCH --repo PATH`). |
-| `Recoverable` | `identity`, `branch`, `checkout`, `stopped_because`, `recover_command`, `held_by`, `net_negative` | What a "recoverable" view has to answer: where the work is, why its workstream stopped, and the exact command that lands it. The last two are what make "the exact command" true of the branch as well as of the argv, and are recorded below. |
+| `Recoverable` | `identity`, `branch`, `checkout`, `landed`, `stopped_because`, `recover_command`, `held_by`, `net_negative` | What a "recoverable" view has to answer: where the work is, whether the work reached its base, why its workstream stopped, and the exact command that lands it. `landed`, `held_by`, and `net_negative` are what make "the exact command" true of the branch as well as of the argv, and each is recorded below. |
 | `ChangeSpec` | `head`, `base`, `title`, `body` | `open_change` must say what to open from, into what, and under what title — `--title` is a `publish` option. `body` is optional so the host's own template applies when nothing is supplied. |
 | `MergeOutcome` | `merged(Sha)` / `queued` / `open` | The three ways `publish` exits 0, plus the `merge-queued` / `merge-completed` events. |
 | `Check.status` / `Check.conclusion` | `String` / `Option<String>` | See the open question below. |
@@ -288,9 +288,10 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `1`, and it is deliberately the *initial* version
-rather than a migration boundary — nothing in this build reads a report back, so the
-number is what a **consumer** branches on and there is no older shape here to read.
+The report's schema version is `2`, and it is deliberately not a migration boundary
+— nothing in this build reads a report back, so the number is what a **consumer**
+branches on and there is no older shape here to read. Version 2 is
+`publication.landed` and the eighth `publication.state`, both recorded below.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -306,8 +307,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v1.json` and
-`status-report-v1-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v2.json` and
+`status-report-v2-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
@@ -324,7 +325,7 @@ could be *read* rather than anything about the work.
 | --- | --- | --- |
 | `status REF` | one operand, four spellings, read in the documented order | A change request's URL, a session token, a branch name, and a commit are four names for one piece of work, and which one somebody has depends on where they are standing. Four options would make a caller say which they hold; one operand does not. First match wins, so a session token is a session token even where a branch of that name exists, and ambiguity is *within* a spelling — one branch name in two identities — which is refused naming every candidate. |
 | the sections | identity, session, branch, publication, checks, gate, next | What an agent had to reach outside for, in one place. `next` is the surface the branch-keyed refusals already are: a report that diagnoses without naming the command that advances the work leaves an agent to invent one. |
-| `landed` | read off the base's content, never off ancestry or off the host | Publication squashes, so a branch that landed is an ancestor of nothing afterwards. It is the same question `vcs::collect` excludes a branch on, which is what keeps the report and `recoverable` from disagreeing about one branch. |
+| `landed` | decided from the base's own history, in four tiers, naming the one that decided it | Publication squashes, so a branch that landed is an ancestor of nothing afterwards — and the content comparison that used to answer this is an inference that stops being true the moment anything else lands on the base. The tiers are recorded below. It is the same question `vcs::collect` excludes a branch on, which is what keeps the report and `recoverable` from disagreeing about one branch. |
 | the host section | degrades, never fails | `status` reaches the host for what a change request is doing now, and everything else it reports is answerable offline. A command that failed because a network call did would leave an operator with none of the answer. |
 | `--json` | the same object, on stdout | The scope note `recoverable` carries does not apply: `status` is asked about one piece of work by name, so there is no unstated scope for a reader to mistake. |
 | `import BRANCH --repo PATH` | the operands `recover` already takes | It is addressed at one branch of one identity, so it is reached the same way the two branch-keyed verbs are. Where it looks with no `--from` is `branch::locate` — the same search those verbs use, run clones included. |
@@ -332,6 +333,40 @@ could be *read* rather than anything about the work.
 | `--as NAME` | an alternate local name | The `preserved/<name>` move, which exists because a session's branch pin is refused unless the base carries what the name means: work whose name is spent needs a second name before anything can take the first. |
 | ref writes only | no checkout, no working tree | It fetches into a scratch ref, judges there, and points the destination's ref at it. A name the destination has checked out is refused rather than written: moving that ref leaves git holding a tree that describes a commit the branch no longer names. |
 | the non-fast-forward refusal | names the commits that would be lost | A branch in a registered checkout is the durable record of whatever wrote it, and this verb is reached by somebody who wants a *second* copy reachable. `--as` is the way through, and it is only the right way through once an operator can see what the name they asked for already holds. |
+
+## Whether work landed is decided from history, and the answer says what decided it
+
+**A report that infers is a report that is sometimes wrong, and this one's wrong
+answer is dangerous.** Whether a branch's work had reached its base was
+`git diff --quiet <base> <branch>` over the whole tree, reported as a fact. It is an
+inference and it is wrong as soon as anything else touches the base, related or not:
+a branch that had landed read as work nobody published, and `recoverable` printed
+`Resume: onevcs publish-branch <branch> --repo …` under it. That line is an
+instruction, and following it on a landed branch re-opens a change request for work
+`main` already carries. One report listed eighty-five preserved branches with three
+just-merged ones at the top, each carrying it.
+
+So landing is decided from history, in four tiers, most certain first, and the answer
+names the tier that decided it. `landed.rs` is the one place they are asked, so
+`status` and `recoverable` cannot come to disagree about one branch.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| tier 1 | a recorded landing: a landing commit recorded for the branch, which the base carries | Exact, permanent, and immune to whatever is edited afterwards. **Defined and read here, written nowhere in this build** — the node that watches a merge land writes it — so the tier falls through cleanly until it exists, which is why the three below have to answer on their own. |
+| tier 2 | the change request's number, in a commit the base's history carries, bounded by the fork point | The host writes it into the squash commit it lands, so it answers for anything merged through the host by anybody, with no write of ours and however far the base has moved since. Three spellings are matched — the number in a subject, a merge commit's sentence, and the URL itself — each with its own punctuation around it, so `#1` cannot answer for `#12`. |
+| tier 3 | `<prefix>Landed-Commit:` on the base, naming a branch commit | The one landing that opens no change request is `local-direct`, and nothing else would ever say so. It names a commit rather than a branch name because a name is spent and re-cut. |
+| tier 4 | the content comparison, over the paths the branch touched, and never a `yes` | Last, and labelled as the inference it is: what it can say is that the base does not carry what the branch changed (`no`), or that it does and nothing records why (`unknown`). Scoped to the paths the branch touched rather than the whole tree, so unrelated work landing beside it does not change the answer. |
+| the guard on tiers 1–3 | a landing lands what the branch carried *then*, so a branch whose newest commit is newer than the landing falls through | A session continuing a name that already means something commits onto the same branch, and a row that read that as finished would hide unpublished work — the one direction this must never fail in. |
+| `Landed` | `yes` (carrying its evidence) / `no` / `unknown` | Three answers because the third is real: a branch that landed with no change request and not through this crate leaves nothing in history to read, and reporting that as `no` is what puts a resume instruction under work that is already on the base. The evidence travels *inside* the `yes`, so a landing with nothing behind it is unrepresentable. |
+| `LandingEvidence` | `recorded-landing` / `change-request` / `trailer`, each with the commit | Naming the tier is half the answer: "it landed" is exactly the claim that used to be an inference, and a reader has to be able to tell a record from a comparison. |
+| `publication.state` | the seven it had, plus `maybe-landed` | The eighth is the answer version 1 had no room for and reported as `landed`. `state` is derived from `landed`, so the two cannot disagree, and `Landing::landed()` still answers `bool` for the one question a caller acts on — whether the work is *known* to have reached the base. |
+| `Recoverable.landed` | the same value, on every row | The row is read to be pasted. A row whose work landed carries an **empty** `recover_command` rather than a command with a warning beside it, and no `Resume:` line in either rendering. |
+| `Vcs::preserved(scope)` | `recoverable` plus the branches that landed, defaulting to `recoverable` | `recoverable` answers "what is left to publish" and must never hand a caller a landed branch. But an exclusion nobody can see is how preserved work goes missing, so the landed rows are reachable — through the seam, so a supplied implementation answers this command too, and with a default body so one that predates the question is unaffected. |
+| `recoverable --include-landed` | the flag that reaches it | Off by default: the report is read to decide what to publish. Both renderings name the flag whether or not anything was withheld, because what a report leaves out is exactly what nobody can see it left out. |
+
+```
+onevcs recoverable [--include-landed] [--json]
+```
 
 ## One more: the disk this tool fills, and the verb that empties it
 

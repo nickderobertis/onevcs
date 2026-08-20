@@ -16,6 +16,7 @@ use crate::cli::{
 };
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
+use crate::landed::Landed;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::{Registry, RepoType, Workflow};
@@ -427,7 +428,10 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
         None => Scope::All,
     };
-    let rows = providers.vcs.recoverable(scope)?;
+    let rows = match args.include_landed {
+        true => providers.vcs.preserved(scope)?,
+        false => providers.vcs.recoverable(scope)?,
+    };
     // Nobody types the scope — the directory decides it — so every rendering names
     // it. Unsaid, a scoped answer reads as the whole host's, and another identity's
     // preserved work reads as work nobody has.
@@ -440,6 +444,13 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     });
     let widen = "Only that identity is covered: run `onevcs recoverable` from a directory \
                  outside every registered checkout to see them all.";
+    // Named whether or not anything was withheld, because what a report leaves out
+    // is exactly what nobody can see it left out: this answer is about work that has
+    // *not* reached its base, and a branch missing from it because it landed reads
+    // identically to one missing because nothing found it.
+    let landed_too = "Branches whose work reached their base are not listed; \
+                      `onevcs recoverable --include-landed` lists them too, each saying what \
+                      says so.";
     if args.json {
         // The document itself is the answer and stays exactly what a consumer
         // parses; the scope it was answered under is *about* the answer, so it goes
@@ -450,28 +461,38 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         println!("{}", serde_json::to_string(&rows).map_err(serialization)?);
         return Ok(0);
     }
+    // What the rows are: the same report either way, over a wider set of branches.
+    let what = match args.include_landed {
+        true => "preserved branch(es), landed ones included",
+        false => "preserved unpublished branch(es)",
+    };
     if rows.is_empty() {
+        // Spelled without the count's parenthetical, because there is no count: the
+        // sentence is about there being none of them at all.
+        let none = match args.include_landed {
+            true => "No preserved branches",
+            false => "No preserved unpublished branches",
+        };
         match &scoped {
-            Some(scoped) => println!(
-                "No preserved unpublished branches in {scoped}. Every branch of it has reached \
-                 its base or a remote.\n{widen}"
-            ),
+            Some(scoped) => {
+                println!("{none} in {scoped}. Every branch of it has reached its base or a remote.")
+            }
             None => println!(
-                "No preserved unpublished branches. Every branch across the registered \
-                 identities has reached its base or a remote."
+                "{none}. Every branch across the registered identities has reached its base \
+                 or a remote."
             ),
+        }
+        if !args.include_landed {
+            println!("{landed_too}");
+        }
+        if scoped.is_some() {
+            println!("{widen}");
         }
         return Ok(0);
     }
     match &scoped {
-        Some(scoped) => println!(
-            "{} preserved unpublished branch(es) in {scoped}:",
-            rows.len()
-        ),
-        None => println!(
-            "{} preserved unpublished branch(es) across every registered identity:",
-            rows.len()
-        ),
+        Some(scoped) => println!("{} {what} in {scoped}:", rows.len()),
+        None => println!("{} {what} across every registered identity:", rows.len()),
     }
     for row in rows {
         let kind = match row.branch.provenance {
@@ -481,6 +502,11 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         // On the header line as well as in a line of their own below, because the
         // header is what somebody reads before deciding whether to read the rest.
         let mut marks: Vec<String> = Vec::new();
+        match &row.landed {
+            Landed::Yes { .. } => marks.push(format!("landed — {}", row.landed.tier())),
+            Landed::Unknown => marks.push("may have landed".to_owned()),
+            Landed::No => {}
+        }
         if row.held_by.is_some() {
             marks.push("held by a live session".to_owned());
         }
@@ -520,6 +546,40 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         // and a checkout whose path a shell would split turns it into a command
         // that names a different repository.
         let command = guidance::command(row.recover_command.iter().map(String::as_str));
+        // The line that is read as "paste this" is `Resume:`, and it belongs to a row
+        // whose work has stopped and is not on the base. A row whose work landed gets
+        // no such line at all — running it would re-open a change request for work the
+        // base already carries — and one nothing can decide about is told what to look
+        // at first.
+        if let Landed::Yes { evidence } = &row.landed {
+            println!(
+                "    Landed: {tier} ({commit}) says this branch's work reached {base}. Nothing \
+                 to resume — publishing it again would re-open a change request for work \
+                 {base} already carries",
+                tier = row.landed.tier(),
+                commit = evidence.commit(),
+                base = row.branch.base,
+            );
+            continue;
+        }
+        if row.landed == Landed::Unknown {
+            println!(
+                "    Not decided: nothing records that this branch's work reached {base} — no \
+                 landing, no change request's number in {base}'s history, and no landing \
+                 trailer — and {base} already carries everything it changed. Read it with \
+                 `{diff}`; if it really has not landed, `{command}` lands it",
+                base = row.branch.base,
+                diff = guidance::command([
+                    "git",
+                    "-C",
+                    &row.checkout.to_string_lossy(),
+                    "diff",
+                    "--stat",
+                    &format!("{}...{}", row.branch.base, row.branch.branch),
+                ]),
+            );
+            continue;
+        }
         match &row.held_by {
             // Deliberately not spelled `Resume:` — the one label on this report that
             // is read as "paste this" belongs to a row whose work has stopped, and
@@ -535,6 +595,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             ),
             None => println!("    Resume: {command}"),
         }
+    }
+    if !args.include_landed {
+        println!("{landed_too}");
     }
     // After the rows as well as before them: a scoped answer long enough to scroll
     // is exactly the one whose header has gone by unread.
