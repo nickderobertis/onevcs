@@ -60,6 +60,12 @@ windows-sys = { version = "0.61.2", features = [
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }
 
+# The mounted filesystem one sweep journey needs, which only Linux here can mount
+# without a package outside the distribution's own: `tests/e2e/refusing_fs.rs` says
+# what it is for and `crates/onevcs/AGENTS.md` says what a host needs to run it.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+fuser = { workspace = true }
+
 [dev-dependencies]
 assert_cmd = { workspace = true }
 # The parser the honesty journey drives `run_with` with, which is the same one the

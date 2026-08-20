@@ -708,6 +708,23 @@ fn a_workspace_holding_a_directory_that_hands_unlinks_to_owners_is_retained() {
     );
 }
 
+/// Every entry one directory holds that a sweep's probe made and did not take away.
+fn probes_left_in(directory: &Path) -> Vec<PathBuf> {
+    let mut left: Vec<PathBuf> = std::fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".sweep-probe-"))
+        })
+        .collect();
+    left.sort();
+    left
+}
+
 /// The newest thing anywhere under a path, which is what the age floor reads.
 fn newest_write(path: &Path) -> SystemTime {
     let meta = std::fs::symlink_metadata(path)
@@ -820,159 +837,6 @@ fn a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into() 
     );
 }
 
-// llmlint: ignore-block[e2e_not_mocked,tests_mirror_real_usage] nothing about the tool
-// is stood in for below: the process is the compiled binary, the state root and the
-// workspace are the ones every journey here cuts, the directory is an ordinary one on
-// this filesystem, and the entry the probe creates is really created in it. What is
-// arranged is the *world* — what the kernel answers when that entry is removed —
-// because the condition this journey is about is one no ordinary user can build on an
-// ordinary filesystem. A directory that takes an entry and will not give it up comes
-// from an append-only attribute, an NFSv4 ACL without DELETE_CHILD, or a sandbox
-// policy, and each of those needs a privilege, a server, or a filesystem a suite
-// cannot have; `chattr +a` on this host answers "Operation not permitted". This is the
-// same class of arrangement as `backdate` above, which sets the world's clock because
-// no product interface makes a directory a day old — and what is asserted is entirely
-// what the real `onevcs sweep` then decided.
-/// One `onevcs sweep`, run with the kernel refusing to take a directory away again.
-///
-/// A filesystem that lets an entry be created and will not let it be unlinked is a
-/// real thing to meet — a directory somebody set append-only, an NFSv4 ACL without
-/// `DELETE_CHILD`, a policy that grants `add_name` and not `remove_name` — and an
-/// ordinary user can build none of them in a scratch directory. So the refusal is
-/// arranged where those refusals come from: a seccomp filter, installed between the
-/// fork and the exec, answers `EPERM` for exactly the syscalls that remove a
-/// directory. Everything else is the real thing — the compiled binary, this world's
-/// state root, a workspace a real publication cut — and the probe's own `mkdir`
-/// still succeeds, which is what makes the entry it cannot take away observable.
-#[cfg(target_os = "linux")]
-fn swept_with_directory_removal_refused(world: &World, extra: &[&str]) -> (String, String, i32) {
-    use std::os::unix::process::CommandExt;
-
-    let mut command = world.onevcs_process();
-    command.arg("sweep").args(extra);
-    // SAFETY: the closure runs in the forked child before the exec, where only
-    // async-signal-safe calls are allowed. `prctl` is one, and it is all this does.
-    unsafe {
-        command.pre_exec(refuse_directory_removal);
-    }
-    let output = command.output().expect("the binary runs");
-    (
-        String::from_utf8(output.stdout).expect("the report is UTF-8"),
-        String::from_utf8(output.stderr).expect("the diagnosis is UTF-8"),
-        output
-            .status
-            .code()
-            .expect("the binary exits rather than being signalled"),
-    )
-}
-
-/// Answer `EPERM` for the removal of a directory, and pass everything else through.
-///
-/// Classic BPF over `struct seccomp_data`: the syscall number is its first word, and
-/// the flags `unlinkat` takes are the low half of its fourth argument, ten words in.
-/// `std` removes a directory with `rmdir` where the architecture has that syscall
-/// and with `unlinkat(…, AT_REMOVEDIR)` where it does not, so both are named.
-#[cfg(target_os = "linux")]
-fn refuse_directory_removal() -> std::io::Result<()> {
-    /// `SECCOMP_RET_ERRNO`, whose low bits are the errno the call answers with.
-    const ERRNO: u32 = 0x0005_0000;
-    /// `SECCOMP_RET_ALLOW`.
-    const ALLOW: u32 = 0x7fff_0000;
-    /// `SECCOMP_MODE_FILTER`.
-    const FILTER: libc::c_int = 2;
-    // Where the architecture has no `rmdir` syscall, no number can match the test
-    // below, and `std` reaches `unlinkat` there instead.
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    let rmdir = u32::try_from(libc::SYS_rmdir).expect("a syscall number");
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    let rmdir = u32::MAX;
-
-    let number = |syscall: libc::c_long| u32::try_from(syscall).expect("a syscall number");
-    let deny = ERRNO | u32::try_from(libc::EPERM).expect("an errno");
-    let remove_directory = u32::try_from(libc::AT_REMOVEDIR).expect("a flag bit");
-    let program = [
-        // load the syscall number
-        libc::sock_filter {
-            code: 0x20,
-            jt: 0,
-            jf: 0,
-            k: 0,
-        },
-        // rmdir — refuse it
-        libc::sock_filter {
-            code: 0x15,
-            jt: 3,
-            jf: 0,
-            k: rmdir,
-        },
-        // anything but unlinkat — allow it
-        libc::sock_filter {
-            code: 0x15,
-            jt: 0,
-            jf: 3,
-            k: number(libc::SYS_unlinkat),
-        },
-        // load unlinkat's flags
-        libc::sock_filter {
-            code: 0x20,
-            jt: 0,
-            jf: 0,
-            k: 40,
-        },
-        // AT_REMOVEDIR among them — refuse it, otherwise allow it
-        libc::sock_filter {
-            code: 0x45,
-            jt: 0,
-            jf: 1,
-            k: remove_directory,
-        },
-        libc::sock_filter {
-            code: 0x06,
-            jt: 0,
-            jf: 0,
-            k: deny,
-        },
-        libc::sock_filter {
-            code: 0x06,
-            jt: 0,
-            jf: 0,
-            k: ALLOW,
-        },
-    ];
-    let installed = libc::sock_fprog {
-        len: u16::try_from(program.len()).expect("seven instructions"),
-        filter: program.as_ptr().cast_mut(),
-    };
-    // SAFETY: both calls are `prctl` with the arguments its contract names, and the
-    // filter outlives them — the second call copies it into the kernel.
-    unsafe {
-        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if libc::prctl(libc::PR_SET_SECCOMP, FILTER, std::ptr::addr_of!(installed)) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
-/// Every probe entry a sweep left in one directory.
-fn probes_left_in(directory: &Path) -> Vec<PathBuf> {
-    let mut left: Vec<PathBuf> = std::fs::read_dir(directory)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(".sweep-probe-"))
-        })
-        .collect();
-    left.sort();
-    left
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace() {
@@ -981,20 +845,33 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
     publish_branch(&fixture, "feature/probe-stays");
     let family = publications(&fixture.world);
     let run_root = only_run_root(&family);
+    let spool = run_root.join("worktree/spool");
+    std::fs::create_dir_all(&spool).expect("a directory the gate left");
     backdate(&run_root, 72);
 
-    // Everything about this workspace is finished and old, so the only question left
-    // is whether emptying it is this host's to do — and the probe that asks gets its
-    // entry created and cannot take it away again.
-    let (report, diagnosis, code) = swept_with_directory_removal_refused(&fixture.world, &[]);
+    // A directory an entry may be added to and not taken out of again. It is a real
+    // mount rather than an arrangement: `refusing_fs` is the filesystem, the kernel
+    // routes the binary's own calls to it, and it answers the removal the way an
+    // append-only directory does. Aged with the workspace, so the sweep reaches the
+    // question this journey is about rather than keeping it for its age.
+    let mounted =
+        crate::refusing_fs::mount_over(&spool, SystemTime::now() - Duration::from_secs(72 * 3600));
 
-    let left = probes_left_in(&family);
+    let (report, diagnosis) = swept_with_diagnosis(&fixture, &[]);
+
+    let left = probes_left_in(&spool);
+    let [entry] = left.as_slice() else {
+        panic!(
+            "the premise: the probe's entry was created on that filesystem and could not \
+             be taken away again, so exactly one is still in {}, not {left:?}:\n{report}",
+            spool.display()
+        );
+    };
     assert_eq!(
-        left.len(),
-        1,
-        "the premise: the probe's entry was created and could not be removed, so it is \
-         still in {}:\n{report}",
-        family.display()
+        std::fs::read_dir(entry).into_iter().flatten().count(),
+        0,
+        "and the asking stopped there rather than going on inside the entry it could not \
+         take away:\n{report}"
     );
     assert!(
         run_root.is_dir() && run_root.join("clone").is_dir() && run_root.join("worktree").is_dir(),
@@ -1005,24 +882,18 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
         "and the workspace is kept for the question that could not be finished:\n{report}"
     );
     assert!(
-        probes_left_in(&run_root).is_empty()
-            && probes_left_in(&run_root.join("worktree")).is_empty(),
-        "and the asking stopped at the directory it could not finish asking about, so \
-         nothing under the workspace was written into either:\n{report}"
-    );
-    assert!(
         report.starts_with("onevcs sweep: reclaimed 0 workspace(s), "),
         "nothing is counted as reclaimed:\n{report}"
     );
-    // Still a decision rather than a failure: the sweep ran, and what it could not
-    // show is a line in its report.
-    assert_eq!(code, 0, "the sweep ran:\n{report}{diagnosis}");
-    assert_eq!(diagnosis, "", "and had nothing to diagnose:\n{report}");
+    // A decision rather than a failure: the sweep ran, and what it could not show is
+    // a line in its report.
+    assert_eq!(
+        diagnosis, "",
+        "a directory this host cannot answer for is a decision, not a failure"
+    );
 
-    std::fs::remove_dir(&left[0]).expect("the entry the sweep could not take away");
+    mounted.join();
 }
-
-// llmlint: ignore-end[e2e_not_mocked,tests_mirror_real_usage]
 
 #[test]
 fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {

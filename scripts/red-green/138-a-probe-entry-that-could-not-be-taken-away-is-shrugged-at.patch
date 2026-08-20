@@ -1,4 +1,4 @@
-Mutation: the writability probe shrugs at an entry it could not take away again, so a directory it left something in answers that emptying it is this host's to do.
+Mutation: the writability probe shrugs at an entry it could not take away again, so it goes on asking inside what it left behind rather than answering that it could not finish.
 Red: a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs

@@ -68,6 +68,15 @@ jobs:
         with:
           tool: nextest,cargo-llvm-cov
       - uses: ./.github/actions/setup-just
+      # One sweep journey mounts a filesystem of its own — a directory that takes an
+      # entry and will not give it back, which is a boundary the verb has to answer
+      # for and which nothing else can build unprivileged. The unprivileged mount goes
+      # through `fusermount3`. Installed here rather than inherited from whatever the
+      # runner image happens to ship, so the journey's dependency is declared: the
+      # tier refuses loudly without it, and a runner image that drops the package
+      # would otherwise turn this job red after it was already green.
+      - name: The filesystem one sweep journey mounts
+        run: sudo apt-get update && sudo apt-get install -y fuse3
       - name: Bootstrap
         run: just bootstrap
       - name: Quality gate (affected projects)

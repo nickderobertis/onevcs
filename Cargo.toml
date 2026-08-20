@@ -41,6 +41,11 @@ url = { version = "2", features = ["serde"] }
 # is the only one of those that survives a holder being killed. Cross-platform so
 # the coordination is not a Unix-only feature of the same binary.
 fs4 = { version = "0.13", default-features = false, features = ["sync"] }
+# A filesystem of this journey suite's own, so one boundary a sweep has to answer for
+# — a directory that takes an entry and will not give it up — can be a real mount
+# rather than something stood in for. Built without libfuse: the pure-Rust mount goes
+# through `fusermount3`, so a clean clone needs the `fuse3` package and no headers.
+fuser = { version = "0.15", default-features = false }
 # Setting a directory's timestamps, which `std` can only do through a handle it has
 # no portable way to open one with — Windows hands a directory back on no terms but
 # the backup semantics, and a `#[cfg]` for that would be a second implementation of

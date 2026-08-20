@@ -254,6 +254,17 @@ other way. `just smoke-real` runs it. It never skips and never substitutes `gh`:
 missing credential or a repository whose name does not end in `-smoke` is a loud
 failure, because a smoke that can pass without talking to GitHub proves nothing.
 
+**One journey mounts a filesystem, and that host needs `fuse3`.** The boundary a
+sweep has to answer for — a directory that takes an entry and will not give it back
+— is a filesystem answering, and no unprivileged user can build one any other way:
+`chattr +a` is refused, and an ACL or a server is not something a suite can have. So
+`tests/e2e/refusing_fs.rs` *is* the filesystem, mounted through `fusermount3` and
+gated to Linux, where that needs nothing outside the distribution's own package. It
+refuses loudly rather than skipping when the package is absent, and `ci.yml` installs
+it rather than inheriting it from a runner image: a journey that passes without
+building its own premise proves nothing, which is the failure the verb it tests is
+about.
+
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI

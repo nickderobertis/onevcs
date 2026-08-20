@@ -54,6 +54,11 @@ mod packaging;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod publish_branch;
+// Linux only: it mounts a filesystem of its own, and an unprivileged mount there
+// needs nothing outside the distribution's own `fuse3`. Its head carries the reason
+// in full, and the one journey that uses it is gated the same way.
+#[cfg(target_os = "linux")]
+mod refusing_fs;
 #[cfg(unix)]
 mod registry;
 // `seam` proves each command reaches the implementation it was *handed*, which cannot
