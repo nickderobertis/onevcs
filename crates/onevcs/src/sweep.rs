@@ -221,23 +221,25 @@ fn names_a_run(run_root: &Path) -> bool {
     hex(counter) && hex(nanos) && hex(pid) && parts.next().is_some_and(|slug| !slug.is_empty())
 }
 
-/// Whether every directory a removal of this run root would have to empty — the
-/// family it sits in included — is one this user may unlink an entry from.
+/// Whether this sweep can *show* that every directory a removal of this run root
+/// would have to empty — the family it sits in included — is one this user may unlink
+/// an entry from.
 ///
-/// Anything it could not answer is unproven, which retains like every other unknown
-/// in this module.
+/// Shown rather than true: each answer below refuses where it cannot prove, so `false`
+/// is "not shown" and never "impossible". It retains either way, like every other
+/// unknown in this module, which is why the two need not be told apart.
 ///
 /// Asked *before* anything is removed. `remove_dir_all` works inwards: it deletes
 /// what it can reach and fails at the first thing it cannot, so a sweep that found
 /// out by trying would have destroyed another manager's work in order to learn it was
 /// not its to destroy. A rehearsal asks it too: it leaves nothing behind, and a
 /// `--dry-run` that skipped it would report a decision the real run would not take.
-fn can_unlink_throughout(run_root: &Path) -> bool {
-    run_root.parent().is_some_and(can_unlink_from) && can_unlink_within(run_root)
+fn shows_it_may_empty(run_root: &Path) -> bool {
+    run_root.parent().is_some_and(shows_it_may_unlink_from) && shows_it_may_empty_within(run_root)
 }
 
-/// Whether `path` and every directory under it answered the same.
-fn can_unlink_within(path: &Path) -> bool {
+/// Whether `path` and every directory under it are shown the same.
+fn shows_it_may_empty_within(path: &Path) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
@@ -245,21 +247,22 @@ fn can_unlink_within(path: &Path) -> bool {
     if !meta.is_dir() {
         return true;
     }
-    if !can_unlink_from(path) {
+    if !shows_it_may_unlink_from(path) {
         return false;
     }
     let Ok(entries) = std::fs::read_dir(path) else {
         return false;
     };
     entries
-        .map(|entry| entry.map(|entry| can_unlink_within(&entry.path())))
+        .map(|entry| entry.map(|entry| shows_it_may_empty_within(&entry.path())))
         .all(|answer| answer.unwrap_or(false))
 }
 
-/// Whether an entry of one directory is this user's to unlink: writing into it is
-/// what the unlink takes, unless the directory hands that back to each entry's owner.
-fn can_unlink_from(directory: &Path) -> bool {
-    !hands_unlinks_to_owners(directory) && can_write_into(directory)
+/// Whether an entry of one directory is shown to be this user's to unlink: the probe
+/// below writes into it, which is what the unlink takes — unless the directory hands
+/// that back to each entry's owner, and then nothing here shows anything.
+fn shows_it_may_unlink_from(directory: &Path) -> bool {
+    !hands_unlinks_to_owners(directory) && probe(directory).is_ok()
 }
 
 /// Whether a directory carries the sticky bit, which is the one thing writing into it
@@ -278,18 +281,12 @@ fn hands_unlinks_to_owners(_directory: &Path) -> bool {
     false
 }
 
-/// Ask one directory whether this user may add an entry to it, and leave it as it
-/// was found.
+/// Add an entry to the directory, take that away again, and put its clock back.
 ///
 /// By doing it, because the permission bits do not answer on their own: what decides
 /// is the effective user, its groups, and whatever the filesystem enforces over both
-/// — which is the question the removal itself asks. A probe that stopped part way
-/// answers `false`, having shown nothing about the directory.
-fn can_write_into(directory: &Path) -> bool {
-    probe(directory).is_ok()
-}
-
-/// Add an entry to the directory, take that away again, and put its clock back.
+/// — which is the question the removal itself asks. A probe that stopped part way has
+/// shown nothing about the directory.
 ///
 /// The clock is put back to what it already says *before* anything moves it, because
 /// a directory whose timestamps this cannot set is one it must not write into at all:
@@ -376,7 +373,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     // Last, because it is the only question whose answer is about this *host* rather
     // than about the workspace: everything above has already decided the directory is
     // dead, and this asks whether emptying it can be shown to be ours to do.
-    if !can_unlink_throughout(run_root) {
+    if !shows_it_may_empty(run_root) {
         return Ok(Verdict::Retain(Kept::Unproven));
     }
     Ok(Verdict::Reclaim(lease))
