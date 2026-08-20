@@ -2,21 +2,20 @@ Mutation: the sweep stops asking whether a directory under its families is one t
 Red: a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index e904725..9be0971 100644
+index 4c48e38..c3b38cd 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -169,15 +169,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
-                 .to_owned(),
-         ));
+@@ -210,14 +210,6 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+             "it is not a directory, and every run root is one",
+         )));
      }
 -    // The one thing `branch::prepare` always leaves: a run clone. A directory under
 -    // this family carrying none is somebody else's, or one somebody has already
 -    // taken apart by hand, and either way this verb cannot show it made it.
 -    if !git::is_repo(&run_root.join("clone")) {
--        return Ok(Verdict::Retain(
--            "its owner cannot be proven: it holds no run clone this crate would have cut"
--                .to_owned(),
--        ));
+-        return Ok(Verdict::Retain(Kept::OwnerUnproven(
+-            "it holds no run clone this crate would have cut",
+-        )));
 -    }
      // An exclusive take succeeds only while no shared occupancy lease is held, which
      // is what a landing holds for the whole of its run. Held, the answer is that

@@ -2,10 +2,10 @@ Mutation: a workspace this host may not remove is reported as reclaimed anyway, 
 Red: what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index cd01192..6382256 100644
+index 4c48e38..f7218e7 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -253,19 +253,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+@@ -252,19 +252,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
          });
          return;
      }
@@ -19,7 +19,7 @@ index cd01192..6382256 100644
 -        // the retained list is for.
 -        Err(e) => report.retained.push(Retained {
 -            path: run_root,
--            reason: format!("it could not be removed: {e}"),
+-            why: Kept::NotRemoved(e.to_string()),
 -        }),
 -    }
 +    let _ = std::fs::remove_dir_all(&run_root);

@@ -6,10 +6,10 @@ Red: a_dry_run_reports_what_it_would_reclaim_and_removes_nothing
 Red: the_age_floor_bounds_what_a_sweep_considers
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index cd01192..3011e7f 100644
+index 4c48e38..f7c4e36 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -253,20 +253,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
+@@ -252,20 +252,11 @@ fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) {
          });
          return;
      }
@@ -23,7 +23,7 @@ index cd01192..3011e7f 100644
 -        // the retained list is for.
 -        Err(e) => report.retained.push(Retained {
 -            path: run_root,
--            reason: format!("it could not be removed: {e}"),
+-            why: Kept::NotRemoved(e.to_string()),
 -        }),
 -    }
      drop(lease);

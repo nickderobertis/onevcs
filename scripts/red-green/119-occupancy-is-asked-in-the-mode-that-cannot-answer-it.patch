@@ -2,15 +2,15 @@ Mutation: the sweep asks for a run root's lease in the shared mode every occupan
 Red: a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
-index e904725..e8fa790 100644
+index 4c48e38..b2296bd 100644
 --- a/crates/onevcs/src/sweep.rs
 +++ b/crates/onevcs/src/sweep.rs
-@@ -181,7 +181,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+@@ -221,7 +221,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
      // An exclusive take succeeds only while no shared occupancy lease is held, which
      // is what a landing holds for the whole of its run. Held, the answer is that
      // somebody is publishing in here — reported, and nothing about them touched.
 -    let Some(lease) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
 +    let Some(lease) = lock::try_shared(&workspace::occupancy_identity(run_root))? else {
-         return Ok(Verdict::Retain(
-             "a live session holds its occupancy lease; nothing was removed and nothing was \
-              terminated"
+         return Ok(Verdict::Retain(Kept::Occupied));
+     };
+     if !gate::has_recorded_verdict(run_root) {
