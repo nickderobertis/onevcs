@@ -2,13 +2,13 @@ Mutation: a run root nothing ever judged answers that its merge path reached a v
 Red: a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason
 
 diff --git a/crates/onevcs/src/merge_path.rs b/crates/onevcs/src/merge_path.rs
-index 85c948b..53bba85 100644
+index c9a1856..539640b 100644
 --- a/crates/onevcs/src/merge_path.rs
 +++ b/crates/onevcs/src/merge_path.rs
-@@ -104,23 +104,8 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
- /// nothing about its contents: that path is written by that function alone, and a
- /// push whose output was empty said as much as one that printed a page. A directory
- /// wearing the name would otherwise answer for a verdict nobody reached.
+@@ -108,20 +108,8 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
+ /// `gate-notes.log` somebody dropped beside the evidence is not a verdict this crate
+ /// reached. And a *directory* wearing an otherwise perfect name would answer for a
+ /// verdict nobody reached, so the entry has to be a file.
 -pub fn has_recorded_verdict(run_root: &Path) -> bool {
 -    let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
 -        return false;
@@ -19,10 +19,7 @@ index 85c948b..53bba85 100644
 -            .flatten()
 -            .flatten()
 -            .any(|log| {
--                let name = log.file_name();
--                let name = name.to_string_lossy();
--                name.starts_with("gate-")
--                    && name.ends_with(".log")
+-                attempt_number(&log.file_name().to_string_lossy()).is_some()
 -                    && log.file_type().is_ok_and(|kind| kind.is_file())
 -            })
 -    })
@@ -30,4 +27,4 @@ index 85c948b..53bba85 100644
 +    true
  }
  
- /// The highest attempt number this branch's directory has ever recorded.
+ /// The attempt one preserved log's filename names, or nothing if it names none.

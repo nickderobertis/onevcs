@@ -1,0 +1,35 @@
+Mutation: a branch whose content the base already carries is taken as work to publish, both where a publication asks before it queues and in the squash that would build it.
+Red: a_branch_whose_content_already_landed_publishes_nothing_and_never_reaches_its_merge_path
+Red: a_branch_whose_content_already_landed_opens_no_change_request
+Red: an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index a324b36..085debf 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -721,11 +721,8 @@ fn nothing_to_publish(context: &Context<'_>, compared: &str) -> Result<bool> {
+     if git::log_messages(&context.repo, compared, &context.branch)?.is_empty() {
+         return Ok(true);
+     }
+-    Ok(!git::trees_differ(
+-        &context.repo,
+-        compared,
+-        &context.branch,
+-    )?)
++    let _ = compared;
++    Ok(false)
+ }
+ 
+ /// The subject one publication commit carries, and what it must carry forward.
+@@ -994,8 +991,9 @@ fn publish_locally(
+         let scratch = scratch_parent.join("worktree");
+         git::worktree_add_detached(&context.repo, &scratch, compared)?;
+         let landed = (|| -> Result<PublishOutcome> {
+-            let Some(sha) = git::merge_squash(&scratch, &context.branch, &message)? else {
+-                return Ok(PublishOutcome::NothingToPublish);
++            let sha = match git::merge_squash(&scratch, &context.branch, &message)? {
++                Some(sha) => sha,
++                None => git::head_sha(&scratch)?,
+             };
+             let pushed = git::push(
+                 &scratch,
