@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 196. Tests observed red and then green: 226.
+Patches: 202. Tests observed red and then green: 238.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -22,7 +22,7 @@ publish-branch answers NotImplemented, which is the state before this branch: th
 - RED `an_explicit_title_is_the_subject_a_branch_publishes_under` — Unexpected failure.
 - RED `a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change` — Unexpected return code, failed var == 2
 - RED `a_per_run_policy_narrows_the_rules_resolved_one_and_never_widens_it` — Unexpected return code, failed var == 2
-- RED `a_gate_that_rejects_a_branch_keeps_it_where_it_was_found` — Unexpected return code, failed var == 1
+- RED `a_merge_path_that_rejects_a_branch_keeps_it_where_it_was_found` — Unexpected return code, failed var == 1
 - RED `a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved` — Unexpected return code, failed var == 3
 - RED `a_marker_under_an_unreadable_prefix_is_never_published_as_a_finished_branch` — Unexpected return code, failed var == 2
 - RED `a_repository_path_that_is_not_text_is_refused_as_the_argument_it_is` — Unexpected return code, failed var == 2
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpzgCwVW-project-8823e3ab2f21/runs/<token>/clone stands on its own parent 1522c17e996702cdaec447
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpl8tpTr-project-a14a8c26757e/runs/<token>/clone stands on its own parent b742fc78eea2f13870102f
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpwf2rqK-project-c9f748495f95/runs/<token>/clone stands on its own parent 40ae77f827a62dabbf685a
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpmxtQ7J-project-e984f8608760/runs/<token>/clone stands on its own parent d35f3dbad2c83f8555073b
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -235,9 +235,9 @@ a landing's occupancy lease names something other than the run root it works in,
 
 - RED `a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated` — assertion `left == right` failed
 
-### `121-a-gate-that-recorded-nothing-is-read-as-a-verdict`
+### `121-a-merge-path-that-recorded-nothing-is-read-as-a-verdict`
 
-a run root nothing ever judged answers that its gate reached a verdict, so an unfinished publication is read as a finished one.
+a run root nothing ever judged answers that its merge path reached a verdict, so an unfinished publication is read as a finished one.
 
 - RED `a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason` — assertion `left == right` failed
 
@@ -353,12 +353,6 @@ the writability probe stops treating a clock it cannot put back as an answer, so
 
 - RED `a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into` — a directory this could not leave as it found it is no answer, so nothing was removed:
 
-### `13-the-gate-does-not-run`
-
-a publication stops running the gate the policy names.
-
-- RED `a_gate_that_rejects_a_branch_keeps_it_where_it_was_found` — Unexpected return code, failed var == 1
-
 ### `140-a-landing-never-enforces-the-retention-rule`
 
 a branch-keyed landing stops enforcing the retention rule over its own family, so the workspaces the landings before it left behind are reaped only when somebody remembers to run the verb.
@@ -387,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-3e9ba4-18cda9c39721d3f3-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-23cb1f-18cdb19c4df506a7-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -401,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-3ec46d-18cda9c654ee2f23-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-24034b-18cdb1a26456e01c-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -429,9 +423,9 @@ the landing this host recorded for a branch is never read, so the most certain t
 
 ### `14-an-identity-with-no-bar-is-only-diagnosed`
 
-the refusal that nothing would be attested stops naming the rules entry that answers it.
+the refusal that nothing would be attested stops naming what answers it.
 
-- RED `an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one` — Unexpected stderr, failed var.contains(<tmp>/.onevcs/rules.yml)
+- RED `an_identity_with_no_bar_is_told_what_would_give_it_one` — Unexpected stderr, failed var.contains(executable pre-push hook)
 
 ### `150-the-change-requests-number-is-not-looked-for`
 
@@ -443,13 +437,13 @@ the change request's number is not looked for in the base's history, so a branch
 
 a publication that opens no change request leaves no landing trailer on the base, so nothing on the base says what it landed.
 
-- RED `a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_base` — assertion `left == right` failed: nothing recorded a landing for this name, and the base's own commit did: {"version":2,"ref":{"given":"pres
+- RED `a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_base` — assertion `left == right` failed: nothing recorded a landing for this name, and the base's own commit did: {"version":3,"ref":{"given":"pres
 
 ### `152-a-landing-nothing-records-is-read-as-unpublished`
 
 the comparison of content answers no rather than unknown, so a landing nothing recorded reads as work nobody published.
 
-- RED `a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown` — assertion `left == right` failed: the base carries what it changed and nothing records that it landed: {"version":2,"ref":{"given":"feature/
+- RED `a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unknown` — assertion `left == right` failed: the base carries what it changed and nothing records that it landed: {"version":3,"ref":{"given":"feature/
 
 ### `153-a-landed-row-is-offered-to-be-resumed-anyway`
 
@@ -487,14 +481,14 @@ a base whose history already took a change under the subject a landing of this b
 
 only the number a host trails in parentheses is looked for in the base's history, so a change request a merge commit names in a sentence — or one a message quotes the URL of — is a landing nothing reads.
 
-- RED `a_change_request_a_merge_commit_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history names this change request, in the sentence a merge commit spells it in: {"version":2,"r
-- RED `a_change_request_its_own_url_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history quotes this change request's own URL: {"version":2,"ref":{"given":"feature/quoted-by-ur
+- RED `a_change_request_a_merge_commit_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history names this change request, in the sentence a merge commit spells it in: {"version":3,"r
+- RED `a_change_request_its_own_url_names_is_read_off_the_bases_history` — assertion `left == right` failed: the base's history quotes this change request's own URL: {"version":3,"ref":{"given":"feature/quoted-by-ur
 
 ### `159-a-landing-answers-for-work-it-never-carried`
 
 a recorded landing stops being asked whether it carried everything the branch has changed since it forked, so a landing answers for work committed onto the branch after it.
 
-- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
+- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":3,
 
 ### `15-a-recorded-base-is-refused-without-naming-it`
 
@@ -506,14 +500,16 @@ an unusable stack pointer is refused as a bare name rather than as the trailer i
 
 the copy that answers for a branch is whichever one shows a landing, so a run clone left at the commit that landed answers for a checkout holding commits nobody published.
 
-- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":2,
+- RED `a_landing_never_answers_for_work_the_branch_gained_after_it` — assertion `left != right` failed: a landing answers for the work it carried, and this branch has since gained work it did not: {"version":3,
 
 ### `160-push-evidence-is-conditional-again`
 
-a publishing push records what it wrote only where the policy names a pre-push gate, which is where it used to.
+a publishing push records what it wrote only where it was refused, and never on the event, so what a green run's merge path said is thrown away.
 
-- RED `a_push_a_hook_refuses_records_what_the_hook_wrote_whatever_the_policy_calls_its_gate` — every publishing push records what it wrote
+- RED `a_push_a_hook_refuses_records_what_the_hook_wrote` — every publishing push records what it wrote
 - RED `a_push_that_is_accepted_records_what_it_wrote_too` — an accepted push records what it wrote as well
+- RED `a_pre_push_hook_that_rejects_the_push_is_reported_as_the_merge_path_refusing` — a stored log
+- RED `a_refusing_merge_path_stops_the_publication_and_leaves_the_work_where_it_can_be_found` — a refused push stores what it wrote
 
 ### `161-a-conflict-names-nothing-it-conflicts-over`
 
@@ -562,9 +558,9 @@ a change-auto publication arms the host's merge and settles at queued, which is 
 - RED `a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_publication` — Unexpected stdout, failed var.contains(merged at)
 - RED `landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed` — Unexpected stdout, failed var.contains(merged at)
 
-### `166-checks-are-observed-only-where-the-gate-names-them`
+### `166-checks-are-observed-for-nobody`
 
-a change-direct publication consults the host's checks only where the resolved policy names them as its gate, which on a host whose rules name commands is no repository at all.
+a change-direct publication stops consulting the host's checks before it asks for the merge, so a repository's required checks are observed for nobody.
 
 - RED `a_host_that_will_not_describe_a_change_requests_checks_still_opens_one` — Unexpected return code, failed var == 2
 - RED `a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed` — assertion `left == right` failed: []
@@ -657,11 +653,55 @@ the train's no-subject skip goes back to reporting the synthesis failure alone.
 
 - RED `a_candidate_whose_content_the_base_already_carries_adds_no_second_commit` — Unexpected stdout, failed var.contains(publish it with `onevcs publish-branch claude/at-the-base --repo <tmp>/project --title <T>`)
 
+### `197-one-pipe-is-drained-before-the-other-is-touched`
+
+one pipe is read to EOF before the other is touched, so a merge path loud enough to fill the first one wedges the capture reading it.
+
+- RED `a_merge_path_that_fills_its_pipes_and_passes_still_reaches_its_own_verdict` — the publication was killed at the journey's bound: a hook that writes past one pipe buffer wedged the capture reading it
+- RED `a_merge_path_that_fills_its_pipes_and_refuses_still_reaches_its_own_verdict` — the publication was killed at the journey's bound: a hook that writes past one pipe buffer wedged the capture reading it
+
+### `198-preserved-logs-are-never-pruned`
+
+a branch's preserved logs are never pruned, so one re-pushing through a red merge path grows its directory without end.
+
+- RED `a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_directory_forever` — assertion `left == right` failed: ["gate-0006.log", "gate-0007.log", "gate-0008.log", "gate-0012.log", "gate-0009.log", "gate-0004.log", "ga
+
+### `199-evidence-leaves-the-library-unredacted`
+
+evidence is stored as it arrived, so a credential a merge path echoed leaves the library inside an artifact.
+
+- RED `a_merge_path_that_echoes_a_credential_records_only_that_it_had_one` — GITHUB_TOKEN=s3cret-value-nobody-should-see
+
 ### `19-the-verb-is-not-written-down`
 
 the command surface record stops naming publish-branch, which is the drift the two readers exist to catch.
 
 - RED `the_contract_and_clap_name_the_same_commands` — assertion `left == right` failed: the parser and the two documents that write the command surface down — docs/contract.md and docs/inferre
+
+### `200-a-key-nobody-declared-is-read-in-silence`
+
+a rule and a policy stop refusing a key nobody declared, so the gate no schema has any more is read back in silence.
+
+- RED `a_rules_file_that_still_names_a_gate_is_not_a_shape_this_type_reads` — the approved fixture names a gate, and this type has no such field: RulesFile { version: 1, trailer_prefix: None, rules: [Rule { match: Rule
+- RED `a_malformed_rules_file_is_rejected_at_the_boundary` — this must be rejected:
+
+### `201-the-amendment-keeps-the-key-its-version-removed`
+
+the amendment's version 3 fixture keeps the key that version removed, so the schema a consumer reads is one this build refuses.
+
+- RED `the_version_3_fixture_round_trips_and_is_the_approved_one_without_its_gate` — the version 3 fixture must deserialize: Error("rules[0]: unknown field `gate`, expected one of `match`, `publication`, `approvals`", line: 7
+
+### `202-a-spent-key-is-refused-rather-than-dropped`
+
+a spent gate is left in the document rather than dropped, so a rules file at the version that still had one is refused rather than read.
+
+- RED `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three` — Unexpected failure.
+
+### `203-a-spent-key-is-dropped-in-silence`
+
+a spent gate is dropped in silence, so the only place an operator learns the key means nothing says nothing.
+
+- RED `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three` — assertion `left == right` failed: one deprecation line, naming the file: ""
 
 ### `20-a-round-header-is-not-checked`
 
@@ -877,7 +917,7 @@ a root that already carries the change below a stack is merged into like anythin
 - RED `a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root` — Unexpected failure.
 - RED `a_hosted_stack_the_root_independently_matches_is_answered_the_same_way` — assertion `left == right` failed: [Object {"v": Number(1), "ts": String("<time>"), "stream": String("<token>"), "seq": Number(5), "source": 
 - RED `a_publish_branch_replay_conflict_names_its_own_command` — Unexpected return code, failed var == 3
-- RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — Unexpected failure.
+- RED `a_root_that_advances_before_the_queue_turn_is_resynced_without_the_stack_returning` — Unexpected failure.
 
 ### `54-a-stack-inferred-from-content`
 
@@ -938,11 +978,11 @@ a recorded diagnostic keeps the values only this run would spell.
 
 - RED `a_recorded_diagnostic_carries_no_path_a_second_run_would_spell_differently` — every value only this run would spell is a placeholder, and what it said is not:
 
-### `63-a-moved-base-is-not-re-judged`
+### `63-a-moved-base-is-not-resynced`
 
-a base that moved after the gate is neither re-synced nor re-judged.
+a base that moved while this publication waited for its turn is never re-synced.
 
-- RED `a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning` — assertion `left == right` failed: the gate judged the base it landed on, not only the base it started from
+- RED `a_base_that_advances_conflictingly_while_a_publication_is_queued_is_reported_as_a_conflict` — Unexpected return code, failed var == 3
 
 ### `64-an-unreadable-listing-is-read-as-carried`
 
@@ -1100,7 +1140,7 @@ the copies of a branch are ordered rather than compared, so the first checkout t
 - RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 - RED `a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other` — Unexpected return code, failed var == 2
 - RED `a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it` — Unexpected return code, failed var == 2
-- RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected return code, failed var == 2
+- RED `recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reached_by` — Unexpected stderr, failed var.contains(no copy of it carries the rest)
 
 ### `80-a-stated-subject-policy-is-never-asked`
 
@@ -1108,6 +1148,7 @@ the composed subject is never put to the repository, so a repository that states
 
 - RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — Unexpected return code, failed var == 1
 - RED `a_commit_msg_hook_judges_the_explicit_title_a_publication_would_land_under` — Unexpected return code, failed var == 1
+- RED `a_publication_the_repositorys_subject_policy_refuses_says_so_and_says_where_the_branch_went` — assertion `left == right` failed
 - RED `a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone` — the hook recorded nothing at <tmp>/commit-msg-saw: No such file or directory (os error 2)
 - RED `a_commit_msg_hook_that_cannot_run_refuses_the_publication_rather_than_passing_it` — Unexpected return code, failed var == 2
 - RED `a_hook_that_refuses_without_a_word_is_still_reported_as_the_refusal_it_is` — Unexpected return code, failed var == 1
@@ -1186,11 +1227,11 @@ text a hook wrote is interpolated into the refusal exactly as it arrived, contro
 
 - RED `a_repositorys_commit_msg_hook_refuses_the_subject_a_publication_would_land` — an escape sequence a hook wrote must not reach the terminal:
 
-### `84-every-gate-verdict-is-read-as-a-pass`
+### `84-every-merge-path-verdict-is-read-as-a-pass`
 
-status stops reading what a gate-verdict event actually said, so a refusal and a word this build does not know both report as a pass.
+status stops reading what a push event actually said, so a refusal and a word this build does not know both report as a pass.
 
-- RED `the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names` — assertion `left == right` failed
+- RED `the_last_merge_path_verdict_recorded_for_the_work_is_what_the_report_names` — assertion `left == right` failed
 
 ### `85-a-branch-a-stream-names-is-taken-on-trust`
 
@@ -1246,7 +1287,7 @@ the report's schema version stops being checked where the object is read, so a d
 
 a field the report leaves out when it holds nothing becomes one a reader requires, so the very bytes this build writes are bytes it cannot read.
 
-- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — the full golden reads back as a report: missing field `notes` at line 81 column 1
+- RED `both_checked_in_goldens_read_back_as_reports_and_write_themselves_again` — the full golden reads back as a report: missing field `notes` at line 75 column 1
 
 ### `90-a-commit-a-checkout-cannot-see-is-read-as-a-failure`
 
