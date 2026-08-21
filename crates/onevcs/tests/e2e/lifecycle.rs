@@ -2712,6 +2712,79 @@ fn the_integrate_train_keeps_going_past_a_failure_and_lands_one_commit_each() {
 }
 
 #[test]
+fn a_train_whose_merge_path_runs_nothing_is_warned_about_before_it_lands_and_never_refused() {
+    // Carrying no `pre-push` hook is a configuration this crate reports and does not
+    // overrule: a publication of such an identity is not refused either, and a train
+    // that refused where a publication does not would send an operator to raw `git
+    // merge`, which is verified by even less.
+    let fixture = Fixture::local(&local_direct());
+    let checkout = fixture.checkout.clone();
+    let world = &fixture.world;
+
+    world.git(
+        &checkout,
+        &["checkout", "-q", "-b", "claude/unproven", "main"],
+    );
+    world.commit_file(
+        &checkout,
+        "one.txt",
+        "one\n",
+        "feat: the unproven candidate",
+    );
+    world.git(&checkout, &["checkout", "-q", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args(["integrate", "claude/unproven", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude/unproven: merged"));
+
+    // Said *before* the work rather than after it: the train advances a base, and an
+    // operator who learns afterwards that nothing will ever judge what it landed has
+    // already landed it.
+    let said = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        said.contains("nothing on this identity's merge path runs a gate"),
+        "the train says what will not judge what it lands: {said:?}"
+    );
+    assert!(
+        said.contains("onevcs repos --audit-gates"),
+        "and names the command that reports what covers it: {said:?}"
+    );
+    assert_eq!(fixture.origin_log()[0], "feat: the unproven candidate");
+
+    // And an identity whose merge path *does* run something is told nothing, by the
+    // same train — the hook git runs at the push that publishes the advanced base is
+    // what verifies a train, so there is nothing here to report.
+    let hook_ran = world.path("hook-ran");
+    fixture.verified_by(&format!("printf 'ran\\n' >>\"{}\"", hook_ran.display()));
+    world.git(
+        &checkout,
+        &["checkout", "-q", "-b", "claude/proven", "main"],
+    );
+    world.commit_file(&checkout, "two.txt", "two\n", "feat: the proven candidate");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+
+    let covered = world
+        .onevcs()
+        .args(["integrate", "claude/proven", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .success();
+    let quiet = String::from_utf8(covered.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert!(
+        !quiet.contains("merge path runs a gate"),
+        "an identity something judges is told nothing: {quiet:?}"
+    );
+    assert!(
+        hook_ran.is_file(),
+        "the premise: the hook is what ruled on the push that published the base"
+    );
+}
+
+#[test]
 fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
     let world = World::new();
     let origin = world.bare_origin("reviewed");

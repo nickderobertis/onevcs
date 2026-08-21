@@ -215,27 +215,16 @@ fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
     dropped
 }
 
-/// Say once, per file, that a rules file still names what no longer verifies.
+/// Say, naming the file, that a rules file still names what no longer verifies.
 ///
-/// Once because it is the operator's own document and nothing they can do about it
-/// mid-run: a line per `onevcs` command in a run that publishes all day is noise
-/// that gets filtered, and the second one carries nothing the first did not.
+/// One line per load, which is one line per command: no `onevcs` command reads the
+/// rules file twice. A suppression keyed on what had already been reported was
+/// tried and taken out again — nothing could reach it, and an unreachable branch
+/// that claims to keep the output quiet is worse than the line it would have saved.
 fn report_spent_gate(path: &Path, dropped: usize) {
     if dropped == 0 {
         return;
     }
-    static REPORTED: std::sync::Mutex<Option<Vec<PathBuf>>> = std::sync::Mutex::new(None);
-    let mut reported = match REPORTED.lock() {
-        Ok(reported) => reported,
-        // A poisoned lock means another thread panicked mid-report. Saying it twice
-        // is better than a load that fails over a warning.
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let seen = reported.get_or_insert_with(Vec::new);
-    if seen.iter().any(|already| already == path) {
-        return;
-    }
-    seen.push(path.to_path_buf());
     eprintln!(
         "onevcs: warning: the rules file at {} names a gate, which version \
          {GATE_REMOVED_VERSION} removed; it is ignored. What verifies a change is the \
