@@ -1003,7 +1003,7 @@ fn publish_locally(
                 "origin",
                 environment,
             )?;
-            record_push(context, stream, &pushed)?;
+            record_push(stream, &context.branch, &pushed, Some(&context.run_root))?;
             if !pushed.accepted() {
                 return Err(rejected(context, &pushed));
             }
@@ -1118,7 +1118,7 @@ fn publish_as_change(
         replacing,
         environment,
     )?;
-    record_push(context, stream, &pushed)?;
+    record_push(stream, &context.branch, &pushed, Some(&context.run_root))?;
     if !pushed.accepted() {
         // Which refusal this is depends on what git declined, and that is decided
         // from what git and the host *report* rather than from the sentence either
@@ -1546,27 +1546,44 @@ fn unsettled(
 /// Storing it is best effort: the push has already happened, so a state root that
 /// would not take the bytes says so on stderr rather than turning a push git
 /// accepted into a publication that failed.
-fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed) -> Result<()> {
+///
+/// Every publishing push in this crate goes through here — the merge train's push of
+/// its advanced base included, because that push is where the hook rules on a train.
+/// One producer, so a second one cannot come to emit a thinner `push` event than the
+/// contract says a push verdict is.
+///
+/// `preserve_under` is the run root whose per-branch directory keeps a copy that
+/// outlives the tree the push was built in, and is `None` for a caller whose scratch
+/// workspace is removed when it returns — there the stored artifact is what persists,
+/// and a copy under a directory about to go would only look like evidence.
+pub(crate) fn record_push(
+    stream: &mut Stream,
+    branch: &Ref,
+    pushed: &git::Pushed,
+    preserve_under: Option<&Path>,
+) -> Result<()> {
     let output = pushed.output();
     let stored = stream::store_artifact("log", output);
-    let kept = merge_path::preserve_log(&context.run_root, &context.branch, output);
-    for error in [stored.as_ref().err(), kept.as_ref().err()]
-        .into_iter()
-        .flatten()
+    let kept = preserve_under.map(|root| merge_path::preserve_log(root, branch, output));
+    for error in [
+        stored.as_ref().err(),
+        kept.as_ref().and_then(|kept| kept.as_ref().err()),
+    ]
+    .into_iter()
+    .flatten()
     {
         eprintln!(
-            "onevcs: warning: the push of {:?} is recorded without what it wrote: {error}",
-            context.branch
+            "onevcs: warning: the push of {branch:?} is recorded without what it wrote: {error}"
         );
     }
     let artifact = stored.ok();
     let mut payload = object(json!({
-        "branch": context.branch,
+        "branch": branch,
         "remote": "origin",
         "accepted": pushed.accepted(),
         "output": output,
     }));
-    if let Ok(preserved) = &kept {
+    if let Some(Ok(preserved)) = &kept {
         payload.insert(
             "preserved_log".to_owned(),
             json!(preserved.display().to_string()),

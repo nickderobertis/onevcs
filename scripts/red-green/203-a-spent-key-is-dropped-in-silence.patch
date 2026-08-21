@@ -2,12 +2,12 @@ Mutation: a spent gate is dropped in silence, so the only place an operator lear
 Red: a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three
 
 diff --git a/crates/onevcs/src/policy.rs b/crates/onevcs/src/policy.rs
-index 75a538a..53731f7 100644
+index 7a73f34..b7cd99a 100644
 --- a/crates/onevcs/src/policy.rs
 +++ b/crates/onevcs/src/policy.rs
-@@ -222,7 +222,8 @@ fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
- /// tried and taken out again — nothing could reach it, and an unreachable branch
- /// that claims to keep the output quiet is worse than the line it would have saved.
+@@ -221,7 +221,8 @@ fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
+ /// is one line per command, and nothing here needs to remember what it has already
+ /// reported.
  fn report_spent_gate(path: &Path, dropped: usize) {
 -    if dropped == 0 {
 +    let _ = (path, dropped);

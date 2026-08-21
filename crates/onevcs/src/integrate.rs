@@ -310,14 +310,12 @@ fn train(
             });
         }
         let result = git::push(root, base, "origin", &environment)?;
-        stream.emit(
-            EventKind::Push,
-            object(json!({
-                "branch": base,
-                "remote": "origin",
-                "accepted": result.accepted(),
-            })),
-        );
+        // Through the one recorder every publishing push uses: this push is where the
+        // repository's `pre-push` hook rules on the whole train, so what it wrote is
+        // the verdict and the only account of a refusal there will ever be. No run
+        // root is handed over — the train's scratch workspace is removed a few lines
+        // below, so the stored artifact is what outlives the run.
+        publish::record_push(stream, &Ref::from_git(base), &result, None)?;
         if !result.accepted() {
             return Err(Error::PushRejected {
                 reason: format!(

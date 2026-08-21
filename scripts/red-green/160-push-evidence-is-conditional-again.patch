@@ -5,32 +5,34 @@ Red: a_pre_push_hook_that_rejects_the_push_is_reported_as_the_merge_path_refusin
 Red: a_refusing_merge_path_stops_the_publication_and_leaves_the_work_where_it_can_be_found
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index a324b36..629c690 100644
+index a94d239..4229209 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -1550,31 +1550,18 @@ fn unsettled(
- /// accepted into a publication that failed.
- fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed) -> Result<()> {
+@@ -1563,33 +1563,20 @@ pub(crate) fn record_push(
+     preserve_under: Option<&Path>,
+ ) -> Result<()> {
      let output = pushed.output();
 -    let stored = stream::store_artifact("log", output);
--    let kept = merge_path::preserve_log(&context.run_root, &context.branch, output);
--    for error in [stored.as_ref().err(), kept.as_ref().err()]
--        .into_iter()
--        .flatten()
+-    let kept = preserve_under.map(|root| merge_path::preserve_log(root, branch, output));
+-    for error in [
+-        stored.as_ref().err(),
+-        kept.as_ref().and_then(|kept| kept.as_ref().err()),
+-    ]
+-    .into_iter()
+-    .flatten()
 -    {
 -        eprintln!(
--            "onevcs: warning: the push of {:?} is recorded without what it wrote: {error}",
--            context.branch
+-            "onevcs: warning: the push of {branch:?} is recorded without what it wrote: {error}"
 -        );
 -    }
 -    let artifact = stored.ok();
 -    let mut payload = object(json!({
--        "branch": context.branch,
+-        "branch": branch,
 -        "remote": "origin",
 -        "accepted": pushed.accepted(),
 -        "output": output,
 -    }));
--    if let Ok(preserved) = &kept {
+-    if let Some(Ok(preserved)) = &kept {
 -        payload.insert(
 -            "preserved_log".to_owned(),
 -            json!(preserved.display().to_string()),
@@ -38,14 +40,16 @@ index a324b36..629c690 100644
 +    stream.emit(
 +        EventKind::Push,
 +        object(json!({
-+            "branch": context.branch,
++            "branch": branch,
 +            "remote": "origin",
 +            "accepted": pushed.accepted(),
 +        })),
 +    );
 +    if !pushed.accepted() {
 +        let _ = stream::store_artifact("log", output)?;
-+        let _ = merge_path::preserve_log(&context.run_root, &context.branch, output)?;
++        if let Some(root) = preserve_under {
++            let _ = merge_path::preserve_log(root, branch, output)?;
++        }
      }
 -    stream.emit_with(EventKind::Push, payload, artifact.into_iter().collect());
      Ok(())

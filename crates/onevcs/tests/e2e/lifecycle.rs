@@ -2782,6 +2782,34 @@ fn a_train_whose_merge_path_runs_nothing_is_warned_about_before_it_lands_and_nev
         hook_ran.is_file(),
         "the premise: the hook is what ruled on the push that published the base"
     );
+
+    // And that push is a verdict like every other publishing push, so it carries what
+    // the hook wrote. A train that emitted a thinner `push` event than a publication
+    // would leave the one run whose verification happens *only* at the push as the one
+    // with no account of it.
+    let pushes = world.events_of(&integrate_token(&checkout), "push");
+    let last = pushes.last().expect("the train pushed its advanced base");
+    assert_eq!(last["payload"]["accepted"], true, "{last}");
+    assert_eq!(last["payload"]["branch"], "main", "{last}");
+    assert!(
+        last["payload"]["output"].is_string(),
+        "the push carries what the merge path wrote: {last}"
+    );
+    assert!(
+        last["artifacts"][0]["id"].is_string(),
+        "and stores it as an artifact: {last}"
+    );
+}
+
+/// The stream a train writes under, which is keyed by the identity's alias.
+fn integrate_token(checkout: &std::path::Path) -> String {
+    format!(
+        "integrate-{}",
+        checkout
+            .file_name()
+            .expect("the checkout has a name")
+            .to_string_lossy()
+    )
 }
 
 #[test]
