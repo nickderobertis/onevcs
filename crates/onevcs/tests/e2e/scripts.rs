@@ -1648,32 +1648,22 @@ fn a_lock_the_run_cannot_put_down_is_said_rather_than_assumed() {
     // outlives the run: a lock still there is a refusal, to every run after it, about
     // a run that is not there — so a removal that did not happen is reported with the
     // way out of it rather than assumed to have worked.
+    use std::os::unix::fs::PermissionsExt;
+
     let harness = Harness::new();
     harness.patch(
         "01-subject",
         &subject_patch(&["the_test_the_mutation_breaks"]),
     );
-    // The real `rm` for everything else and a refusal for that one path, which is what
-    // a lock directory this user cannot remove looks like from inside the script.
-    let refusing = stub(
-        "rm",
-        r#"#!/usr/bin/env bash
-for arg in "$@"; do
-  case "$arg" in
-    *red-green.lock) echo "rm: cannot remove '$arg': Permission denied" >&2; exit 1 ;;
-  esac
-done
-exec /bin/rm "$@"
-"#,
-    );
-    let path = format!(
-        "{}:{}",
-        refusing.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    // The refusal is the filesystem's own: the lock directory holds the pid file the
+    // run wrote, and unlinking that needs write on the directory. Taken away between
+    // a round's apply and its restore, which is the one moment anything runs inside
+    // the lock's lifetime. `.logs` itself stays writable, so the log is untouched and
+    // the lock is the only thing the run cannot put down.
+    harness.hook("chmod a-w .logs/red-green.lock");
 
-    let reported = harness.run_with(&["--base", "HEAD"], &[("PATH", path.as_str())]);
-    reported
+    harness
+        .run(&["--base", "HEAD"])
         .failed()
         .said("red-green: .logs/red-green.lock could not be removed")
         .said("ACTION: remove .logs/red-green.lock by hand")
@@ -1683,12 +1673,17 @@ exec /bin/rm "$@"
 
     // …and the action it names is the whole way back: with the lock gone by hand, the
     // next run is let in rather than turned away by the one that could not drop it.
+    let lock = harness.root().join(".logs/red-green.lock");
     assert!(
-        harness.root().join(".logs/red-green.lock").exists(),
+        lock.is_dir(),
         "the run reported a lock it could not remove, so the lock is still there"
     );
-    std::fs::remove_dir_all(harness.root().join(".logs/red-green.lock"))
-        .expect("the lock the run could not remove");
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755))
+        .expect("the lock directory is this user's to give back");
+    std::fs::remove_dir_all(&lock).expect("the lock the run could not remove");
+    // The hook removes itself so it runs once, and it is a tracked file: committing
+    // that is what leaves the tree the second run is entitled to refuse a dirty one.
+    harness.commit("test: the hook ran, once");
     harness
         .run(&["--base", "HEAD"])
         .succeeded()
