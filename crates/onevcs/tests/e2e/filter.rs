@@ -58,7 +58,7 @@ fn kinds(events: &[Value]) -> Vec<String> {
 
 /// A published local session, and the token whose stream it wrote.
 fn published(branch: &str) -> (Fixture, String) {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", branch]);
     fixture
         .world
@@ -123,17 +123,17 @@ fn a_filter_narrows_a_real_session_stream_and_exclude_wins_over_include() {
     let everything = kinds(&reported(world, &token, &[]));
     assert!(
         everything.contains(&"lock-wait".to_owned())
-            && everything.contains(&"gate-verdict".to_owned()),
+            && everything.contains(&"merge-completed".to_owned()),
         "this journey needs a stream with both: {everything:?}"
     );
 
     // Include-only, handed over inline as JSON: what the planner asks for.
-    let gates = kinds(&reported(
+    let merges = kinds(&reported(
         world,
         &token,
-        &["--filter", r#"{"include": [{"kind": "gate-*"}]}"#],
+        &["--filter", r#"{"include": [{"kind": "merge-*"}]}"#],
     ));
-    assert_eq!(gates, vec!["gate-started", "gate-verdict"]);
+    assert_eq!(merges, vec!["merge-queued", "merge-completed"]);
 
     // Exclude-only, from a file of the YAML the grammar is written in: everything
     // the session recorded except the waiting.
@@ -166,15 +166,15 @@ fn a_filter_narrows_a_real_session_stream_and_exclude_wins_over_include() {
 
     // Both, on the same events: exclude wins over include, so the narrower of two
     // statements about one kind is the one that decides.
-    let verdict_only = kinds(&reported(
+    let completed_only = kinds(&reported(
         world,
         &token,
         &[
             "--filter",
-            r#"{"include": [{"kind": "gate-*"}], "exclude": [{"kind": "gate-started"}]}"#,
+            r#"{"include": [{"kind": "merge-*"}], "exclude": [{"kind": "merge-queued"}]}"#,
         ],
     ));
-    assert_eq!(verdict_only, vec!["gate-verdict"]);
+    assert_eq!(completed_only, vec!["merge-completed"]);
 
     // And the source family, which every event this crate produces carries.
     assert_eq!(
@@ -290,7 +290,7 @@ const FOLLOWED_SPEC: &str = r#"{"include": [{"kind": "merge-*"}, {"kind": "sessi
 
 #[test]
 fn a_followed_read_is_filtered_by_the_same_spec_as_a_one_shot_one() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/followed-filter"]);
 
     // Following from before the publication, so what the filter judges is written
@@ -348,8 +348,7 @@ fn a_followed_read_is_filtered_by_the_same_spec_as_a_one_shot_one() {
     // agreement above an agreement about filtering rather than about a short stream.
     let everything = kinds(&reported(&fixture.world, &token, &[]));
     assert!(
-        everything.contains(&"merge-queued".to_owned())
-            && everything.contains(&"gate-verdict".to_owned()),
+        everything.contains(&"merge-queued".to_owned()) && everything.contains(&"push".to_owned()),
         "{everything:?}"
     );
 }

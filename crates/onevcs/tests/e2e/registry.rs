@@ -272,7 +272,7 @@ fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
         &world,
         "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp, name: \"*\"}\n\
          \x20   publication: change-open\n    approvals: required\ndefault: {publication: \
-         change-auto, approvals: none, gate: {kind: pre-push}}\n",
+         change-auto, approvals: none}\n",
     );
 
     world
@@ -292,11 +292,9 @@ fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
         .stdout(predicate::str::contains(
             "approvals: required (from rule 1)",
         ))
-        // The rule sets no gate, so the field falls through to the default and the
-        // explanation says which of the two decided it.
-        .stdout(predicate::str::contains(
-            "gate: pre-push (from the default)",
-        ));
+        // What verifies a change is the repository's own merge path and never the
+        // rules file, so the resolved policy has no line about it to explain.
+        .stdout(predicate::str::contains("gate:").not());
 }
 
 #[test]
@@ -318,7 +316,7 @@ fn a_repository_no_rule_matches_falls_through_to_the_default() {
         &world,
         "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp}\n\
          \x20   publication: local-direct\n    approvals: none\n\
-         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
 
     world
@@ -332,7 +330,9 @@ fn a_repository_no_rule_matches_falls_through_to_the_default() {
         .stdout(predicate::str::contains(
             "publication: change-open (from the default)",
         ))
-        .stdout(predicate::str::contains("gate: checks (from the default)"));
+        .stdout(predicate::str::contains(
+            "approvals: required (from the default)",
+        ));
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: required, gate: {kind: pre-push}}\n",
+         default: {publication: local-direct, approvals: required}\n",
     );
 
     // The failure this prevents is silent: the change lands, and nothing later
@@ -385,7 +385,7 @@ fn a_trailer_prefix_that_spells_no_git_trailer_key_is_refused_by_name() {
             &world,
             format!(
                 "version: 2\ntrailer_prefix: {prefix}\nrules: []\n\
-                 default: {{publication: change-open, approvals: required, gate: {{kind: checks}}}}\n"
+                 default: {{publication: change-open, approvals: required}}\n"
             ),
         );
         world
@@ -401,7 +401,7 @@ fn a_trailer_prefix_that_spells_no_git_trailer_key_is_refused_by_name() {
     configure_rules(
         &world,
         "version: 2\ntrailer_prefix: Zzz-\nrules: []\n\
-         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
     world
         .onevcs()
@@ -423,7 +423,7 @@ fn a_rules_file_written_before_the_trailer_prefix_existed_still_reads_and_means_
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
-    let policy = "default: {publication: change-open, approvals: required, gate: {kind: checks}}";
+    let policy = "default: {publication: change-open, approvals: required}";
 
     // The file every host already has. It keeps working, and it means the keys this
     // crate has always written — which value that is comes from the contract, so
@@ -496,7 +496,7 @@ fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
         .stderr(predicate::str::contains("declares version 7"))
         // Naming the range rather than one version, because more than one is
         // readable now and an operator downgrading a file needs to know which.
-        .stderr(predicate::str::contains("reads versions 1 to 2"));
+        .stderr(predicate::str::contains("reads versions 1 to 3"));
 }
 
 #[test]
@@ -513,7 +513,7 @@ fn a_path_rule_matches_the_checkout_rather_than_the_origin() {
         &world,
         format!(
             "version: 1\nrules:\n  - match: {{path: \"{}/*\"}}\n    publication: local-direct\n\
-             default: {{publication: change-open, approvals: none, gate: {{kind: checks}}}}\n",
+             default: {{publication: change-open, approvals: none}}\n",
             world.path("").to_string_lossy().trim_end_matches('/')
         ),
     );

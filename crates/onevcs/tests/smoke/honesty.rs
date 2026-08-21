@@ -29,12 +29,12 @@ use crate::scratch::{authenticated_user, inhabit, real_host, scratch_repo, World
 
 /// The policy the compared journey publishes under.
 ///
-/// `change-direct` with a command gate: it opens a change request, merges it, and
-/// records a verdict, which is every event kind two backends can both reach against
-/// a repository that declares no required checks. The offline leg publishes under
-/// `change-auto` with the host's checks and keeps covering that.
-const RULES: &str = "version: 2\nrules: []\ndefault:\n  publication: change-direct\n  \
-                     approvals: none\n  gate:\n    command: [\"git\", \"--version\"]\n";
+/// `change-direct`: it opens a change request and merges it, which is every event
+/// kind two backends can both reach against a repository that declares no required
+/// checks. The offline leg publishes under `change-auto` with the host's checks and
+/// keeps covering that.
+const RULES: &str = "version: 3\nrules: []\ndefault:\n  publication: change-direct\n  \
+                     approvals: none\n";
 
 /// One command line, run against these implementations.
 fn run(args: &[&str], providers: Providers<'_>) -> u8 {
@@ -145,14 +145,13 @@ fn publication_events_match_between_the_real_backends_and_the_providers() {
     assert_eq!(
         real_evidence,
         evidence(&provided_events, &provided.home()),
-        "the log a gate's artifact holds must read the same either way"
+        "the log a push's artifact holds must read the same either way"
     );
-    // Not vacuously equal: the journey really did run a gate, push, open a change on
-    // GitHub, and land it.
+    // Not vacuously equal: the journey really did push, open a change on GitHub, and
+    // land it.
     let kinds = crate::comparison::kinds(&real_events);
     for expected in [
         "session-opened",
-        "gate-verdict",
         "push",
         "change-opened",
         "merge-queued",

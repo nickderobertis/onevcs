@@ -95,11 +95,11 @@ impl Hosted {
     }
 }
 
-pub const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
-pub const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
+pub const REVIEWED: &str = "{publication: change-open, approvals: required}";
+pub const AUTOMATED: &str = "{publication: change-auto, approvals: required}";
 /// Published straight into the base behind a gate that is a command, so nothing on
 /// this path asks the host what checks a change request carries.
-const DIRECT: &str = "{publication: change-direct, approvals: none, gate: {command: [\"true\"]}}";
+const DIRECT: &str = "{publication: change-direct, approvals: none}";
 
 #[test]
 fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
@@ -2028,8 +2028,7 @@ fn a_change_the_host_holds_is_watched_until_it_lands_and_reports_the_commit() {
     // The gate is `pre-push` rather than `checks` deliberately: what drives the
     // watching is the *merge policy*, not what the policy names as its
     // verification. This journey would have observed nothing at all before.
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -2100,12 +2099,11 @@ fn a_merge_the_host_reports_is_recorded_on_the_branch_under_the_configured_prefi
     // Under this host's own configured prefix, like every other trailer this crate
     // reads and writes: a repository spelling its provenance differently must read
     // its own landings and not somebody else's.
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     configure_rules(
         &hosted.world,
         "version: 2\ntrailer_prefix: Orchestrator-\nrules: []\n\
-         default: {publication: change-auto, approvals: required, gate: {kind: pre-push}}\n",
+         default: {publication: change-auto, approvals: required}\n",
     );
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
@@ -2267,8 +2265,7 @@ fn a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_public
     // carrying it, and that is worth saying. It is not worth reporting the merge as
     // having failed: the change is on the base either way, and a publication that
     // answered "failed" would send somebody to land work that is already landed.
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -2300,8 +2297,7 @@ fn a_landing_the_checkout_will_not_take_is_a_warning_rather_than_a_failed_public
     // `commit-msg` hook turns the landing commit's message down. A repository is
     // entitled to refuse a message nothing asked it about; it is not entitled to
     // undo a merge that has already happened.
-    let refusing =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let refusing = Hosted::new("{publication: change-auto, approvals: required}");
     refusing.world.install_commit_msg(
         &refusing.checkout,
         "grep -q 'record the landing' \"$1\" && exit 1; exit 0",
@@ -2334,8 +2330,7 @@ fn a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending() 
     // silent stop: the check never settles, the host never merges, and the
     // publication has to say so — naming the check it was still being held for, so
     // whoever routes the failure can tell "CI said no" from "nobody answered".
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -2372,8 +2367,7 @@ fn a_red_required_check_ends_an_auto_merge_publication_and_quotes_the_log() {
     // report the wrong thing: the failure is the check, and it is named, with a
     // bounded excerpt of what it printed — the diagnosis used to be reachable only
     // by fetching the artifact by hand.
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -2441,8 +2435,7 @@ fn an_auto_merge_the_host_takes_and_never_performs_is_bounded_and_says_the_check
     // here — there are none — so the bound says which of the three it was, because
     // "CI is still running", "the repository declares nothing blocking", and "the
     // host took it and did nothing" are three different next moves.
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -2469,8 +2462,7 @@ fn an_auto_merge_the_host_takes_and_never_performs_is_bounded_and_says_the_check
 
 #[test]
 fn a_repository_that_disallows_auto_merge_reports_the_hosts_refusal() {
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     std::fs::write(hosted.world.path("gh-state/auto-merge-unavailable"), "")
         .expect("the host refuses auto-merge");
@@ -2488,8 +2480,7 @@ fn a_repository_that_disallows_auto_merge_reports_the_hosts_refusal() {
 
 #[test]
 fn a_branch_the_hooks_gate_rejects_never_reaches_a_change_request() {
-    let hosted =
-        Hosted::new("{publication: change-open, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-open, approvals: required}");
     hosted.world.install_pre_push(
         &hosted.checkout,
         "echo 'the gate rejected this' >&2; exit 1",
@@ -2531,7 +2522,7 @@ fn a_local_identity_cannot_be_asked_to_open_a_change_request() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
 
     let assert = world

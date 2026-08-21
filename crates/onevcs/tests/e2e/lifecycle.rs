@@ -77,6 +77,18 @@ impl Fixture {
         (token_of(&stdout), worktree_of(&stdout))
     }
 
+    /// Give the repository its own verifier: a `pre-push` hook running `body`.
+    ///
+    /// The merge path is what verifies a local-first publication — git runs this
+    /// hook at the publishing push, in the tree that push is publishing — so a
+    /// journey that needs a verifier which *refuses*, or one that writes something
+    /// the run then has to account for, says so here. Installed on the execution
+    /// checkout, which is where an operator's hooks live; `git::carry_hooks` is what
+    /// gets them into the clone a session publishes from.
+    pub fn verified_by(&self, body: &str) -> PathBuf {
+        self.world.install_pre_push(&self.checkout, body)
+    }
+
     /// What the origin's `main` branch now holds.
     pub fn origin_log(&self) -> Vec<String> {
         self.world
@@ -87,14 +99,15 @@ impl Fixture {
     }
 }
 
-/// A rules default that publishes locally and verifies with one command.
-pub fn local_direct(gate: &str) -> String {
-    format!("{{publication: local-direct, approvals: none, gate: {{command: {gate}}}}}")
+/// A rules default that publishes locally, which is verified by the repository's
+/// own `pre-push` hook at the publishing push and by nothing else.
+pub fn local_direct() -> String {
+    "{publication: local-direct, approvals: none}".to_owned()
 }
 
 #[test]
 fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/one"]);
 
     assert!(
@@ -144,7 +157,7 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
 
 #[test]
 fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // Somebody else's change lands on origin. The registered checkout is not touched
     // by that, so its own `main` is now behind — which is where an execution
     // checkout sits between one publication and the next.
@@ -225,7 +238,7 @@ fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_ow
 
 #[test]
 fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (first, worktree) = fixture.open(&["--branch", "feature/resumed"]);
     fixture
         .world
@@ -319,7 +332,7 @@ fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_seco
 
 #[test]
 fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // Somebody is working in that run root, which is the state the whole journey is
     // about: resuming is an optimisation, and an optimisation that cannot be taken
     // must never be a session that will not open.
@@ -370,7 +383,7 @@ fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refus
 
 #[test]
 fn a_pin_resumes_only_the_session_it_asked_for() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
     // A second base at the same commit, and a second checkout of the same identity,
     // so a request can name one the session it might have resumed was not cut with.
@@ -477,7 +490,7 @@ fn a_pin_resumes_only_the_session_it_asked_for() {
 
 #[test]
 fn a_session_that_pins_no_branch_is_cut_fresh_every_time() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (first, worktree) = fixture.open(&[]);
     // Work, so the run root it holds outlives the reclamation the next open runs and
     // the two can be compared at all.
@@ -516,7 +529,7 @@ fn a_session_that_pins_no_branch_is_cut_fresh_every_time() {
 
 #[test]
 fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_checkout() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/adds"]);
     fixture
         .world
@@ -569,8 +582,6 @@ fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_che
         .collect();
     for expected in [
         "session-opened",
-        "gate-started",
-        "gate-verdict",
         "lock-wait",
         "lock-acquired",
         "merge-queued",
@@ -588,10 +599,9 @@ fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_che
 }
 
 #[test]
-fn a_failing_gate_stops_the_publication_and_leaves_the_work_where_it_can_be_found() {
-    let fixture = Fixture::local(&local_direct(
-        "[\"sh\", \"-c\", \"echo the gate rejected this; exit 1\"]",
-    ));
+fn a_refusing_merge_path_stops_the_publication_and_leaves_the_work_where_it_can_be_found() {
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("echo the hook rejected this >&2; exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/rejected"]);
     fixture
         .world
@@ -602,9 +612,10 @@ fn a_failing_gate_stops_the_publication_and_leaves_the_work_where_it_can_be_foun
         .onevcs()
         .args(["publish", &token])
         .assert()
-        // Exit 1 is the contract's code for the gate or the host's checks refusing.
+        // Exit 1 is the contract's code for a verification failure, whichever of the
+        // merge path's verifications it was.
         .code(1)
-        .stderr(predicate::str::contains("gate failed"))
+        .stderr(predicate::str::contains("push rejected"))
         .stderr(predicate::str::contains("is preserved in"));
 
     // Nothing reached the base.
@@ -616,35 +627,35 @@ fn a_failing_gate_stops_the_publication_and_leaves_the_work_where_it_can_be_foun
         .git(&fixture.checkout, &["branch", "--list", "feature/rejected"])
         .contains("feature/rejected"));
 
-    // The gate's own output is stored as an artifact and fetched through the CLI.
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
-    let id = verdicts[0]["artifacts"][0]["id"]
+    // What the hook wrote is stored as an artifact and fetched through the CLI.
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], false);
+    let id = pushes[0]["artifacts"][0]["id"]
         .as_str()
-        .expect("a failing gate stores its log");
+        .expect("a refused push stores what it wrote");
     fixture
         .world
         .onevcs()
         .args(["artifact", "cat", id])
         .assert()
         .success()
-        .stdout(predicate::str::contains("the gate rejected this"));
+        .stdout(predicate::str::contains("the hook rejected this"));
     // …and preserved beside the run root, one file per invocation, so it outlives
-    // the worktree it ran in.
+    // the worktree the publication was built in.
     let preserved = PathBuf::from(
-        verdicts[0]["payload"]["preserved_log"]
+        pushes[0]["payload"]["preserved_log"]
             .as_str()
             .expect("a preserved log path"),
     );
     assert!(preserved.ends_with("gate-0001.log"), "{preserved:?}");
     assert!(std::fs::read_to_string(&preserved)
         .expect("the preserved log")
-        .contains("the gate rejected this"));
+        .contains("the hook rejected this"));
 }
 
 #[test]
 fn a_title_that_could_not_be_a_subject_is_refused_before_anything_is_committed() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/untitled"]);
     fixture
         .world
@@ -682,7 +693,7 @@ fn a_title_that_could_not_be_a_subject_is_refused_before_anything_is_committed()
 
 #[test]
 fn a_branch_that_adds_nothing_publishes_nothing() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, _worktree) = fixture.open(&["--branch", "feature/empty"]);
 
     fixture
@@ -701,7 +712,8 @@ fn a_branch_whose_content_already_landed_publishes_nothing_and_runs_no_gate() {
     // to the tree, so the history cannot answer this and the tree has to. There is
     // nothing left to verify either, which a gate that refuses everything is what
     // proves: reaching it would fail a publication whose work is already on the base.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/landed-elsewhere"]);
     fixture
         .world
@@ -736,7 +748,7 @@ fn a_branch_whose_content_already_landed_publishes_nothing_and_runs_no_gate() {
 
 #[test]
 fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_name() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/unnameable"]);
     let overlong = format!("feat: {}", "a very long description ".repeat(6));
     fixture
@@ -777,7 +789,7 @@ fn a_branch_whose_commits_name_no_change_refuses_rather_than_publishing_a_non_na
 
 #[test]
 fn a_subject_is_published_whole_up_to_the_limit_and_refused_one_character_past_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let hundred = format!("feat: {}", "a".repeat(100 - "feat: ".len()));
     assert_eq!(hundred.len(), 100);
 
@@ -844,7 +856,10 @@ fn a_subject_is_published_whole_up_to_the_limit_and_refused_one_character_past_i
 
 #[test]
 fn a_dirty_adoption_commits_incomplete_provenance_that_only_recovery_may_publish() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let (token, worktree) = fixture.open(&["--branch", "feature/interrupted"]);
     fixture
         .world
@@ -920,7 +935,10 @@ fn a_dirty_adoption_commits_incomplete_provenance_that_only_recovery_may_publish
 fn a_configured_trailer_prefix_is_written_and_read_by_every_verb_that_touches_provenance() {
     // The same journey as above under a prefix this crate has never written, which
     // is what a host whose branches were preserved by something else configures.
-    let fixture = Fixture::with_trailer_prefix(&local_direct("[\"true\"]"), "Zzz-");
+    let fixture = Fixture::with_trailer_prefix(&local_direct(), "Zzz-");
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let (token, worktree) = fixture.open(&["--branch", "feature/interrupted"]);
     fixture
         .world
@@ -1009,10 +1027,13 @@ fn a_legacy_marker_is_recovered_by_its_subject_even_when_its_trailer_is_unreadab
     // The awkward middle case: a branch preserved by a build old enough to mark the
     // step in the *subject*, carrying a trailer under a prefix this host does not
     // read. The subject is what recognizes it — that is what the suffix is for — so
-    // recovery still runs the gate and attests, under the prefix this host writes.
-    // The train, which knows only that it found provenance it cannot read, refuses
-    // it and points at the verb that can. Both refuse to publish it as finished.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // recovery still attests, under the prefix this host writes. The train, which
+    // knows only that it found provenance it cannot read, refuses it and points at
+    // the verb that can. Both refuse to publish it as finished.
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let checkout = fixture.checkout.clone();
     fixture
         .world
@@ -1078,7 +1099,7 @@ fn an_ordinary_publication_under_a_configured_prefix_records_no_provenance_at_al
     // work that finished. Publication preserves the uncommitted remainder as
     // *complete*, so neither the branch nor the base may end up carrying a marker
     // under the configured prefix — or under the one it replaced.
-    let fixture = Fixture::with_trailer_prefix(&local_direct("[\"true\"]"), "Zzz-");
+    let fixture = Fixture::with_trailer_prefix(&local_direct(), "Zzz-");
     let (token, worktree) = fixture.open(&["--branch", "feature/finished"]);
     fixture
         .world
@@ -1122,7 +1143,7 @@ fn the_stack_metadata_a_preserved_branch_carries_is_read_under_the_configured_pr
     // A branch preserved on top of another one: the change-request base and the
     // change it was opened as travel as trailers, and both are spelled under the
     // configured prefix like everything else here.
-    let fixture = Fixture::with_trailer_prefix(&local_direct("[\"true\"]"), "Zzz-");
+    let fixture = Fixture::with_trailer_prefix(&local_direct(), "Zzz-");
     let checkout = fixture.checkout.clone();
     let change = "https://example.invalid/changes/7";
     fixture
@@ -1185,7 +1206,10 @@ fn a_branch_whose_provenance_prefix_is_not_configured_is_never_published_as_comp
     // The branch a different consumer preserved: its subject says nothing about
     // being unfinished, and only the trailer marks the step — under a prefix this
     // host is not configured to read.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let checkout = fixture.checkout.clone();
     fixture
         .world
@@ -1260,7 +1284,7 @@ fn a_branch_whose_provenance_prefix_is_not_configured_is_never_published_as_comp
         &fixture.world,
         format!(
             "version: 2\ntrailer_prefix: Qqq-\nrules: []\ndefault: {}\n",
-            local_direct("[\"true\"]")
+            local_direct()
         ),
     );
     fixture
@@ -1287,7 +1311,7 @@ fn a_branch_whose_provenance_prefix_is_not_configured_is_never_published_as_comp
 
 #[test]
 fn recovery_hands_a_complete_branch_over_to_the_verb_that_publishes_one() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/complete"]);
     fixture
         .world
@@ -1320,7 +1344,7 @@ fn recovery_hands_a_complete_branch_over_to_the_verb_that_publishes_one() {
 
 #[test]
 fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
 
     let (complete, complete_tree) = fixture.open(&["--branch", "feature/whole"]);
     fixture
@@ -1393,7 +1417,7 @@ fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
 
 #[test]
 fn a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // llmlint: ignore-block[tests_mirror_real_usage] no verb holds an occupancy lease
     // across time — each takes it, works, and releases it before the process that opened
     // the session exits — so there is no command to run that leaves a run root occupied
@@ -1490,7 +1514,7 @@ fn a_branch_that_removes_more_than_it_adds_is_marked_in_both_renderings() {
     // beside them been trusted. Deleting far more than it adds may be exactly right,
     // which is why this marks rather than excludes — but it must reach the operator
     // before the command does.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let many: String = (1..=400).map(|line| format!("line {line}\n")).collect();
     fixture.world.commit_file(
         &fixture.checkout,
@@ -1600,7 +1624,7 @@ fn what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked() {
     // removes is not net-negative; and a branch sharing no history with the base has no
     // point it forked from, so there is nothing to measure it against. A mark on any of
     // them is a mark an operator learns to ignore.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let many: String = (1..=40).map(|line| format!("line {line}\n")).collect();
     fixture
         .world
@@ -1717,7 +1741,7 @@ fn what_the_net_negative_count_does_not_count_leaves_a_branch_unmarked() {
 
 #[test]
 fn a_branch_the_base_already_carries_drops_out_of_the_recoverable_view() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/landed"]);
     fixture
         .world
@@ -1752,7 +1776,7 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
     // worktree, and nothing ever closed it — so the branch reached no checkout and
     // exists in the run clone alone. That is the case this report exists for, and
     // the one an operator otherwise finishes with raw `git`.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (_token, worktree) = fixture.open(&["--branch", "feature/only-in-the-run-clone"]);
     fixture.world.commit_file(
         &worktree,
@@ -1828,7 +1852,7 @@ fn work_a_stopped_run_left_only_in_its_clone_is_reported_and_landed_by_the_comma
 
 #[test]
 fn a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forking_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // The name is used once and published, so the base carries what it meant as one
     // squashed commit while the run's own clone keeps the branch that meant it — ahead of
     // the base by commits nothing will publish again.
@@ -1932,7 +1956,7 @@ fn a_run_clone_that_cannot_reach_the_base_is_judged_against_the_one_it_can() {
     // The identity has two checkouts: the one publication fast-forwards, and a
     // worker the run is cut from. A clone reads history out of its lender, so a
     // base commit the lender never fetched is one the clone cannot see at all.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let worker = fixture.world.clone_of(&fixture.origin, "worker");
     fixture
         .world
@@ -1997,7 +2021,7 @@ fn a_scoped_recoverable_answer_names_the_identity_it_covers() {
     // alone — which nobody typed and nothing but this line says, so an answer of
     // sixty branches reads as the whole host's and the work under the other
     // identity reads as work nobody has.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let other_origin = fixture.world.bare_origin("unrelated");
     let other = fixture.world.clone_of(&other_origin, "unrelated");
     fixture
@@ -2098,7 +2122,7 @@ fn a_scoped_recoverable_answer_names_the_identity_it_covers() {
 
 #[test]
 fn a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting_fresh() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
 
     // The work a stopped run left in its clone, which is where a pin most often
@@ -2273,7 +2297,7 @@ fn a_branch_pin_naming_work_that_already_exists_continues_it_rather_than_cutting
 
 #[test]
 fn a_continued_branch_publishes_the_commits_its_base_does_not_carry() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
 
     // Work that landed on a branch and stayed there: the node that made it stopped
@@ -2341,7 +2365,7 @@ fn a_continued_branch_publishes_the_commits_its_base_does_not_carry() {
 
 #[test]
 fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
 
     world.git(
@@ -2432,7 +2456,7 @@ fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_wha
 
 #[test]
 fn copies_of_a_continued_branch_that_diverged_are_refused_rather_than_one_being_chosen() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
 
     // A copy pushed from somewhere else…
@@ -2495,7 +2519,7 @@ fn copies_of_a_continued_branch_that_diverged_are_refused_rather_than_one_being_
 
 #[test]
 fn a_continued_branch_opens_at_whichever_copy_carries_the_other() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
 
     // A branch made here and pushed, so both this checkout and origin hold it…
@@ -2587,7 +2611,7 @@ fn a_continued_branch_opens_at_whichever_copy_carries_the_other() {
 
 #[test]
 fn a_session_whose_base_is_its_own_branch_is_refused_naming_the_spelling_that_replaced_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
 
     world.git(
@@ -2629,7 +2653,7 @@ fn a_session_whose_base_is_its_own_branch_is_refused_naming_the_spelling_that_re
 
 #[test]
 fn the_integrate_train_keeps_going_past_a_failure_and_lands_one_commit_each() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let checkout = fixture.checkout.clone();
     let world = &fixture.world;
 
@@ -2740,10 +2764,7 @@ fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
     world.install_fake_host(&origin);
     configure_rules(
         &world,
-        format!(
-            "version: 1\nrules: []\ndefault: {}\n",
-            local_direct("[\"true\"]")
-        ),
+        format!("version: 1\nrules: []\ndefault: {}\n", local_direct()),
     );
     world
         .onevcs()
@@ -2755,7 +2776,7 @@ fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
 
 #[test]
 fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let other = fixture.world.clone_of(&fixture.origin, "elsewhere");
     fixture.world.commit_file(
         &other,
@@ -2809,7 +2830,7 @@ fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
 
 #[test]
 fn a_publication_checkout_that_is_not_on_its_base_is_refused() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/blocked"]);
     fixture
         .world
@@ -2834,8 +2855,7 @@ fn a_publication_checkout_that_is_not_on_its_base_is_refused() {
 #[test]
 fn the_publishing_push_hands_its_hook_the_base_it_publishes_onto() {
     let log = "comparison.log";
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let recorded = fixture.world.path(log);
     fixture.world.install_pre_push(
         &fixture.checkout,
@@ -2858,31 +2878,29 @@ fn the_publishing_push_hands_its_hook_the_base_it_publishes_onto() {
         .success();
 
     // A hook left to discover its own base resolves the repository default rather
-    // than the base this push is publishing onto — which for a memoizing gate tier
+    // than the base this push is publishing onto — which for a memoizing judged tier
     // is a different question, judged under a key the worker never saw.
     let recorded = std::fs::read_to_string(&recorded).expect("the hook recorded its environment");
     assert_eq!(recorded.trim(), "origin main", "{recorded}");
 
-    // The hook's whole run is the gate's verdict, and it is preserved whether it
-    // passed or was rejected.
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    assert_eq!(verdicts[0]["payload"]["verdict"], "pass");
-    assert!(verdicts[0]["artifacts"][0]["id"].is_string());
+    // The hook's whole run is the merge path's verdict, and it is preserved whether
+    // it passed or was rejected.
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], true);
+    assert!(pushes[0]["artifacts"][0]["id"].is_string());
 }
 
 #[test]
-fn a_push_a_hook_refuses_records_what_the_hook_wrote_whatever_the_policy_calls_its_gate() {
-    // The repository's verification here is a `command:` gate, which this crate runs
-    // itself and which passes — and the repository *also* carries a `pre-push` hook,
-    // which is the shape every identity on the host this was written for has. The
-    // hook refuses the publishing push, and what it wrote is the only account of why
-    // there will ever be: it lives in a pipe, and the process ends.
+fn a_push_a_hook_refuses_records_what_the_hook_wrote() {
+    // The hook refuses the publishing push, and what it wrote is the only account of
+    // why there will ever be: it lives in a pipe, and the process ends.
     //
     // That evidence used to be preserved only where the resolved policy named
-    // `gate: {kind: pre-push}`, so on this shape of repository a rejected push threw
-    // the diagnosis away every time. What the policy calls its verification cannot
-    // decide whether a failure is diagnosable, so the capture is unconditional.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    // `gate: {kind: pre-push}`, so on a host whose rules named commands a rejected
+    // push threw the diagnosis away every time. What a policy called its
+    // verification could not decide whether a failure was diagnosable, and now there
+    // is no such field at all: the capture is unconditional.
+    let fixture = Fixture::local(&local_direct());
     fixture.world.install_pre_push(
         &fixture.checkout,
         "echo 'the pre-push hook found a secret in the diff' >&2; exit 1",
@@ -2929,12 +2947,12 @@ fn a_push_a_hook_refuses_records_what_the_hook_wrote_whatever_the_policy_calls_i
         "{preserved}"
     );
 
-    // And the gate that *was* named ran and passed, so this is not the hook being
-    // reported as the policy's gate by another name.
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    assert_eq!(verdicts.len(), 1, "{verdicts:?}");
-    assert_eq!(verdicts[0]["payload"]["verdict"], "pass");
-    assert_eq!(verdicts[0]["payload"]["command"], "true");
+    // And nothing else claims to have judged this: the push is the one place the
+    // merge path ruled, so there is one account of the refusal rather than two.
+    assert!(
+        fixture.world.events_of(&token, "gate-verdict").is_empty(),
+        "no verdict travels beside the push that carries it"
+    );
 }
 
 #[test]
@@ -2942,7 +2960,7 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
     // The other half of "unconditional": a publication that landed leaves an account
     // of the push that landed it, so the record of a green run is readable and not
     // only the record of a red one.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/accepted"]);
     fixture
         .world
@@ -2978,8 +2996,7 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
     // driven on its own. Behind a `pre-push` gate, so the push is the only thing
     // storing an artifact: a `command:` gate stores its own verdict before the push
     // is ever made, and this is a claim about the push.
-    let unrecordable =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    let unrecordable = Fixture::local("{publication: local-direct, approvals: none}");
     unrecordable
         .world
         .install_pre_push(&unrecordable.checkout, "exit 0");
@@ -3054,13 +3071,9 @@ fn run_root_of(world: &World, token: &str) -> PathBuf {
 }
 
 #[test]
-fn a_pre_push_gate_that_rejects_the_push_is_reported_as_the_gate_failing() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
-    fixture.world.install_pre_push(
-        &fixture.checkout,
-        "echo 'the complete gate found something' >&2; exit 1",
-    );
+fn a_pre_push_hook_that_rejects_the_push_is_reported_as_the_merge_path_refusing() {
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("echo 'the complete gate found something' >&2; exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/hooked"]);
     fixture
         .world
@@ -3075,9 +3088,9 @@ fn a_pre_push_gate_that_rejects_the_push_is_reported_as_the_gate_failing() {
         .stderr(predicate::str::contains("rejected by the merge path"));
     assert_eq!(fixture.origin_log().len(), 1);
 
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
-    let id = verdicts[0]["artifacts"][0]["id"]
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], false);
+    let id = pushes[0]["artifacts"][0]["id"]
         .as_str()
         .expect("a stored log");
     fixture
@@ -3092,10 +3105,11 @@ fn a_pre_push_gate_that_rejects_the_push_is_reported_as_the_gate_failing() {
 }
 
 #[test]
-fn a_gate_that_echoes_a_credential_records_only_that_it_had_one() {
-    let fixture = Fixture::local(&local_direct(
-        "[\"sh\", \"-c\", \"echo GITHUB_TOKEN=$GITHUB_TOKEN; echo ghp_0123456789abcdefghij; exit 1\"]",
-    ));
+fn a_merge_path_that_echoes_a_credential_records_only_that_it_had_one() {
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by(
+        "echo GITHUB_TOKEN=${GITHUB_TOKEN:-} >&2; echo ghp_0123456789abcdefghij >&2; exit 1",
+    );
     let (token, worktree) = fixture.open(&["--branch", "feature/leaky"]);
     fixture
         .world
@@ -3109,8 +3123,8 @@ fn a_gate_that_echoes_a_credential_records_only_that_it_had_one() {
         .assert()
         .code(1);
 
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    let id = verdicts[0]["artifacts"][0]["id"]
+    let pushes = fixture.world.events_of(&token, "push");
+    let id = pushes[0]["artifacts"][0]["id"]
         .as_str()
         .expect("a stored log");
     let assert = fixture
@@ -3133,7 +3147,7 @@ fn a_gate_that_echoes_a_credential_records_only_that_it_had_one() {
 
 #[test]
 fn every_event_carries_the_envelope_the_contract_declares() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/observed"]);
     fixture
         .world
@@ -3175,10 +3189,11 @@ fn every_event_carries_the_envelope_the_contract_declares() {
 
 #[test]
 fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
-    let fixture = Fixture::local(&local_direct(
-        // Well past the 4096-byte bound the contract fixes.
-        "[\"sh\", \"-c\", \"for i in $(seq 1 400); do echo 'the gate said something long'; done; exit 1\"]",
-    ));
+    let fixture = Fixture::local(&local_direct());
+    // Well past the 4096-byte bound the contract fixes.
+    fixture.verified_by(
+        "for i in $(seq 1 400); do echo 'the hook said something long' >&2; done; exit 1",
+    );
     let (token, worktree) = fixture.open(&["--branch", "feature/verbose"]);
     fixture
         .world
@@ -3190,8 +3205,8 @@ fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
         .assert()
         .code(1);
 
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    let payload = &verdicts[0]["payload"];
+    let pushes = fixture.world.events_of(&token, "push");
+    let payload = &pushes[0]["payload"];
     assert_eq!(payload["truncated"], true, "{payload}");
     assert_eq!(
         payload["output"]
@@ -3202,7 +3217,7 @@ fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
     );
     // The whole run survives as the artifact the event points at, which is the
     // point of the bound: the payload is a slice, not the evidence.
-    let id = verdicts[0]["artifacts"][0]["id"]
+    let id = pushes[0]["artifacts"][0]["id"]
         .as_str()
         .expect("a stored log");
     let assert = fixture
@@ -3214,40 +3229,43 @@ fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
     assert!(assert.get_output().stdout.len() > 4096);
 }
 
-/// Lines enough to put several pipe buffers through one of a gate's streams. A
+/// Lines enough to put several pipe buffers through one of a hook's streams. A
 /// Linux pipe holds 64 KiB unless an operator has raised it, and a line here is
 /// around sixty bytes.
 const PIPE_FILLING_LINES: usize = 3000;
 /// The volume the merge-path failure was measured at: twice a pipe's default
-/// capacity, which is what a gate wedged writing.
+/// capacity, which is what a verification wedged writing.
 const A_WEDGING_VOLUME: usize = 128 * 1024;
-/// Enough to prove the quiet stream was captured too, and nothing like a buffer.
-const FEW_LINES: usize = 3;
 /// The bound a capture journey drives its publication under.
 ///
-/// Not a bound the tool has — a `command:` gate is the repository's own complete
-/// verification and is deliberately unbounded. It is here so a capture that wedges
-/// fails as a killed publication naming what wedged it, rather than hanging the
-/// suite until CI's own timeout.
+/// Not a bound the tool has at this size — the hook bound is an hour and a half,
+/// because a repository's own verification is the work. It is here so a capture
+/// that wedges fails as a killed publication naming what wedged it, rather than
+/// hanging the suite until CI's own timeout.
 const CAPTURE_BOUND: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// The diagnostics come last on purpose: a child cannot exit while a pipe nobody is
-/// draining is full, so this is the shape that wedges a capture reading one pipe to
-/// EOF before it touches the other — the shape a test runner reporting per-test
-/// status has.
-fn noisy_gate(output: usize, diagnostics: usize, status: i32) -> String {
+/// A `pre-push` hook that writes past a pipe's capacity on both its streams.
+///
+/// A child cannot exit while a pipe nobody is draining is full, so this is the
+/// shape that wedges a capture reading one pipe to EOF before it touches the other
+/// — the shape a test runner reporting per-test status has. It is the repository's
+/// own verification now, so what has to survive the volume is the *push*'s
+/// evidence.
+fn a_loud_hook(status: i32) -> String {
     format!(
-        "[\"sh\", \"-c\", \"echo the gate began its run; \
-         i=0; while [ $i -lt {output} ]; do echo the gate is reporting line $i of what it did; \
-         i=$((i+1)); done; \
-         j=0; while [ $j -lt {diagnostics} ]; \
-         do echo the gate is complaining about line $j of what it read >&2; j=$((j+1)); done; \
-         echo the gate finished its run; exit {status}\"]"
+        "echo the hook began its run; \
+         i=0; while [ $i -lt {PIPE_FILLING_LINES} ]; \
+         do echo the hook is reporting line $i of what it did; i=$((i+1)); done; \
+         j=0; while [ $j -lt {PIPE_FILLING_LINES} ]; \
+         do echo the hook is complaining about line $j of what it read >&2; j=$((j+1)); done; \
+         echo the hook finished its run; exit {status}"
     )
 }
 
-fn evidence_of_a_noisy_gate(gate: &str, branch: &str, code: i32) -> String {
-    let fixture = Fixture::local(&local_direct(gate));
+/// What a publication whose merge path was loud recorded about it.
+fn evidence_of_a_loud_hook(status: i32, branch: &str, code: i32) -> String {
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by(&a_loud_hook(status));
     let (token, worktree) = fixture.open(&["--branch", branch]);
     fixture
         .world
@@ -3261,26 +3279,26 @@ fn evidence_of_a_noisy_gate(gate: &str, branch: &str, code: i32) -> String {
         .assert();
     assert!(
         assert.get_output().status.code().is_some(),
-        "the publication was killed at the journey's bound: a gate that writes past \
+        "the publication was killed at the journey's bound: a hook that writes past \
          one pipe buffer wedged the capture reading it"
     );
     assert.code(code);
 
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
+    let pushes = fixture.world.events_of(&token, "push");
     assert_eq!(
-        verdicts[0]["payload"]["verdict"],
-        if code == 0 { "pass" } else { "fail" },
-        "the ruling is the gate's own exit status: {}",
-        verdicts[0]["payload"]
+        pushes[0]["payload"]["accepted"],
+        code == 0,
+        "the ruling is the merge path's own answer: {}",
+        pushes[0]["payload"]
     );
     let preserved = PathBuf::from(
-        verdicts[0]["payload"]["preserved_log"]
+        pushes[0]["payload"]["preserved_log"]
             .as_str()
             .expect("a preserved log path"),
     );
     let evidence = std::fs::read_to_string(&preserved).expect("the preserved log");
 
-    let id = verdicts[0]["artifacts"][0]["id"]
+    let id = pushes[0]["artifacts"][0]["id"]
         .as_str()
         .expect("a stored log");
     let stored = fixture
@@ -3294,212 +3312,57 @@ fn evidence_of_a_noisy_gate(gate: &str, branch: &str, code: i32) -> String {
         evidence,
         "the artifact and the preserved log are one run"
     );
-
-    // Whichever pipe filled, output stays ahead of diagnostics and both are whole.
-    let began = evidence
-        .find("the gate began its run")
-        .expect("the gate's first line of output");
-    let finished = evidence
-        .find("the gate finished its run")
-        .expect("the gate's last line of output, written after it filled a pipe");
-    let complained = evidence
-        .find("the gate is complaining about line 0 ")
-        .expect("the gate's first line of diagnostics");
-    assert!(
-        began < finished && finished < complained,
-        "the capture concatenates all of standard output before standard error"
-    );
     evidence
 }
 
 #[test]
-fn a_gate_that_fills_its_diagnostic_pipe_still_reaches_its_own_verdict() {
-    let evidence = evidence_of_a_noisy_gate(
-        &noisy_gate(FEW_LINES, PIPE_FILLING_LINES, 0),
-        "feature/loud-diagnostics",
-        0,
-    );
+fn a_merge_path_that_fills_its_pipes_and_passes_still_reaches_its_own_verdict() {
+    let evidence = evidence_of_a_loud_hook(0, "feature/loud-and-green", 0);
 
+    assert_eq!(
+        evidence.matches("the hook is reporting line").count(),
+        PIPE_FILLING_LINES,
+        "every line of output the hook wrote is in the evidence"
+    );
     assert_eq!(
         evidence
-            .matches("the gate is complaining about line")
+            .matches("the hook is complaining about line")
             .count(),
         PIPE_FILLING_LINES,
-        "every diagnostic line the gate wrote is in the evidence"
+        "every diagnostic line the hook wrote is in the evidence"
     );
     assert!(
-        evidence.len() > A_WEDGING_VOLUME,
-        "the diagnostics must reach the volume that wedged the gate: {} bytes",
+        evidence.contains("the hook finished its run"),
+        "the hook's last line, written after it filled a pipe, is in the evidence"
+    );
+    assert!(
+        evidence.len() > 2 * A_WEDGING_VOLUME,
+        "both streams must reach the volume that wedged the capture: {} bytes",
         evidence.len()
     );
 }
 
 #[test]
-fn a_gate_that_fills_its_output_pipe_still_reaches_its_own_verdict() {
-    let evidence = evidence_of_a_noisy_gate(
-        // Rejecting, so the volume is proved against the ruling that strands work.
-        &noisy_gate(PIPE_FILLING_LINES, FEW_LINES, 1),
-        "feature/loud-output",
-        1,
-    );
+fn a_merge_path_that_fills_its_pipes_and_refuses_still_reaches_its_own_verdict() {
+    // Rejecting, so the volume is proved against the ruling that strands work: what
+    // the hook wrote is the only account of why the push was refused there will ever
+    // be, and it lives in a pipe until the process ends.
+    let evidence = evidence_of_a_loud_hook(1, "feature/loud-and-red", 1);
 
     assert_eq!(
-        evidence.matches("the gate is reporting line").count(),
-        PIPE_FILLING_LINES,
-        "every line of output the gate wrote is in the evidence"
-    );
-    assert!(
-        evidence.len() > A_WEDGING_VOLUME,
-        "the output must reach the volume that wedged the gate: {} bytes",
-        evidence.len()
-    );
-}
-
-#[test]
-fn a_gate_whose_output_is_not_text_still_leaves_the_rest_of_it() {
-    // `\377` is a byte no UTF-8 sequence begins with — the shape a gate quoting a
-    // filename this host's locale cannot spell writes. Decoding the stream as text
-    // outright answers that byte by discarding every other byte with it, so the
-    // verdict would arrive with no evidence to explain it. One on each stream,
-    // because each is decoded on its own and either could drop the other's evidence.
-    let gate = "[\"sh\", \"-c\", \"printf 'the gate began \\\\377 its run\\\\n'; \
-                printf 'the gate read \\\\377 and could not name it\\\\n' >&2; \
-                echo the gate finished its run; exit 1\"]";
-    let fixture = Fixture::local(&local_direct(gate));
-    let (token, worktree) = fixture.open(&["--branch", "feature/undecodable"]);
-    fixture
-        .world
-        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
-
-    fixture
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .timeout(CAPTURE_BOUND)
-        .assert()
-        .code(1);
-
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
-    let preserved = PathBuf::from(
-        verdicts[0]["payload"]["preserved_log"]
-            .as_str()
-            .expect("a preserved log path"),
-    );
-    // Readable as text at all is half the claim: every byte was accounted for, so
-    // what the gate wrote around the one it could not spell survived.
-    let evidence = std::fs::read_to_string(&preserved).expect("the preserved log is text");
-    let began = evidence
-        .find("the gate began ")
-        .expect("the output around its undecodable byte");
-    assert!(
-        evidence.contains(" its run") && evidence.contains("the gate finished its run"),
-        "the gate's output is in the evidence: {evidence:?}"
-    );
-    let read = evidence
-        .find("the gate read ")
-        .expect("the diagnostics around their undecodable byte");
-    assert!(
-        evidence.contains(" and could not name it"),
-        "the gate's diagnostics are in the evidence: {evidence:?}"
-    );
-    assert!(
-        began < read,
-        "standard output still comes before standard error: {evidence:?}"
-    );
-    assert_eq!(
-        evidence.matches('\u{fffd}').count(),
-        2,
-        "each stream's byte is marked rather than dropped silently: {evidence:?}"
-    );
-}
-
-#[test]
-fn a_gate_that_fills_both_pipes_still_reaches_its_own_verdict() {
-    let evidence = evidence_of_a_noisy_gate(
-        &noisy_gate(PIPE_FILLING_LINES, PIPE_FILLING_LINES, 0),
-        "feature/loud-everything",
-        0,
-    );
-
-    assert_eq!(
-        evidence.matches("the gate is reporting line").count(),
+        evidence.matches("the hook is reporting line").count(),
         PIPE_FILLING_LINES
     );
     assert_eq!(
         evidence
-            .matches("the gate is complaining about line")
+            .matches("the hook is complaining about line")
             .count(),
         PIPE_FILLING_LINES
     );
     assert!(
         evidence.len() > 2 * A_WEDGING_VOLUME,
-        "both streams must reach the volume that wedged the gate: {} bytes",
+        "both streams must reach the volume that wedged the capture: {} bytes",
         evidence.len()
-    );
-}
-
-#[test]
-fn the_integrate_train_judges_a_loud_candidate_rather_than_wedging_on_it() {
-    // The train runs the same gate over every candidate it judges, so a capture that
-    // wedges strands a whole train rather than one publication. This gate rules on
-    // what the candidate's tree holds, which is how its verdict is shown to have
-    // survived the volume: the second candidate is the one carrying `second.txt`.
-    let gate = format!(
-        "[\"sh\", \"-c\", \"j=0; while [ $j -lt {PIPE_FILLING_LINES} ]; \
-         do echo the gate is complaining about line $j of what it read >&2; j=$((j+1)); done; \
-         echo the gate finished its run; test ! -f second.txt\"]"
-    );
-    let fixture = Fixture::local(&local_direct(&gate));
-    let checkout = fixture.checkout.clone();
-    let world = &fixture.world;
-    for (branch, file, subject) in [
-        (
-            "claude/loud-first",
-            "first.txt",
-            "feat: the first candidate",
-        ),
-        (
-            "claude/loud-second",
-            "second.txt",
-            "fix: the second candidate",
-        ),
-    ] {
-        world.git(&checkout, &["checkout", "-q", "-b", branch, "main"]);
-        world.commit_file(&checkout, file, "value\n", subject);
-    }
-    world.git(&checkout, &["checkout", "-q", "main"]);
-
-    let assert = world
-        .onevcs()
-        .args(["integrate", "claude/loud-first", "claude/loud-second"])
-        .current_dir(&checkout)
-        .timeout(CAPTURE_BOUND)
-        .assert();
-    assert!(
-        assert.get_output().status.code().is_some(),
-        "the train was killed at the journey's bound: a loud candidate's gate wedged \
-         the capture reading it"
-    );
-    assert
-        .success()
-        .stdout(predicate::str::contains("claude/loud-first: merged"))
-        .stdout(predicate::str::contains("claude/loud-second: skipped"))
-        .stdout(predicate::str::contains("gate-failed"));
-
-    // Only what the loud gate cleared reached the base.
-    let subjects: Vec<String> = world
-        .git(&checkout, &["log", "--format=%s", "main"])
-        .lines()
-        .map(str::to_owned)
-        .collect();
-    assert_eq!(
-        subjects,
-        vec![
-            "feat: the first candidate".to_owned(),
-            "chore: seed the repository".to_owned(),
-        ],
-        "{subjects:?}"
     );
 }
 
@@ -3518,8 +3381,7 @@ fn an_artifact_nobody_stored_is_a_usage_error() {
 
 #[test]
 fn a_wedged_gate_is_stopped_by_the_bound_and_left_running_by_nothing() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let marker = fixture.world.path("wedged.pid");
     fixture.world.install_pre_push(
         &fixture.checkout,
@@ -3562,7 +3424,7 @@ fn a_wedged_gate_is_stopped_by_the_bound_and_left_running_by_nothing() {
 
 #[test]
 fn an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     for (value, expected) in [
         ("not-a-number", "must be a number of seconds"),
         ("0", "finite number of seconds above zero"),
@@ -3593,7 +3455,7 @@ fn an_unusable_bound_is_refused_rather_than_silently_reverting_to_unbounded() {
 
 #[test]
 fn an_unusable_lock_bound_stops_the_command_by_name() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/locked"]);
     fixture
         .world
@@ -3614,7 +3476,7 @@ fn an_unusable_lock_bound_stops_the_command_by_name() {
 
 #[test]
 fn two_publications_of_one_identity_queue_rather_than_race() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // The contention is *made* to happen rather than hoped for. A publication takes
     // its merge turn and then pushes inside it, and the publishing push runs the
     // checkout's `pre-push` hook — so a hook that does not return until it is let go
@@ -3761,7 +3623,7 @@ fn a_conflict_across_more_files_than_a_refusal_can_name_says_how_many_it_left_ou
     // across one. A refusal nobody reads to the end names nothing, so it is bounded;
     // what it leaves out is counted, because a truncated list read as the whole one
     // reports a smaller problem than the one that happened.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let token = conflicting_over(&fixture, "feature/many", 12);
 
     let assert = fixture
@@ -3802,7 +3664,7 @@ fn a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict() {
     // which has its own exit code and its own next command — into a filesystem
     // complaint, so the miss is said on stderr and the refusal is the one it always
     // was.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let token = conflicting_over(&fixture, "feature/unstorable", 1);
     let artifacts = fixture.world.home().join("artifacts");
     std::fs::create_dir_all(&artifacts).expect("an artifact directory");
@@ -3833,7 +3695,7 @@ fn a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict() {
 
 #[test]
 fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/conflicting"]);
     fixture.world.commit_file(
         &worktree,
@@ -4014,7 +3876,7 @@ pub fn stacked_on_a_squash_merged_parent(fixture: &Fixture, branch: &str) -> (St
 
 #[test]
 fn a_recorded_stack_that_squash_merged_is_replayed_onto_the_root_rather_than_merged() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, _worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/filter");
 
     // Merging the root base into this is unwinnable and stays unwinnable, which is
@@ -4047,44 +3909,48 @@ fn a_recorded_stack_that_squash_merged_is_replayed_onto_the_root_rather_than_mer
 }
 
 #[test]
-fn a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning() {
-    // The base can move between the gate and this publication's turn in the queue,
-    // and what lands is then re-synced and re-judged. For a stack that has already
-    // been replayed onto the root, that second sync is an ordinary merge — the tip
-    // its own work began after is on no branch any more, and replaying from it again
-    // would be replaying the root's own history. What has to hold is that the first
-    // replay stands: only this branch's own work reaches the advanced root.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+fn a_root_that_advances_before_the_queue_turn_is_resynced_without_the_stack_returning() {
+    // The base can move between a publication starting and its turn in the queue —
+    // the writer ahead of it in that queue is the usual reason — and what lands is
+    // then re-synced. For a stack that has already been replayed onto the root, that
+    // second sync is an ordinary merge: the tip its own work began after is on no
+    // branch any more, and replaying from it again would be replaying the root's own
+    // history. What has to hold is that the first replay stands: only this branch's
+    // own work reaches the advanced root.
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
-    let (token, _worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/filter");
 
-    // A gate that lands somebody else's work on the root while it runs — once, so
-    // the base this publication judged is not the base it will land on.
-    let other = world.clone_of(&fixture.origin, "advancing");
-    let script = world.path("advance-the-root.sh");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\n\
-             echo ran >> {ran}\n\
-             [ -e {marker} ] && exit 0\n\
+    // Somebody else lands work on the root before this publication takes its turn.
+    // The repository's own `commit-msg` hook is where a journey can make that happen
+    // at a determined moment: a publication composes its subject once, before it
+    // enters the queue, so a hook that pushes there leaves the base this publication
+    // started against behind the base it will land on. Installed before the session
+    // opens, because a run clone takes the lender's hooks path when it is cut; armed
+    // only when the publication is about to run, so the fixture's own commits do not
+    // spend it, and disarmed by its own firing so the re-synced attempt lands.
+    let other = world.path("advancing");
+    let armed = world.path("arm-the-root-advance");
+    let marker = world.path("the-root-advanced");
+    world.install_commit_msg(
+        &fixture.checkout,
+        &format!(
+            "[ -e {armed} ] || exit 0\n\
+             rm -f {armed}\n\
              : > {marker}\n\
+             unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n\
              cd {other}\n\
-             git commit -q --allow-empty -m 'feat: land something else while the gate ran'\n\
+             git fetch -q origin\n\
+             git checkout -q -B main origin/main\n\
+             git commit -q --allow-empty -m 'feat: land something else in the meantime'\n\
              git push -q origin main\n",
-            ran = world.path("the-gate-ran").display(),
-            marker = world.path("the-root-advanced").display(),
+            armed = armed.display(),
+            marker = marker.display(),
             other = other.display(),
         ),
-    )
-    .expect("a gate script");
-    configure_rules(
-        world,
-        format!(
-            "version: 1\nrules: []\ndefault: {}\n",
-            local_direct(&format!("[\"bash\", \"{}\"]", script.display()))
-        ),
     );
+    let (token, _worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/filter");
+    world.clone_of(&fixture.origin, "advancing");
+    std::fs::write(&armed, "").expect("the hook is armed");
 
     world
         .onevcs()
@@ -4093,22 +3959,18 @@ fn a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning()
         .success()
         .stdout(predicate::str::contains("merged at"));
 
-    // The base that moved is re-synced *and* re-judged: what the gate cleared the
-    // first time is not what would have landed.
-    assert_eq!(
-        std::fs::read_to_string(world.path("the-gate-ran"))
-            .expect("the gate ran")
-            .lines()
-            .count(),
-        2,
-        "the gate judged the base it landed on, not only the base it started from"
+    // The base that moved is re-synced: what this publication started against is not
+    // what it lands on, and only its own work goes on top of what arrived.
+    assert!(
+        marker.exists(),
+        "the journey's premise: the root advanced before this publication's turn"
     );
     let subjects = fixture.origin_log();
     assert_eq!(
         subjects,
         vec![
             "feat: filter what the engine relays",
-            "feat: land something else while the gate ran",
+            "feat: land something else in the meantime",
             "feat: write the engine",
             "chore: seed the repository",
         ],
@@ -4122,7 +3984,7 @@ fn a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning()
 
 #[test]
 fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lands_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = stacked_on_a_squash_merged_parent(&fixture, "feature/clashing-filter");
     fixture.world.commit_file(
         &worktree,
@@ -4285,7 +4147,7 @@ fn a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone() {
     // so a change below that touched a path which is not leaves no listing to scope
     // the comparison by. What decides whether it landed is then the whole tree, which
     // is why this publishes rather than stalling on a name nobody here can hold.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
     let unreadable = OsString::from_vec(b"engine\xff.txt".to_vec());
     world.git(
@@ -4380,7 +4242,7 @@ fn a_root_the_publication_checkout_cannot_name_leaves_the_stack_where_it_is() {
     // there is nowhere to move the change to, and the publication is the one it has
     // always been — onto the branch it was opened against, by the merge it has always
     // used, with nothing replayed on a guess about which branch the root is.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
     a_change_below(&fixture);
     world.git(&fixture.checkout, &["checkout", "-q", "main"]);
@@ -4439,7 +4301,7 @@ fn a_root_this_clone_no_longer_has_leaves_the_stack_where_it_is() {
     // was cut, so the clone publishing the change pruned it and the checkout that
     // still names it has not looked since. There is no ref to compare a stack against,
     // and the publication is the one it has always been.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
     a_change_below(&fixture);
     // Left checked out, so the session's clone has no local `main` of its own either.
@@ -4498,7 +4360,7 @@ fn an_unreadable_listing_and_a_root_that_moved_on_leaves_the_stack_where_it_is()
     // the change below *and* unrelated work answers it no. Nothing is replayed on
     // what could not be established — the branch takes the merge it would have taken
     // before any of this, and lands on the branch it was opened against.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
     let unreadable = OsString::from_vec(b"engine\xff.txt".to_vec());
     world.git(
@@ -4578,7 +4440,7 @@ fn a_branch_the_base_independently_matches_is_still_merged_because_no_record_sta
     // stack whose change below has squash-merged. Nothing recorded it as stacked, so
     // nothing about it is replayed — it takes the merge, keeps both of its commits,
     // and lands them.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/lookalike"]);
     fixture.world.commit_file(
         &worktree,
@@ -4639,7 +4501,7 @@ fn a_branch_the_base_independently_matches_is_still_merged_because_no_record_sta
 
 #[test]
 fn closing_a_session_hands_its_branch_back_before_the_worktree_goes() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/handed-back"]);
     fixture
         .world
@@ -4667,7 +4529,7 @@ fn closing_a_session_hands_its_branch_back_before_the_worktree_goes() {
 
 #[test]
 fn an_execution_checkout_of_another_identity_is_refused() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let other_origin = fixture.world.bare_origin("unrelated");
     let other = fixture.world.clone_of(&other_origin, "unrelated");
     fixture
@@ -4694,7 +4556,7 @@ fn an_execution_checkout_of_another_identity_is_refused() {
 
 #[test]
 fn only_the_newest_abandoned_sessions_holding_work_can_still_be_resumed() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let mut tokens = Vec::new();
     for index in 0..5 {
         let (token, worktree) = fixture.open(&["--branch", &format!("feature/dead-{index}")]);
@@ -4772,7 +4634,7 @@ fn a_per_run_policy_may_narrow_the_rules_but_never_widen_them() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-auto, approvals: required}\n",
     );
     world.install_fake_host(&origin);
 

@@ -39,7 +39,7 @@ use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
 use crate::registry::{Registry, RepoType, Workflow};
-use crate::rules::{Approvals, Gate, MergePolicy};
+use crate::rules::{Approvals, MergePolicy};
 use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
 use crate::store::{self, Resolution};
 use crate::workspace::{Ref, Token};
@@ -59,10 +59,20 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// `publication.state`, `maybe-landed`, which is the answer a version 1 report had
 /// no room for and reported as `landed` on an inference.
 ///
+/// `3` is the rules gate going away. `identity.gate` was the rules file's `gate:`
+/// and there is no such key any more; the top-level `gate` was the last verdict a
+/// gate this crate ran had recorded, and this crate runs none. What replaces the
+/// second is `merge_path`: the same question — was this work judged, what did the
+/// judgement say, and where is what it wrote — asked of the verifier that actually
+/// rules on it, which for a publishing push is the repository's own `pre-push`
+/// hook. `identity.gate` has no replacement, because the identity's *own* detected
+/// bar is a different field on a different document and `onevcs repos
+/// --audit-gates` is what reports merge-path coverage.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 2;
+pub const REPORT_VERSION: u32 = 3;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -125,9 +135,9 @@ pub struct Report {
     pub publication: PublicationReport,
     /// What the host says its checks are doing, or why it could not be asked.
     pub checks: ChecksReport,
-    /// The last gate verdict recorded for this work.
+    /// The last thing this work's merge path said about it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gate: Option<GateReport>,
+    pub merge_path: Option<MergePathReport>,
     /// The command that advances the work, or why none does.
     pub next: NextReport,
     /// Anything this report could not read, so a gap is stated rather than left to
@@ -170,8 +180,6 @@ pub struct IdentityReport {
     pub workflow: Workflow,
     /// Whether the repository is one person's or a team's.
     pub repo_type: RepoType,
-    /// The gate the rules resolve to, as the rules file spells it.
-    pub gate: Gate,
     /// Whether the rules require approvals.
     pub approvals: Approvals,
 }
@@ -246,7 +254,7 @@ pub enum BranchProvenance {
     Complete,
     /// A step did not finish, and no verified recovery has cleared it.
     IncompleteUnattested,
-    /// A step did not finish, and a recovery attested that a gate cleared it.
+    /// A step did not finish, and a recovery attested that verification cleared it.
     IncompleteAttested,
 }
 
@@ -354,7 +362,7 @@ pub enum Landing {
 ///
 /// One or the other, never both halves of each: a section carrying an answer *and*
 /// the reason there is none could report "could not look" as "nothing blocks this",
-/// which is the one thing that turns an ungated merge into one that looks gated.
+/// which is the one thing that turns an unverified merge into one that looks verified.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ChecksReport {
@@ -400,33 +408,35 @@ pub struct CheckReport {
     pub required: bool,
 }
 
-/// The last gate verdict recorded for this work, and where its log was kept.
+/// The last thing this work's merge path said about it, and where it said it.
+///
+/// A publishing push is where the merge path rules on a change — git runs the
+/// repository's `pre-push` hook there, and its verdict arrives as that push's
+/// output and nowhere else — so the `push` event is what this is read from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GateReport {
+pub struct MergePathReport {
     /// What it ruled.
     pub verdict: Verdict,
-    /// What ran.
-    pub command: String,
-    /// The preserved log, which outlives the tree the gate ran in.
+    /// The preserved log, which outlives the tree the publication was built in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log: Option<PathBuf>,
     /// The session stream that recorded it.
     pub recorded_by: String,
 }
 
-/// What a gate said about the work it was handed.
+/// What a merge path said about the work it was handed.
 ///
-/// The two words a `gate-verdict` event is written with, and a third for one this
-/// build cannot read: a verdict it did not understand is not a rejection, and
-/// reporting it as one would name a gate that never refused anything.
+/// Two verdicts and a third for an event this build cannot read: a `push` that
+/// recorded no `accepted` said nothing about the change, and reporting that as a
+/// refusal would name a merge path that never refused anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {
-    /// It verified the change.
+    /// It accepted the change.
     Pass,
     /// It refused the change.
     Fail,
-    /// The event named a verdict this build does not read.
+    /// The event named no verdict this build reads.
     Unrecorded,
 }
 
@@ -494,7 +504,11 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             .filter_map(|record| record.change_url.clone()),
     );
     let asked_the_host_to_land = relevant.iter().any(|record| record.asked_the_host_to_land);
-    let gate = latest(relevant.iter().filter_map(|record| record.gate.clone()));
+    let merge_path = latest(
+        relevant
+            .iter()
+            .filter_map(|record| record.merge_path.clone()),
+    );
     let recorded = landed::Recorded {
         landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
         // Parsed rather than passed through, for the same reason: the report prints
@@ -581,7 +595,6 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             publication_checkout: resolution.publication.clone(),
             workflow: resolution.identity.workflow,
             repo_type: resolution.identity.repo_type,
-            gate: resolved.policy.gate.clone(),
             approvals: resolved.policy.approvals,
         },
         session,
@@ -600,7 +613,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             merge_policy: resolved.policy.publication,
         },
         checks,
-        gate,
+        merge_path,
         next,
         notes,
     })
@@ -887,7 +900,7 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
                     format!(
                         "branch {branch:?} is preserved and unpublished, and carries an unattested \
                          incomplete marker: only `recover` may publish it, because publishing it \
-                         means attesting that a gate cleared the step that stopped",
+                         means attesting that verification cleared the step that stopped",
                         branch = work.branch,
                     )
                 } else {
@@ -974,7 +987,7 @@ pub(crate) struct Recorded {
     /// revision.
     landing: Option<Stamped<ObjectId>>,
     asked_the_host_to_land: bool,
-    gate: Option<Stamped<GateReport>>,
+    merge_path: Option<Stamped<MergePathReport>>,
 }
 
 /// The moment an envelope was stamped, in the one form the shared envelope fixes:
@@ -1049,7 +1062,7 @@ fn latest<T>(recorded: impl Iterator<Item = Stamped<T>>) -> Option<T> {
 ///
 /// A directory nothing has written a stream into is nought streams; every other way
 /// the listing can go wrong is a *gap*, and it says so. The two must not look alike:
-/// what a stream decides here is which change request a branch has and what its gate
+/// what a stream decides here is which change request a branch has and what its merge path
 /// said, and reporting "could not look" as "there is none" is how a report about half
 /// the record reads as a report about all of it.
 pub(crate) fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>> {
@@ -1113,7 +1126,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         change_url: None,
         landing: None,
         asked_the_host_to_land: false,
-        gate: None,
+        merge_path: None,
     };
     let path = directory.join(format!("{token}.ndjson"));
     let raw = match std::fs::read_to_string(&path) {
@@ -1196,17 +1209,19 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     record.landing = Some(Stamped { at, value: sha });
                 }
             }
-            EventKind::GateVerdict => {
-                record.gate = Some(Stamped {
+            // The merge path's own verdict on a publishing push: git runs the
+            // repository's `pre-push` hook there and the answer comes back as the
+            // push's output, so `accepted` is what it ruled. A push that recorded no
+            // such field said nothing, which is not the same as saying no.
+            EventKind::Push => {
+                record.merge_path = Some(Stamped {
                     at,
-                    value: GateReport {
-                        verdict: match field("verdict").as_deref() {
-                            Some("pass") => Verdict::Pass,
-                            Some("fail") => Verdict::Fail,
-                            _ => Verdict::Unrecorded,
+                    value: MergePathReport {
+                        verdict: match event.payload.get("accepted").and_then(Value::as_bool) {
+                            Some(true) => Verdict::Pass,
+                            Some(false) => Verdict::Fail,
+                            None => Verdict::Unrecorded,
                         },
-                        command: field("command")
-                            .unwrap_or_else(|| "a command the event did not name".to_owned()),
                         log: field("preserved_log").map(PathBuf::from),
                         recorded_by: token.to_owned(),
                     },
@@ -1471,12 +1486,11 @@ impl Report {
         ));
         out.push_str(&format!(
             "identity:\n  key: {}\n  publication checkout: {}\n  workflow: {}\n  repo_type: {}\n  \
-             gate: {}\n  approvals: {}\n",
+             approvals: {}\n",
             self.identity.key,
             self.identity.publication_checkout.display(),
             spell_workflow(self.identity.workflow),
             spell_repo_type(self.identity.repo_type),
-            policy::spell_gate(&self.identity.gate),
             spell_approvals(self.identity.approvals),
         ));
         match &self.session {
@@ -1602,19 +1616,18 @@ impl Report {
                 ));
             }
         }
-        match &self.gate {
-            Some(gate) => {
+        match &self.merge_path {
+            Some(merge_path) => {
                 out.push_str(&format!(
-                    "gate:\n  verdict: {}\n  command: {}\n  recorded by: {}\n",
-                    spell_verdict(gate.verdict),
-                    gate.command,
-                    gate.recorded_by
+                    "merge path:\n  verdict: {}\n  recorded by: {}\n",
+                    spell_verdict(merge_path.verdict),
+                    merge_path.recorded_by
                 ));
-                if let Some(log) = &gate.log {
+                if let Some(log) = &merge_path.log {
                     out.push_str(&format!("  log: {}\n", log.display()));
                 }
             }
-            None => out.push_str("gate: no verdict recorded for this work\n"),
+            None => out.push_str("merge path: no verdict recorded for this work\n"),
         }
         out.push_str("next:\n");
         match &self.next.command {
@@ -1698,8 +1711,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v2.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v2-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v3.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v3-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -1748,7 +1761,7 @@ mod round_trip {
 
         let minimal: Report = serde_json::from_str(MINIMAL).expect("the minimal golden");
         assert!(minimal.session.is_none());
-        assert!(minimal.gate.is_none());
+        assert!(minimal.merge_path.is_none());
         assert!(minimal.branch.change_base.is_none());
         assert!(minimal.publication.change_url.is_none());
         assert!(minimal.notes.is_empty());

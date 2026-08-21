@@ -495,6 +495,100 @@ that guessed would open a change request nobody wrote. Neither branch-keyed verb
 takes one: `recover` and `publish-branch` are reached by an operator naming a
 branch, not by a caller that drafted a body.
 
+**The repository's own merge path is the only verifier, and the rules file no longer
+names one.** The approved contract gives every rule and the `default:` a `gate:` —
+`checks`, `pre-push`, or a `command:` this crate runs itself. That tier is removed,
+runner and vocabulary together.
+
+It was never a second opinion. For a local-first repository a `command:` gate is
+literally the same work the `pre-push` hook then does at the publishing push, run
+twice against the same tree. For a remote-first one it front-runs the host's required
+checks and discards the answer, so a red gate refuses a change CI would have refused
+five minutes later and a green one proves nothing CI will not re-prove. Where the
+tier is *judged* rather than deterministic the duplication is worse than wasted: one
+repository spent three hours on a verdict that never converged, because each roll of
+the judge named a different rule and neither roll was the one the merge path would
+make. A verifier that runs beside the real one and throws its answer away is worse
+than no verifier.
+
+So verification is the repository's, and this crate hands it what it needs rather
+than repeating it: the host's required checks for a remote-first identity, the
+`pre-push` hook for a local-first one. `onevcs repos --audit-gates` already reports
+which of the two covers each identity, and that question matters more now, not less.
+
+**The schema is versioned rather than broken.** A rules file is an operator's
+document on their own host, so refusing every `onevcs` command the moment this build
+landed — before anything could re-apply their rules — would be a worse failure than
+reading a key this build has nothing to do with.
+
+- At **version 1 and 2** a `gate:` on a rule or on `default:` is **accepted and
+  ignored**, with one line on stderr naming the file it was read out of. Nothing else
+  about those versions changes, and the approved fixture below is still a file this
+  build reads.
+- At **version 3** there is no such key: `Policy` is `{publication, approvals}`
+  exactly, and a `gate:` anywhere is refused as the unknown field it is.
+
+```yaml
+version: 3
+trailer_prefix: Onevcs-
+rules:
+  - match: {host: github.com, owner: acme-corp, name: "*"}
+    publication: change-open          # local-direct | change-open | change-auto | change-direct
+    approvals: required               # required | none
+  - match: {path: "~/projects/*"}
+    publication: local-direct
+default: {publication: change-open, approvals: required}
+```
+
+Everything downstream of the field goes with it. `onevcs rules check REPO` prints
+`publication:` and `approvals:` with their `(from …)` sources and no `gate:` line;
+`onevcs repos` keeps its third column, which is the registry's own detected identity
+bar and was never this field. Two of the approved text's event kinds are retired,
+because nothing emits them any more:
+
+Event kinds retired: `gate-started`, `gate-verdict`.
+
+What a publishing push wrote is still evidence, on the `push` event, unconditionally
+— which is where a `pre-push` verdict always actually arrived.
+
+`FailureKind` and `Error` are **unchanged**, `Gate` included. The exit code the
+contract fixes for a verification failure is still `1`, and the vocabulary is fixed
+across the three libraries that route on it — so a variant is not renamed because the
+tier behind it went away. `FailureKind::Gate` now means the repository's own
+`commit-msg` hook turning down the subject a publication would land under, and a host
+that took a merge and then reported it unperformed.
+
+`status --json` bumps to **version 3**. `identity.gate` was the rules file's `gate:`
+and there is no such key; the top-level `gate` was the last verdict a gate this crate
+ran had recorded, and this crate runs none. The second is re-expressed as
+`merge_path` — the same question, asked of the verifier that actually rules — read
+off the `push` event:
+
+```json
+{"merge_path": {"verdict": "pass", "log": "<the preserved log>", "recorded_by": "<session>"}}
+```
+
+`verdict` is `pass`, `fail`, or `unrecorded` for a push that recorded no answer.
+`identity.gate` gets no replacement: the identity's own detected bar is a different
+field on a different document, and merge-path coverage is what `onevcs repos
+--audit-gates` reports.
+
+The local merge train (`onevcs integrate`) verified each candidate with the same
+`command:` gate, and now verifies with the repository's `pre-push` hook at the push
+that publishes the advanced base — the same verifier every other landing of a
+local-first identity answers to. Only trains whose rules named a command ever ran
+that per-candidate tier: `gate: {kind: pre-push}`, which is what the approved fixture
+gives a local-first repository, ran nothing there. An identity whose merge path runs
+nothing at all is warned about in the words `onevcs register` already uses, not
+refused — a train that refused where a publication does not would send an operator to
+raw `git merge`, which is verified by less.
+
+`onevcs recover` still refuses to attest a branch that nothing verified. The guard
+asked the rules file whether the resolved policy named `pre-push`; it asks the merge
+path itself now, through the same coverage question `onevcs repos --audit-gates`
+answers, so the guard, the registration warning, and the audit cannot disagree about
+which identities are covered.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

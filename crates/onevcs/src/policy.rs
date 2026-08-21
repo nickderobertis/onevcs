@@ -1,7 +1,7 @@
 //! The rules engine: which policy a repository publishes under, and why.
 //!
 //! The rules file is YAML and **first match wins**. A rule contributes whichever
-//! of the three policy fields it sets; anything it leaves unset comes from the
+//! of the two policy fields it sets; anything it leaves unset comes from the
 //! file's `default`. A registry with no rules file resolves against a built-in
 //! default that is the one the contract spells.
 //!
@@ -14,16 +14,16 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::registry::Registry;
-use crate::rules::{Approvals, Gate, GateKind, MergePolicy, Policy, RuleMatch, RulesFile};
+use crate::rules::{Approvals, MergePolicy, Policy, RuleMatch, RulesFile};
 use crate::store::Normalized;
 use crate::{home, ids};
 
 /// The version of the rules file this build writes, and the newest it reads.
 ///
-/// `2` added `trailer_prefix`. Nothing else about the shape moved, so a file that
-/// declares an older version is read as it always was rather than migrated: there
-/// is no field to fill in, only one that is absent.
-pub const VERSION: u32 = 2;
+/// `2` added `trailer_prefix`. `3` removed `gate:`. Nothing else about the shape
+/// moved, so a file that declares an older version is read as it always was rather
+/// than migrated: there is no field to fill in, only ones that are absent or spent.
+pub const VERSION: u32 = 3;
 
 /// The oldest version this build still reads.
 pub const OLDEST_VERSION: u32 = 1;
@@ -36,6 +36,17 @@ pub const OLDEST_VERSION: u32 = 1;
 /// readings are provenance written under one prefix and searched for under another.
 /// So it is refused rather than either obeyed or ignored.
 const TRAILER_PREFIX_VERSION: u32 = 2;
+
+/// The version at which the rules file stopped naming what verifies a change.
+///
+/// The removal is versioned rather than taken outright because a rules file is an
+/// operator's document on their own host: refusing every `onevcs` command the
+/// moment this build landed — before anything could re-apply their rules — is a
+/// worse failure than reading a key this build has nothing to do with. So `1` and
+/// `2` still accept a `gate:` and drop it, saying once which file it was read out
+/// of, and `3` declares a shape that never had one and is refused by
+/// `deny_unknown_fields` for carrying it.
+const GATE_REMOVED_VERSION: u32 = 3;
 
 /// How much review a publication policy leaves in the path.
 ///
@@ -57,19 +68,6 @@ pub fn spell(policy: MergePolicy) -> &'static str {
         MergePolicy::ChangeOpen => "change-open",
         MergePolicy::ChangeAuto => "change-auto",
         MergePolicy::ChangeDirect => "change-direct",
-    }
-}
-
-/// How a gate is spelled where one is reported.
-pub fn spell_gate(gate: &Gate) -> String {
-    match gate {
-        Gate::Kind {
-            kind: GateKind::Checks,
-        } => "checks".to_owned(),
-        Gate::Kind {
-            kind: GateKind::PrePush,
-        } => "pre-push".to_owned(),
-        Gate::Command { command } => format!("command: {}", command.join(" ")),
     }
 }
 
@@ -95,8 +93,6 @@ pub struct Resolved {
     pub publication_from: String,
     /// Where `approvals` came from.
     pub approvals_from: String,
-    /// Where `gate` came from.
-    pub gate_from: String,
 }
 
 /// Where the rules a repository resolved against came from.
@@ -139,9 +135,6 @@ pub fn built_in_default() -> Policy {
     Policy {
         publication: MergePolicy::ChangeOpen,
         approvals: Approvals::Required,
-        gate: Gate::Kind {
-            kind: GateKind::Checks,
-        },
     }
 }
 
@@ -168,21 +161,91 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
     let raw = std::fs::read_to_string(&path).map_err(|e| Error::Invalid {
         reason: format!("cannot read the rules file at {}: {e}", path.display()),
     })?;
-    let file: RulesFile = serde_yaml_ng::from_str(&raw).map_err(|e| Error::Invalid {
+    let malformed = |e: serde_yaml_ng::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {e}", path.display()),
-    })?;
-    if !(OLDEST_VERSION..=VERSION).contains(&file.version) {
-        return Err(Error::Invalid {
-            reason: format!(
-                "the rules file at {} declares version {}; this build reads versions \
-                 {OLDEST_VERSION} to {VERSION}",
-                path.display(),
-                file.version
-            ),
-        });
+    };
+    // The declared version decides whether a `gate:` is a spent key this build drops
+    // or a stray one it refuses, and that has to be settled before the shape is
+    // enforced: `deny_unknown_fields` gets no say in which version it is reading.
+    let mut document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
+    // The version is read before the shape is enforced, and refused before it too:
+    // which keys a file may carry is a fact about the version it declares, so a
+    // version this build does not read has to be answered as that rather than as
+    // whichever of its keys this build happened not to recognize.
+    if let Some(declared) = declared_version(&document) {
+        if !(u64::from(OLDEST_VERSION)..=u64::from(VERSION)).contains(&declared) {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the rules file at {} declares version {declared}; this build reads versions \
+                     {OLDEST_VERSION} to {VERSION}",
+                    path.display(),
+                ),
+            });
+        }
+        if declared < u64::from(GATE_REMOVED_VERSION) {
+            report_spent_gate(&path, drop_gate(&mut document));
+        }
     }
+    let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
     validate(&path, &file)?;
     Ok((file, RulesSource::File(path)))
+}
+
+/// The version a document declares, before anything about its shape is enforced.
+fn declared_version(document: &serde_yaml_ng::Value) -> Option<u64> {
+    document.get("version")?.as_u64()
+}
+
+/// Drop every `gate:` a pre-`3` document carries, and say how many there were.
+///
+/// The key is spent rather than unknown, so it is taken out of the document before
+/// the shape refuses it. Nothing else is touched: a `gate:` nested anywhere this
+/// schema does not put one is left where it is and refused as the stray key it is.
+fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
+    let mut dropped = 0;
+    let mut take = |from: Option<&mut serde_yaml_ng::Value>| {
+        if let Some(serde_yaml_ng::Value::Mapping(fields)) = from {
+            dropped += usize::from(fields.remove("gate").is_some());
+        }
+    };
+    take(document.get_mut("default"));
+    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get_mut("rules") {
+        for rule in rules {
+            take(Some(rule));
+        }
+    }
+    dropped
+}
+
+/// Say once, per file, that a rules file still names what no longer verifies.
+///
+/// Once because it is the operator's own document and nothing they can do about it
+/// mid-run: a line per `onevcs` command in a run that publishes all day is noise
+/// that gets filtered, and the second one carries nothing the first did not.
+fn report_spent_gate(path: &Path, dropped: usize) {
+    if dropped == 0 {
+        return;
+    }
+    static REPORTED: std::sync::Mutex<Option<Vec<PathBuf>>> = std::sync::Mutex::new(None);
+    let mut reported = match REPORTED.lock() {
+        Ok(reported) => reported,
+        // A poisoned lock means another thread panicked mid-report. Saying it twice
+        // is better than a load that fails over a warning.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let seen = reported.get_or_insert_with(Vec::new);
+    if seen.iter().any(|already| already == path) {
+        return;
+    }
+    seen.push(path.to_path_buf());
+    eprintln!(
+        "onevcs: warning: the rules file at {} names a gate, which version \
+         {GATE_REMOVED_VERSION} removed; it is ignored. What verifies a change is the \
+         repository's own merge path — the host's required checks, or its pre-push hook — \
+         and `onevcs repos --audit-gates` reports which of those each identity has. Delete \
+         the gate keys and declare version {GATE_REMOVED_VERSION}",
+        path.display()
+    );
 }
 
 /// Reject a rules file whose own policy cannot be honoured.
@@ -194,8 +257,9 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
 ///
 /// Only what a *combination* of fields makes impossible belongs here — a field
 /// that is wrong on its own is refused by its own type, which is why nothing checks
-/// the trailer prefix's spelling twice. A field the declared version does not have
-/// is such a combination.
+/// the trailer prefix's spelling twice. A field the declared version does not *yet*
+/// have is such a combination; one a later version took away is dropped before the
+/// shape is read, so it never reaches here.
 fn validate(path: &Path, file: &RulesFile) -> Result<()> {
     if file.version < TRAILER_PREFIX_VERSION && file.trailer_prefix.is_some() {
         return Err(Error::Invalid {
@@ -257,10 +321,6 @@ pub fn resolve(
             policy: Policy {
                 publication: rule.publication.unwrap_or(file.default.publication),
                 approvals: rule.approvals.unwrap_or(file.default.approvals),
-                gate: rule
-                    .gate
-                    .clone()
-                    .unwrap_or_else(|| file.default.gate.clone()),
             },
             source: source.to_string(),
             matched: Some(Matched {
@@ -269,7 +329,6 @@ pub fn resolve(
             }),
             publication_from: field_source(&named, rule.publication.is_some()),
             approvals_from: field_source(&named, rule.approvals.is_some()),
-            gate_from: field_source(&named, rule.gate.is_some()),
         };
     }
     Resolved {
@@ -278,7 +337,6 @@ pub fn resolve(
         matched: None,
         publication_from: "the default".to_owned(),
         approvals_from: "the default".to_owned(),
-        gate_from: "the default".to_owned(),
     }
 }
 
@@ -380,7 +438,7 @@ pub fn default_path() -> Result<PathBuf> {
 }
 
 /// A branch name that is safe to use as a directory name, used to name the place
-/// its preserved gate logs are kept.
+/// its preserved merge-path logs are kept.
 pub fn branch_slug(branch: &str) -> String {
     let flattened: String = branch
         .chars()

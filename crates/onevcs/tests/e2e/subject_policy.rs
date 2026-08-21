@@ -451,7 +451,7 @@ fn a_locally_published_session_is_held_to_the_same_policy_as_a_branch() {
     // The other publication path and the other verb: a session token rather than a
     // branch name, and a squash straight onto the base rather than a change request.
     // Both compose their subject in one place, so both are asked the same question.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let record = fixture.world.path("commit-msg-saw");
     fixture
         .world

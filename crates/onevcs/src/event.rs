@@ -78,10 +78,6 @@ pub enum EventKind {
     LockWait,
     /// The identity's lock was acquired.
     LockAcquired,
-    /// The repository's own verification gate started.
-    GateStarted,
-    /// The gate's verdict, pass or fail, with its log as an artifact.
-    GateVerdict,
     /// Work was committed onto a preserved branch; carries the provenance kind.
     CommitPreserved,
     /// A branch was pushed.
@@ -167,8 +163,6 @@ impl EventKind {
             EventKind::Fetch => "fetch",
             EventKind::LockWait => "lock-wait",
             EventKind::LockAcquired => "lock-acquired",
-            EventKind::GateStarted => "gate-started",
-            EventKind::GateVerdict => "gate-verdict",
             EventKind::CommitPreserved => "commit-preserved",
             EventKind::Push => "push",
             EventKind::ChangeOpened => "change-opened",

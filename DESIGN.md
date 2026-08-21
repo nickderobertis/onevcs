@@ -44,7 +44,7 @@ tag that was cut.
 
 The operator raised it. The old value was the width a wrapped commit *body* is
 written to, which was never their rule for a subject, and it twice refused
-complete, gate-green work at publication; a description cut to fit is not on offer,
+complete, verified work at publication; a description cut to fit is not on offer,
 so the refusal was the whole cost.
 
 `provenance::SUBJECT_LIMIT` is the only statement of the number, and `onepipeline`

@@ -14,7 +14,7 @@ index a6ed12a..32675cb 100644
 -    // With a copy on the host and no such observation — the branch reached the host
 -    // from somewhere this checkout has never fetched — there is nothing to lease on,
 -    // and an unleased push of a rewritten branch is exactly the overwrite all of
--    // this exists to prevent. Refuse here, before the gate, and name the fetch that
+-    // this exists to prevent. Refuse here, before anything is built, and name the fetch that
 -    // supplies the observation.
 -    if stack_replay.is_some() && observed.is_none() {
 -        if let Some(hosted) = &hosted {

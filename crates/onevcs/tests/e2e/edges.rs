@@ -99,7 +99,9 @@ fn a_registry_with_no_rules_file_resolves_the_built_in_default() {
         .stdout(predicate::str::contains(
             "approvals: required (from the default)",
         ))
-        .stdout(predicate::str::contains("gate: checks (from the default)"));
+        // What verifies a change is the repository's own merge path and never the
+        // rules file, so the resolved policy has no line about it to print.
+        .stdout(predicate::str::contains("gate:").not());
 }
 
 #[test]
@@ -216,8 +218,7 @@ fn a_legacy_registry_whose_records_contradict_themselves_is_refused_by_field() {
 
 #[test]
 fn publishing_commits_the_work_the_session_left_in_its_worktree() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let (token, worktree) = fixture.open(&["--branch", "feature/uncommitted"]);
     // The shape a caller leaves behind: files written, nothing committed.
     std::fs::write(worktree.join("one.txt"), "one\n").expect("uncommitted work");
@@ -241,57 +242,9 @@ fn publishing_commits_the_work_the_session_left_in_its_worktree() {
 }
 
 #[test]
-fn a_gate_naming_a_command_this_host_does_not_have_fails_rather_than_passing() {
-    let fixture = Fixture::local(
-        "{publication: local-direct, approvals: none, gate: {command: [\"no-such-gate-command\"]}}",
-    );
-    let (token, worktree) = fixture.open(&["--branch", "feature/missing-gate"]);
-    fixture
-        .world
-        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
-
-    fixture
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .code(1);
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
-    assert!(verdicts[0]["payload"]["output"]
-        .as_str()
-        .expect("the gate's own output")
-        .contains("the gate command \"no-such-gate-command\" could not be run"));
-}
-
-#[test]
-fn a_gate_that_names_no_command_verified_nothing_and_says_so() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: []}}");
-    let (token, worktree) = fixture.open(&["--branch", "feature/empty-gate"]);
-    fixture
-        .world
-        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
-
-    fixture
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .code(1);
-    let verdicts = fixture.world.events_of(&token, "gate-verdict");
-    assert!(verdicts[0]["payload"]["output"]
-        .as_str()
-        .expect("the gate's own output")
-        .contains("names no command"));
-}
-
-#[test]
-fn a_branch_that_re_pushes_through_a_red_gate_cannot_grow_its_log_directory_forever() {
-    let fixture = Fixture::local(&format!(
-        "{{publication: local-direct, approvals: none, gate: {{command: {}}}}}",
-        "[\"sh\", \"-c\", \"echo attempt; exit 1\"]"
-    ));
+fn a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_directory_forever() {
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    fixture.verified_by("echo attempt >&2; exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/repeatedly-red"]);
     fixture
         .world
@@ -306,10 +259,10 @@ fn a_branch_that_re_pushes_through_a_red_gate_cannot_grow_its_log_directory_fore
             .args(["publish", &token])
             .assert()
             .code(1);
-        let verdicts = fixture.world.events_of(&token, "gate-verdict");
-        last = verdicts
+        let pushes = fixture.world.events_of(&token, "push");
+        last = pushes
             .last()
-            .expect("a verdict")
+            .expect("a push, refused or not")
             .get("payload")
             .and_then(|payload| payload["preserved_log"].as_str())
             .expect("a preserved log path")
@@ -332,8 +285,7 @@ fn a_branch_that_re_pushes_through_a_red_gate_cannot_grow_its_log_directory_fore
 
 #[test]
 fn a_checkout_with_no_remote_head_falls_back_to_its_one_remote_branch() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     // Nobody has a HEAD to offer: the origin's dangles and the tracking ref is gone.
     fixture.world.git(
         &fixture.origin,
@@ -351,8 +303,7 @@ fn a_checkout_with_no_remote_head_falls_back_to_its_one_remote_branch() {
 
 #[test]
 fn a_checkout_whose_remote_head_is_ambiguous_asks_for_an_explicit_base() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     fixture
         .world
         .git(&fixture.checkout, &["branch", "release", "main"]);
@@ -397,8 +348,7 @@ fn a_checkout_whose_remote_head_is_ambiguous_asks_for_an_explicit_base() {
 
 #[test]
 fn a_checkout_with_no_cached_remote_head_asks_the_remote_rather_than_guessing() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     fixture
         .world
         .git(&fixture.checkout, &["branch", "release", "main"]);
@@ -432,8 +382,7 @@ fn a_checkout_with_no_cached_remote_head_asks_the_remote_rather_than_guessing() 
 
 #[test]
 fn a_branch_name_git_would_refuse_is_refused_before_anything_is_cut() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     for (option, value) in [("--branch", "feature/..bad"), ("--base", "not a branch")] {
         fixture
             .world
@@ -447,8 +396,7 @@ fn a_branch_name_git_would_refuse_is_refused_before_anything_is_cut() {
 
 #[test]
 fn a_session_another_process_is_inside_is_neither_adopted_nor_closed() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let before = fixture.world.locks();
     let (token, _worktree) = fixture.open(&[]);
     let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
@@ -509,8 +457,7 @@ fn a_session_nobody_opened_says_where_a_token_comes_from() {
 
 #[test]
 fn an_adoption_recreates_the_worktree_a_torn_down_session_left_behind() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let (token, worktree) = fixture.open(&["--branch", "feature/torn-down"]);
     fixture
         .world
@@ -537,8 +484,7 @@ fn an_adoption_recreates_the_worktree_a_torn_down_session_left_behind() {
 
 #[test]
 fn events_hands_over_a_line_this_build_cannot_parse_rather_than_hiding_it() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let (token, _worktree) = fixture.open(&["--branch", "feature/unparsed"]);
 
     // A stream this build cannot read every line of: what a torn write leaves, and
@@ -574,8 +520,7 @@ fn events_hands_over_a_line_this_build_cannot_parse_rather_than_hiding_it() {
 
 #[test]
 fn events_follow_returns_once_the_session_it_is_following_has_closed() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let (token, _worktree) = fixture.open(&["--branch", "feature/followed"]);
     fixture
         .world
@@ -600,8 +545,7 @@ fn a_train_offered_something_it_cannot_run_says_which_and_why() {
     // "Which and why" is half of it: each refusal also names the command that
     // answers it, because an agent handed a diagnosis with no next command reaches
     // for raw `git`, which is the one thing this tool exists to replace.
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let checkout = fixture.checkout.clone();
 
     // A name git would not accept is refused as the name it is, rather than as a
@@ -697,8 +641,7 @@ fn a_command_run_outside_every_registered_checkout_says_how_to_register_one() {
 
 #[test]
 fn recovering_a_branch_no_checkout_has_names_everywhere_it_looked() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     fixture
         .world
         .onevcs()
@@ -736,8 +679,7 @@ fn recovering_a_branch_no_checkout_has_names_everywhere_it_looked() {
 
 #[test]
 fn recovering_a_branch_with_nothing_ahead_of_its_base_says_there_is_nothing_to_recover() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     fixture
         .world
         .git(&fixture.checkout, &["branch", "feature/nothing", "main"]);
@@ -763,8 +705,10 @@ fn recovering_a_branch_with_nothing_ahead_of_its_base_says_there_is_nothing_to_r
 
 #[test]
 fn a_recovery_whose_base_conflicts_keeps_the_preserved_branch() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}");
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let (token, worktree) = fixture.open(&["--branch", "feature/clashing-recovery"]);
     fixture.world.commit_file(
         &worktree,
@@ -904,7 +848,7 @@ fn a_host_bound_that_cannot_be_read_is_refused_at_the_boundary() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-auto, approvals: required}\n",
     );
     world.install_fake_host(&origin);
 
@@ -949,7 +893,7 @@ fn a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-direct, approvals: none, gate: {kind: pre-push}}\n",
+         default: {publication: change-direct, approvals: none}\n",
     );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
@@ -994,7 +938,7 @@ fn a_host_that_cannot_produce_a_checks_log_records_none_rather_than_its_refusal(
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-auto, approvals: required}\n",
     );
     world.install_fake_host(&origin);
     world.host_checks(&[crate::world::Check {
@@ -1062,9 +1006,7 @@ fn a_host_that_cannot_produce_a_checks_log_records_none_rather_than_its_refusal(
 
 #[test]
 fn a_train_reports_each_way_a_candidate_can_fail_without_stopping() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct(
-        "[\"sh\", \"-c\", \"test ! -f reject.txt\"]",
-    ));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let world = &fixture.world;
     let checkout = fixture.checkout.clone();
 
@@ -1088,22 +1030,25 @@ fn a_train_reports_each_way_a_candidate_can_fail_without_stopping() {
         "feat: from the branch",
     );
 
-    // A candidate the gate rejects.
+    // A candidate that carries an unattested incomplete marker, which belongs to
+    // `recover` and not to the train.
     world.git(
         &checkout,
-        &["checkout", "-q", "-b", "claude/rejected", "main"],
+        &["checkout", "-q", "-b", "claude/interrupted", "main"],
     );
+    // The subject a preserved incomplete step carries, which is what recognizes one
+    // whatever wrote it.
     world.commit_file(
         &checkout,
-        "reject.txt",
-        "reject\n",
-        "feat: the rejected candidate",
+        "half.txt",
+        "half\n",
+        "chore: preserve the interrupted step (incomplete step)",
     );
 
     world.git(&checkout, &["checkout", "-q", "main"]);
     world
         .onevcs()
-        .args(["integrate", "claude/clashes-remote", "claude/rejected"])
+        .args(["integrate", "claude/clashes-remote", "claude/interrupted"])
         .current_dir(&checkout)
         .assert()
         .success()
@@ -1111,7 +1056,7 @@ fn a_train_reports_each_way_a_candidate_can_fail_without_stopping() {
             "claude/clashes-remote: skipped (conflict with the current base in \"shared.txt\")",
         ))
         .stdout(predicate::str::contains(
-            "claude/rejected: skipped (gate-failed)",
+            "claude/interrupted: skipped (incomplete provenance",
         ))
         .stdout(predicate::str::contains("Base advanced: no"))
         .stdout(predicate::str::contains("Pushed: no"));
@@ -1119,7 +1064,7 @@ fn a_train_reports_each_way_a_candidate_can_fail_without_stopping() {
 
 #[test]
 fn a_candidate_whose_content_the_base_already_carries_adds_no_second_commit() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let world = &fixture.world;
     let checkout = fixture.checkout.clone();
 
@@ -1216,9 +1161,8 @@ fn a_train_refuses_a_single_owner_identity_that_publishes_through_its_host() {
 
 #[test]
 fn a_handover_the_execution_checkout_refuses_is_reported_rather_than_assumed() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct(
-        "[\"sh\", \"-c\", \"exit 1\"]",
-    ));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    fixture.verified_by("exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/diverged"]);
     // Left uncommitted, so the publication commits it — and the handover that
     // follows that commit is the one refused.
@@ -1260,7 +1204,7 @@ fn a_handover_the_execution_checkout_refuses_is_reported_rather_than_assumed() {
 
 #[test]
 fn a_queue_state_this_build_cannot_read_stops_the_publication_by_name() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/queued"]);
     fixture
         .world
@@ -1420,7 +1364,7 @@ fn a_safety_clone_executes_the_work_while_the_canonical_checkout_publishes_it() 
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: none, gate: {command: [\"true\"]}}\n",
+         default: {publication: local-direct, approvals: none}\n",
     );
 
     // Two decisions, deliberately separated: the repository argument selects the
@@ -1526,9 +1470,9 @@ fn a_rules_pattern_with_more_than_one_star_matches_around_each_of_them() {
         .success();
     configure_rules(
         &world,
-        "version: 1\nrules:\n  - match: {name: \"service-*-*i\"}\n\
-         \x20   publication: change-open\n    gate: {command: [\"just\", \"gate\"]}\n\
-         default: {publication: change-auto, approvals: none, gate: {kind: checks}}\n",
+        "version: 3\nrules:\n  - match: {name: \"service-*-*i\"}\n\
+         \x20   publication: change-open\n    approvals: required\n\
+         default: {publication: change-auto, approvals: none}\n",
     );
 
     world
@@ -1540,15 +1484,18 @@ fn a_rules_pattern_with_more_than_one_star_matches_around_each_of_them() {
             "matched: rule 1 {name: service-*-*i}",
         ))
         .stdout(predicate::str::contains(
-            "gate: command: just gate (from rule 1)",
+            "publication: change-open (from rule 1)",
+        ))
+        .stdout(predicate::str::contains(
+            "approvals: required (from rule 1)",
         ));
 
     // …and the literal between the stars has to be there.
     configure_rules(
         &world,
-        "version: 1\nrules:\n  - match: {name: \"service-*-worker\"}\n\
-         \x20   publication: change-open\ndefault: {publication: change-auto, approvals: none, \
-         gate: {kind: checks}}\n",
+        "version: 3\nrules:\n  - match: {name: \"service-*-worker\"}\n\
+         \x20   publication: change-open\ndefault: {publication: change-auto, \
+         approvals: none}\n",
     );
     world
         .onevcs()
@@ -1592,7 +1539,7 @@ fn a_version_2_registry_leaves_a_remote_workflow_in_the_narrower_classification(
 
 #[test]
 fn a_checkout_that_cannot_fast_forward_reports_git_own_refusal() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     // The checkout takes its base somewhere the origin's base cannot reach.
     fixture.world.commit_file(
         &fixture.checkout,
@@ -1624,7 +1571,7 @@ fn a_checkout_that_cannot_fast_forward_reports_git_own_refusal() {
 
 #[test]
 fn a_command_run_from_below_a_checkout_still_finds_it() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let nested = fixture.checkout.join("deep/inside");
     std::fs::create_dir_all(&nested).expect("a directory inside the checkout");
 
@@ -1640,7 +1587,7 @@ fn a_command_run_from_below_a_checkout_still_finds_it() {
 
 #[test]
 fn recoverable_answers_for_the_repository_it_is_run_in() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     // A branch nothing opened a session for: made in the checkout, never published.
     fixture.world.git(
         &fixture.checkout,
@@ -1691,8 +1638,7 @@ fn recoverable_answers_for_the_repository_it_is_run_in() {
 
 #[test]
 fn a_repository_whose_checkout_carries_its_own_hooks_gates_the_publishing_push() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     // Tracked hooks, the shape a repository commits rather than configures: the
     // session's clone has to pick them up, because a clone copies no local config
     // and the publishing push is made from it.
@@ -1742,9 +1688,8 @@ fn a_repository_whose_checkout_carries_its_own_hooks_gates_the_publishing_push()
 
 #[test]
 fn a_recovery_the_gate_rejects_keeps_the_preserved_branch_where_it_found_it() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct(
-        "[\"sh\", \"-c\", \"test ! -f half.txt\"]",
-    ));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    fixture.verified_by("test ! -f half.txt");
     let (token, worktree) = fixture.open(&["--branch", "feature/rejected-recovery"]);
     fixture
         .world
@@ -1800,7 +1745,7 @@ fn a_recovery_of_an_identity_that_cannot_name_its_bar_refuses_to_attest_anything
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: none, gate: {kind: pre-push}}\n",
+         default: {publication: local-direct, approvals: none}\n",
     );
 
     let assert = world
@@ -1846,8 +1791,7 @@ fn a_recovery_of_an_identity_that_cannot_name_its_bar_refuses_to_attest_anything
 
 #[test]
 fn a_second_publication_gives_up_on_a_queue_the_first_is_holding() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     // The gate runs at the publishing push, which happens *inside* the turn — so a
     // slow one is exactly what holds the queue.
     fixture.world.install_pre_push(&fixture.checkout, "sleep 4");
@@ -1890,7 +1834,7 @@ fn a_second_publication_gives_up_on_a_queue_the_first_is_holding() {
 
 #[test]
 fn events_follow_keeps_reading_until_the_session_it_follows_closes() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/followed-live"]);
 
     let mut follow = fixture.world.onevcs();
@@ -1916,7 +1860,7 @@ fn events_follow_keeps_reading_until_the_session_it_follows_closes() {
 
 #[test]
 fn a_publication_checkout_somebody_is_working_in_is_refused() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/blocked-by-dirt"]);
     fixture
         .world
@@ -1955,7 +1899,7 @@ fn a_repository_with_no_remote_still_opens_and_closes_a_session() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: none, gate: {command: [\"true\"]}}\n",
+         default: {publication: local-direct, approvals: none}\n",
     );
 
     let assert = world
@@ -2007,7 +1951,7 @@ fn interrupted_work(world: &World, name: &str, branch: &str) -> (PathBuf, PathBu
     configure_rules(
         world,
         "version: 1\nrules: []\n\
-         default: {publication: change-open, approvals: required, gate: {kind: pre-push}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
@@ -2242,9 +2186,8 @@ fn naming_a_recoverys_body_twice_is_refused_before_anything_is_attested() {
 
 #[test]
 fn a_rejected_branch_the_execution_checkout_will_not_take_is_reported_as_lost() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct(
-        "[\"sh\", \"-c\", \"exit 1\"]",
-    ));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    fixture.verified_by("exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/nowhere-to-go"]);
     fixture
         .world
@@ -2265,23 +2208,23 @@ fn a_rejected_branch_the_execution_checkout_will_not_take_is_reported_as_lost() 
         .world
         .git(&fixture.checkout, &["checkout", "-q", "main"]);
 
-    // The gate rejects the work, and the handover that would have preserved it is
-    // refused too. That second line is the only warning that the branch named in
-    // the failure exists nowhere outside a run root about to be reclaimed.
+    // The merge path rejects the push, and the handover that would have preserved
+    // the work is refused too. That second line is the only warning that the branch
+    // named in the failure exists nowhere outside a run root about to be reclaimed.
     fixture
         .world
         .onevcs()
         .args(["publish", &token])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("gate failed"))
+        .stderr(predicate::str::contains("push rejected"))
         .stderr(predicate::str::contains("refused branch"))
         .stderr(predicate::str::contains("nothing outside this session"));
 }
 
 #[test]
 fn an_execution_checkout_nobody_registered_is_refused_by_name() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     fixture
         .world
         .onevcs()
@@ -2301,7 +2244,7 @@ fn an_execution_checkout_nobody_registered_is_refused_by_name() {
 
 #[test]
 fn closing_a_session_twice_is_not_an_error() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/closed-twice"]);
     fixture
         .world
@@ -2348,7 +2291,7 @@ fn a_train_asked_to_push_a_checkout_with_no_origin_says_what_to_run_instead() {
         &world,
         format!(
             "version: 1\nrules: []\ndefault: {}\n",
-            crate::lifecycle::local_direct("[\"true\"]")
+            crate::lifecycle::local_direct()
         ),
     );
     world.git(&checkout, &["checkout", "-q", "-b", "claude/one", "main"]);
@@ -2382,7 +2325,7 @@ fn a_train_asked_to_push_a_checkout_with_no_origin_says_what_to_run_instead() {
 
 #[test]
 fn a_train_whose_push_the_merge_path_rejects_says_so_after_the_base_advanced() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     fixture.world.install_pre_push(
         &fixture.checkout,
         "echo 'the aggregate gate says no' >&2; exit 1",
@@ -2398,9 +2341,9 @@ fn a_train_whose_push_the_merge_path_rejects_says_so_after_the_base_advanced() {
         .world
         .git(&fixture.checkout, &["checkout", "-q", "main"]);
 
-    // The candidate's own gate run is what keeps this readable: the base advanced
-    // locally before the single push, so the rejection is about the train's
-    // aggregate rather than about any one branch that was never verified.
+    // One push carries the whole train, so the rejection is about the aggregate: the
+    // base advanced locally before it, and what the merge path refused is everything
+    // the train had landed on that base.
     fixture
         .world
         .onevcs()
@@ -2435,7 +2378,7 @@ fn a_host_that_accepts_a_merge_and_does_not_perform_it_is_not_reported_as_merged
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-direct, approvals: none, gate: {kind: pre-push}}\n",
+         default: {publication: change-direct, approvals: none}\n",
     );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
@@ -2548,7 +2491,7 @@ fn a_rules_file_the_registry_names_wins_over_the_conventional_one() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
     world
         .onevcs()
@@ -2563,7 +2506,7 @@ fn a_rules_file_the_registry_names_wins_over_the_conventional_one() {
     std::fs::write(
         &elsewhere,
         "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: none, gate: {kind: pre-push}}\n",
+         default: {publication: local-direct, approvals: none}\n",
     )
     .expect("a rules file somewhere else");
     point_at_rules(&world, &elsewhere);
@@ -2596,7 +2539,7 @@ fn a_host_that_will_not_say_whether_a_check_blocks_the_merge_is_not_guessed_at()
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-auto, approvals: required}\n",
     );
     world.install_fake_host(&origin);
     world.host_checks(&[crate::world::Check {
@@ -2655,7 +2598,7 @@ fn a_host_this_build_does_not_speak_for_is_refused_rather_than_addressed_as_gith
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
     world.install_fake_host(&origin);
 
@@ -2721,7 +2664,7 @@ fn a_host_that_opens_something_other_than_a_change_request_is_not_followed() {
         configure_rules(
             &world,
             "version: 1\nrules: []\n\
-             default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
+             default: {publication: change-open, approvals: required}\n",
         );
         world.install_fake_host(&origin);
         world.answer_malformed(shape);
@@ -2783,7 +2726,7 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
         configure_rules(
             &world,
             "version: 1\nrules: []\n\
-             default: {publication: change-auto, approvals: required, gate: {kind: checks}}\n",
+             default: {publication: change-auto, approvals: required}\n",
         );
         world.install_fake_host(&origin);
         world.host_checks(&[crate::world::Check {
@@ -2854,7 +2797,7 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
 
 #[test]
 fn a_stored_record_that_disagrees_with_itself_is_rejected_where_it_is_read() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let (token, _worktree) = fixture.open(&["--branch", "feature/recorded"]);
     let path = fixture
         .world
@@ -3029,7 +2972,7 @@ fn a_stacked_session_records_the_tip_it_was_cut_from_and_keeps_it_through_its_li
     // moment it can be read: `session open --base` on a branch that is not the
     // identity's root. It is the tip of that branch, and it survives the record
     // being closed and adopted, because every later command reads it back.
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     fixture.world.git(
         &fixture.checkout,
         &["checkout", "-q", "-b", "feature/below"],
@@ -3089,7 +3032,7 @@ fn a_continued_stacked_branch_records_where_its_own_work_begins_and_lands_only_t
     // never saw — so what is written down is where the two forked, and it has to be
     // read before the base is merged in: afterwards they share the base's tip and the
     // fork point is gone.
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let world = &fixture.world;
     world.git(
         &fixture.checkout,
@@ -3194,7 +3137,7 @@ fn a_recorded_stack_tip_this_clone_does_not_have_is_refused_by_name() {
     // "no stack": that answer is the merge this whole path exists to avoid, arrived at
     // through a silence. It is refused, and the refusal names the verb that reads the
     // stack off the branch instead.
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     fixture.world.git(
         &fixture.checkout,
         &["checkout", "-q", "-b", "feature/below"],
@@ -3252,7 +3195,7 @@ fn a_session_whose_root_nobody_can_name_records_no_stack_and_publishes_as_one() 
     // session opened where nothing can say which branch the root is has no stack to
     // record — and is refused nothing for it. What it publishes is what every session
     // published before any of this: onto the base it was opened against.
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let world = &fixture.world;
     world.git(
         &fixture.checkout,
@@ -3321,7 +3264,7 @@ fn a_session_whose_root_nobody_can_name_records_no_stack_and_publishes_as_one() 
 
 #[test]
 fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/stateful"]);
     let path = fixture
         .world
@@ -3390,7 +3333,7 @@ fn a_session_record_round_trips_the_state_its_life_cycle_is_in() {
 
 #[test]
 fn a_train_that_lands_without_pushing_says_so_in_both_answers() {
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let checkout = fixture.checkout.clone();
     fixture.world.git(
         &checkout,
@@ -3428,7 +3371,7 @@ fn a_train_that_lands_without_pushing_says_so_in_both_answers() {
 fn a_git_command_whose_working_directory_is_gone_names_that_directory() {
     // `spawn` raises `NotFound` for a missing program and for a missing working
     // directory alike, and only one of them is what a reader must be sent after.
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     let removed = fixture.checkout.clone();
     std::fs::remove_dir_all(&removed).expect("the checkout goes away under the tool");
 
@@ -3451,7 +3394,7 @@ fn a_git_binary_nothing_can_find_still_names_the_binary() {
     // The other half of that answer, and the reason the check is on the directory
     // rather than on the message: a `git` this process cannot find is exactly what an
     // absent PATH entry looks like, and it is still what a reader must be sent after.
-    let fixture = Fixture::local(&crate::lifecycle::local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
     fixture
         .world
         .onevcs()

@@ -89,7 +89,7 @@ pub struct SessionRecord {
     pub lifecycle: Lifecycle,
     /// What the session's branch carries now — an adopted session that was left
     /// dirty carries [`Provenance::IncompleteStep`], and must pass the merge-path
-    /// gate through `onevcs recover` before it may be published.
+    /// merge path through `onevcs recover` before it may be published.
     pub provenance: Provenance,
 }
 
@@ -155,7 +155,7 @@ pub enum Provenance {
     /// The step finished; the branch is ready to publish as it stands.
     Complete,
     /// The step did not finish. Its work was committed behind an incomplete-step
-    /// marker and must pass the merge-path gate before it may be published.
+    /// marker and must pass its merge path before it may be published.
     IncompleteStep,
 }
 

@@ -20,13 +20,14 @@ use crate::event::EventKind;
 use url::Url;
 
 use crate::host::{ChangeRequest, ChangeSpec, Check, Hosting, MergeOutcome, RemoteHost, Sha};
-use crate::rules::{Gate, GateKind, MergePolicy, Policy};
+use crate::rules::{MergePolicy, Policy};
 use crate::session::{Lifecycle, Provenance, SessionToken};
 use crate::store::Resolution;
 use crate::stream::{self, Stream};
 use crate::workspace::{object, Ref};
 use crate::{
-    gate, gh, git, guidance, home, ids, lock, policy, provenance, queue, store, vcs, workspace,
+    gh, git, guidance, home, ids, lock, merge_path, policy, provenance, queue, store, vcs,
+    workspace,
 };
 
 /// How many times a base that moved under a publication is re-merged before the
@@ -191,10 +192,17 @@ impl PublishOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FailureKind {
-    /// The gate this crate runs itself — a `command:` gate, or the repository's own
-    /// `commit-msg` hook — reported failure. What the *host's* checks reported is
-    /// [`ChecksFailed`](FailureKind::ChecksFailed) or
-    /// [`ChecksUnsettled`](FailureKind::ChecksUnsettled).
+    /// A publication was refused by something that judged it, where no narrower
+    /// kind says which — the repository's own `commit-msg` hook turning down the
+    /// subject, or a host that took a merge and then reported it unperformed. What
+    /// the *host's checks* reported is [`ChecksFailed`](FailureKind::ChecksFailed)
+    /// or [`ChecksUnsettled`](FailureKind::ChecksUnsettled), and what its `pre-push`
+    /// hook said is [`PushRejected`](FailureKind::PushRejected).
+    ///
+    /// Named for the tier this crate used to run itself and kept under that name:
+    /// the contract fixes this vocabulary across the three libraries that route on
+    /// it, so a variant is not renamed because the tier behind it went away.
+    // llmlint: ignore[names_match_behavior] the approved contract fixes the spelling.
     Gate,
     /// Input was rejected at a trust boundary.
     Invalid,
@@ -366,7 +374,7 @@ pub struct Context<'a> {
     pub effective: MergePolicy,
     /// The repository the branch lives in — a session clone, or a recovery clone.
     pub repo: PathBuf,
-    /// The tree the gate runs in.
+    /// The tree this publication is built in.
     pub worktree: PathBuf,
     /// The branch carrying the change.
     pub branch: Ref,
@@ -376,7 +384,7 @@ pub struct Context<'a> {
     /// handing it here. A publication that replays during its own run decides this
     /// for itself.
     pub push: Push,
-    /// Where preserved gate logs are written.
+    /// Where preserved merge-path logs are written.
     pub run_root: PathBuf,
     /// The checkout that keeps this branch once the run root is gone — a session's
     /// execution checkout, or the checkout a branch-keyed verb read the branch out
@@ -592,8 +600,8 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     }
     // Asked after the fetch and before anything else: a change whose stack the root
     // already carries is a change onto the root base, and everything below — what it is compared
-    // against, what its gate judges, what its change request targets — follows from
-    // that rather than from the branch it was opened against.
+    // against, what its change request targets — follows from that rather than from
+    // the branch it was opened against.
     let mut replay = None;
     let landed;
     let mut context = context;
@@ -628,10 +636,9 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     };
     // The trailers are the publication *commit*'s, so only the local path takes them
     // here — and it re-describes the branch after the queue anyway. Asking now is
-    // still what refuses a branch with no usable subject before the gate runs.
+    // still what refuses a branch with no usable subject before anything is pushed.
     let (subject, _) = describe(context, &compared)?;
-    let environment = gate::comparison_env("origin", context.target.base());
-    verify(context, stream, &environment)?;
+    let environment = merge_path::comparison_env("origin", context.target.base());
 
     match context.effective {
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
@@ -748,48 +755,6 @@ fn describe(context: &Context<'_>, compared: &str) -> Result<(String, Vec<String
         trailers.push(format!("{} {tip}", context.provenance.landed()));
     }
     Ok((subject, trailers))
-}
-
-/// Run the gate this crate owns, when the policy names one.
-///
-/// `pre-push` and `checks` are not run here: the first is git's own hook at the
-/// publishing push, and the second is the host's. Both report later, and both are
-/// captured where they actually arrive.
-fn verify(
-    context: &Context<'_>,
-    stream: &mut Stream,
-    environment: &[(String, String)],
-) -> Result<()> {
-    let Some(command) = gate::own_command(&context.policy.gate) else {
-        return Ok(());
-    };
-    stream.emit(
-        EventKind::GateStarted,
-        object(json!({
-            "command": command.join(" "),
-            "comparison_remote": "origin",
-            "comparison_base": context.target.base(),
-        })),
-    );
-    let verdict = gate::run(&context.worktree, command, environment);
-    let artifact = stream::store_artifact("log", &verdict.output)?;
-    let preserved = gate::preserve_log(&context.run_root, &context.branch, &verdict.output)?;
-    stream.emit_with(
-        EventKind::GateVerdict,
-        object(json!({
-            "verdict": verdict.ruling.describe(),
-            "command": verdict.command,
-            "output": verdict.output,
-            "preserved_log": preserved.display().to_string(),
-        })),
-        vec![artifact],
-    );
-    if verdict.ruling.passed() {
-        return Ok(());
-    }
-    Err(Error::GateFailed {
-        reason: format!("{} rejected {:?}", verdict.command, context.branch),
-    })
 }
 
 /// What bringing a branch level with what it lands on did.
@@ -988,7 +953,7 @@ fn publish_locally(
 ) -> Result<PublishOutcome> {
     let publication = &context.resolution.publication;
     require_publication_checkout_ready(publication, context.target.base())?;
-    let judged = git::tip(&context.repo, compared);
+    let synced = git::tip(&context.repo, compared);
 
     let identity = lock::git_identity(&git::common_dir(publication)?);
     let turn = queue::turn(&identity)?;
@@ -1012,14 +977,14 @@ fn publish_locally(
     let outcome = (|| -> Result<PublishOutcome> {
         // The base can have advanced while this turn was queued — the writer ahead
         // of it in the queue is the usual reason. The tree that lands is therefore
-        // re-synced and re-judged here rather than silently reconciled: what the
-        // gate cleared is no longer what would be published.
+        // re-synced here rather than silently reconciled: what was brought level with
+        // the base is no longer what would be published, and the merge path is about
+        // to rule on whatever this pushes.
         if git::has_remote(&context.repo, "origin") {
             git::fetch(&context.repo, "origin")?;
         }
-        if git::tip(&context.repo, compared) != judged {
+        if git::tip(&context.repo, compared) != synced {
             sync(context, stream, compared, None)?;
-            verify(context, stream, environment)?;
         }
         let (subject, trailers) = describe(context, compared)?;
         let message = compose_message(&subject, &trailers);
@@ -1060,7 +1025,7 @@ fn publish_locally(
 
 /// A push the merge path refused, reported as what git said it was.
 ///
-/// [`Error::PushRejected`] rather than a gate failure: the same exit code, and a
+/// [`Error::PushRejected`] rather than [`Error::GateFailed`]: the same exit code, and a
 /// kind a caller can route on. What the hook or the remote actually *wrote* is not
 /// in here — it is the artifact `record_push` stored a moment earlier, because it
 /// is a run of the repository's whole verification and does not belong inline.
@@ -1257,12 +1222,12 @@ fn publish_as_change(
     );
 
     let outcome = (|| -> Result<PublishOutcome> {
-        // What is watched, and until when, follows the **merge policy** — never what
-        // the policy names as its gate. Watching used to happen only where the gate
-        // was `{kind: checks}`, and on a host whose every rule names a `command:`
-        // gate that is no identity at all: the host's required checks were observed
-        // for no repository. A change-direct publication asks for the merge itself,
-        // so it waits for the checks the host says block one first.
+        // What is watched, and until when, follows the **merge policy**, which is the
+        // only thing that decides it. It once followed what the rules called the
+        // repository's gate, and on a host whose every rule named a `command:` gate
+        // that was no identity at all: the host's required checks were observed for no
+        // repository. A change-direct publication asks for the merge itself, so it
+        // waits for the checks the host says block one first.
         if context.effective == MergePolicy::ChangeDirect {
             await_checks(host.as_ref(), &change, stream)?;
         }
@@ -1572,27 +1537,21 @@ fn unsettled(
 
 /// Record one publishing push, and what it wrote.
 ///
-/// **Unconditionally**, which is the point of this function. What git and the
-/// repository's `pre-push` hook wrote is the only account of why a push was
-/// refused, and it lives in a pipe until the process ends. Preserving it only where
-/// the policy named `gate: {kind: pre-push}` meant no repository on a host whose
-/// rules name commands: what a policy calls its verification cannot decide whether
+/// **Unconditionally**, which is the point of this function. The publishing push is
+/// where the repository's own `pre-push` hook rules on the change, so what git and
+/// that hook wrote is the verdict as well as the only account of why a push was
+/// refused — and it lives in a pipe until the process ends. Preserving it only where
+/// the rules named `gate: {kind: pre-push}` meant no repository on a host whose
+/// rules named commands: what a policy calls its verification cannot decide whether
 /// a failure is diagnosable.
 ///
-/// The evidence is stored once and referenced twice where a `pre-push` gate also
-/// has a verdict to report, because two copies of one run read as two runs. Storing
-/// it is best effort: the push has already happened, so a state root that would not
-/// take the bytes says so on stderr rather than turning a push git accepted into a
-/// publication that failed.
+/// Storing it is best effort: the push has already happened, so a state root that
+/// would not take the bytes says so on stderr rather than turning a push git
+/// accepted into a publication that failed.
 fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed) -> Result<()> {
-    let ruling = if pushed.accepted() {
-        gate::Ruling::Passed
-    } else {
-        gate::Ruling::Rejected
-    };
     let output = pushed.output();
     let stored = stream::store_artifact("log", output);
-    let kept = gate::preserve_log(&context.run_root, &context.branch, output);
+    let kept = merge_path::preserve_log(&context.run_root, &context.branch, output);
     for error in [stored.as_ref().err(), kept.as_ref().err()]
         .into_iter()
         .flatten()
@@ -1606,7 +1565,7 @@ fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed)
     let mut payload = object(json!({
         "branch": context.branch,
         "remote": "origin",
-        "accepted": ruling.passed(),
+        "accepted": pushed.accepted(),
         "output": output,
     }));
     if let Ok(preserved) = &kept {
@@ -1615,37 +1574,7 @@ fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed)
             json!(preserved.display().to_string()),
         );
     }
-    stream.emit_with(
-        EventKind::Push,
-        payload,
-        artifact.clone().into_iter().collect(),
-    );
-    // A `pre-push` gate's verdict arrives as push output and nowhere else, so the
-    // same evidence is *also* the gate's verdict when the policy names that gate —
-    // reported as one, on the event a consumer reads verdicts from.
-    if matches!(
-        context.policy.gate,
-        Gate::Kind {
-            kind: GateKind::PrePush
-        }
-    ) {
-        let mut verdict = object(json!({
-            "verdict": ruling.describe(),
-            "command": "the repository's pre-push hook",
-            "output": output,
-        }));
-        if let Ok(preserved) = &kept {
-            verdict.insert(
-                "preserved_log".to_owned(),
-                json!(preserved.display().to_string()),
-            );
-        }
-        stream.emit_with(
-            EventKind::GateVerdict,
-            verdict,
-            artifact.into_iter().collect(),
-        );
-    }
+    stream.emit_with(EventKind::Push, payload, artifact.into_iter().collect());
     Ok(())
 }
 

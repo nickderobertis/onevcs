@@ -2,13 +2,13 @@
 //!
 //! One NDJSON file per session, appended to. `seq` is monotonic per stream, so a
 //! consumer detects loss as a gap rather than by trusting the producer. Payload
-//! text fields truncate at 4096 bytes and say so; a gate run or a check log is an
+//! text fields truncate at 4096 bytes and say so; a push's output or a check log is an
 //! artifact instead, stored beside the stream and fetched through
 //! `onevcs artifact cat`.
 //!
 //! Redaction happens **here**, before an event or an artifact leaves the library,
 //! because the thing being redacted arrives from outside it: a rejecting `pre-push`
-//! hook echoes whatever its own gate printed, credentials included.
+//! hook echoes whatever its own verification printed, credentials included.
 
 use std::fs::OpenOptions;
 use std::io::Write;

@@ -211,7 +211,7 @@ fn retained_reason(report: &str, path: &Path) -> String {
 
 #[test]
 fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/landed");
     publish_branch(&fixture, "feature/landed");
 
@@ -265,7 +265,10 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
 
 #[test]
 fn a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     interrupted_branch(&fixture, "feature/interrupted");
     fixture
         .world
@@ -298,8 +301,7 @@ fn a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication() {
 
 #[test]
 fn a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_terminated() {
-    let fixture =
-        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     // The gate runs at the publishing push, inside the landing, and holds it there
     // until this journey releases it — which is the only way a run root can be
     // observed while somebody is genuinely working in it.
@@ -364,7 +366,7 @@ fn a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_te
 
 #[test]
 fn a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     interrupted_branch(&fixture, "feature/interrupted");
     // Refused for its provenance, which happens after the run root is cut and long
     // before any gate runs — so what it leaves behind is a workspace nothing ever
@@ -422,7 +424,8 @@ fn a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_ne
     // its gate reached a verdict — not that the verdict was a pass. What it is not is
     // spent: the branch it gated never reached the origin, so the workspace holding it
     // is kept under the bound rather than reaped like a landing that finished.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     finished_branch(&fixture, "feature/rejected");
     fixture
         .world
@@ -491,7 +494,7 @@ fn a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_ne
 
 #[test]
 fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_sweep() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/not-ours-to-remove");
     publish_branch(&fixture, "feature/not-ours-to-remove");
     let run_root = only_run_root(&publications(&fixture.world));
@@ -634,7 +637,7 @@ fn what_this_host_may_not_read_or_remove_is_reported_rather_than_failing_the_swe
 
 #[test]
 fn a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/asked-about");
     publish_branch(&fixture, "feature/asked-about");
     let run_root = only_run_root(&publications(&fixture.world));
@@ -693,7 +696,7 @@ fn a_workspace_the_sweep_could_not_ask_about_is_not_aged_by_the_asking() {
 
 #[test]
 fn a_workspace_holding_a_directory_that_hands_unlinks_to_owners_is_retained() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/sticky");
     publish_branch(&fixture, "feature/sticky");
     let run_root = only_run_root(&publications(&fixture.world));
@@ -800,7 +803,7 @@ fn a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into() 
         shared.display()
     );
 
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let family = publications(&fixture.world);
     std::fs::create_dir_all(family.parent().expect("the workspaces root"))
         .expect("the workspaces root");
@@ -864,7 +867,7 @@ fn a_directory_whose_clock_this_host_could_not_put_back_is_never_written_into() 
 #[cfg(target_os = "linux")]
 #[test]
 fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_workspace() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/probe-stays");
     publish_branch(&fixture, "feature/probe-stays");
     let family = publications(&fixture.world);
@@ -925,7 +928,7 @@ fn a_probe_entry_this_host_could_not_take_away_again_is_no_answer_about_the_work
 #[cfg(target_os = "linux")]
 #[test]
 fn a_probe_file_this_host_could_not_unlink_is_no_answer_about_the_workspace() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/file-stays");
     publish_branch(&fixture, "feature/file-stays");
     let family = publications(&fixture.world);
@@ -981,7 +984,7 @@ fn a_probe_file_this_host_could_not_unlink_is_no_answer_about_the_workspace() {
 
 #[test]
 fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let family = publications(&fixture.world);
     std::fs::create_dir_all(&family).expect("the publications family");
 
@@ -1032,7 +1035,7 @@ fn a_directory_this_verb_cannot_show_it_cut_is_retained_with_that_reason() {
 
 #[test]
 fn a_dry_run_reports_what_it_would_reclaim_and_removes_nothing() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/rehearsed");
     publish_branch(&fixture, "feature/rehearsed");
     let run_root = only_run_root(&publications(&fixture.world));
@@ -1062,7 +1065,7 @@ fn a_dry_run_reports_what_it_would_reclaim_and_removes_nothing() {
 
 #[test]
 fn the_age_floor_bounds_what_a_sweep_considers() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/just-landed");
     publish_branch(&fixture, "feature/just-landed");
     let run_root = only_run_root(&publications(&fixture.world));
@@ -1117,7 +1120,7 @@ fn the_age_floor_bounds_what_a_sweep_considers() {
 
 #[test]
 fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // A session's run root, which is the bounded recovery history `session open`
     // keeps so a dead run's branch stays reachable. It is under the identity's own
     // directory rather than under either family this verb reaps — and it is made to
@@ -1182,7 +1185,7 @@ fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
 
 #[test]
 fn a_state_root_nothing_has_published_from_is_a_sweep_with_nothing_to_do() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     assert!(
         !fixture.world.home().join("workspaces").exists(),
         "the premise: nothing has cut a workspace under this state root yet"
@@ -1223,7 +1226,7 @@ fn a_state_root_nothing_has_published_from_is_a_sweep_with_nothing_to_do() {
 
 #[test]
 fn what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let workspaces = fixture.world.home().join("workspaces");
     std::fs::create_dir_all(publications(&fixture.world)).expect("the publications family");
     // Something else's, directly under the root this verb answers for.
@@ -1253,7 +1256,7 @@ fn what_is_under_the_root_and_is_not_a_run_root_is_reported_rather_than_touched(
 
 #[test]
 fn an_age_floor_no_window_can_hold_is_refused_at_the_boundary() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // Spelled with `=` so a negative reaches the parser as a value rather than as
     // an option nobody declared, which is a different refusal about a different
     // mistake.
@@ -1281,21 +1284,25 @@ fn still_running(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-/// A gate that starts a daemon of its own, the way a repository's verification does.
+/// A local fixture whose merge path starts a daemon of its own, the way a
+/// repository's verification does.
 ///
-/// What it starts inherits the gate's working directory — the landing's worktree —
-/// which is what a real Nx daemon inherits and why a run root can be removed while a
-/// process goes on holding everything that was in it. Its output goes nowhere, as a
-/// daemon's does: one still holding the gate's pipe would keep the gate from ever
-/// returning. The pid lands under `$HOME`, which the journey's world owns and the
-/// gate inherits, and therefore outside the workspace being reclaimed.
+/// What the `pre-push` hook starts inherits the hook's working directory — the tree
+/// the publishing push is made from, inside the landing's run root — which is what a
+/// real Nx daemon inherits and why a run root can be removed while a process goes on
+/// holding everything that was in it. Its output goes nowhere, as a daemon's does:
+/// one still holding the hook's pipe would keep the push from ever returning. The pid
+/// lands under `$HOME`, which the journey's world owns and the hook inherits, and
+/// therefore outside the workspace being reclaimed.
 ///
 /// It sleeps far longer than any journey waits for it to go, so a run that observes
 /// it gone has observed a stop rather than a process that ran out on its own.
-fn gate_starting_a_daemon(body: &str) -> String {
-    local_direct(&format!(
-        "[\"sh\", \"-c\", \"{body} >/dev/null 2>&1 </dev/null & echo $! > $HOME/daemon.pid\"]"
-    ))
+fn a_merge_path_starting_a_daemon(body: &str) -> Fixture {
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by(&format!(
+        "{body} >/dev/null 2>&1 </dev/null & echo $! > $HOME/daemon.pid"
+    ));
+    fixture
 }
 
 fn daemon_pid(fixture: &Fixture) -> i32 {
@@ -1314,7 +1321,7 @@ fn daemon_pid(fixture: &Fixture) -> i32 {
 fn reclaiming_a_workspace_stops_the_process_the_publication_left_running() {
     // Unlinking the files a running process holds open frees none of them, so what
     // this asserts is that the process has gone and not only that the directory has.
-    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 300"));
+    let fixture = a_merge_path_starting_a_daemon("sleep 300");
     finished_branch(&fixture, "feature/daemonised");
     publish_branch(&fixture, "feature/daemonised");
 
@@ -1364,9 +1371,8 @@ fn a_process_that_will_not_take_the_first_signal_is_ended_before_the_workspace_g
     // A daemon is asked to stop before it is stopped, so that one with a socket and a
     // lock file of its own can put them down. One that does not answer is not left
     // running: it is the whole of what makes the removal a reclamation.
-    let fixture = Fixture::local(&gate_starting_a_daemon(
-        "sh -c 'trap \\\"\\\" TERM; touch $HOME/trapped; sleep 300'",
-    ));
+    let fixture =
+        a_merge_path_starting_a_daemon("sh -c 'trap \"\" TERM; touch $HOME/trapped; sleep 300'");
     finished_branch(&fixture, "feature/stubborn");
     publish_branch(&fixture, "feature/stubborn");
 
@@ -1400,7 +1406,7 @@ fn an_operator_sweeping_from_inside_a_workspace_is_not_stopped_by_their_own_swee
     // shell somebody left in one answers that description exactly. It is not a daemon
     // and it is not this verb's to end, so the sweep is run *from* the workspace it
     // reclaims and the shell that ran it has to come back.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/stood-in");
     publish_branch(&fixture, "feature/stood-in");
     let run_root = only_run_root(&publications(&fixture.world));
@@ -1431,7 +1437,7 @@ fn a_workspace_whose_branch_the_base_already_carries_takes_no_place_in_the_bound
     // no origin ref names. Publication squashes, so a branch of two commits lands as
     // one it is not an ancestor of and keeps both of them for ever — and reading that
     // as unpublished work would keep every finished workspace on the disk.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/two-commits"]);
     for (file, subject) in [
         ("a.txt", "feat: the first half"),
@@ -1485,7 +1491,8 @@ fn a_workspace_whose_branch_the_base_already_carries_takes_no_place_in_the_bound
 fn the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes() {
     // The failure history an operator reads is the recent one, and its preserved gate
     // logs go when it does.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     let branches = [
         "feature/oldest",
         "feature/older",
@@ -1567,7 +1574,7 @@ fn the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_i
 fn a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind() {
     // Nobody types `onevcs sweep` in this journey: the landing is what enforces the
     // rule, over its own family, as it cuts the next run root.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/first");
     publish_branch(&fixture, "feature/first");
     let spent = only_run_root(&publications(&fixture.world));
@@ -1621,7 +1628,10 @@ fn a_recovery_enforces_the_rule_over_its_own_family_and_not_the_publications() {
     // Both branch-keyed verbs cut run roots and both enforce the rule, each over the
     // family it cuts under — a recovery reaching into `publications` would be reaping
     // a family it knows nothing about having just made.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     finished_branch(&fixture, "feature/published");
     publish_branch(&fixture, "feature/published");
     let publication = only_run_root(&publications(&fixture.world));
@@ -1658,7 +1668,7 @@ fn a_landing_stops_the_daemon_the_landing_before_it_left_running() {
     // The incident itself: a host publishing all day, each gate leaving a daemon
     // behind, and nobody running a sweep. What reclaims the disk is the next landing,
     // and reclaiming means the process too.
-    let fixture = Fixture::local(&gate_starting_a_daemon("sleep 300"));
+    let fixture = a_merge_path_starting_a_daemon("sleep 300");
     finished_branch(&fixture, "feature/one");
     publish_branch(&fixture, "feature/one");
     let earlier = only_run_root(&publications(&fixture.world));
@@ -1691,7 +1701,8 @@ fn a_landing_stops_the_daemon_the_landing_before_it_left_running() {
 fn a_landing_applies_the_same_bound_to_the_workspaces_holding_work_no_origin_has() {
     // The bound is the rule's, not the verb's: a host that never runs `onevcs sweep`
     // keeps the same failure history and no more of it.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     let mut roots: Vec<PathBuf> = Vec::new();
     for branch in ["feature/a", "feature/b", "feature/c", "feature/d"] {
         finished_branch(&fixture, branch);
@@ -1753,7 +1764,7 @@ fn a_landing_applies_the_same_bound_to_the_workspaces_holding_work_no_origin_has
 
 #[test]
 fn a_landing_never_reclaims_a_workspace_somebody_holds_the_lease_on() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // A first landing, so that every lock a landing takes other than its own run
     // root's already exists — which is what makes the next one identifiable.
     finished_branch(&fixture, "feature/warm");
@@ -1822,7 +1833,7 @@ fn a_landing_says_so_when_the_family_it_would_reclaim_cannot_be_listed() {
     // The other way the pass does not happen: a family this user may write into and
     // may not list. The landing has a directory to cut and nothing it can judge, and
     // saying nothing would leave the disk filling with no word anywhere.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/before");
     publish_branch(&fixture, "feature/before");
     let family = publications(&fixture.world);
@@ -1864,7 +1875,7 @@ fn a_landing_says_so_when_the_retention_rule_could_not_run_and_lands_anyway() {
     // A landing refused because somebody else's leftovers could not be judged is the
     // failure this rule exists to prevent, so it says what it could not do and
     // publishes.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     // A first landing, so that the merge queue's own locks are already there and the
     // ones the next landing adds are its own: its run root's lease, and the queue
     // ticket it will have finished with.

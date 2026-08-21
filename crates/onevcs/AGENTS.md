@@ -66,7 +66,8 @@ beside it is drift nothing would catch. What separates them is provenance and
 nothing else: `recover` requires an unattested incomplete marker and writes the
 attestation that clears it, `publish-branch` requires that there is none.
 `integrate` stays the local-only merge train and routes to `publish-branch` rather
-than re-gating a branch itself.
+than re-verifying a branch itself; what verifies a train is the `pre-push` hook at
+the push that publishes the advanced base.
 
 Which means **a refusal on this path is the guidance surface**: each one names the
 command with its exact arguments, or the rules-file entry, that resolves it. A
@@ -118,12 +119,46 @@ cwd. The train is deliberately not what it names, even for finished work:
 refuses a team or remote identity outright, so it lands none of the branches this
 report is most often read about — the ones a run left in its own clone.
 
+## The repository's own merge path is the only verifier
+
+Nothing here runs a verification tier of its own, and the rules file names none.
+For a remote-first identity the verifier is the host's required checks on the
+change request; for a local-first one it is the `pre-push` hook git runs at the
+publishing push. A second tier beside either of those is not a second opinion —
+for the local case it is literally the same work run twice, and for the remote one
+it front-runs CI and throws the answer away. Where such a tier is *judged* rather
+than deterministic, the two answers disagree and neither is the one the merge path
+would give.
+
+Three things follow, and each is easy to reintroduce by accident.
+
+- **`onevcs` hands the merge path the comparison identity and keeps what it wrote,
+  and does nothing else about verification.** `merge_path::comparison_env` exports
+  the remote and base every judging process resolves — a hook left to discover its
+  own base resolves the repository default, which for a stacked change is not the
+  base the push is publishing onto — and `merge_path::preserve_log` keeps what a
+  publishing push wrote where it outlives the tree it was built in.
+- **A `push` event is a verdict.** Its `accepted` is what the merge path ruled, its
+  artifact is what the hook wrote, and both are recorded for every publishing push
+  whatever the outcome. `status` reads its `merge_path` section off that event.
+- **`recover` refuses to attest a branch nothing verified**, and asks
+  `store::merge_path_coverage` — the same question `onevcs register` warns on and
+  `onevcs repos --audit-gates` reports. Those three must keep one answer.
+
+The rules schema is versioned rather than broken over this: version 3 has no
+`gate:` key, and versions 1 and 2 accept one, drop it, and say once which file it
+came out of. An operator's rules file is their own document, and refusing every
+command the moment a release landed would be worse than reading a key that no
+longer means anything.
+
 ## A publication observes, captures, and does not settle early
 
-- **Polling is driven by `context.effective`, never by `context.policy.gate`.** The
-  gate is what tempts you — it has a `checks` kind, and reading it here is one line
-  — but a host whose every rule names a `command:` gate then has its required checks
-  observed for no repository at all.
+- **Polling is driven by `context.effective`, and by nothing else.** It once
+  followed what the rules file called the repository's gate — that field had a
+  `checks` kind, and reading it here was one line — and on a host whose every rule
+  named a `command:` gate the required checks were then observed for no repository
+  at all. The field is gone; the lesson is that what a policy *calls* its
+  verification never decides what a publication does.
 - **Every capture is best effort where the thing it records has already happened.**
   `record_push`, `report_conflict`, and `record_landing` warn on stderr and carry
   on. A `?` in any of them turns a push git accepted, or a merge the host performed,
@@ -280,7 +315,7 @@ package; without it that journey refuses rather than skips, since one that passe
 without building its own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
-as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
+as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
 builds the crate and runs the contract, boundary, and packaging suites.
 
@@ -405,9 +440,9 @@ Six rules govern how it decides.
   inside a workspace. Nothing a lease is held on is removed, and nothing inside it is
   signalled.
 - **The evidence outlives the failure by the age floor**, which is
-  `sweep::DEFAULT_MIN_AGE_HOURS` where nobody says otherwise. Preserved gate logs live
-  under the run root — which outlives the worktree the gate ran in — so reclamation is
-  the only thing that takes them.
+  `sweep::DEFAULT_MIN_AGE_HOURS` where nobody says otherwise. The merge path's
+  preserved logs live under the run root — which outlives the worktree the
+  publication was built in — so reclamation is the only thing that takes them.
   Work no origin has keeps its workspace past the floor as well, bounded by
   `workspace::RETAINED_DEAD_RUNS` itself: one bound on one question, asked of the
   lifecycle clones there and of the landings' workspaces here.
@@ -416,8 +451,9 @@ Six rules govern how it decides.
   cannot come to disagree. Publication squashes, which is why neither half of it can
   be dropped.
 - **Reclaiming a workspace stops what it left running** (`processes.rs`), because
-  unlinking files a live process holds open frees none of their blocks — a gate is
-  the repository's own verification, and verifications start daemons that outlive it.
+  unlinking files a live process holds open frees none of their blocks — a
+  publication runs the repository's own verification, and verifications start daemons
+  that outlive it.
   Nothing live is signalled, and neither is this process or anything it descends
   from: an operator who ran a sweep from inside a workspace is not a daemon. A
   workspace whose holders would not stop is kept and reported rather than

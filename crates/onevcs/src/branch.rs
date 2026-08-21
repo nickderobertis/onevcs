@@ -93,9 +93,9 @@ pub struct Landing {
     pub source: PathBuf,
     /// The disposable clone the branch was imported into.
     pub clone: PathBuf,
-    /// The tree the gate runs in.
+    /// The tree this landing is built in.
     pub worktree: PathBuf,
-    /// Where preserved gate logs are written.
+    /// Where preserved merge-path logs are written.
     pub run_root: PathBuf,
     /// The occupancy lease this landing holds on that run root, for as long as the
     /// landing lives.
@@ -300,7 +300,7 @@ pub fn prepare(
     // With a copy on the host and no such observation — the branch reached the host
     // from somewhere this checkout has never fetched — there is nothing to lease on,
     // and an unleased push of a rewritten branch is exactly the overwrite all of
-    // this exists to prevent. Refuse here, before the gate, and name the fetch that
+    // this exists to prevent. Refuse here, before anything is built, and name the fetch that
     // supplies the observation.
     if stack_replay.is_some() && observed.is_none() {
         if let Some(hosted) = &hosted {

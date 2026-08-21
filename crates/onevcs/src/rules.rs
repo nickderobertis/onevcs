@@ -1,8 +1,13 @@
-//! The rules file: how each repository publishes a change, and what verifies it.
+//! The rules file: how each repository publishes a change.
 //!
 //! YAML, first match wins. A rule matches on the host/owner/name of an identity
-//! or on a checkout path, and contributes whichever of the three policy fields it
+//! or on a checkout path, and contributes whichever of the two policy fields it
 //! sets; anything it leaves unset comes from [`RulesFile::default`].
+//!
+//! What *verifies* a change is not here and never comes back. The repository's own
+//! merge path is the verifier — the host's required checks for a remote-first
+//! identity, the `pre-push` hook for a local-first one — and a second tier beside
+//! it front-ran the real one and threw the answer away.
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -11,12 +16,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesFile {
-    /// The schema version: `1` is this shape without `trailer_prefix`, `2` with it.
+    /// The schema version: `1` is this shape without `trailer_prefix`, `2` with it,
+    /// `3` without `gate`.
     // llmlint: ignore[boundary_inputs_validated] which versions this build can read is the
     // loader's question rather than this type's, and it answers it: it refuses one outside
-    // the range it reads, and refuses a trailer_prefix in a version that predates the key.
-    // The shape is enforced here — an undeclared publication, approvals, or gate kind, a
-    // missing default, or a stray key is rejected at this boundary and asserted in
+    // the range it reads, refuses a trailer_prefix in a version that predates the key, and
+    // drops a `gate:` from a version that still had one before this type ever sees it.
+    // The shape is enforced here — an undeclared publication or approvals value, a missing
+    // default, or a stray key is rejected at this boundary and asserted in
     // tests/contract.rs.
     pub version: u32,
     /// The prefix every provenance trailer key carries, written and read.
@@ -106,9 +113,6 @@ pub struct Rule {
     /// Whether approvals are required. Unset falls back to the default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approvals: Option<Approvals>,
-    /// What verifies a change. Unset falls back to the default policy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gate: Option<Gate>,
 }
 
 /// What a rule applies to. Every field is optional; the ones that are set must
@@ -138,8 +142,6 @@ pub struct Policy {
     pub publication: MergePolicy,
     /// Whether approvals are required.
     pub approvals: Approvals,
-    /// What verifies a change.
-    pub gate: Gate,
 }
 
 /// How a change reaches the base branch.
@@ -182,30 +184,4 @@ pub enum Approvals {
     Required,
     /// No approval is required.
     None,
-}
-
-/// What verifies a change before it may be published.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Gate {
-    /// One of the built-in kinds, written as `{kind: checks}`.
-    Kind {
-        /// Which built-in kind.
-        kind: GateKind,
-    },
-    /// An explicit command, written as `{command: [...]}`.
-    Command {
-        /// The argv to run, verbatim.
-        command: Vec<String>,
-    },
-}
-
-/// A built-in verification kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum GateKind {
-    /// The host's own required checks on the change request.
-    Checks,
-    /// The repository's `pre-push` hook.
-    PrePush,
 }

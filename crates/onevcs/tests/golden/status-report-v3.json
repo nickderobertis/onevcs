@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "ref": {
     "given": "feature/full",
     "kind": "branch"
@@ -9,11 +9,6 @@
     "publication_checkout": "<root>/hosted",
     "workflow": "remote",
     "repo_type": "team",
-    "gate": {
-      "command": [
-        "true"
-      ]
-    },
     "approvals": "required"
   },
   "session": {
@@ -69,9 +64,8 @@
       "status-checks"
     ]
   },
-  "gate": {
+  "merge_path": {
     "verdict": "pass",
-    "command": "true",
     "log": "<root>/.onevcs/workspaces/github.com-acme-corp-hosted-e5acaab6088d/runs/s-000000000000/gate-logs/feature-full/gate-0001.log",
     "recorded_by": "s-000000000000"
   },

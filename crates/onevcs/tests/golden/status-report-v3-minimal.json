@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "ref": {
     "given": "feature/plain",
     "kind": "branch"
@@ -9,9 +9,6 @@
     "publication_checkout": "<root>/hosted",
     "workflow": "remote",
     "repo_type": "team",
-    "gate": {
-      "kind": "checks"
-    },
     "approvals": "required"
   },
   "branch": {

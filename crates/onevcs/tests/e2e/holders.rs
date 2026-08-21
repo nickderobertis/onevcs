@@ -90,7 +90,7 @@ fn set_owner_pid(fixture: &Fixture, token: &str, pid: u32) {
 /// shape it answers are public.
 #[test]
 fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_binary() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (spawned, _) = fixture.open(&["--branch", "feature/spawned"]);
 
     inhabit(&fixture.world);
@@ -167,7 +167,7 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
 
 #[test]
 fn the_library_refuses_a_repository_nothing_resolves_rather_than_answering_empty() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     inhabit(&fixture.world);
 
     let refused = onevcs::session_holders("owner/name")
@@ -187,7 +187,7 @@ fn the_library_refuses_a_repository_nothing_resolves_rather_than_answering_empty
 
 #[test]
 fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_state() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let closed = fixture.open(&["--branch", "feature/closed"]).0;
     fixture
         .world
@@ -288,7 +288,7 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
 
 #[test]
 fn holders_accepts_the_repository_resolver_spellings_and_distinguishes_empty_from_unresolved() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let registry: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixture.world.home().join("registry.json")).expect("the registry"),
     )
@@ -328,7 +328,7 @@ fn holders_accepts_the_repository_resolver_spellings_and_distinguishes_empty_fro
 
 #[test]
 fn holders_human_output_is_one_line_per_record_and_empty_means_no_output() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     fixture
         .world
         .onevcs()
@@ -359,7 +359,7 @@ fn holders_human_output_is_one_line_per_record_and_empty_means_no_output() {
 
 #[test]
 fn non_process_pid_values_are_stale() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let zero = fixture.open(&["--branch", "feature/pid-zero"]).0;
     let overflow = fixture.open(&["--branch", "feature/pid-overflow"]).0;
     set_owner_pid(&fixture, &zero, 0);
