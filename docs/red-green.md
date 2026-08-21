@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 204. Tests observed red and then green: 241.
+Patches: 207. Tests observed red and then green: 242.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpWpxftO-project-1041a85a246c/runs/<token>/clone stands on its own parent b56fbbeb3de6b86ad1e33f
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpN9VvPK-project-0d5f778a858e/runs/<token>/clone stands on its own parent 04d9394a5c185295527fc9
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpr0jafg-project-f41b9dabceef/runs/<token>/clone stands on its own parent 76eb6c3026bf629b9ca573
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpzYF7kF-project-11eb2051dc94/runs/<token>/clone stands on its own parent f56953f90d4ae3a4b23ab8
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -381,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-1a1733-18cdb7f1fc7c1528-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-389117-18cdbb63a99d50a2-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-1a4430-18cdb7f4b1a1a44e-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-38cdf6-18cdbb6768a92730-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -716,6 +716,25 @@ a branch whose content the base already carries is taken as work to publish, bot
 a bound that fired says only that it did, naming neither the bound it was nor the knob that raises it.
 
 - RED `a_wedged_pre_push_hook_is_stopped_by_the_bound_and_left_running_by_nothing` — Unexpected stderr, failed var.contains(bound 3s)
+
+### `206-a-name-this-crate-never-wrote-is-read-as-an-attempt`
+
+the one reader of a preserved attempt's name takes any number it can parse, so a file spelled the way this crate never writes one answers for a verdict and is spent by the retention bound.
+
+- RED `a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason` — assertion `left == right` failed
+- RED `a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_directory_forever` — assertion `left == right` failed: ["gate-0006.log", "gate-0007.log", "gate-0008.log", "gate-0012.log", "gate-0009.log", "gate-0004.log", "ga
+
+### `207-retention-spends-a-file-this-crate-never-wrote`
+
+retention takes every .log in the shared directory as an attempt of its own, so a file this crate never wrote counts against the bound and is deleted as the oldest of ours.
+
+- RED `a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_directory_forever` — assertion `left == right` failed: ["gate-0006.log", "gate-0007.log", "gate-0008.log", "gate-0012.log", "gate-0009.log", "gate-notes.log", "g
+
+### `208-a-train-nothing-will-judge-lands-in-silence`
+
+a train whose identity has nothing on its merge path lands its candidates without saying so, so an operator learns what will never judge the work only after it is on the base.
+
+- RED `a_train_whose_merge_path_runs_nothing_is_warned_about_before_it_lands_and_never_refused` — the train says what will not judge what it lands: ""
 
 ### `20-a-round-header-is-not-checked`
 
