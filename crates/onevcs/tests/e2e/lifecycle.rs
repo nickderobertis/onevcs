@@ -707,11 +707,12 @@ fn a_branch_that_adds_nothing_publishes_nothing() {
 }
 
 #[test]
-fn a_branch_whose_content_already_landed_publishes_nothing_and_runs_no_gate() {
+fn a_branch_whose_content_already_landed_publishes_nothing_and_never_reaches_its_merge_path() {
     // A branch that landed under another change keeps its commits and adds nothing
     // to the tree, so the history cannot answer this and the tree has to. There is
-    // nothing left to verify either, which a gate that refuses everything is what
-    // proves: reaching it would fail a publication whose work is already on the base.
+    // nothing left to verify either, which a merge path that refuses everything is
+    // what proves: reaching it would fail a publication whose work is already on the
+    // base.
     let fixture = Fixture::local(&local_direct());
     fixture.verified_by("exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/landed-elsewhere"]);
@@ -3380,7 +3381,7 @@ fn an_artifact_nobody_stored_is_a_usage_error() {
 }
 
 #[test]
-fn a_wedged_gate_is_stopped_by_the_bound_and_left_running_by_nothing() {
+fn a_wedged_pre_push_hook_is_stopped_by_the_bound_and_left_running_by_nothing() {
     let fixture = Fixture::local("{publication: local-direct, approvals: none}");
     let marker = fixture.world.path("wedged.pid");
     fixture.world.install_pre_push(

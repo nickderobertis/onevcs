@@ -100,10 +100,14 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
 /// nothing this crate ran ever reached one there, and a run root that cannot show it
 /// was judged is retained rather than reaped.
 ///
-/// What counts is a **regular file** at the path [`preserve_log`] writes one to, and
-/// nothing about its contents: that path is written by that function alone, and a
-/// push whose output was empty said as much as one that printed a page. A directory
-/// wearing the name would otherwise answer for a verdict nobody reached.
+/// What counts is a **regular file whose name is one [`preserve_log`] writes**, and
+/// nothing about its contents: a push whose output was empty said as much as one
+/// that printed a page. Both halves are the boundary. This directory is under a
+/// state root a host shares, so the name is read through the same
+/// [`attempt_number`] that names an attempt rather than by prefix and suffix — a
+/// `gate-notes.log` somebody dropped beside the evidence is not a verdict this crate
+/// reached. And a *directory* wearing an otherwise perfect name would answer for a
+/// verdict nobody reached, so the entry has to be a file.
 pub fn has_recorded_verdict(run_root: &Path) -> bool {
     let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
         return false;
@@ -114,13 +118,22 @@ pub fn has_recorded_verdict(run_root: &Path) -> bool {
             .flatten()
             .flatten()
             .any(|log| {
-                let name = log.file_name();
-                let name = name.to_string_lossy();
-                name.starts_with("gate-")
-                    && name.ends_with(".log")
+                attempt_number(&log.file_name().to_string_lossy()).is_some()
                     && log.file_type().is_ok_and(|kind| kind.is_file())
             })
     })
+}
+
+/// The attempt one preserved log's filename names, or nothing if it names none.
+///
+/// One reader for the one name [`preserve_log`] writes, so what counts as a
+/// recorded verdict and what counts when the next attempt is numbered cannot come to
+/// disagree about the same file.
+fn attempt_number(name: &str) -> Option<u32> {
+    name.strip_prefix("gate-")?
+        .strip_suffix(".log")?
+        .parse()
+        .ok()
 }
 
 /// The highest attempt number this branch's directory has ever recorded.
@@ -130,15 +143,7 @@ fn highest(directory: &Path) -> u32 {
     };
     entries
         .flatten()
-        .filter_map(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .strip_prefix("gate-")?
-                .strip_suffix(".log")?
-                .parse::<u32>()
-                .ok()
-        })
+        .filter_map(|entry| attempt_number(&entry.file_name().to_string_lossy()))
         .max()
         .unwrap_or(0)
 }

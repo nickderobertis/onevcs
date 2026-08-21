@@ -365,12 +365,12 @@ fn a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_te
 }
 
 #[test]
-fn a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason() {
+fn a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason() {
     let fixture = Fixture::local(&local_direct());
     interrupted_branch(&fixture, "feature/interrupted");
     // Refused for its provenance, which happens after the run root is cut and long
-    // before any gate runs — so what it leaves behind is a workspace nothing ever
-    // judged.
+    // before anything is pushed — so what it leaves behind is a workspace nothing
+    // ever judged.
     fixture
         .world
         .onevcs()
@@ -419,11 +419,12 @@ fn a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason() {
 }
 
 #[test]
-fn a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed() {
-    // A gate that said no said something, and what makes a workspace *judged* is that
-    // its gate reached a verdict — not that the verdict was a pass. What it is not is
-    // spent: the branch it gated never reached the origin, so the workspace holding it
-    // is kept under the bound rather than reaped like a landing that finished.
+fn a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed() {
+    // A merge path that said no said something, and what makes a workspace *judged*
+    // is that it reached a verdict — not that the verdict was a pass. What it is not
+    // is spent: the branch it refused never reached the origin, so the workspace
+    // holding it is kept under the bound rather than reaped like a landing that
+    // finished.
     let fixture = Fixture::local(&local_direct());
     fixture.verified_by("exit 1");
     finished_branch(&fixture, "feature/rejected");
@@ -437,7 +438,7 @@ fn a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_ne
             &fixture.checkout.to_string_lossy(),
         ])
         .assert()
-        // 1 is the contract's code for a gate that rejected the change.
+        // 1 is the contract's code for a verification that rejected the change.
         .code(1);
 
     let run_root = only_run_root(&publications(&fixture.world));

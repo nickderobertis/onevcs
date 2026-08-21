@@ -188,7 +188,7 @@ fn a_complete_branch_of_a_local_identity_lands_on_its_base() {
         "one publication commit onto the seed: {log:?}"
     );
     // The merge path ruled on the branch as it landed, and the push that carried it
-    // recorded what it wrote: publishing a branch is a verification, not a push.
+    // recorded what it wrote.
     let events = fixture.world.events("publish-branch-feature-finished");
     let kinds: Vec<&str> = events
         .iter()

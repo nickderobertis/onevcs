@@ -1,5 +1,5 @@
 Mutation: a run root nothing ever judged answers that its merge path reached a verdict, so an unfinished publication is read as a finished one.
-Red: a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason
+Red: a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason
 
 diff --git a/crates/onevcs/src/merge_path.rs b/crates/onevcs/src/merge_path.rs
 index 85c948b..53bba85 100644

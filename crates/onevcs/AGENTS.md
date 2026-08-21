@@ -122,34 +122,27 @@ report is most often read about — the ones a run left in its own clone.
 ## The repository's own merge path is the only verifier
 
 Nothing here runs a verification tier of its own, and the rules file names none.
-For a remote-first identity the verifier is the host's required checks on the
-change request; for a local-first one it is the `pre-push` hook git runs at the
-publishing push. A second tier beside either of those is not a second opinion —
-for the local case it is literally the same work run twice, and for the remote one
-it front-runs CI and throws the answer away. Where such a tier is *judged* rather
-than deterministic, the two answers disagree and neither is the one the merge path
-would give.
+For a remote-first identity the verifier is the host's required checks; for a
+local-first one it is the `pre-push` hook git runs at the publishing push. A tier
+beside either is not a second opinion — it is the same work twice, or CI's answer
+front-run and thrown away. Three things follow, and each is easy to undo by
+accident.
 
-Three things follow, and each is easy to reintroduce by accident.
-
-- **`onevcs` hands the merge path the comparison identity and keeps what it wrote,
-  and does nothing else about verification.** `merge_path::comparison_env` exports
-  the remote and base every judging process resolves — a hook left to discover its
-  own base resolves the repository default, which for a stacked change is not the
-  base the push is publishing onto — and `merge_path::preserve_log` keeps what a
-  publishing push wrote where it outlives the tree it was built in.
-- **A `push` event is a verdict.** Its `accepted` is what the merge path ruled, its
-  artifact is what the hook wrote, and both are recorded for every publishing push
-  whatever the outcome. `status` reads its `merge_path` section off that event.
-- **`recover` refuses to attest a branch nothing verified**, and asks
+- **This crate hands the merge path what it needs and keeps what it wrote, and does
+  nothing else about verification.** `merge_path::comparison_env` exports the remote
+  and base every judging process resolves — a hook left to find its own resolves the
+  repository default, which for a stacked change is not the base being published
+  onto — and `merge_path::preserve_log` keeps a push's output where it outlives the
+  tree it was built in.
+- **A `push` event is a verdict.** `accepted` is what the merge path ruled and the
+  artifact is what the hook wrote, for every publishing push whatever the outcome.
+  `status` reads its `merge_path` section off that event and nothing else.
+- **`recover` refuses to attest a branch nothing verified**, asking
   `store::merge_path_coverage` — the same question `onevcs register` warns on and
   `onevcs repos --audit-gates` reports. Those three must keep one answer.
 
-The rules schema is versioned rather than broken over this: version 3 has no
-`gate:` key, and versions 1 and 2 accept one, drop it, and say once which file it
-came out of. An operator's rules file is their own document, and refusing every
-command the moment a release landed would be worse than reading a key that no
-longer means anything.
+Why the tier went, and how the rules schema was versioned around it, is the
+amendment in `docs/contract.md`.
 
 ## A publication observes, captures, and does not settle early
 

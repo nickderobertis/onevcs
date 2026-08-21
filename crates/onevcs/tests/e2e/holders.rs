@@ -362,6 +362,9 @@ fn non_process_pid_values_are_stale() {
     let fixture = Fixture::local(&local_direct());
     let zero = fixture.open(&["--branch", "feature/pid-zero"]).0;
     let overflow = fixture.open(&["--branch", "feature/pid-overflow"]).0;
+    // llmlint: ignore[tests_mirror_real_usage] no OS hands out pid 0 or a pid past
+    // `i32::MAX`, so the premise cannot be produced by opening a session; alter only
+    // the persisted owner pid, then drive the real CLI reader over it.
     set_owner_pid(&fixture, &zero, 0);
     set_owner_pid(&fixture, &overflow, i32::MAX as u32 + 1);
 
