@@ -3,13 +3,13 @@ Red: a_host_that_will_not_describe_a_change_requests_checks_still_opens_one
 Red: a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index a324b36..adb4086 100644
+index 3f99595..a2299c0 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -1228,7 +1228,7 @@ fn publish_as_change(
-         // that was no identity at all: the host's required checks were observed for no
-         // repository. A change-direct publication asks for the merge itself, so it
-         // waits for the checks the host says block one first.
+@@ -1226,7 +1226,7 @@ fn publish_as_change(
+         // else — least of all anything a repository *calls* its verification. A
+         // change-direct publication asks for the merge itself, so it waits for the
+         // checks the host says block one first.
 -        if context.effective == MergePolicy::ChangeDirect {
 +        if false {
              await_checks(host.as_ref(), &change, stream)?;
