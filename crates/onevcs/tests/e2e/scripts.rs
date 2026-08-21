@@ -1570,6 +1570,124 @@ fn a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest() {
         .failed()
         .said("the mutated files could not be restored")
         .said("ACTION: run 'git checkout --");
+
+    // …and the lock still comes off. A restore that failed is the moment the next
+    // run is most needed — the tree is carrying a mutation somebody has to clear by
+    // hand — so a run that gave up at the restore and kept the lock would turn that
+    // run away over a run that is no longer there.
+    assert!(
+        !harness.root().join(".logs/red-green.lock").exists(),
+        "the lock is released even when the tree could not be put back"
+    );
+}
+
+#[test]
+fn a_second_run_under_one_checkout_is_refused_rather_than_joining_in() {
+    // Two runs sharing a tree revert each other's mutations mid-round: the loser
+    // records as green a test it never observed red, and the tree can be left
+    // carrying a mutation neither of them owns. The hook is the one moment that
+    // collision is real — it runs between a round's apply and its restore, so the
+    // first run is holding both the lock and an applied mutation when the second
+    // one arrives, which is exactly the arrival this refuses.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    harness.hook(
+        "bash scripts/red-green.sh --base HEAD --record trespasser.md \
+         >trespasser.out 2>&1; printf '%s\\n' \"$?\" >trespasser.status",
+    );
+
+    harness
+        .run(&["--base", "HEAD", "--record", "evidence.md"])
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
+
+    let refused = harness.read("trespasser.out");
+    assert_eq!(
+        harness.read("trespasser.status").trim(),
+        "1",
+        "the second run must refuse rather than join in; it said:\n{refused}"
+    );
+    assert!(
+        refused.contains("another run holds .logs/red-green.lock")
+            && refused.contains("ACTION: wait for it to finish"),
+        "the refusal owes the lock it met and what to do about it:\n{refused}"
+    );
+    // Named as the collision it is rather than as a symptom of it: the lock is taken
+    // before the dirty-tree check precisely so the second run is not turned away for
+    // the mutation the first one has applied.
+    assert!(
+        !refused.contains("uncommitted changes"),
+        "a second run must not be refused for the first one's mutation:\n{refused}"
+    );
+    // It got no further than the refusal: nothing recorded, and the holder's own log
+    // — which a run truncates when it starts — left whole.
+    assert!(
+        harness.read("trespasser.md").is_empty(),
+        "a run that never took the lock has nothing to record"
+    );
+    assert!(
+        harness.read(".logs/red-green.log").contains("01-subject"),
+        "the refused run must not have truncated the log of the run holding the lock"
+    );
+
+    // …and the lock goes with the run that took it, so the next run is not turned
+    // away by what the last one left behind.
+    harness.commit("test: the hook ran, once");
+    harness
+        .run(&["--base", "HEAD", "--record", "evidence.md"])
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
+}
+
+#[test]
+fn a_lock_the_run_cannot_put_down_is_said_rather_than_assumed() {
+    // Taking the lock is checked and letting go of it was not. It is the removal that
+    // outlives the run: a lock still there is a refusal, to every run after it, about
+    // a run that is not there — so a removal that did not happen is reported with the
+    // way out of it rather than assumed to have worked.
+    use std::os::unix::fs::PermissionsExt;
+
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    // The refusal is the filesystem's own: the lock directory holds the pid file the
+    // run wrote, and unlinking that needs write on the directory. Taken away between
+    // a round's apply and its restore, which is the one moment anything runs inside
+    // the lock's lifetime. `.logs` itself stays writable, so the log is untouched and
+    // the lock is the only thing the run cannot put down.
+    harness.hook("chmod a-w .logs/red-green.lock");
+
+    harness
+        .run(&["--base", "HEAD"])
+        .failed()
+        .said("red-green: .logs/red-green.lock could not be removed")
+        .said("ACTION: remove .logs/red-green.lock by hand")
+        // The rounds themselves were done, and the run says so: what failed is the
+        // lock alone, and the operator is owed which of the two it was.
+        .printed("1 mutations, 1 tests observed red then green");
+
+    // …and the action it names is the whole way back: with the lock gone by hand, the
+    // next run is let in rather than turned away by the one that could not drop it.
+    let lock = harness.root().join(".logs/red-green.lock");
+    assert!(
+        lock.is_dir(),
+        "the run reported a lock it could not remove, so the lock is still there"
+    );
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755))
+        .expect("the lock directory is this user's to give back");
+    std::fs::remove_dir_all(&lock).expect("the lock the run could not remove");
+    // The hook removes itself so it runs once, and it is a tracked file: committing
+    // that is what leaves the tree the second run is entitled to refuse a dirty one.
+    harness.commit("test: the hook ran, once");
+    harness
+        .run(&["--base", "HEAD"])
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
 }
 
 #[test]

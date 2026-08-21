@@ -289,6 +289,67 @@ if ! diff_of_tests="$(git diff -U0 "$base" -- 'crates/*/tests/*' ':(exclude)*/fi
 fi
 added="$(sed -n 's/^+fn \([a-z0-9_]*\)() {$/\1/p' <<<"$diff_of_tests" | sort -u)"
 
+# One run at a time under one checkout. A round applies a mutation, runs a test,
+# and reverts it, so two runs sharing a tree revert each other's mutations mid-round
+# — the loser records a test as green that was never observed, and the tree can be
+# left carrying a mutation neither of them owns.
+#
+# `mkdir` is the atomicity, rather than `flock`: creating a directory either happens
+# or fails because it is already there, in one syscall, on every filesystem this
+# runs on — and `flock(1)` is a Linux utility macOS does not ship, which the rest of
+# this script already writes around.
+#
+# Taken *before* the dirty-tree check below, not after: a second run arriving while
+# the first has a mutation applied would otherwise be turned away for uncommitted
+# changes, which names the symptom of the collision instead of the collision.
+lock=".logs/red-green.lock"
+# The lock lives beside the log, so the directory has to be there before it is taken
+# — but only the directory. The log itself is truncated further down, *after* the
+# lock, so a run turned away here does not blank the log of the run holding it.
+#
+# A `.logs` that cannot be created is reported in the words the log check below uses:
+# it is the same condition with the same remedy, and the operator is owed the
+# consequence they have to fix rather than which of the two met it first.
+if ! mkdir -p .logs 2>/dev/null; then
+  echo "red-green: .logs/red-green.log cannot be written" >&2
+  echo "ACTION: make .logs/ writable by this user (it is gitignored and owner-only), then re-run" >&2
+  exit 1
+fi
+if ! mkdir "$lock" 2>/dev/null; then
+  holder="$(cat "$lock/pid" 2>/dev/null || true)"
+  echo "red-green: another run holds $lock${holder:+, as pid $holder}" >&2
+  echo "ACTION: wait for it to finish — two runs under one checkout mutate the same files. If nothing is running, remove $lock and re-run" >&2
+  exit 1
+fi
+# Best effort, and the run proceeds without it: the directory is the lock, and this
+# only lets the refusal above name who is holding it.
+printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
+release_lock() {
+  # A lock that outlives its run turns away every run after it, in the words of a
+  # collision with a run that is not there. So a removal that did not happen is the
+  # operator's to clear, and is said rather than assumed.
+  if ! rm -rf "$lock"; then
+    echo "red-green: $lock could not be removed" >&2
+    echo "ACTION: remove $lock by hand — until it is gone every run is turned away as if one were still in progress" >&2
+    return 1
+  fi
+}
+# One handler for every way out, carrying the run's status by hand, because `set -e`
+# ends a trap at its first failing command: a handler that simply listed a failing
+# `restore` ahead of `release_lock` would stop there and leave the lock held by
+# exactly the run that could not put the tree back — the run whose mess the next one
+# most needs to be let in to clean up.
+restore_armed=0
+on_exit() {
+  status=$?
+  if [ "$restore_armed" = 1 ]; then
+    restore || status=1
+  fi
+  release_lock || status=1
+  exit "$status"
+}
+trap on_exit EXIT
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "red-green: the working tree has uncommitted changes" >&2
   echo "ACTION: commit or stash them first — this script reverts patches with 'git checkout', which would take them with it" >&2
@@ -381,7 +442,10 @@ restore() {
     return 1
   fi
 }
-trap restore EXIT
+# From here out the handler installed with the lock puts the tree back too: the
+# mutated paths are known and `restore` is defined, and a run that ends past this
+# point owes both — the tree as it was found, and the lock off it either way.
+restore_armed=1
 
 for patch in "${patches[@]}"; do
   name="$(basename "$patch" .patch)"

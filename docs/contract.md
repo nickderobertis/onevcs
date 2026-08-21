@@ -28,14 +28,17 @@ incomplete-step commit but fixes no keys, so this crate spells them
 `<prefix>Recovered-Incomplete:`, `<prefix>Change-Url:`, and
 `<prefix>Landed-Commit:`.
 
-The last is the one written onto a *base* rather than onto a branch, and it is
-written by the one landing that opens no change request: a `local-direct`
-publication squashes a branch onto its base, and the commit it lands carries that
-key with the branch commit whose work it landed as its value.
-Everything the host lands carries the change request's own number instead, which
-the host writes. A commit rather than a branch name, because a branch name is spent
-and re-cut and a landing of the work that used to wear it must not answer for work
-that wears it now.
+The last records a landing, and it is written on whichever side of one would
+otherwise keep no record. A `local-direct` publication squashes a branch onto its
+base and opens no change request for anything to find later, so the commit it lands
+carries that key on the *base*, with the branch commit whose work it landed as its
+value. A change the host lands on its own clock is the mirror of that: the host
+writes the change request's own number onto the base, and nothing at all onto the
+branch — so the key is written on the *branch* instead, carrying the commit the
+change reached its base at (below). One key for both, because both answer the one
+question, and a reader tells them apart by which side the commit sits on. A commit
+rather than a branch name, because a branch name is spent and re-cut and a landing
+of the work that used to wear it must not answer for work that wears it now.
 
 The prefix is the rules file's optional `trailer_prefix` key, unset `Onevcs-`.
 
@@ -388,6 +391,100 @@ rather than empty scaffolding. The provenance trailers do not move: they are the
 publication *commit*'s, composed by `compose_message`, and a recovered incomplete
 step still records `Recovered-Incomplete:` there — they simply stop appearing in a
 change request's body, which was never a record anything read them back out of.
+
+**A publication observes every surface it can fail at, says which failure it was,
+and does not settle while the host still has the change.** The contract gives
+`publish` one code for a verification failure and one line of prose beside it. Both
+were doing too much work. A publication can fail at four surfaces — the gate, the
+publishing push, the sync with its base, and the host's required checks — and three
+of them threw their evidence away: a rejected push preserved what the hook wrote
+only where the resolved policy named `gate: {kind: pre-push}`, which on a host whose
+every rule names a `command:` gate is no repository at all; a sync conflict reported
+that something conflicted and never what; and a red required check named the check
+and left the reason reachable only by fetching an artifact by hand. Worse, under
+`change-auto` the publication *ended* at change-request-open: the host landed the
+change later on its own clock, and no node remained alive to report that it had, or
+that a check had stopped it.
+
+Evidence travels on the events, and none of it is conditional:
+
+- `push` carries what the push wrote — git's own porcelain and whatever the
+  repository's `pre-push` hook printed — as a `log` artifact, with `output` and
+  `preserved_log` beside it, for **every** publishing push, accepted or rejected,
+  whatever the policy names as its gate. Where the policy does name `pre-push`, the
+  same artifact is referenced again from that gate's `gate-verdict`; one run of a
+  gate is one artifact.
+- `sync-conflict` carries `paths`, the paths git left unmerged, and the hunks it
+  renders for them as a `diff` artifact. Both are read out of the tree git had
+  already opened, before the attempt is aborted, so neither costs a second merge.
+  Every refusal about a conflict names those paths.
+- `change-check` already carried the failing check's log; the refusal about it now
+  quotes a bounded excerpt of that log beside the check's name, so the diagnosis is
+  in the failure and not only behind an artifact id.
+
+Which failure it was is a case rather than a sentence:
+
+```rust
+pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented,
+                       ChecksFailed, ChecksUnsettled, PushRejected }  // 1 | 2 | 3 | 70 | 1 | 1 | 1
+```
+
+`ChecksFailed` is a required check that concluded red, and its `reason` names the
+check. `ChecksUnsettled` is the bound elapsing with required checks unsettled, and
+its `reason` names the checks still pending — the bound had been a second silent
+failure. `PushRejected` is a push the merge path refused, and its `reason` carries
+git's own per-ref refusal. All three keep **exit code 1**, which is the code the
+contract already fixes for a verification failure: what is new is which verification
+it was, and only a caller that branches on the kind can see it. `Error` gains the
+matching variants (`ChecksFailed`, `ChecksUnsettled`, `PushRejected`); it is
+`#[non_exhaustive]`, which is what makes that additive.
+
+What a publication watches follows the **merge policy**, never what the policy names
+as its verification:
+
+- `change-auto` arms the host's own merge and then watches, until the host reports
+  the merge — answering `Merged(sha)` with the commit read from the host's own
+  answer — until a required check concludes red, or until the bound. It no longer
+  answers `Queued` for a change the host is holding.
+- `change-direct` asks for the merge itself, so it waits until nothing the host says
+  blocks one is still unsettled. A host that declares *no* required check has
+  answered, and its answer is that nothing blocks; the merge is then the host's own
+  to refuse under its own rules. `change-auto` is where that fails closed, because
+  its watch ends at a merge a host holding the change behind an undeclared check
+  never performs.
+- **`change-open` is the stated exception**: a human decides when a reviewed change
+  merges, so there is no bounded wait to have and it settles at change-request-open
+  exactly as before. That is a decision, not an oversight.
+
+Watching needs one question the six methods could not ask, so `RemoteHost` gains a
+seventh:
+
+```rust
+pub trait RemoteHost {                       // the six above, unchanged, plus:
+    fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>>;
+}
+```
+
+`None` is "not yet" and never "somewhere else". It is **defaulted**, so an
+implementation written against the earlier surface still compiles — and defaulted to
+`Error::NotImplemented` rather than to `None`, because a host that was never taught
+to answer has not said a change is unmerged, and a publication reading it that way
+would watch to its bound and then report checks that were never the reason.
+
+`ONEVCS_CHECKS_POLL_SECONDS` defaults to **30 seconds** rather than 5, against the
+same hour-long `ONEVCS_CHECKS_TIMEOUT_SECONDS` bound. Each ask is a `gh` subprocess
+and at least one API call, and the answer changes when a job finishes rather than
+when it is asked about. The override is unchanged.
+
+Finally, a merge the host reports is **recorded on the branch**, as one more
+provenance trailer under the configured prefix: `<prefix>Landed-Commit:` carrying
+the commit the change reached its base at, written the moment the host reports the
+merge, on an otherwise empty commit — the branch's content is exactly what merged. It is read back through `trailer_prefix`
+exactly as `<prefix>Recovered-Incomplete:` is, and it is what lets a later reader say
+a branch landed because a landing was *recorded* rather than infer it from content
+the base might have come by some other way. Writing it is best effort: the change has
+already merged by then, and reporting the publication as failed because its own
+footnote could not be written would be a worse lie than the missing line.
 
 `onevcs publish` takes the body two ways: `--body` and `--body-file`.
 The first is the text as typed and the second is the path of a file holding it,

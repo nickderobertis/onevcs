@@ -118,6 +118,21 @@ cwd. The train is deliberately not what it names, even for finished work:
 refuses a team or remote identity outright, so it lands none of the branches this
 report is most often read about — the ones a run left in its own clone.
 
+## A publication observes, captures, and does not settle early
+
+- **Polling is driven by `context.effective`, never by `context.policy.gate`.** The
+  gate is what tempts you — it has a `checks` kind, and reading it here is one line
+  — but a host whose every rule names a `command:` gate then has its required checks
+  observed for no repository at all.
+- **Every capture is best effort where the thing it records has already happened.**
+  `record_push`, `report_conflict`, and `record_landing` warn on stderr and carry
+  on. A `?` in any of them turns a push git accepted, or a merge the host performed,
+  into a publication that failed — and sends somebody to land work that is landed.
+- **A conflict's paths and hunks exist only before the abort**, so `git::conflict_in`
+  takes both in the same pass that decides it *was* a conflict, and reads them
+  NUL-delimited: git quotes a pathname carrying a newline or a quote in its default
+  listing, and a reader that unquoted nothing would name a file nobody has.
+
 ## The subject policy is the repository's, and this crate holds none
 
 `publish::subject_for` composes the subject a publication lands under — an explicit
@@ -307,12 +322,14 @@ script written beside them that answered to what they asked.
   Cleanup is a `Drop`, so a run that fails half way still removes its branch; what
   it can leave behind is a merged (or, on a failure between opening and merging,
   an open) pull request, which is deliberate — that is the evidence it ran.
-- **The scratch repository declares no required check.** `gate: {kind: checks}`
-  waits for checks that *block*, so that path cannot go green there and stays
-  covered by the offline tier; this tier proves `change_checks` and `check_log`
-  themselves against the real workflow the repository carries. Making its check
-  required would need branch protection, which would then also gate every merge
-  this tier depends on.
+- **The scratch repository declares no required check.** Its `change-direct`
+  journeys still consult the host's checks — every automated policy does — and a
+  host that declares none has *answered*, so they proceed and the merge is the
+  host's own to refuse. What cannot be proved there is the waiting: a publication
+  that ends at a check going green stays covered by the offline tier, and this tier
+  proves `change_checks`, `check_log`, and `merged_at` themselves against the real
+  workflow the repository carries. Making its check required would need branch
+  protection, which would then also gate every merge this tier depends on.
 - **The honesty comparison has two legs.** `tests/e2e/honesty.rs` is the offline
   one and runs in every gate; `tests/smoke/honesty.rs` is the same comparison with
   real `Git` + real `GitHub`. Both reduce their streams with

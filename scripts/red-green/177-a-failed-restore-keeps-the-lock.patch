@@ -1,0 +1,22 @@
+Mutation: the exit handler stops carrying the run's status by hand, so `set -e` ends it at a restore that failed and the lock stays held.
+Red: a_tree_the_run_cannot_put_back_is_the_one_failure_it_says_loudest
+
+diff --git a/scripts/red-green.sh b/scripts/red-green.sh
+index ce137fe..daa83b8 100755
+--- a/scripts/red-green.sh
++++ b/scripts/red-green.sh
+@@ -341,12 +341,10 @@ release_lock() {
+ # most needs to be let in to clean up.
+ restore_armed=0
+ on_exit() {
+-  status=$?
+   if [ "$restore_armed" = 1 ]; then
+-    restore || status=1
++    restore
+   fi
+-  release_lock || status=1
+-  exit "$status"
++  release_lock
+ }
+ trap on_exit EXIT
+ 

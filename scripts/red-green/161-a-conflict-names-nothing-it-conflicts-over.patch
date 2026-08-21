@@ -1,0 +1,28 @@
+Mutation: a conflict stops carrying the paths git left unmerged, so every refusal about one says only that something conflicted.
+Red: a_conflict_across_more_files_than_a_refusal_can_name_says_how_many_it_left_out
+Red: a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict
+Red: a_base_that_conflicts_with_the_branch_reports_its_own_exit_code
+Red: a_train_reports_each_way_a_candidate_can_fail_without_stopping
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index bab9207..04fe5ec 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -1379,15 +1379,10 @@ fn conflict_in(cwd: &Path) -> Result<Option<Conflict>> {
+     if !unmerged.ok() {
+         return Ok(None);
+     }
+-    let paths: Vec<String> = unmerged
+-        .stdout
+-        .split('\0')
+-        .filter(|path| !path.is_empty())
+-        .map(str::to_owned)
+-        .collect();
+-    if paths.is_empty() {
++    if unmerged.trimmed().is_empty() {
+         return Ok(None);
+     }
++    let paths: Vec<String> = Vec::new();
+     // Best effort, and deliberately not an error: the paths are the answer this
+     // exists for, and a git that would not render the hunks for them has still said
+     // what conflicts.

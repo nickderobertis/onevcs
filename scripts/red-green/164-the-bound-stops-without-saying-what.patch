@@ -1,0 +1,35 @@
+Mutation: the bound on watching the host stops without naming what was still unsettled, which is the silent failure it used to be.
+Red: a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending
+Red: a_branch_the_host_never_lands_is_bounded_and_says_what_was_pending
+Red: an_auto_merge_the_host_takes_and_never_performs_is_bounded_and_says_the_checks_were_fine
+Red: a_required_check_that_never_settles_is_bounded_rather_than_waited_on_forever
+Red: a_repository_that_declares_no_required_check_is_not_read_as_having_passed
+Red: a_change_request_the_host_reports_no_checks_on_is_bounded_rather_than_merged
+Red: landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index 23395da..ee7f9a6 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -1547,19 +1547,8 @@ fn unsettled(
+     bound: std::time::Duration,
+     awaited: &str,
+ ) -> Error {
+-    let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
+-    let pending: Vec<&str> = required
+-        .iter()
+-        .filter(|check| !check.settled())
+-        .map(|check| check.name.as_str())
+-        .collect();
+-    let named = if !pending.is_empty() {
+-        format!("still unsettled: {}", guidance::listed(&pending))
+-    } else if required.is_empty() {
+-        "the host declared no required check on it at all".to_owned()
+-    } else {
+-        "every required check it declared had settled".to_owned()
+-    };
++    let _ = checks;
++    let named = "it did not";
+     // llmlint: ignore[names_match_behavior] one fixed kind for the bound's three endings.
+     Error::ChecksUnsettled {
+         reason: format!(

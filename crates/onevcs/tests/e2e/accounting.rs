@@ -539,7 +539,10 @@ fn landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed() {
         ))
         .stdout(predicate::str::contains("nothing advances this work"));
 
-    // A merge the host is holding is not a merge that happened.
+    // A merge the host is holding is not a merge that happened. The publication
+    // watches it to the bound and stops there rather than reporting a landing, and
+    // the accounting is about what the *host* holds — so the work is still queued
+    // whatever became of the command that asked for it.
     let queued = Hosted::new(AUTOMATED_BEHIND_A_COMMAND);
     queued.world.host_checks(&[Check {
         name: "gate",
@@ -551,10 +554,11 @@ fn landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed() {
     queued
         .world
         .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
         .args(["publish", &token])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("merge queued for"));
+        .code(1)
+        .stderr(predicate::str::contains("still unsettled: \"gate\""));
     let answer = report(&queued.world, "feature/queued");
     assert_eq!(answer["publication"]["state"], "queued");
     assert_eq!(answer["gate"]["verdict"], "pass");

@@ -114,14 +114,19 @@ impl Trailers {
         &self.change_url
     }
 
-    /// Records, on the base's own landing commit, the branch commit whose work
-    /// that commit lands.
+    /// Records a landing: on the base's own landing commit, the branch commit whose
+    /// work that commit lands; on the branch, the commit the host merged it at.
     ///
-    /// The one provenance trailer that is written onto the *base* rather than onto
-    /// a branch, because it answers a question about the base: whether the work a
-    /// branch carries ever reached it. A commit rather than a branch name — a name
-    /// is spent and re-cut, and a landing of the work that used to wear it must not
-    /// answer for work that wears it now.
+    /// One key for both, because both answer the one question — did this work reach
+    /// that base — and a reader tells them apart by which side the commit sits on
+    /// and by which way the commit it names is reachable. Two writers, because two
+    /// landings leave no record otherwise: the `local-direct` squash opens no change
+    /// request for anything to find later, and a host that lands the change on its
+    /// own clock writes its number onto the base and nothing at all onto the branch.
+    ///
+    /// A commit rather than a branch name — a name is spent and re-cut, and a
+    /// landing of the work that used to wear it must not answer for work that wears
+    /// it now.
     pub(crate) fn landed(&self) -> &str {
         &self.landed
     }
@@ -195,7 +200,13 @@ pub(crate) fn is_incomplete(message: &str, trailers: &Trailers) -> bool {
 /// a valid conventional commit, so a synthesizer that reads every commit folds the
 /// marker's own text into what it publishes.
 pub(crate) fn is_provenance(message: &str, trailers: &Trailers) -> bool {
-    is_incomplete(message, trailers) || message.contains(trailers.recovered())
+    is_incomplete(message, trailers)
+        || message.contains(trailers.recovered())
+        // A landing record describes what became of the change rather than what the
+        // change is, so a later synthesis of a subject must skip it exactly as it
+        // skips a marker — otherwise a branch that landed and was published again
+        // would land under "chore: record the landing of ...".
+        || message.contains(trailers.landed())
 }
 
 /// The message an incomplete-step commit carries.

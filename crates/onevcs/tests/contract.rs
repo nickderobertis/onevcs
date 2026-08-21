@@ -775,6 +775,24 @@ fn every_error_says_what_failed_and_which_exit_code_it_is() {
             },
             "sync conflict: main moved twice during requeue",
         ),
+        (
+            Error::ChecksFailed {
+                reason: "required check \"gate\" concluded failure".to_owned(),
+            },
+            "required check failed: required check \"gate\" concluded failure",
+        ),
+        (
+            Error::ChecksUnsettled {
+                reason: "still unsettled: \"gate\"".to_owned(),
+            },
+            "checks unsettled: still unsettled: \"gate\"",
+        ),
+        (
+            Error::PushRejected {
+                reason: "[remote rejected] (pre-receive hook declined)".to_owned(),
+            },
+            "push rejected: [remote rejected] (pre-receive hook declined)",
+        ),
     ];
     for (error, expected) in cases {
         assert!(
@@ -1877,8 +1895,143 @@ fn a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set() {
     assert!(versioned.contains("\"version\""), "{versioned}");
 }
 
-/// Every ending a publication has, proven exhaustive by the match below: adding a
-/// variant without listing it here stops compiling.
+/// Every failure a publication can end with, taken off the type.
+///
+/// Exhaustive by the same device [`all_publish_outcomes`] uses: the match below is
+/// what makes the list complete, so a kind added to the enum cannot reach a consumer
+/// without appearing in the amendment that declares it.
+fn all_failure_kinds() -> Vec<(&'static str, u8)> {
+    [
+        FailureKind::Gate,
+        FailureKind::Invalid,
+        FailureKind::SyncConflict,
+        FailureKind::NotImplemented,
+        FailureKind::ChecksFailed,
+        FailureKind::ChecksUnsettled,
+        FailureKind::PushRejected,
+    ]
+    .into_iter()
+    .map(|kind| {
+        let named = match kind {
+            FailureKind::Gate => "Gate",
+            FailureKind::Invalid => "Invalid",
+            FailureKind::SyncConflict => "SyncConflict",
+            FailureKind::NotImplemented => "NotImplemented",
+            FailureKind::ChecksFailed => "ChecksFailed",
+            FailureKind::ChecksUnsettled => "ChecksUnsettled",
+            FailureKind::PushRejected => "PushRejected",
+        };
+        (named, kind.exit_code())
+    })
+    .collect()
+}
+
+#[test]
+fn the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_code() {
+    // The amendment is where a consumer reads the failure vocabulary first, and a
+    // downstream router branches on exactly these names — so the enum and the text
+    // are held together here rather than being two lists that drift. The exit codes
+    // matter as much as the names: three of the seven are new and every one of them
+    // keeps the code the contract already fixes for a verification failure, so a
+    // process that only reads the code sees nothing change.
+    let declared = amendment_declaring("ChecksFailed, ChecksUnsettled, PushRejected }");
+    let kinds = all_failure_kinds();
+    for (named, _) in &kinds {
+        assert!(
+            declared.contains(named),
+            "the amendment no longer declares the failure kind {named}"
+        );
+    }
+    let codes: Vec<String> = kinds
+        .iter()
+        .map(|(_, code)| code.to_string())
+        .collect::<Vec<String>>();
+    assert!(
+        declared.contains(&codes.join(" | ")),
+        "the amendment's exit-code row {declared:?} disagrees with FailureKind::exit_code, \
+         which reads {}",
+        codes.join(" | ")
+    );
+}
+
+#[test]
+fn the_amendment_states_the_interval_this_build_asks_the_host_at() {
+    // The interval is an operator-visible cost, not an implementation detail: every
+    // ask is a `gh` subprocess and at least one API call, so a publication watching a
+    // half-hour CI run spends hundreds of them. The amendment states the number, the
+    // constant is the number, and neither can move without the other.
+    //
+    // Read out of the source rather than through the type, because the module is
+    // private — the constant is this build's answer and not part of the surface, and
+    // making it public to reconcile it would widen the surface to test it.
+    let declared = repo_file("crates/onevcs/src/gh.rs")
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const DEFAULT_CHECKS_POLL_SECONDS: f64 = ")?
+                .strip_suffix(";")
+                .map(str::to_owned)
+        })
+        .expect("gh.rs declares the default poll interval");
+    let seconds: f64 = declared
+        .parse()
+        .expect("the default is a number of seconds");
+    assert!(
+        regions()
+            .0
+            .contains(&format!("defaults to **{seconds:.0} seconds**")),
+        "the amendment no longer states the {seconds:.0}-second interval this build polls at"
+    );
+}
+
+#[test]
+fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
+    // The seventh method, and the one thing this crate cannot learn any other way:
+    // under `change-auto` the host performs the merge, out of a tree this process
+    // never held, so where the change landed is the host's answer or it is nobody's.
+    let declared = amendment_declaring("fn merged_at");
+    assert!(
+        declared.contains("fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>>;"),
+        "the amendment no longer declares the method a watch asks: {declared}"
+    );
+    // Defaulted, so the seam stays additive — and defaulted to the refusal this
+    // repository reserves for a seam with no body.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let change = ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL"),
+        head_sha: Sha("0f1e2d3".to_owned()),
+        base: "main".to_owned(),
+    };
+    assert!(
+        matches!(
+            Earlier.merged_at(&change),
+            Err(Error::NotImplemented { operation }) if operation.contains("merged_at")
+        ),
+        "a host that was never taught to answer must refuse rather than say `not yet`"
+    );
+}
+
 fn all_publish_outcomes() -> Vec<&'static str> {
     let url = Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a valid URL");
     let outcomes = [

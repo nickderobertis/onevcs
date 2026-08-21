@@ -1,0 +1,16 @@
+Mutation: the amendment declares the question a watching publication asks its host in a shape that cannot say "not yet".
+Red: the_amendment_declares_the_question_a_watched_publication_asks_its_host
+
+diff --git a/docs/contract.md b/docs/contract.md
+index 937d163..a94baa1 100644
+--- a/docs/contract.md
++++ b/docs/contract.md
+@@ -448,7 +448,7 @@ seventh:
+ 
+ ```rust
+ pub trait RemoteHost {                       // the six above, unchanged, plus:
+-    fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>>;
++    fn merged_at(&self, cr: &ChangeRequest) -> Result<Sha>;
+ }
+ ```
+ 

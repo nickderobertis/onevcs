@@ -15,6 +15,7 @@
 // its base is therefore an assertion about git.
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use predicates::prelude::*;
@@ -2378,6 +2379,8 @@ fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_wha
         .assert()
         .code(3)
         .stderr(predicate::str::contains("feature/two-minds"))
+        // Which file the two minds disagree over, not merely that they do.
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains(
             fixture.checkout.to_string_lossy().as_ref(),
         ));
@@ -2408,7 +2411,8 @@ fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_wha
         .shell(&land)
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("conflicts with"));
+        .stderr(predicate::str::contains("conflicts with"))
+        .stderr(predicate::str::contains("in \"shared.txt\""));
     world.git(&fixture.checkout, &["checkout", "-q", "feature/two-minds"]);
     world.git(&fixture.checkout, &["fetch", "-q", "origin"]);
     let _ = world.git_raw(&fixture.checkout, &["merge", "origin/main"]);
@@ -2864,6 +2868,189 @@ fn the_publishing_push_hands_its_hook_the_base_it_publishes_onto() {
     let verdicts = fixture.world.events_of(&token, "gate-verdict");
     assert_eq!(verdicts[0]["payload"]["verdict"], "pass");
     assert!(verdicts[0]["artifacts"][0]["id"].is_string());
+}
+
+#[test]
+fn a_push_a_hook_refuses_records_what_the_hook_wrote_whatever_the_policy_calls_its_gate() {
+    // The repository's verification here is a `command:` gate, which this crate runs
+    // itself and which passes — and the repository *also* carries a `pre-push` hook,
+    // which is the shape every identity on the host this was written for has. The
+    // hook refuses the publishing push, and what it wrote is the only account of why
+    // there will ever be: it lives in a pipe, and the process ends.
+    //
+    // That evidence used to be preserved only where the resolved policy named
+    // `gate: {kind: pre-push}`, so on this shape of repository a rejected push threw
+    // the diagnosis away every time. What the policy calls its verification cannot
+    // decide whether a failure is diagnosable, so the capture is unconditional.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    fixture.world.install_pre_push(
+        &fixture.checkout,
+        "echo 'the pre-push hook found a secret in the diff' >&2; exit 1",
+    );
+    let (token, worktree) = fixture.open(&["--branch", "feature/refused"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("push rejected"));
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+
+    // The hook's own words are on the `push` event, as the artifact the envelope's
+    // rule puts large evidence in, and preserved on disk where they outlive the
+    // worktree the publication was built in.
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0]["payload"]["accepted"], false);
+    let id = pushes[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("every publishing push records what it wrote");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "the pre-push hook found a secret in the diff",
+        ));
+    let preserved = pushes[0]["payload"]["preserved_log"]
+        .as_str()
+        .expect("the push preserves its output beyond the run's own tree");
+    assert!(
+        std::fs::read_to_string(preserved)
+            .expect("the preserved log is readable")
+            .contains("the pre-push hook found a secret in the diff"),
+        "{preserved}"
+    );
+
+    // And the gate that *was* named ran and passed, so this is not the hook being
+    // reported as the policy's gate by another name.
+    let verdicts = fixture.world.events_of(&token, "gate-verdict");
+    assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+    assert_eq!(verdicts[0]["payload"]["verdict"], "pass");
+    assert_eq!(verdicts[0]["payload"]["command"], "true");
+}
+
+#[test]
+fn a_push_that_is_accepted_records_what_it_wrote_too() {
+    // The other half of "unconditional": a publication that landed leaves an account
+    // of the push that landed it, so the record of a green run is readable and not
+    // only the record of a red one.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/accepted"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], true);
+    let id = pushes[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("an accepted push records what it wrote as well");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("refs/heads/main"));
+
+    // …and a state root that will not take those bytes says so, rather than turning
+    // a push git accepted into a publication that failed. The record is a footnote
+    // to work that has already reached the base; refusing over it would send
+    // somebody to land what is already landed.
+    //
+    // Its two halves fail independently — the artifact beside the stream, and the
+    // log preserved where it outlives the tree the push was made in — so each is
+    // driven on its own. Behind a `pre-push` gate, so the push is the only thing
+    // storing an artifact: a `command:` gate stores its own verdict before the push
+    // is ever made, and this is a claim about the push.
+    let unrecordable =
+        Fixture::local("{publication: local-direct, approvals: none, gate: {kind: pre-push}}");
+    unrecordable
+        .world
+        .install_pre_push(&unrecordable.checkout, "exit 0");
+    let artifacts = unrecordable.world.home().join("artifacts");
+    std::fs::create_dir_all(&artifacts).expect("an artifact directory");
+
+    for (half, landed) in [("artifact", 2), ("preserved-log", 3)] {
+        let branch = format!("feature/no-{half}");
+        let (token, worktree) = unrecordable.open(&["--branch", &branch]);
+        unrecordable.world.commit_file(
+            &worktree,
+            &format!("{half}.txt"),
+            "one\n",
+            &format!("feat: add {half}"),
+        );
+        let logs = run_root_of(&unrecordable.world, &token).join("gate-logs");
+        let closed = match half {
+            "artifact" => artifacts.clone(),
+            _ => {
+                std::fs::create_dir_all(&logs).expect("a preserved-log directory");
+                logs.clone()
+            }
+        };
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o500))
+            .expect("a directory nothing may write into");
+
+        unrecordable
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(
+                "is recorded without what it wrote",
+            ));
+
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700))
+            .expect("the directory is restored");
+        assert_eq!(
+            unrecordable.origin_log().len(),
+            landed,
+            "{half}: the publication reached the base whatever became of its record"
+        );
+        let pushes = unrecordable.world.events_of(&token, "push");
+        let stored = !pushes[0]["artifacts"]
+            .as_array()
+            .expect("an array")
+            .is_empty();
+        // The half that could still be written was, and the half that could not is
+        // absent rather than naming a file that is not there.
+        assert_eq!(stored, half != "artifact", "{half}: {pushes:?}");
+        assert_eq!(
+            pushes[0]["payload"].get("preserved_log").is_some(),
+            half == "artifact",
+            "{half}: {pushes:?}"
+        );
+    }
+}
+
+/// The run root one session works in, read out of the record that names it.
+fn run_root_of(world: &World, token: &str) -> PathBuf {
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("sessions").join(format!("{token}.json")))
+            .expect("a session record"),
+    )
+    .expect("the record is JSON");
+    PathBuf::from(
+        record["run_root"]
+            .as_str()
+            .expect("a session records the run root it works in"),
+    )
 }
 
 #[test]
@@ -3525,6 +3712,125 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
     );
 }
 
+/// One session and one base that disagree about `files` files, which is a real
+/// conflict driven end to end rather than one asserted about.
+fn conflicting_over(fixture: &Fixture, branch: &str, files: usize) -> String {
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    for file in 0..files {
+        fixture.world.commit_file(
+            &worktree,
+            &conflicted_name(file),
+            "from the session\n",
+            &format!("feat: change shared file {file}"),
+        );
+    }
+    let other = fixture
+        .world
+        .clone_of(&fixture.origin, &format!("advancing-{branch}"));
+    for file in 0..files {
+        fixture.world.commit_file(
+            &other,
+            &conflicted_name(file),
+            "from the base\n",
+            &format!("feat: change file {file} differently"),
+        );
+    }
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+    token
+}
+
+/// The name of one conflicting file.
+///
+/// The first two carry a space and a quote, and a newline — the characters git
+/// renders in its *default* listing as a quoted C string, which a reader that took
+/// it for a pathname would turn into a file the repository does not have. Every
+/// path this crate reads off a conflict is read NUL-delimited for that reason, and
+/// these are the fixtures that catch it going back.
+fn conflicted_name(file: usize) -> String {
+    match file {
+        0 => "shared \" 0.txt".to_owned(),
+        1 => "shared\n1.txt".to_owned(),
+        other => format!("shared-{other}.txt"),
+    }
+}
+
+#[test]
+fn a_conflict_across_more_files_than_a_refusal_can_name_says_how_many_it_left_out() {
+    // The paths come from git and their number is a fact about the repository, not
+    // about this crate — a refactor conflicts across a hundred files as readily as
+    // across one. A refusal nobody reads to the end names nothing, so it is bounded;
+    // what it leaves out is counted, because a truncated list read as the whole one
+    // reports a smaller problem than the one that happened.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let token = conflicting_over(&fixture, "feature/many", 12);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("and 2 more"));
+    let said = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+    assert_eq!(
+        (0..12)
+            // As the refusal spells them: quoted, so a name carrying a quote of its
+            // own comes back escaped rather than closing the one around it.
+            .filter(|file| said.contains(&format!("{:?}", conflicted_name(*file))))
+            .count(),
+        10,
+        "the refusal names ten of them and counts the rest: {said}"
+    );
+
+    // The event is not bounded, because a consumer is not reading it aloud: every
+    // path git left unmerged is on it.
+    let conflicts = fixture.world.events_of(&token, "sync-conflict");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"]
+            .as_array()
+            .expect("the paths travel as a list")
+            .len(),
+        12,
+        "{conflicts:?}"
+    );
+}
+
+#[test]
+fn a_conflict_whose_hunks_cannot_be_stored_is_still_reported_as_a_conflict() {
+    // The hunks are an illustration of the conflict; the paths are the answer. A
+    // state root that will not take the artifact must not turn a sync conflict —
+    // which has its own exit code and its own next command — into a filesystem
+    // complaint, so the miss is said on stderr and the refusal is the one it always
+    // was.
+    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let token = conflicting_over(&fixture, "feature/unstorable", 1);
+    let artifacts = fixture.world.home().join("artifacts");
+    std::fs::create_dir_all(&artifacts).expect("an artifact directory");
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o500))
+        .expect("a directory nothing may write into");
+
+    let conflicted = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("shared \\\" 0.txt"))
+        .stderr(predicate::str::contains("recorded without its hunks"));
+
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700))
+        .expect("the artifact directory is restored");
+    let conflicts = fixture.world.events_of(&token, "sync-conflict");
+    assert!(
+        conflicts[0]["artifacts"]
+            .as_array()
+            .expect("an array")
+            .is_empty(),
+        "evidence that was not stored is no artifact reference: {conflicts:?}"
+    );
+    drop(conflicted);
+}
+
 #[test]
 fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
     let fixture = Fixture::local(&local_direct("[\"true\"]"));
@@ -3555,6 +3861,9 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
         // settle.
         .code(3)
         .stderr(predicate::str::contains("sync conflict"))
+        // What conflicts, not merely that something did: an operator told only that
+        // two branches conflict is an operator opening both and diffing by hand.
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains("the branch is retained"))
         // A deterministic refusal has to name what would change the answer: the
         // bounded retry is spent, so re-running publishes nothing, and the exit is
@@ -3563,7 +3872,28 @@ fn a_base_that_conflicts_with_the_branch_reports_its_own_exit_code() {
             "land it with `onevcs publish-branch feature/conflicting --repo {}`",
             fixture.checkout.display()
         )));
-    assert!(!fixture.world.events_of(&token, "sync-conflict").is_empty());
+    // The event carries the same paths, and the hunks git would have printed for
+    // them beside it — read out of the conflicted tree before the attempt was
+    // aborted, which is the only moment they exist.
+    let conflicts = fixture.world.events_of(&token, "sync-conflict");
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"],
+        serde_json::json!(["shared.txt"]),
+        "{conflicts:?}"
+    );
+    assert_eq!(conflicts[0]["artifacts"][0]["kind"], "diff");
+    let id = conflicts[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("the conflict carries its hunks");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from the session"))
+        .stdout(predicate::str::contains("from the base"));
     // The branch survives, which is what "retained" has to mean.
     assert!(fixture
         .world
@@ -3823,6 +4153,9 @@ fn a_conflict_in_a_replayed_branchs_own_work_is_refused_with_the_replay_that_lan
         .stderr(predicate::str::contains(
             "already carries what \"feature/clashing-filter\" was stacked on",
         ))
+        // A replay conflicts over files just as a merge does, and says which:
+        // "resolve the conflict" is not an instruction until it names one.
+        .stderr(predicate::str::contains("in \"shared.txt\""))
         .stderr(predicate::str::contains("the branch is retained"))
         .stderr(predicate::str::contains(format!(
             "land it with `onevcs publish-branch feature/clashing-filter --repo {}`",

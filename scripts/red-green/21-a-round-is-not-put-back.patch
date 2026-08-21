@@ -2,19 +2,22 @@ Mutation: the harness stops reverting a round once it is over.
 Red: a_round_is_recorded_and_the_tree_is_left_as_it_was_found
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index ab7ff42..86a9bca 100755
+index ce137fe..d632340 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -233,8 +233,6 @@ restore() {
+@@ -442,11 +442,6 @@ restore() {
      return 1
    fi
  }
--trap restore EXIT
+-# From here out the handler installed with the lock puts the tree back too: the
+-# mutated paths are known and `restore` is defined, and a run that ends past this
+-# point owes both — the tree as it was found, and the lock off it either way.
+-restore_armed=1
 -
  for patch in "${patches[@]}"; do
    name="$(basename "$patch" .patch)"
    mutation="$(sed -n 's/^Mutation:[[:space:]]*//p' "$patch")"
-@@ -270,7 +268,6 @@ $output"
+@@ -483,7 +478,6 @@ $output"
      transcript+="- RED \`$test\` — $(failure_line "$output")"$'\n'
    done
    transcript+=$'\n'
