@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.3.0...onevcs-testing-v0.3.1) - 2026-08-21
+
+### Added
+
+- *(publish)* evidence every publication failure, and watch an auto-merge to its end ([#63](https://github.com/nickderobertis/onevcs/pull/63))
+
 ## [0.3.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.2.8...onevcs-testing-v0.3.0) - 2026-08-20
 
 ### Added
