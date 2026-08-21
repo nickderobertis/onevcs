@@ -1643,6 +1643,59 @@ fn a_second_run_under_one_checkout_is_refused_rather_than_joining_in() {
 }
 
 #[test]
+fn a_lock_the_run_cannot_put_down_is_said_rather_than_assumed() {
+    // Taking the lock is checked and letting go of it was not. It is the removal that
+    // outlives the run: a lock still there is a refusal, to every run after it, about
+    // a run that is not there — so a removal that did not happen is reported with the
+    // way out of it rather than assumed to have worked.
+    let harness = Harness::new();
+    harness.patch(
+        "01-subject",
+        &subject_patch(&["the_test_the_mutation_breaks"]),
+    );
+    // The real `rm` for everything else and a refusal for that one path, which is what
+    // a lock directory this user cannot remove looks like from inside the script.
+    let refusing = stub(
+        "rm",
+        r#"#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    *red-green.lock) echo "rm: cannot remove '$arg': Permission denied" >&2; exit 1 ;;
+  esac
+done
+exec /bin/rm "$@"
+"#,
+    );
+    let path = format!(
+        "{}:{}",
+        refusing.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let reported = harness.run_with(&["--base", "HEAD"], &[("PATH", path.as_str())]);
+    reported
+        .failed()
+        .said("red-green: .logs/red-green.lock could not be removed")
+        .said("ACTION: remove .logs/red-green.lock by hand")
+        // The rounds themselves were done, and the run says so: what failed is the
+        // lock alone, and the operator is owed which of the two it was.
+        .printed("1 mutations, 1 tests observed red then green");
+
+    // …and the action it names is the whole way back: with the lock gone by hand, the
+    // next run is let in rather than turned away by the one that could not drop it.
+    assert!(
+        harness.root().join(".logs/red-green.lock").exists(),
+        "the run reported a lock it could not remove, so the lock is still there"
+    );
+    std::fs::remove_dir_all(harness.root().join(".logs/red-green.lock"))
+        .expect("the lock the run could not remove");
+    harness
+        .run(&["--base", "HEAD"])
+        .succeeded()
+        .printed("1 mutations, 1 tests observed red then green");
+}
+
+#[test]
 fn a_transcript_that_cannot_be_written_is_a_failure_rather_than_a_silent_omission() {
     // The record is the deliverable, so a run that did every round and could not
     // write it down is a failed run — not a green line with nothing behind it.

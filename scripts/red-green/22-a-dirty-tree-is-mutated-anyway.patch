@@ -2,12 +2,12 @@ Mutation: the harness stops refusing a tree that carries uncommitted work.
 Red: a_tree_or_a_log_the_harness_cannot_safely_use_stops_it_before_any_round
 
 diff --git a/scripts/red-green.sh b/scripts/red-green.sh
-index 760bf96..f0aa279 100755
+index ce137fe..9a43fad 100755
 --- a/scripts/red-green.sh
 +++ b/scripts/red-green.sh
-@@ -323,12 +323,6 @@ release_lock() {
+@@ -350,12 +350,6 @@ on_exit() {
  }
- trap release_lock EXIT
+ trap on_exit EXIT
  
 -if [ -n "$(git status --porcelain)" ]; then
 -  echo "red-green: the working tree has uncommitted changes" >&2
