@@ -80,10 +80,18 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
                 prune(&directory)?;
                 return Ok(path);
             }
-            // Another writer claimed this number between the two calls: a retry
-            // beside the recovery of what it replaced is exactly that race, and
-            // neither may write over the other's evidence.
-            Err(_) => next += 1,
+            // The number was taken between the two calls — a retry beside the
+            // recovery of what it replaced is exactly that race — so the next one is
+            // tried, and neither writer may write over the other's evidence. Only
+            // that: every other way `create_new` fails is a directory this process
+            // cannot write, and walking ten thousand numbers to say so would report
+            // an unwritable state root as a branch with too much history.
+            Err(collision) if collision.kind() == std::io::ErrorKind::AlreadyExists => next += 1,
+            Err(unwritable) => {
+                return Err(error::at("preserve the merge-path log at", &path)(
+                    unwritable,
+                ))
+            }
         }
     }
     Err(error::at(
@@ -181,7 +189,18 @@ fn prune(directory: &Path) -> Result<()> {
     logs.sort();
     while logs.len() > PRESERVED_LOG_ATTEMPTS {
         let oldest = logs.remove(0);
-        let _ = std::fs::remove_file(oldest);
+        // Best effort, and said rather than discarded. The evidence this call was
+        // made for is already written, so a `?` here would turn a push that has
+        // happened into a publication that failed — the same reason `record_push`
+        // and `record_landing` warn and carry on. What it costs is a directory one
+        // file over its bound until the next attempt prunes again.
+        if let Err(kept) = std::fs::remove_file(&oldest) {
+            eprintln!(
+                "onevcs: warning: the preserved merge-path log at {} is past the retention \
+                 bound and could not be removed: {kept}",
+                oldest.display()
+            );
+        }
     }
     Ok(())
 }

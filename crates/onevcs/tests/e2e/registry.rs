@@ -5,6 +5,8 @@
 //! read out of the commands a user actually runs — `register`, `repos`, `resolve`,
 //! `rules check` — rather than out of the document they happen to be stored in.
 
+// llmlint: ignore-file[e2e_not_mocked] the substituted host is the external boundary
+// this suite drives across, for the reason written immediately below.
 // llmlint: ignore-file[tests_mirror_real_usage] two setup shapes here are deliberate
 // and have no user-facing alternative. Writing a version 2, 3, or 4 registry document
 // is the only way to drive the lazy migration — the older `onevcs` that would have
