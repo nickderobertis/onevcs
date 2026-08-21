@@ -364,6 +364,89 @@ fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
 }
 
 #[test]
+fn a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three()
+{
+    // The key an operator's own rules file still carries. Refusing every `onevcs`
+    // command the moment this build landed — before anything could re-apply their
+    // rules — would be a worse failure than reading a key this build has nothing to
+    // do with, so the removal is versioned: 1 and 2 accept it and drop it, 3 has no
+    // such field at all.
+    let world = World::new();
+    let origin = world.bare_origin("gated");
+    let checkout = world.clone_of(&origin, "gated");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/gated.git",
+        ])
+        .assert()
+        .success();
+    let rules = world.home().join("rules.yml");
+
+    for version in ["version: 1", "version: 2\ntrailer_prefix: Zzz-"] {
+        configure_rules(
+            &world,
+            format!(
+                "{version}\nrules:\n\
+                 \x20 - match: {{host: github.com, owner: acme-corp, name: \"*\"}}\n\
+                 \x20   publication: change-open\n    approvals: required\n\
+                 \x20   gate: {{command: [\"just\", \"gate\"]}}\n\
+                 default: {{publication: change-auto, approvals: none, gate: {{kind: checks}}}}\n"
+            ),
+        );
+
+        let assert = world
+            .onevcs()
+            .args(["rules", "check", "gated"])
+            .assert()
+            // Accepted: everything the file says about *publishing* still decides
+            // the policy, and the key that named a verifier decides nothing.
+            .success()
+            .stdout(predicate::str::contains(
+                "publication: change-open (from rule 1)",
+            ))
+            .stdout(predicate::str::contains(
+                "approvals: required (from rule 1)",
+            ))
+            .stdout(predicate::str::contains("gate:").not());
+
+        // …and said out loud once, naming the file to edit, rather than dropped in
+        // silence. Once, because it is the operator's own document and nothing they
+        // can do about it mid-run: a line per command in a run that publishes all
+        // day is noise that gets filtered.
+        let said = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+        assert_eq!(
+            said.matches("names a gate").count(),
+            1,
+            "one deprecation line, naming the file: {said:?}"
+        );
+        assert!(
+            said.contains(&rules.to_string_lossy().into_owned()),
+            "the line names the file it was read out of: {said:?}"
+        );
+    }
+
+    // At the version that removed it there is no such field, so a file still
+    // carrying one is the stray key it is — refused by name rather than obeyed or
+    // ignored, which is what keeps a declared version worth trusting.
+    configure_rules(
+        &world,
+        "version: 3\nrules: []\n\
+         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+    );
+    world
+        .onevcs()
+        .args(["rules", "check", "gated"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is malformed"))
+        .stderr(predicate::str::contains("unknown field `gate`"));
+}
+
+#[test]
 fn a_trailer_prefix_that_spells_no_git_trailer_key_is_refused_by_name() {
     let world = World::new();
     let origin = world.bare_origin("prefixed");
