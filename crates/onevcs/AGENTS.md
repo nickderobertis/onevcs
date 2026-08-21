@@ -123,10 +123,8 @@ report is most often read about — the ones a run left in its own clone.
 
 Nothing here runs a verification tier of its own, and the rules file names none.
 For a remote-first identity the verifier is the host's required checks; for a
-local-first one it is the `pre-push` hook git runs at the publishing push. A tier
-beside either is not a second opinion — it is the same work twice, or CI's answer
-front-run and thrown away. Three things follow, and each is easy to undo by
-accident.
+local-first one it is the `pre-push` hook git runs at the publishing push. Three
+things follow, and each is easy to undo by accident.
 
 - **This crate hands the merge path what it needs and keeps what it wrote, and does
   nothing else about verification.** `merge_path::comparison_env` exports the remote
@@ -141,17 +139,12 @@ accident.
   `store::merge_path_coverage` — the same question `onevcs register` warns on and
   `onevcs repos --audit-gates` reports. Those three must keep one answer.
 
-Why the tier went, and how the rules schema was versioned around it, is the
-amendment in `docs/contract.md`.
-
 ## A publication observes, captures, and does not settle early
 
-- **Polling is driven by `context.effective`, and by nothing else.** It once
-  followed what the rules file called the repository's gate — that field had a
-  `checks` kind, and reading it here was one line — and on a host whose every rule
-  named a `command:` gate the required checks were then observed for no repository
-  at all. The field is gone; the lesson is that what a policy *calls* its
-  verification never decides what a publication does.
+- **Polling is driven by `context.effective`, and by nothing else.** What a policy
+  *calls* its verification never decides what a publication observes: a field read
+  here for that once left the host's required checks observed for no repository at
+  all.
 - **Every capture is best effort where the thing it records has already happened.**
   `record_push`, `report_conflict`, and `record_landing` warn on stderr and carry
   on. A `?` in any of them turns a push git accepted, or a merge the host performed,

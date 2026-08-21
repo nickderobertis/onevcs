@@ -250,9 +250,15 @@ fn a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_director
         .world
         .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
 
+    // Planted before the attempts and read back after them: retention *deletes*, and
+    // this directory is under a state root a host shares. A `.log` this crate did not
+    // write is somebody else's file rather than the oldest of ours, so the bound may
+    // not spend it however many attempts pile up beside it.
+    let bystanders = ["notes.log", "gate-notes.log", "gate-1.log"];
+
     // Twelve attempts, two past the retention bound.
     let mut last = String::new();
-    for _ in 0..12 {
+    for attempt in 0..12 {
         fixture
             .world
             .onevcs()
@@ -267,6 +273,17 @@ fn a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_director
             .and_then(|payload| payload["preserved_log"].as_str())
             .expect("a preserved log path")
             .to_owned();
+        // Dropped in beside the first attempt, so every later one prunes with them
+        // there — including the attempts that carry the directory past its bound.
+        if attempt == 0 {
+            let directory = std::path::Path::new(&last)
+                .parent()
+                .expect("the branch's log directory");
+            for name in bystanders {
+                std::fs::write(directory.join(name), "somebody else's file\n")
+                    .expect("a file beside the evidence that this crate did not write");
+            }
+        }
     }
     let directory = std::path::Path::new(&last)
         .parent()
@@ -278,9 +295,19 @@ fn a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_director
         .collect();
     // The newest ten, so the last few attempts are always readable and a branch
     // that re-pushes all night cannot fill the disk with them.
-    assert_eq!(kept.len(), 10, "{kept:?}");
+    let attempts: Vec<_> = kept
+        .iter()
+        .filter(|name| !bystanders.contains(&name.as_str()))
+        .collect();
+    assert_eq!(attempts.len(), 10, "{kept:?}");
     assert!(kept.contains(&"gate-0012.log".to_owned()), "{kept:?}");
     assert!(!kept.contains(&"gate-0001.log".to_owned()), "{kept:?}");
+    for name in bystanders {
+        assert!(
+            kept.contains(&name.to_owned()),
+            "the bound spends this crate's attempts and nothing else: {kept:?}"
+        );
+    }
 }
 
 #[test]

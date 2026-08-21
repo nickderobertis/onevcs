@@ -15,24 +15,14 @@
 //! answers to, reached through [`crate::merge_path::comparison_env`] so the hook
 //! judges against the base the train is publishing onto.
 //!
-//! The train used to run a per-candidate `command:` gate as well, and losing it
-//! costs less than the comment that defended it claimed: `own_command` answered
-//! `None` for `gate: {kind: pre-push}`, which is what the contract's own example
-//! gives a local-first repository, so the only trains that ever ran one were the
-//! trains whose rules named a command — the duplicated judged tier that front-ran
-//! the hook and threw its answer away. Running it per candidate did buy finer
-//! attribution when the aggregate was refused, and that is genuinely lost; what is
-//! bought back is that the answer the train acts on is the answer the merge path
-//! gives, rather than a second one that could differ from it.
-//!
-//! Without `--push` the train advances a base and reaches no merge path at all —
-//! but that base is the operator's own checkout and nothing else builds on it until
-//! the push happens, which is when the hook rules.
+//! Verification is therefore per *push* and not per candidate, which costs the
+//! finer attribution a refused aggregate used to get. Without `--push` the train
+//! reaches no merge path at all — that base is the operator's own checkout, and
+//! nothing else builds on it until the push the hook rules on.
 //!
 //! An identity whose merge path runs nothing at all
 //! ([`crate::store::Coverage::None`]) is **warned about rather than refused**, in
-//! the same words `onevcs register` uses. Carrying no hook is a configuration this
-//! crate reports and does not overrule: a publication of such an identity is not
+//! the same words `onevcs register` uses: a publication of such an identity is not
 //! refused either, and a train that refused where a publication does not would send
 //! an operator to raw `git merge`, which is verified by even less.
 

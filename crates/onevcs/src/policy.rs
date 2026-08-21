@@ -39,13 +39,11 @@ const TRAILER_PREFIX_VERSION: u32 = 2;
 
 /// The version at which the rules file stopped naming what verifies a change.
 ///
-/// The removal is versioned rather than taken outright because a rules file is an
-/// operator's document on their own host: refusing every `onevcs` command the
-/// moment this build landed — before anything could re-apply their rules — is a
-/// worse failure than reading a key this build has nothing to do with. So `1` and
-/// `2` still accept a `gate:` and drop it, saying once which file it was read out
-/// of, and `3` declares a shape that never had one and is refused by
-/// `deny_unknown_fields` for carrying it.
+/// `1` and `2` accept a `gate:` and drop it, saying once which file it was read out
+/// of; `3` declares a shape that never had one, so `deny_unknown_fields` refuses it
+/// there. Versioned rather than taken outright because a rules file is an operator's
+/// document on their own host, and refusing every command before they can re-apply
+/// it is worse than reading a key this build has nothing to do with.
 const GATE_REMOVED_VERSION: u32 = 3;
 
 /// How much review a publication policy leaves in the path.

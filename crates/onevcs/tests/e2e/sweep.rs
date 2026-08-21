@@ -416,6 +416,28 @@ fn a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason
         "its gate has recorded no verdict under gate-logs, so nothing here can say the \
          publication finished",
     );
+
+    // Nor is a *file* spelled the way this crate never writes one. The attempts are
+    // numbered `gate-0001.log` upwards, four digits wide; this directory is under a
+    // state root a host shares, so `gate-1.log` and `gate-notes.log` are somebody
+    // else's files and neither may answer that a publication was judged.
+    let branch_logs = run_root.join("gate-logs/feature-interrupted");
+    std::fs::create_dir_all(&branch_logs).expect("the branch's log directory");
+    for name in ["gate-1.log", "gate-notes.log"] {
+        std::fs::write(branch_logs.join(name), "not this crate's evidence\n")
+            .expect("a file wearing a name no attempt is written under");
+    }
+    backdate(&run_root, 72);
+    let misspelled = swept(&fixture, &[]);
+    assert!(
+        run_root.is_dir(),
+        "a file this crate never wrote is no verdict:\n{misspelled}"
+    );
+    assert_eq!(
+        retained_reason(&misspelled, &run_root),
+        "its gate has recorded no verdict under gate-logs, so nothing here can say the \
+         publication finished",
+    );
 }
 
 #[test]

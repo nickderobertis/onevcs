@@ -118,16 +118,12 @@ fn complete_branch_verb(landing: &branch::Landing) -> String {
 /// nothing for a recovery to clear the marker *with*, so the refusal names both
 /// ways to give it one rather than only stating that it has neither.
 ///
-/// The second half used to be asked of the rules file — whether the resolved policy
-/// named `gate: {kind: pre-push}` — and it is asked of the merge path itself now
-/// that the merge path is the only verifier there is. It is the same question
-/// [`store::merge_path_coverage`] answers for `onevcs register` and `onevcs repos
-/// --audit-gates`, so the guard, the registration warning, and the audit cannot
-/// come to disagree about which identities are covered. What it costs is a shape
-/// the rules could once describe and the crate cannot detect; what it buys is that
-/// a *remote* identity now answers honestly — its required checks cover its merge
-/// path, and the old condition refused it whenever its rules happened to say
-/// `checks`.
+/// The second half is [`store::merge_path_coverage`] — the same question `onevcs
+/// register` warns on and `onevcs repos --audit-gates` reports, so the guard, the
+/// warning, and the audit cannot come to disagree about which identities are
+/// covered. It detects coverage rather than taking a repository's word for it,
+/// which is what lets a remote identity answer for the required checks that
+/// actually rule on its change requests.
 fn attests_nothing(landing: &branch::Landing) -> Option<String> {
     if landing.resolution.identity.gate != store::NOOP_GATE
         || store::merge_path_coverage(&landing.resolution, &landing.source) != store::Coverage::None

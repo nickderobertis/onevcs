@@ -105,9 +105,10 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
 /// that printed a page. Both halves are the boundary. This directory is under a
 /// state root a host shares, so the name is read through the same
 /// [`attempt_number`] that names an attempt rather than by prefix and suffix — a
-/// `gate-notes.log` somebody dropped beside the evidence is not a verdict this crate
-/// reached. And a *directory* wearing an otherwise perfect name would answer for a
-/// verdict nobody reached, so the entry has to be a file.
+/// `gate-notes.log` somebody dropped beside the evidence, or a `gate-1.log` spelled
+/// the way this crate never writes one, is not a verdict this crate reached. And a
+/// *directory* wearing an otherwise perfect name would answer for a verdict nobody
+/// reached, so the entry has to be a file.
 pub fn has_recorded_verdict(run_root: &Path) -> bool {
     let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
         return false;
@@ -127,13 +128,22 @@ pub fn has_recorded_verdict(run_root: &Path) -> bool {
 /// The attempt one preserved log's filename names, or nothing if it names none.
 ///
 /// One reader for the one name [`preserve_log`] writes, so what counts as a
-/// recorded verdict and what counts when the next attempt is numbered cannot come to
-/// disagree about the same file.
+/// recorded verdict, what counts when the next attempt is numbered, and what
+/// retention may spend cannot come to disagree about the same file.
+///
+/// The spelling is **exactly** the one that function writes: `gate-`, four digits,
+/// `.log`, numbered from `0001`. This directory sits under a state root a host
+/// shares, so a looser reader is the difference between reading this crate's own
+/// evidence and reading whatever else is in there — a `gate-1.log` is not a name
+/// this crate has ever written, and treating it as an attempt would let it answer
+/// for a verdict nobody reached and put somebody else's file under a bound that is
+/// not its.
 fn attempt_number(name: &str) -> Option<u32> {
-    name.strip_prefix("gate-")?
-        .strip_suffix(".log")?
-        .parse()
-        .ok()
+    let digits = name.strip_prefix("gate-")?.strip_suffix(".log")?;
+    if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().filter(|number| *number > 0)
 }
 
 /// The highest attempt number this branch's directory has ever recorded.
@@ -148,14 +158,25 @@ fn highest(directory: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+/// Keep the newest [`PRESERVED_LOG_ATTEMPTS`] attempts, and spend nothing else.
+///
+/// What it may remove is what [`preserve_log`] wrote — read through
+/// [`attempt_number`], and a regular file — for the reason [`has_recorded_verdict`]
+/// reads names the same way: retention *deletes*, so anything in this shared
+/// directory that this crate did not write is somebody else's file rather than the
+/// oldest of ours. Sorting by name is sorting by attempt, because the number is
+/// zero-padded to a fixed width.
 fn prune(directory: &Path) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Ok(());
     };
     let mut logs: Vec<PathBuf> = entries
         .flatten()
+        .filter(|entry| {
+            attempt_number(&entry.file_name().to_string_lossy()).is_some()
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|value| value == "log"))
         .collect();
     logs.sort();
     while logs.len() > PRESERVED_LOG_ATTEMPTS {

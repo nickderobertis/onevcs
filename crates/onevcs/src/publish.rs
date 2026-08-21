@@ -1222,12 +1222,10 @@ fn publish_as_change(
     );
 
     let outcome = (|| -> Result<PublishOutcome> {
-        // What is watched, and until when, follows the **merge policy**, which is the
-        // only thing that decides it. It once followed what the rules called the
-        // repository's gate, and on a host whose every rule named a `command:` gate
-        // that was no identity at all: the host's required checks were observed for no
-        // repository. A change-direct publication asks for the merge itself, so it
-        // waits for the checks the host says block one first.
+        // What is watched, and until when, follows the **merge policy** and nothing
+        // else — least of all anything a repository *calls* its verification. A
+        // change-direct publication asks for the merge itself, so it waits for the
+        // checks the host says block one first.
         if context.effective == MergePolicy::ChangeDirect {
             await_checks(host.as_ref(), &change, stream)?;
         }
