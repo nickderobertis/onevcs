@@ -217,10 +217,9 @@ fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
 
 /// Say, naming the file, that a rules file still names what no longer verifies.
 ///
-/// One line per load, which is one line per command: no `onevcs` command reads the
-/// rules file twice. A suppression keyed on what had already been reported was
-/// tried and taken out again — nothing could reach it, and an unreachable branch
-/// that claims to keep the output quiet is worse than the line it would have saved.
+/// One line per load, and no `onevcs` command reads the rules file twice — so this
+/// is one line per command, and nothing here needs to remember what it has already
+/// reported.
 fn report_spent_gate(path: &Path, dropped: usize) {
     if dropped == 0 {
         return;
