@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.3.1...onevcs-testing-v0.4.0) - 2026-08-21
+
+### Added
+
+- *(rules)* [**breaking**] make the repository's own merge path the only verifier ([#65](https://github.com/nickderobertis/onevcs/pull/65))
+
 ## [0.3.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.3.0...onevcs-testing-v0.3.1) - 2026-08-21
 
 ### Added
