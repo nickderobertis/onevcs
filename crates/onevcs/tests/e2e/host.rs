@@ -97,8 +97,8 @@ impl Hosted {
 
 pub const REVIEWED: &str = "{publication: change-open, approvals: required}";
 pub const AUTOMATED: &str = "{publication: change-auto, approvals: required}";
-/// Published straight into the base behind a gate that is a command, so nothing on
-/// this path asks the host what checks a change request carries.
+/// Asks the host for the merge itself, so it is the policy that waits on whatever
+/// checks the host says block one first.
 const DIRECT: &str = "{publication: change-direct, approvals: none}";
 
 #[test]
