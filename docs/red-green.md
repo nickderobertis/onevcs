@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 202. Tests observed red and then green: 238.
+Patches: 204. Tests observed red and then green: 241.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpl8tpTr-project-a14a8c26757e/runs/<token>/clone stands on its own parent b742fc78eea2f13870102f
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpWpxftO-project-1041a85a246c/runs/<token>/clone stands on its own parent b56fbbeb3de6b86ad1e33f
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpmxtQ7J-project-e984f8608760/runs/<token>/clone stands on its own parent d35f3dbad2c83f8555073b
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpr0jafg-project-f41b9dabceef/runs/<token>/clone stands on its own parent 76eb6c3026bf629b9ca573
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -239,7 +239,7 @@ a landing's occupancy lease names something other than the run root it works in,
 
 a run root nothing ever judged answers that its merge path reached a verdict, so an unfinished publication is read as a finished one.
 
-- RED `a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason` — assertion `left == right` failed
+- RED `a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason` — assertion `left == right` failed
 
 ### `122-a-directory-nobody-can-vouch-for-is-taken-on-trust`
 
@@ -381,8 +381,8 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-23cb1f-18cdb19c4df506a7-0 is one of the three newest workspaces holding unlanded work:
-- RED `a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-1a1733-18cdb7f1fc7c1528-0 is one of the three newest workspaces holding unlanded work:
+- RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
 
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-24034b-18cdb1a26456e01c-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-1a4430-18cdb7f4b1a1a44e-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -702,6 +702,20 @@ a spent gate is left in the document rather than dropped, so a rules file at the
 a spent gate is dropped in silence, so the only place an operator learns the key means nothing says nothing.
 
 - RED `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three` — assertion `left == right` failed: one deprecation line, naming the file: ""
+
+### `204-content-the-base-carries-is-published-again`
+
+a branch whose content the base already carries is taken as work to publish, both where a publication asks before it queues and in the squash that would build it.
+
+- RED `a_branch_whose_content_already_landed_publishes_nothing_and_never_reaches_its_merge_path` — Unexpected failure.
+- RED `a_branch_whose_content_already_landed_opens_no_change_request` — Unexpected stdout, failed var.contains(nothing to publish: the base already carries this branch's content)
+- RED `an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name` — Unexpected stdout, failed var.contains(nothing to publish)
+
+### `205-a-fired-bound-names-neither-itself-nor-its-knob`
+
+a bound that fired says only that it did, naming neither the bound it was nor the knob that raises it.
+
+- RED `a_wedged_pre_push_hook_is_stopped_by_the_bound_and_left_running_by_nothing` — Unexpected stderr, failed var.contains(bound 3s)
 
 ### `20-a-round-header-is-not-checked`
 
