@@ -1,0 +1,16 @@
+Mutation: a branch's preserved logs are never pruned, so one re-pushing through a red merge path grows its directory without end.
+Red: a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_directory_forever
+
+diff --git a/crates/onevcs/src/merge_path.rs b/crates/onevcs/src/merge_path.rs
+index 85c948b..15aec5b 100644
+--- a/crates/onevcs/src/merge_path.rs
++++ b/crates/onevcs/src/merge_path.rs
+@@ -77,7 +77,7 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
+             Ok(_) => {
+                 std::fs::write(&path, crate::stream::redact(contents))
+                     .map_err(error::at("preserve the merge-path log at", &path))?;
+-                prune(&directory)?;
++                let _ = prune;
+                 return Ok(path);
+             }
+             // Another writer claimed this number between the two calls: a retry

@@ -9,7 +9,7 @@ Red: a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root
 Red: a_hosted_stack_the_root_independently_matches_is_answered_the_same_way
 Red: a_publish_branch_replay_conflict_names_its_own_command
 
-Red: a_root_that_advances_after_the_gate_is_resynced_without_the_stack_returning
+Red: a_root_that_advances_before_the_queue_turn_is_resynced_without_the_stack_returning
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
 index 23865c3..e3b6954 100644

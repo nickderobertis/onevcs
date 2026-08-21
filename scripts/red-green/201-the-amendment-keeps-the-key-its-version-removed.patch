@@ -1,0 +1,19 @@
+Mutation: the amendment's version 3 fixture keeps the key that version removed, so the schema a consumer reads is one this build refuses.
+Red: the_version_3_fixture_round_trips_and_is_the_approved_one_without_its_gate
+
+diff --git a/docs/contract.md b/docs/contract.md
+index 4e24791..ebdd1f9 100644
+--- a/docs/contract.md
++++ b/docs/contract.md
+@@ -535,9 +535,10 @@ rules:
+   - match: {host: github.com, owner: acme-corp, name: "*"}
+     publication: change-open          # local-direct | change-open | change-auto | change-direct
+     approvals: required               # required | none
++    gate: {kind: checks}
+   - match: {path: "~/projects/*"}
+     publication: local-direct
+-default: {publication: change-open, approvals: required}
++default: {publication: change-open, approvals: required, gate: {kind: checks}}
+ ```
+ 
+ Everything downstream of the field goes with it. `onevcs rules check REPO` prints

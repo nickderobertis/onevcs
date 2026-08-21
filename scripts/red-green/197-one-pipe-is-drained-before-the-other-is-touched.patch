@@ -1,0 +1,27 @@
+Mutation: one pipe is read to EOF before the other is touched, so a merge path loud enough to fill the first one wedges the capture reading it.
+Red: a_merge_path_that_fills_its_pipes_and_passes_still_reaches_its_own_verdict
+Red: a_merge_path_that_fills_its_pipes_and_refuses_still_reaches_its_own_verdict
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index fe6e4e4..81347e1 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -207,14 +207,13 @@ fn bounded(
+         let mut buffer = Vec::new();
+         let _ = stdout.read_to_end(&mut buffer);
+         let _ = out_sender.send(());
+-        buffer
+-    });
+-    let err_reader = std::thread::spawn(move || {
+-        let mut buffer = Vec::new();
+-        let _ = stderr.read_to_end(&mut buffer);
++        let mut rest = Vec::new();
++        let _ = stderr.read_to_end(&mut rest);
+         let _ = sender.send(());
++        buffer.extend_from_slice(&rest);
+         buffer
+     });
++    let err_reader = std::thread::spawn(Vec::new);
+ 
+     // Both pipes reaching EOF is what proves nothing git started is still writing.
+     // Waiting on the child alone would return while a hook's orphaned child still

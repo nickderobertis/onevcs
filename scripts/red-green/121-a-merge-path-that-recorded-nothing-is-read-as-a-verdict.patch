@@ -1,13 +1,13 @@
-Mutation: a run root nothing ever judged answers that its gate reached a verdict, so an unfinished publication is read as a finished one.
+Mutation: a run root nothing ever judged answers that its merge path reached a verdict, so an unfinished publication is read as a finished one.
 Red: a_workspace_whose_gate_recorded_no_verdict_is_retained_with_that_reason
 
-diff --git a/crates/onevcs/src/gate.rs b/crates/onevcs/src/gate.rs
-index 1a46f27..28ce977 100644
---- a/crates/onevcs/src/gate.rs
-+++ b/crates/onevcs/src/gate.rs
-@@ -204,23 +204,8 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
+diff --git a/crates/onevcs/src/merge_path.rs b/crates/onevcs/src/merge_path.rs
+index 85c948b..53bba85 100644
+--- a/crates/onevcs/src/merge_path.rs
++++ b/crates/onevcs/src/merge_path.rs
+@@ -104,23 +104,8 @@ pub fn preserve_log(run_root: &Path, branch: &str, contents: &str) -> Result<Pat
  /// nothing about its contents: that path is written by that function alone, and a
- /// gate whose output was empty said as much as one that printed a page. A directory
+ /// push whose output was empty said as much as one that printed a page. A directory
  /// wearing the name would otherwise answer for a verdict nobody reached.
 -pub fn has_recorded_verdict(run_root: &Path) -> bool {
 -    let Ok(branches) = std::fs::read_dir(run_root.join(PRESERVED_LOG_DIRNAME)) else {
