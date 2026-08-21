@@ -1,0 +1,17 @@
+Mutation: a spent gate is dropped in silence, so the only place an operator learns the key means nothing says nothing.
+Red: a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three
+
+diff --git a/crates/onevcs/src/policy.rs b/crates/onevcs/src/policy.rs
+index 6cdbee4..9ed7d6a 100644
+--- a/crates/onevcs/src/policy.rs
++++ b/crates/onevcs/src/policy.rs
+@@ -223,7 +223,8 @@ fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
+ /// mid-run: a line per `onevcs` command in a run that publishes all day is noise
+ /// that gets filtered, and the second one carries nothing the first did not.
+ fn report_spent_gate(path: &Path, dropped: usize) {
+-    if dropped == 0 {
++    let _ = (path, dropped);
++    if true {
+         return;
+     }
+     static REPORTED: std::sync::Mutex<Option<Vec<PathBuf>>> = std::sync::Mutex::new(None);

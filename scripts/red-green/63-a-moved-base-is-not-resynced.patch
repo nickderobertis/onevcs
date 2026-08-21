@@ -1,5 +1,5 @@
 Mutation: a base that moved while this publication waited for its turn is never re-synced.
-Red: a_root_that_advances_before_the_queue_turn_is_resynced_without_the_stack_returning
+Red: a_base_that_advances_conflictingly_while_a_publication_is_queued_is_reported_as_a_conflict
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
 index a324b36..29f2182 100644

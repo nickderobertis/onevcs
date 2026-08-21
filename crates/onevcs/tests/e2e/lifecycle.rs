@@ -3909,6 +3909,82 @@ fn a_recorded_stack_that_squash_merged_is_replayed_onto_the_root_rather_than_mer
 }
 
 #[test]
+fn a_base_that_advances_conflictingly_while_a_publication_is_queued_is_reported_as_a_conflict() {
+    // The window the re-sync after the queue turn exists for. A publication brings
+    // its branch level with the base before it queues; the writer ahead of it in
+    // that queue then lands something else, and what this one would publish is no
+    // longer level with what it would publish onto. Where the two agree the squash
+    // absorbs it either way — where they *conflict*, only the re-sync turns that
+    // into the contract's own sync-conflict exit, with the paths that conflicted and
+    // the branch retained. Without it a conflict surfaces from inside the squash, as
+    // a failure about git rather than about this publication.
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+
+    // Installed before the session opens, because a run clone takes the lender's
+    // hooks path when it is cut; armed only when the publication is about to run, so
+    // the fixture's own commits do not spend it, and disarmed by its own firing.
+    let other = world.path("advancing");
+    let armed = world.path("arm-the-conflicting-advance");
+    world.install_commit_msg(
+        &fixture.checkout,
+        &format!(
+            "[ -e {armed} ] || exit 0\n\
+             rm -f {armed}\n\
+             unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n\
+             cd {other}\n\
+             git fetch -q origin\n\
+             git checkout -q -B main origin/main\n\
+             printf 'from the base\\n' > shared.txt\n\
+             git add -A\n\
+             git commit -q -m 'feat: change the shared file differently'\n\
+             git push -q origin main\n",
+            armed = armed.display(),
+            other = other.display(),
+        ),
+    );
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/clashing-queue"]);
+    world.commit_file(
+        &worktree,
+        "shared.txt",
+        "from the branch\n",
+        "feat: change the shared file",
+    );
+    world.clone_of(&fixture.origin, "advancing");
+    std::fs::write(&armed, "").expect("the hook is armed");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // 3 is the contract's code for a base that moved under a publication and a
+        // bounded resolve-and-requeue that did not converge.
+        .code(3)
+        .stderr(predicate::str::contains("shared.txt"))
+        .stderr(predicate::str::contains("is retained"));
+
+    // Nothing of this branch reached the base, and what the other writer landed is
+    // still there — the publication stopped rather than resolving on somebody's
+    // behalf.
+    assert_eq!(
+        fixture.origin_log()[0],
+        "feat: change the shared file differently"
+    );
+    assert!(!armed.exists(), "the journey's premise: the base advanced");
+
+    // The conflict travels on the stream with the paths it was about, which is what
+    // makes the refusal actionable rather than merely true.
+    let conflicts = world.events_of(&token, "sync-conflict");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"],
+        serde_json::json!(["shared.txt"]),
+        "{conflicts:?}"
+    );
+}
+
+#[test]
 fn a_root_that_advances_before_the_queue_turn_is_resynced_without_the_stack_returning() {
     // The base can move between a publication starting and its turn in the queue —
     // the writer ahead of it in that queue is the usual reason — and what lands is
