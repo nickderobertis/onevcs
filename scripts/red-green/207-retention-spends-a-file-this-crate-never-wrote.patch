@@ -1,0 +1,20 @@
+Mutation: retention takes every .log in the shared directory as an attempt of its own, so a file this crate never wrote counts against the bound and is deleted as the oldest of ours.
+Red: a_branch_that_re_pushes_through_a_red_merge_path_cannot_grow_its_log_directory_forever
+
+diff --git a/crates/onevcs/src/merge_path.rs b/crates/onevcs/src/merge_path.rs
+index 87e978d..0ae5782 100644
+--- a/crates/onevcs/src/merge_path.rs
++++ b/crates/onevcs/src/merge_path.rs
+@@ -172,11 +172,8 @@ fn prune(directory: &Path) -> Result<()> {
+     };
+     let mut logs: Vec<PathBuf> = entries
+         .flatten()
+-        .filter(|entry| {
+-            attempt_number(&entry.file_name().to_string_lossy()).is_some()
+-                && entry.file_type().is_ok_and(|kind| kind.is_file())
+-        })
+         .map(|entry| entry.path())
++        .filter(|path| path.extension().is_some_and(|value| value == "log"))
+         .collect();
+     logs.sort();
+     while logs.len() > PRESERVED_LOG_ATTEMPTS {
