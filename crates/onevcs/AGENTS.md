@@ -66,7 +66,8 @@ beside it is drift nothing would catch. What separates them is provenance and
 nothing else: `recover` requires an unattested incomplete marker and writes the
 attestation that clears it, `publish-branch` requires that there is none.
 `integrate` stays the local-only merge train and routes to `publish-branch` rather
-than re-gating a branch itself.
+than re-verifying a branch itself; what verifies a train is the `pre-push` hook at
+the push that publishes the advanced base.
 
 Which means **a refusal on this path is the guidance surface**: each one names the
 command with its exact arguments, or the rules-file entry, that resolves it. A
@@ -118,12 +119,32 @@ cwd. The train is deliberately not what it names, even for finished work:
 refuses a team or remote identity outright, so it lands none of the branches this
 report is most often read about — the ones a run left in its own clone.
 
+## The repository's own merge path is the only verifier
+
+Nothing here runs a verification tier of its own, and the rules file names none.
+For a remote-first identity the verifier is the host's required checks; for a
+local-first one it is the `pre-push` hook git runs at the publishing push. Three
+things follow, and each is easy to undo by accident.
+
+- **This crate hands the merge path what it needs and keeps what it wrote, and does
+  nothing else about verification.** `merge_path::comparison_env` exports the remote
+  and base every judging process resolves — a hook left to find its own resolves the
+  repository default, which for a stacked change is not the base being published
+  onto — and `merge_path::preserve_log` keeps a push's output where it outlives the
+  tree it was built in.
+- **A `push` event is a verdict.** `accepted` is what the merge path ruled and the
+  artifact is what the hook wrote, for every publishing push whatever the outcome.
+  `status` reads its `merge_path` section off that event and nothing else.
+- **`recover` refuses to attest a branch nothing verified**, asking
+  `store::merge_path_coverage` — the same question `onevcs register` warns on and
+  `onevcs repos --audit-gates` reports. Those three must keep one answer.
+
 ## A publication observes, captures, and does not settle early
 
-- **Polling is driven by `context.effective`, never by `context.policy.gate`.** The
-  gate is what tempts you — it has a `checks` kind, and reading it here is one line
-  — but a host whose every rule names a `command:` gate then has its required checks
-  observed for no repository at all.
+- **Polling is driven by `context.effective`, and by nothing else.** What a policy
+  *calls* its verification never decides what a publication observes: a field read
+  here for that once left the host's required checks observed for no repository at
+  all.
 - **Every capture is best effort where the thing it records has already happened.**
   `record_push`, `report_conflict`, and `record_landing` warn on stderr and carry
   on. A `?` in any of them turns a push git accepted, or a merge the host performed,
@@ -280,7 +301,7 @@ package; without it that journey refuses rather than skips, since one that passe
 without building its own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
-as `gh` and the `pre-push` hooks the gate journeys write are POSIX shell, and a
+as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
 builds the crate and runs the contract, boundary, and packaging suites.
 
@@ -405,9 +426,9 @@ Six rules govern how it decides.
   inside a workspace. Nothing a lease is held on is removed, and nothing inside it is
   signalled.
 - **The evidence outlives the failure by the age floor**, which is
-  `sweep::DEFAULT_MIN_AGE_HOURS` where nobody says otherwise. Preserved gate logs live
-  under the run root — which outlives the worktree the gate ran in — so reclamation is
-  the only thing that takes them.
+  `sweep::DEFAULT_MIN_AGE_HOURS` where nobody says otherwise. The merge path's
+  preserved logs live under the run root — which outlives the worktree the
+  publication was built in — so reclamation is the only thing that takes them.
   Work no origin has keeps its workspace past the floor as well, bounded by
   `workspace::RETAINED_DEAD_RUNS` itself: one bound on one question, asked of the
   lifecycle clones there and of the landings' workspaces here.
@@ -416,8 +437,9 @@ Six rules govern how it decides.
   cannot come to disagree. Publication squashes, which is why neither half of it can
   be dropped.
 - **Reclaiming a workspace stops what it left running** (`processes.rs`), because
-  unlinking files a live process holds open frees none of their blocks — a gate is
-  the repository's own verification, and verifications start daemons that outlive it.
+  unlinking files a live process holds open frees none of their blocks — a
+  publication runs the repository's own verification, and verifications start daemons
+  that outlive it.
   Nothing live is signalled, and neither is this process or anything it descends
   from: an operator who ran a sweep from inside a workspace is not a daemon. A
   workspace whose holders would not stop is kept and reported rather than

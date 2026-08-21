@@ -30,7 +30,7 @@
 //! [`SUBJECT_LIMIT`] is the length a publication holds a commit subject to, and a
 //! consumer validating a plan *before* it runs has to ask the same question this
 //! crate will ask at publication — otherwise the refusal arrives an hour later, on
-//! work that is finished and gate-green. Everything else here is `pub(crate)`: the
+//! work that is finished and verified. Everything else here is `pub(crate)`: the
 //! trailer vocabulary is this crate's own, and the module is public solely so that
 //! one constant has a stable path.
 

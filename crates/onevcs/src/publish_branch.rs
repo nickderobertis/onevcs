@@ -10,7 +10,7 @@
 //! It is [`crate::branch`] plus one precondition, which is the mirror of
 //! `recover`'s: interrupted work is refused here and named over there, because
 //! publishing a branch whose step never finished means writing an attestation, and
-//! only the verb that runs the gate to earn one may write it.
+//! only the verb that earns one may write it.
 
 use std::path::Path;
 
@@ -51,8 +51,8 @@ pub fn run(
             reason: format!(
                 "branch {branch:?} carries incomplete provenance ({} unattested marker(s)): a \
                  step stopped before it finished, and publishing it means attesting that a green \
-                 gate cleared what stopped. `publish-branch` publishes completed work; land this \
-                 one with `{}`, which runs the gate and writes that attestation",
+                 verification cleared what stopped. `publish-branch` publishes completed work; \
+                 land this one with `{}`, which writes that attestation",
                 unattested.len(),
                 landing.command_for(Verb::Recover),
             ),

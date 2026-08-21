@@ -1,12 +1,12 @@
 //! The processes a run root left running, and stopping them before it is removed.
 //!
-//! A gate is the repository's own verification, and verifications start daemons —
+//! A publication runs the repository's own hooks, and verifications start daemons —
 //! ones that outlive the publication that started them. Removing the directory
 //! reclaims nothing while one is running: the blocks a process holds open stay
 //! allocated after the files are unlinked, and it goes on working against a tree
 //! that is gone.
 //!
-//! **What names such a process is its working directory.** A `command:` gate runs in
+//! **What names such a process is its working directory.** A hook runs in
 //! the run root's worktree and everything it starts inherits that directory, so a
 //! process sitting inside a run root this crate has already proven finished is one
 //! that run left behind. Nothing is inferred from a name, a command line, or a
@@ -380,7 +380,7 @@ fn signal_to(pid: Pid, signal: Signal) {
 // the public surface, so publishing it in order to reach it is the change the contract
 // forbids. Nothing inside it can either: their only caller is `sweep`, and every
 // fixture that builds a run root for it hangs off `tests/e2e/world.rs`, which is
-// `#![cfg(unix)]` because the `gh` it substitutes and the gates it installs are POSIX
+// `#![cfg(unix)]` because the `gh` it substitutes and the hooks it installs are POSIX
 // shell — so on the platform these serve, the suite that would drive them does not
 // exist. What they answer is what Windows is safe with anyway: a directory a live
 // process holds open refuses to be unlinked there, and a run root the sweep could not

@@ -1,9 +1,9 @@
 //! What each command does, once its arguments have parsed.
 //!
 //! Everything here writes its result to stdout and its diagnosis to stderr, and
-//! returns the exit code the contract fixes: `0` published, `1` the gate or the
-//! host's checks rejected it, `2` invalid, `3` a sync conflict that the bounded
-//! retry did not settle.
+//! returns the exit code the contract fixes: `0` published, `1` the merge path
+//! refused it — its hooks, or the host's required checks — `2` invalid, `3` a sync
+//! conflict that the bounded retry did not settle.
 
 use std::io::Write;
 use std::path::Path;
@@ -182,8 +182,8 @@ fn session_adopt(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u
     // as readily as one this build's git did.
     if providers.vcs.session(&token)?.provenance == Provenance::IncompleteStep {
         eprintln!(
-            "onevcs: this branch carries incomplete-step provenance, so it must pass the \
-             merge-path gate through `onevcs recover` before it may be published."
+            "onevcs: this branch carries incomplete-step provenance, so it must pass its \
+             merge path through `onevcs recover` before it may be published."
         );
     }
     Ok(0)
@@ -659,7 +659,7 @@ fn integrate_branches(args: &IntegrateArgs) -> Result<u8> {
     let resolution = resolve_here(&registry)?;
     let token = format!("integrate-{}", policy::branch_slug(&resolution.alias));
     let mut stream = Stream::open(&token)?;
-    let outcome = integrate::run(&resolution, &args.branches, args.push, None, &mut stream)?;
+    let outcome = integrate::run(&resolution, &args.branches, args.push, &mut stream)?;
     println!("Integration train for {}:", outcome.base);
     for branch in &outcome.branches {
         println!("  {}: {}", branch.branch, branch.status.describe());
@@ -824,11 +824,6 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
             crate::rules::Approvals::None => "none",
         },
         resolved.approvals_from
-    );
-    println!(
-        "gate: {} (from {})",
-        policy::spell_gate(&resolved.policy.gate),
-        resolved.gate_from
     );
     // Not part of the matched policy: one vocabulary reads and writes every
     // repository's provenance, so it is reported once, from the file or the default.

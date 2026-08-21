@@ -1,0 +1,21 @@
+Mutation: a bound that fired says only that it did, naming neither the bound it was nor the knob that raises it.
+Red: a_wedged_pre_push_hook_is_stopped_by_the_bound_and_left_running_by_nothing
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index fe6e4e4..570a3e4 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -244,11 +244,9 @@ fn bounded(
+         let _ = err_reader.join();
+         let elapsed = started.elapsed().as_secs_f64();
+         let (knob, _) = class.knob();
++        let _ = (bound, knob);
+         return Err(Error::Invalid {
+-            reason: format!(
+-                "{label} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})",
+-                bound = bound.as_secs_f64()
+-            ),
++            reason: format!("{label} timed out after {elapsed:.3}s"),
+         });
+     };
+ 

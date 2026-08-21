@@ -4,8 +4,8 @@
 //! and a later host maps it to whatever it calls the same thing. [`Vcs`] owns the
 //! repository side (identities, sessions, preserved work) and [`RemoteHost`] owns
 //! the host side (opening a change, reading its checks, merging it). A
-//! [`rules`] file decides, per repository, how a change is published and what
-//! verifies it. Everything a process does along the way is emitted as an
+//! [`rules`] file decides, per repository, how a change is published and whether
+//! it needs an approval. Everything a process does along the way is emitted as an
 //! [`Envelope`].
 //!
 //! # The shape of one change
@@ -14,7 +14,8 @@
 //! session open  →  a per-run --shared clone and one worktree, occupancy-leased
 //!    →  work happens in the worktree
 //!    →  publish   →  fetch and merge the current base  (bounded resolve-and-requeue)
-//!                 →  the gate: a command, the pre-push hook, or the host's checks
+//!                 →  the repository's own merge path verifies it: its pre-push
+//!                    hook, or the host's required checks on the change request
 //!                 →  local-direct squash, or a change request the host lands
 //!    →  session close  →  the worktree goes; the branch is copied out and stays
 //! ```
@@ -39,7 +40,6 @@ mod branch;
 pub mod cli;
 mod error;
 mod event;
-mod gate;
 mod gh;
 mod git;
 mod guidance;
@@ -50,6 +50,7 @@ mod import;
 mod integrate;
 mod landed;
 mod lock;
+mod merge_path;
 mod policy;
 mod processes;
 pub mod provenance;

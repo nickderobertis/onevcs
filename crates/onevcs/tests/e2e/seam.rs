@@ -25,7 +25,7 @@ use crate::world::World;
 
 /// A policy that publishes a change request and leaves it open, which is the
 /// shortest path that still reaches the host.
-const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
+const REVIEWED: &str = "{publication: change-open, approvals: required}";
 
 /// A registered hosted repository, and its identity as the registry derived it.
 fn hosted(world: &World, rules: &str) -> (std::path::PathBuf, Identity) {
@@ -250,10 +250,7 @@ fn closing_a_session_goes_through_the_supplied_repository_side() {
 fn recovering_a_branch_opens_its_change_on_the_supplied_host() {
     let world = World::new();
     inhabit(&world);
-    let (checkout, _identity) = hosted(
-        &world,
-        "{publication: change-open, approvals: required, gate: {kind: pre-push}}",
-    );
+    let (checkout, _identity) = hosted(&world, "{publication: change-open, approvals: required}");
     // A merge path that runs something, so a recovery attestation attests to a
     // verdict that was actually reached.
     world.install_pre_push(&checkout, "exit 0");

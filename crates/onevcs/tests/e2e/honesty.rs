@@ -49,7 +49,7 @@ use crate::world::World;
 /// The policy the compared journey publishes under: a change request the host
 /// lands once its required checks are green, which is the path that touches every
 /// one of the six host methods.
-const AUTOMATED: &str = "{publication: change-auto, approvals: required, gate: {kind: checks}}";
+const AUTOMATED: &str = "{publication: change-auto, approvals: required}";
 
 /// Who the host says is calling. The substituted `gh` answers `tester`, so the
 /// provider is seeded to answer the same — an authenticated user is a fact about

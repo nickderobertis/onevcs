@@ -13,4 +13,4 @@ index 4c48e38..b2296bd 100644
 +    let Some(lease) = lock::try_shared(&workspace::occupancy_identity(run_root))? else {
          return Ok(Verdict::Retain(Kept::Occupied));
      };
-     if !gate::has_recorded_verdict(run_root) {
+     if !merge_path::has_recorded_verdict(run_root) {

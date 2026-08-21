@@ -32,16 +32,18 @@ quietly in passing.
 
 ## Types the contract implies but does not name
 
-Three exist because a named item could not be written without them:
+Two exist because a named item could not be written without them:
 
 - **`Policy`** — the object under `default:` in the rules file, and the shape a
-  rule resolves to. A `Rule`'s three policy fields are each optional (the second
+  rule resolves to. A `Rule`'s two policy fields are each optional (the second
   rule in the contract's own fixture omits `approvals`); a `Policy`'s are not.
-- **`GateKind`** — `checks` and `pre-push`, the two values the contract's `gate:
-  {kind: ...}` comment lists. The third form, `command: [...]`, is the other
-  variant of `Gate` itself.
 - **`Approvals`** — `required` / `none`, the values of the rules file's
   `approvals:` key.
+
+There was a third. `Gate` and `GateKind` spelled the contract's `gate:` key, and
+the amendment that made the repository's own merge path the only verifier removed
+the key, the types, and the tier behind them. Schema version 3 has no such field;
+versions 1 and 2 accept one and drop it, saying once which file it came out of.
 
 `MergePolicy` is deliberately *not* duplicated: the rules file's `publication:`
 key and `RemoteHost::merge`'s `policy` argument list the same four values, so they
@@ -238,7 +240,7 @@ same reason.
 | `--policy P` | the option `publish` takes, under the same rule | The policy comes from the identity's rules; a per-run one may narrow it and never widen it past requiring approvals, which is `MergePolicy::narrow` rather than a second rule. |
 | `--title T` on both verbs | the `Subject` an explicit title has always been | `publish` has taken one since the contract was written, and the refusal it answers — no commit subject fits — is reachable from a preserved branch too, where the alternative is rewriting a commit on work that was interrupted. |
 | `--body TEXT` and `--body-file PATH` on both verbs | the pair `publish` takes, refused together by the same boundary | A body is drafted by whatever knew what the change was for, and which verb happened to land the branch is no reason for the change request to describe itself differently — an operator resuming a preserved branch reads the same empty pull request either way. Both spellings are representable so `app::explicit_body` can refuse the pair by name, and its refusal names the verb and operands the caller typed rather than `publish`'s. Nothing is composed when neither is given: the change request opens with no body, as it does today. |
-| the answer | the same `PublishOutcome` and exit codes as `recover` | It is a second caller of the branch-keyed publication path, not a second publication. `recover` and `publish-branch` share one implementation of locate, clone, worktree, base-merge, gate, and publish; provenance is the whole of what separates them. |
+| the answer | the same `PublishOutcome` and exit codes as `recover` | It is a second caller of the branch-keyed publication path, not a second publication. `recover` and `publish-branch` share one implementation of locate, clone, worktree, base-merge, and publish; provenance is the whole of what separates them. |
 
 No public library item is added: `publish::run` was already branch-keyed, and both
 verbs are private modules behind it. What the CLI gains is the verb and four options.
@@ -288,10 +290,14 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `2`, and it is deliberately not a migration boundary
+The report's schema version is `3`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
+Version 3 is the rules gate going away: `identity.gate` was the rules file's
+`gate:`, which no schema has any more, and the top-level `gate` was the last verdict
+a gate this crate ran had recorded, which it re-expresses as `merge_path` — the same
+question asked of the verifier that actually rules on a change.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -324,7 +330,7 @@ could be *read* rather than anything about the work.
 | Item | Inferred shape | Why |
 | --- | --- | --- |
 | `status REF` | one operand, four spellings, read in the documented order | A change request's URL, a session token, a branch name, and a commit are four names for one piece of work, and which one somebody has depends on where they are standing. Four options would make a caller say which they hold; one operand does not. First match wins, so a session token is a session token even where a branch of that name exists, and ambiguity is *within* a spelling — one branch name in two identities — which is refused naming every candidate. |
-| the sections | identity, session, branch, publication, checks, gate, next | What an agent had to reach outside for, in one place. `next` is the surface the branch-keyed refusals already are: a report that diagnoses without naming the command that advances the work leaves an agent to invent one. |
+| the sections | identity, session, branch, publication, checks, merge path, next | What an agent had to reach outside for, in one place. `next` is the surface the branch-keyed refusals already are: a report that diagnoses without naming the command that advances the work leaves an agent to invent one. |
 | `landed` | decided from the base's own history, in four tiers, naming the one that decided it | Publication squashes, so a branch that landed is an ancestor of nothing afterwards — and the content comparison that used to answer this is an inference that stops being true the moment anything else lands on the base. The tiers are recorded below. It is the same question `vcs::collect` excludes a branch on, which is what keeps the report and `recoverable` from disagreeing about one branch. |
 | the host section | degrades, never fails | `status` reaches the host for what a change request is doing now, and everything else it reports is answerable offline. A command that failed because a network call did would leave an operator with none of the answer. |
 | `--json` | the same object, on stdout | The scope note `recoverable` carries does not apply: `status` is asked about one piece of work by name, so there is no unstated scope for a reader to mistake. |
@@ -380,7 +386,7 @@ onevcs recoverable [--all] [--json]
 The same gap again, one layer down. Every branch-keyed landing cuts a run root
 under the state root — `workspaces/publications/<slug>-<unique>` for
 `publish-branch` and `workspaces/recoveries/<slug>-<unique>` for `recover`, each
-holding a clone, a worktree, and the gate's preserved logs — and **nothing has
+holding a clone, a worktree, and the merge path's preserved logs — and **nothing has
 ever removed one**. Measured on the host that motivated this: thirty-one
 directories, forty-nine gigabytes, none of them ever reaped, because no verb this
 tool has knew the directory existed. A full disk took that host down twice during
@@ -405,7 +411,7 @@ and default for default, because one composing caller (`ai-orchestrator`'s
 may depart from it alone.
 
 **Why the verb is here rather than in a general-purpose sweeper.** What makes a
-publication workspace reclaimable is `onevcs` state: its gate has recorded a
+publication workspace reclaimable is `onevcs` state: its merge path has recorded a
 verdict under it, and no live session holds its occupancy lease. Both are facts
 this crate can read, and neither is one a caller should be asked to supply — a
 caller-supplied liveness proof that is wrong deletes a publication worktree
@@ -443,11 +449,11 @@ exists to prevent.
 
 | Item | Inferred shape | Why |
 | --- | --- | --- |
-| how long the evidence lasts | the age floor: 24 hours by default, from the last write anywhere under the run root | The preserved gate logs are what an operator reads *after* a publication failed, and they live under the run root — which outlives the worktree the gate ran in — so reclamation is the only thing that takes them. Both ways of asking answer to the same floor, so the evidence a landing left cannot be taken by the landing after it. |
+| how long the evidence lasts | the age floor: 24 hours by default, from the last write anywhere under the run root | The preserved merge-path logs are what an operator reads *after* a publication failed, and they live under the run root — which outlives the worktree the publication was built in — so reclamation is the only thing that takes them. Both ways of asking answer to the same floor, so the evidence a landing left cannot be taken by the landing after it. |
 | a clone holding work no origin has | kept past the floor, bounded to the most recently written of its family | `sweep::RETAINED_UNPUBLISHED` *is* `workspace::RETAINED_DEAD_RUNS` rather than a second number equal to it: one bound on one question, asked of the lifecycle clones there and of the landings' workspaces here — and stated nowhere as a literal, because a number repeated in prose is the drift this record exists to prevent. The newest are what it keeps, because the failure somebody reaches for is the one that just happened, and keeping every one forever turns a scratch root into an archive nobody prunes. |
 | what "no origin has" means | commits no `origin` ref carries **and** content the base does not already carry | `vcs::collect`'s own two questions, so the report that offers work for recovery and the rule that keeps its workspace cannot disagree. Publication squashes: ancestry alone would call every finished workspace unpublished work, and content alone would call a branch spent whose commits happen to change nothing. |
-| the processes a reclaimed workspace left running | stopped, `SIGTERM` then `SIGKILL`, before anything is unlinked | A gate is the repository's own verification and verifications start daemons. Two Nx daemons outlived their publications by 33 and 16 minutes during the incident, pinning roughly 14G, and unlinking files a live process holds open frees none of their blocks — so a removal that left them running would report a figure the disk never gets back. |
-| which processes those are | the ones whose **working directory** is inside the run root | It is what a gate's children inherit and what nothing else on a shared host has. A name or a command line would be this crate guessing which of a host's processes are its business. This process, everything it descends from, and any pid at or below `1` are never signalled — an operator who ran a sweep from inside a workspace is not a daemon. |
+| the processes a reclaimed workspace left running | stopped, `SIGTERM` then `SIGKILL`, before anything is unlinked | A publication runs the repository's own verification and verifications start daemons. Two Nx daemons outlived their publications by 33 and 16 minutes during the incident, pinning roughly 14G, and unlinking files a live process holds open frees none of their blocks — so a removal that left them running would report a figure the disk never gets back. |
+| which processes those are | the ones whose **working directory** is inside the run root | It is what a hook's children inherit and what nothing else on a shared host has. A name or a command line would be this crate guessing which of a host's processes are its business. This process, everything it descends from, and any pid at or below `1` are never signalled — an operator who ran a sweep from inside a workspace is not a daemon. |
 | a workspace whose holders would not stop | kept, reported, and not removed | Half-emptying a tree a live process is still writing into is worse than the tree that was there, and the space would not come back anyway. |
 
 **One boundary is deliberately outside it.** `workspaces/<identity>/runs` is the

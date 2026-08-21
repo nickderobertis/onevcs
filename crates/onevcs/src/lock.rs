@@ -24,7 +24,7 @@ use crate::{home, ids};
 
 /// How long a queued wait may last before the turn is abandoned.
 pub const TIMEOUT_ENV: &str = "ONEVCS_LOCK_TIMEOUT_SECONDS";
-/// Minutes, not seconds: a legitimate turn can hold a whole gate run, and failing
+/// Minutes, not seconds: a legitimate turn can hold a whole publication, and failing
 /// a session that would simply have been served next is the outcome this bound
 /// exists to avoid.
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 900.0;

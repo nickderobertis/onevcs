@@ -39,11 +39,11 @@ use crate::world::World;
 
 /// A policy that opens a change request and leaves it open: the shortest path that
 /// still reaches the host, and the one both backends are compared on.
-const REVIEWED: &str = "{publication: change-open, approvals: required, gate: {kind: checks}}";
+const REVIEWED: &str = "{publication: change-open, approvals: required}";
 
-/// A registered hosted repository whose gate refuses everything, so a publication
-/// that reaches it fails for a reason the journey chose.
-const REFUSING: &str = "{publication: local-direct, approvals: none, gate: {command: [\"false\"]}}";
+/// A local-first policy, verified by the repository's own `pre-push` hook at the
+/// publishing push and by nothing else.
+const LOCAL: &str = "{publication: local-direct, approvals: none}";
 
 /// A registered hosted repository, its origin, and the identity the registry
 /// derived for it.
@@ -548,10 +548,7 @@ fn a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed
     // git underneath is still real git against a real origin.
     let world = World::new();
     inhabit(&world);
-    let (origin, _identity) = hosted(
-        &world,
-        "{publication: change-direct, approvals: none, gate: {command: [\"true\"]}}",
-    );
+    let (origin, _identity) = hosted(&world, "{publication: change-direct, approvals: none}");
     world.install_fake_host(&origin);
     let session = open(&Git, "feature/queueing");
     world.commit_file(
@@ -948,10 +945,24 @@ fn a_publication_given_no_body_opens_a_change_request_with_no_body_at_all() {
 }
 
 #[test]
-fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() {
+fn a_publication_the_repositorys_subject_policy_refuses_says_so_and_says_where_the_branch_went() {
     let world = World::new();
     inhabit(&world);
-    let (_origin, _identity) = hosted(&world, REFUSING);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    // The repository's own `commit-msg` hook, which is what `FailureKind::Gate` now
+    // means: the subject this publication would land under, turned down by the
+    // repository that would have to live with it. Installed before the session is
+    // opened, because that is when the clone is given the checkout's hooks, and
+    // armed only once the branch's own commit is made — a hook that turned every
+    // subject down would refuse the work before there was a publication to refuse.
+    let armed = world.path("the-subject-policy-is-armed");
+    world.install_commit_msg(
+        &world.path("hosted"),
+        &format!(
+            "[ -e {armed} ] || exit 0\necho 'that subject would not release' >&2\nexit 1",
+            armed = armed.display()
+        ),
+    );
     let session = open(&Git, "feature/refused");
     world.commit_file(
         &session.worktree,
@@ -959,24 +970,29 @@ fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() 
         "one\n",
         "feat: add the refused thing",
     );
+    std::fs::write(&armed, "").expect("the subject policy is armed");
 
     let published = onevcs::publish(
         &Providers::real(),
         &session.token,
         &PublishRequest::default(),
     )
-    .expect("a rejected gate is an outcome, not a refusal to start");
+    .expect("a turned-down subject is an outcome, not a refusal to start");
     let PublishOutcome::Failed {
         kind,
         reason,
         retained,
     } = &published.outcome
     else {
-        panic!("a gate that exits non-zero must fail the publication: {published:?}");
+        panic!("a hook that turns the subject down must fail the publication: {published:?}");
     };
     assert_eq!(*kind, FailureKind::Gate);
     assert_eq!(kind.exit_code(), 1);
     assert!(reason.contains("gate failed"), "{reason}");
+    assert!(
+        reason.contains("that subject would not release"),
+        "the refusal carries what the hook wrote: {reason}"
+    );
     // The work is the only record of itself, so the caller is told where it is.
     let Some(Retention::HandedBack(checkout)) = retained else {
         panic!("the branch is handed back to the execution checkout: {retained:?}");
@@ -987,12 +1003,11 @@ fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() 
         "the checkout it names carries the branch: {branches:?}"
     );
 
-    // The gate above is one of four verifications a publication can fail, and the
+    // The hook above is one of four verifications a publication can fail, and the
     // exit code cannot tell them apart: the contract fixes `1` for all of them, so a
     // process reading `$?` sees one answer where a caller embedding the crate has to
     // see four. The other three are driven here, each to its own ending.
-    const AUTOMATED: &str =
-        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}";
+    const AUTOMATED: &str = "{publication: change-auto, approvals: required}";
 
     // A required check the host concluded red. The publication stops there, names
     // the check, and quotes what it printed.
@@ -1077,7 +1092,7 @@ fn a_publication_that_its_gate_refuses_says_so_and_says_where_the_branch_went() 
     inhabit(&world);
     let session = ready_to_publish(
         &world,
-        "{publication: change-auto, approvals: required, gate: {kind: pre-push}}",
+        "{publication: change-auto, approvals: required}",
         "feature/unanswerable",
         "exit 0",
     );
@@ -1106,10 +1121,7 @@ fn a_base_that_moved_incompatibly_is_a_sync_conflict_the_caller_can_tell_apart()
     // A gate that passes, so what stops this publication is the base rather than a
     // verdict — the third of the contract's own exit codes, and the one a caller
     // has to distinguish because retrying it is the only thing that can settle it.
-    let (origin, _identity) = hosted(
-        &world,
-        "{publication: local-direct, approvals: none, gate: {command: [\"true\"]}}",
-    );
+    let (origin, _identity) = hosted(&world, "{publication: local-direct, approvals: none}");
     let session = open(&Git, "feature/conflicting");
     world.commit_file(
         &session.worktree,
@@ -1152,8 +1164,11 @@ fn a_base_that_moved_incompatibly_is_a_sync_conflict_the_caller_can_tell_apart()
 fn a_branch_the_execution_checkout_will_not_take_back_is_reported_as_refused() {
     let world = World::new();
     inhabit(&world);
-    let (_origin, _identity) = hosted(&world, REFUSING);
+    let (_origin, _identity) = hosted(&world, LOCAL);
     let checkout = world.path("hosted");
+    // A merge path that refuses, so the publication fails for a reason the journey
+    // chose and the branch is handed back rather than landed.
+    world.install_pre_push(&checkout, "exit 1");
     let session = open(&Git, "feature/handback");
     world.commit_file(
         &session.worktree,

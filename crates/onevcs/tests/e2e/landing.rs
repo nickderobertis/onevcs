@@ -255,7 +255,7 @@ fn a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landi
     // the merge it performed, which is the most certain tier there is — and it still
     // answers once the base has moved over the very file the branch changed, which is
     // where the comparison of content stops being able to.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/landed-locally"]);
     fixture
         .world
@@ -342,7 +342,7 @@ fn a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_
     // has no record of its own anywhere. What answers for it is the base's, written
     // onto the commit that landed the work: a trailer naming the branch commit it
     // squashed, which is the only thing a landing with no change request leaves.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/spent-name"]);
     fixture
         .world
@@ -474,7 +474,7 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     // nobody ever published. The honest answer is that it cannot be decided, and the
     // one thing it must not be is `no`, because `no` is what puts an instruction to
     // publish under work the base already carries.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/landed-by-hand"]);
     fixture.world.commit_file(
         &worktree,
@@ -616,7 +616,7 @@ fn a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_land
     // really is unpublished is still a row, still says so, and still carries the verb
     // that lands it. A change that made every branch read as "may have landed" would
     // be as useless as the one that made every landed branch read as unpublished.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/nobody-published"]);
     fixture.world.commit_file(
         &worktree,
@@ -633,7 +633,7 @@ fn a_branch_nobody_published_reads_as_not_landed_and_keeps_the_command_that_land
 
     // Before there is anything to report at all, both views say so — and the wider
     // one does not offer the flag it was already given.
-    let empty = Fixture::local(&local_direct("[\"true\"]"));
+    let empty = Fixture::local(&local_direct());
     empty
         .world
         .onevcs()
@@ -784,7 +784,7 @@ fn a_landing_never_answers_for_work_the_branch_gained_after_it() {
     // landed what the branch carried *then* — so a report that read the record and
     // stopped there would hide the work committed since, which is the one direction
     // this must never fail in.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/landed-then-more"]);
     fixture
         .world

@@ -26,8 +26,8 @@ use crate::scratch::{
 
 /// `change-open`: the pull request is opened and left open, so the checks it
 /// carries can be watched through the interface rather than raced against a merge.
-const RULES: &str = "version: 2\nrules: []\ndefault:\n  publication: change-open\n  \
-                     approvals: none\n  gate:\n    command: [\"git\", \"--version\"]\n";
+const RULES: &str = "version: 3\nrules: []\ndefault:\n  publication: change-open\n  \
+                     approvals: none\n";
 
 /// Whether the scratch repository's check blocks a merge, and why this journey
 /// asserts it does not.
@@ -35,9 +35,9 @@ const RULES: &str = "version: 2\nrules: []\ndefault:\n  publication: change-open
 /// `required` is branch protection's word, not the workflow's: GitHub reports a
 /// check as required only where a ruleset or a protected branch names it, and the
 /// scratch repository has neither. So the real answer here is `false`, and the
-/// publication path that waits for *required* checks (`gate: {kind: checks}`)
-/// cannot go green against this repository — it would wait for a check nothing
-/// declared blocking and time out. That path stays covered by the offline tier,
+/// publication path that waits for *required* checks (`change-direct`, and
+/// `change-auto`'s watch) cannot go green against this repository — it would wait
+/// for a check nothing declared blocking and time out. That path stays covered by the offline tier,
 /// where the host's answer is scripted; this journey proves the two methods
 /// themselves against the real API. Making the scratch check required would need
 /// branch protection on it, which would then also gate every merge this tier

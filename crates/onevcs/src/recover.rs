@@ -3,14 +3,14 @@
 //! `recover`, `publish-branch`, and `integrate` are three verbs, and which one a
 //! branch belongs to is decided by its **provenance**, never by its name. A branch
 //! carrying an unattested incomplete marker is interrupted work, and only this verb
-//! may publish it — because publishing it means writing the attestation that says a
-//! green gate cleared the step that stopped. A branch whose commits are all complete
-//! belongs to one of the other two, and this verb hands it over by name rather than
-//! only refusing.
+//! may publish it — because publishing it means writing the attestation that says
+//! the step that stopped was verified after all. A branch whose commits are all
+//! complete belongs to one of the other two, and this verb hands it over by name
+//! rather than only refusing.
 //!
 //! Everything around the attestation — locating the branch, cloning it, cutting a
-//! worktree, merging the change base, running the gate, publishing — is
-//! [`crate::branch`], which `publish-branch` runs too.
+//! worktree, merging the change base, publishing — is [`crate::branch`], which
+//! `publish-branch` runs too.
 
 use std::path::Path;
 
@@ -25,7 +25,7 @@ use crate::registry::{Registry, RepoType, Workflow};
 use crate::store;
 use crate::stream::Stream;
 use crate::workspace::object;
-use crate::{provenance, rules};
+use crate::{guidance, provenance};
 
 /// Verify and publish a preserved branch.
 pub fn run(
@@ -114,32 +114,31 @@ fn complete_branch_verb(landing: &branch::Landing) -> String {
 
 /// Why an attestation would attest nothing, when it would.
 ///
-/// An identity that names no complete bar and whose merge path runs no gate has
+/// An identity that names no complete bar and whose merge path runs nothing has
 /// nothing for a recovery to clear the marker *with*, so the refusal names both
 /// ways to give it one rather than only stating that it has neither.
+///
+/// The second half is [`store::merge_path_coverage`] — the same question `onevcs
+/// register` warns on and `onevcs repos --audit-gates` reports, so the guard, the
+/// warning, and the audit cannot come to disagree about which identities are
+/// covered. It detects coverage rather than taking a repository's word for it,
+/// which is what lets a remote identity answer for the required checks that
+/// actually rule on its change requests.
 fn attests_nothing(landing: &branch::Landing) -> Option<String> {
-    let merge_path_gate = matches!(
-        landing.resolved.policy.gate,
-        rules::Gate::Kind {
-            kind: rules::GateKind::PrePush
-        }
-    );
     if landing.resolution.identity.gate != store::NOOP_GATE
-        || !merge_path_gate
-        || store::pre_push_hook(&landing.source).is_some()
+        || store::merge_path_coverage(&landing.resolution, &landing.source) != store::Coverage::None
     {
         return None;
     }
     Some(format!(
-        "identity {:?} names no complete bar and its merge path runs no gate, so a recovery \
-         attestation would attest nothing. Give it one in the rules file at {}: a rule matching \
-         this identity with `gate: {{command: [...]}}` names the bar itself, and \
-         `gate: {{kind: pre-push}}` keeps the merge path as the gate once {} carries an \
-         executable pre-push hook. Confirm it with `{}`, then re-run `{}`",
+        "identity {:?} names no complete bar and nothing on its merge path verifies one, so a \
+         recovery attestation would attest nothing. Give it one of the two: put an executable \
+         pre-push hook in {}, which is what judges a publishing push, or register this identity \
+         against a host whose required checks judge its change requests. Confirm what covers it \
+         with `{}`, then re-run `{}`",
         landing.resolution.key,
-        landing.rules_file.display(),
         landing.source.display(),
-        landing.rules_check(),
+        guidance::command(["onevcs", "repos", "--audit-gates"]),
         landing.command(),
     ))
 }

@@ -39,14 +39,14 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v2.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v2-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v3.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v3-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
-/// Paths rather than substrings, because two of these share a name with something
-/// that is *not* optional — `identity.gate` is written whatever the rules resolve to
-/// — and a golden that merely mentioned the word would answer the wrong question.
+/// Paths rather than substrings, because one of these shares a name with something
+/// that is *not* optional — `checks` is written whatever the host said — and a
+/// golden that merely mentioned the word would answer the wrong question.
 ///
 /// `next.command` and `notes` are deliberately not here: no report carrying an open
 /// change request has a command to advance it, and `notes` reports a gap in what
@@ -56,13 +56,11 @@ const OPTIONAL: &[&[&str]] = &[
     &["session"],
     &["branch", "change_base"],
     &["publication", "change_url"],
-    &["gate"],
+    &["merge_path"],
 ];
 
-/// A change-auto identity whose gate is a command, so a publication reaches the
-/// host's merge without waiting on the host's own checks.
-const AUTOMATED_BEHIND_A_COMMAND: &str =
-    "{publication: change-auto, approvals: required, gate: {command: [\"true\"]}}";
+/// A change-auto identity, which arms the host's own merge and then watches it.
+const AUTOMATED_POLICY: &str = "{publication: change-auto, approvals: required}";
 
 /// One green required check, which is what lets an automated publication land.
 const GREEN: Check = Check {
@@ -173,10 +171,6 @@ fn every_spelling_of_one_piece_of_work_resolves_to_the_same_report() {
     assert_eq!(by_token["identity"]["key"], "github.com/acme-corp/hosted");
     assert_eq!(by_token["identity"]["workflow"], "remote");
     assert_eq!(by_token["identity"]["repo_type"], "team");
-    assert_eq!(
-        by_token["identity"]["gate"],
-        serde_json::json!({"kind": "checks"})
-    );
     assert_eq!(by_token["identity"]["approvals"], "required");
     assert_eq!(by_token["branch"]["ahead"], 1);
     assert_eq!(by_token["branch"]["provenance"], "complete");
@@ -223,10 +217,7 @@ fn an_ambiguous_reference_is_refused_by_naming_the_candidates() {
     let world = World::new();
     configure_rules(
         &world,
-        format!(
-            "version: 1\nrules: []\ndefault: {}\n",
-            local_direct("[\"true\"]")
-        ),
+        format!("version: 1\nrules: []\ndefault: {}\n", local_direct()),
     );
     let mut keys = Vec::new();
     for name in ["one", "two"] {
@@ -356,7 +347,7 @@ fn an_ambiguous_reference_is_refused_by_naming_the_candidates() {
 
 #[test]
 fn work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let repo = fixture.checkout.to_string_lossy().into_owned();
     let (token, worktree) = fixture.open(&["--branch", "feature/left"]);
     fixture
@@ -400,7 +391,7 @@ fn work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it() {
         .stdout(predicate::str::contains("state: unpublished"))
         .stdout(predicate::str::contains("change request: none recorded"))
         .stdout(predicate::str::contains(
-            "gate: no verdict recorded for this work",
+            "merge path: no verdict recorded for this work",
         ))
         .stdout(predicate::str::contains(format!(
             "  onevcs publish {token}"
@@ -425,7 +416,7 @@ fn work_a_run_left_in_its_own_clone_is_reported_with_the_verb_that_lands_it() {
     );
 
     // A step that did not finish is handed to the only verb that may publish it,
-    // because publishing it means attesting that a gate cleared what stopped.
+    // because publishing it means attesting that verification cleared what stopped.
     let (interrupted, worktree) = fixture.open(&["--branch", "feature/interrupted"]);
     std::fs::write(worktree.join("half.txt"), "half\n").expect("work a step did not commit");
     fixture
@@ -543,7 +534,7 @@ fn landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed() {
     // watches it to the bound and stops there rather than reporting a landing, and
     // the accounting is about what the *host* holds — so the work is still queued
     // whatever became of the command that asked for it.
-    let queued = Hosted::new(AUTOMATED_BEHIND_A_COMMAND);
+    let queued = Hosted::new(AUTOMATED_POLICY);
     queued.world.host_checks(&[Check {
         name: "gate",
         status: "in_progress",
@@ -561,11 +552,11 @@ fn landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed() {
         .stderr(predicate::str::contains("still unsettled: \"gate\""));
     let answer = report(&queued.world, "feature/queued");
     assert_eq!(answer["publication"]["state"], "queued");
-    assert_eq!(answer["gate"]["verdict"], "pass");
+    assert_eq!(answer["merge_path"]["verdict"], "pass");
     assert!(
-        answer["gate"]["log"]
+        answer["merge_path"]["log"]
             .as_str()
-            .expect("the preserved gate log outlives the tree it ran in")
+            .expect("the preserved log outlives the tree it was built in")
             .ends_with(".log"),
         "{answer}"
     );
@@ -732,7 +723,7 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
 
 #[test]
 fn a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let repo = fixture.checkout.to_string_lossy().into_owned();
     let (_token, worktree) = fixture.open(&["--branch", "feature/stranded"]);
     fixture
@@ -850,7 +841,7 @@ fn a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree()
 
 #[test]
 fn a_branch_is_imported_from_another_checkout_and_from_a_remote_ref() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let repo = fixture.checkout.to_string_lossy().into_owned();
     let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
     fixture
@@ -1029,7 +1020,7 @@ fn a_branch_is_imported_from_another_checkout_and_from_a_remote_ref() {
 
 #[test]
 fn a_spent_name_does_not_block_an_import_under_another() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let repo = fixture.checkout.to_string_lossy().into_owned();
     fixture
         .world
@@ -1105,7 +1096,7 @@ fn a_spent_name_does_not_block_an_import_under_another() {
 
 #[test]
 fn an_import_that_would_not_fast_forward_is_refused_naming_what_it_would_lose() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let repo = fixture.checkout.to_string_lossy().into_owned();
     let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
 
@@ -1239,7 +1230,7 @@ fn an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_
     // the refusal names every copy and says to run *this* import again once they are
     // reconciled: nothing here lands anything, which is what makes rerunning it the
     // whole of the answer.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let repo = fixture.checkout.to_string_lossy().into_owned();
     let mut copies = Vec::new();
     for (name, file) in [("worker", "worker.txt"), ("elsewhere", "elsewhere.txt")] {
@@ -1331,13 +1322,12 @@ fn an_import_with_no_source_refuses_diverged_copies_and_sends_the_operator_back_
 }
 
 #[test]
-fn the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names() {
-    // The gate's verdict is the evidence a publication rested on, and it outlives
-    // the tree it ran in — so a report about work that did not land has to be able
-    // to say what refused it, and where the log went.
-    let fixture = Fixture::local(&local_direct(
-        "[\"sh\", \"-c\", \"echo the gate refused this; exit 1\"]",
-    ));
+fn the_last_merge_path_verdict_recorded_for_the_work_is_what_the_report_names() {
+    // The merge path's verdict is the evidence a publication rested on, and it
+    // outlives the tree it was built in — so a report about work that did not land
+    // has to be able to say what refused it, and where the log went.
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("echo the hook refused this >&2; exit 1");
     let (token, worktree) = fixture.open(&["--branch", "feature/refused"]);
     fixture
         .world
@@ -1350,24 +1340,30 @@ fn the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names() {
         .code(1);
 
     let answer = report(&fixture.world, "feature/refused");
-    assert_eq!(answer["gate"]["verdict"], "fail");
-    assert_eq!(answer["gate"]["recorded_by"], token);
-    assert!(answer["gate"]["log"]
+    assert_eq!(answer["merge_path"]["verdict"], "fail");
+    assert_eq!(answer["merge_path"]["recorded_by"], token);
+    assert!(answer["merge_path"]["log"]
         .as_str()
-        .expect("a rejected publication preserves its gate log")
+        .expect("a rejected publication preserves what its merge path wrote")
         .ends_with(".log"));
+    let log = std::fs::read_to_string(
+        answer["merge_path"]["log"]
+            .as_str()
+            .expect("a preserved log path"),
+    )
+    .expect("the preserved log is readable");
+    assert!(log.contains("the hook refused this"), "{log}");
     fixture
         .world
         .onevcs()
         .args(["status", "feature/refused"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("verdict: fail"))
-        .stdout(predicate::str::contains("the gate refused this"));
+        .stdout(predicate::str::contains("verdict: fail"));
 
-    // A verdict a later build wrote and this one does not read is said out loud
-    // rather than reported as one of the two words it does know: reading it as a
-    // pass would clear work nothing verified, and as a fail would name a refusal
+    // A push a later build recorded without the answer this one reads is said out
+    // loud rather than reported as one of the two words it does know: reading it as
+    // a pass would clear work nothing verified, and as a fail would name a refusal
     // that never happened.
     let stream = fixture
         .world
@@ -1385,17 +1381,17 @@ fn the_last_gate_verdict_recorded_for_the_work_is_what_the_report_names() {
                 "stream": token,
                 "seq": 9999,
                 "source": "vcs",
-                "kind": "gate-verdict",
+                "kind": "push",
                 "labels": {},
-                "payload": {"verdict": "deferred", "command": "a later build's gate"},
+                "payload": {"branch": "feature/refused", "accepted": "deferred"},
                 "artifacts": [],
             })
         ),
     )
     .expect("a stream a later build appended to");
     let answer = report(&fixture.world, "feature/refused");
-    assert_eq!(answer["gate"]["verdict"], "unrecorded");
-    assert_eq!(answer["gate"]["command"], "a later build's gate");
+    assert_eq!(answer["merge_path"]["verdict"], "unrecorded");
+    assert!(answer["merge_path"]["log"].is_null());
     fixture
         .world
         .onevcs()
@@ -1458,9 +1454,8 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
 
     // A report carrying every optional field at once: a session, a recorded change
     // base, a change request the host still holds open, checks with and without a
-    // conclusion, and the gate verdict that cleared the publication.
-    let hosted =
-        Hosted::new("{publication: change-open, approvals: required, gate: {command: [\"true\"]}}");
+    // conclusion, and the merge-path verdict that cleared the publication.
+    let hosted = Hosted::new("{publication: change-open, approvals: required}");
     hosted.world.host_checks(&[
         GREEN,
         Check {
@@ -1584,7 +1579,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
     );
 
     // …and one carrying none of them: a branch nothing has published, held by the
-    // checkout alone, with no session, no change request, and no gate behind it.
+    // checkout alone, with no session, no change request, and nothing that judged it.
     let plain = Hosted::new(REVIEWED);
     plain
         .world

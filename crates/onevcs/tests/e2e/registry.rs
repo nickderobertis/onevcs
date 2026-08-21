@@ -5,6 +5,8 @@
 //! read out of the commands a user actually runs — `register`, `repos`, `resolve`,
 //! `rules check` — rather than out of the document they happen to be stored in.
 
+// llmlint: ignore-file[e2e_not_mocked] the substituted host is the external boundary
+// this suite drives across, for the reason written immediately below.
 // llmlint: ignore-file[tests_mirror_real_usage] two setup shapes here are deliberate
 // and have no user-facing alternative. Writing a version 2, 3, or 4 registry document
 // is the only way to drive the lazy migration — the older `onevcs` that would have
@@ -272,7 +274,7 @@ fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
         &world,
         "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp, name: \"*\"}\n\
          \x20   publication: change-open\n    approvals: required\ndefault: {publication: \
-         change-auto, approvals: none, gate: {kind: pre-push}}\n",
+         change-auto, approvals: none}\n",
     );
 
     world
@@ -292,11 +294,9 @@ fn rules_check_explains_which_rule_matched_and_where_each_field_came_from() {
         .stdout(predicate::str::contains(
             "approvals: required (from rule 1)",
         ))
-        // The rule sets no gate, so the field falls through to the default and the
-        // explanation says which of the two decided it.
-        .stdout(predicate::str::contains(
-            "gate: pre-push (from the default)",
-        ));
+        // What verifies a change is the repository's own merge path and never the
+        // rules file, so the resolved policy has no line about it to explain.
+        .stdout(predicate::str::contains("gate:").not());
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn a_repository_no_rule_matches_falls_through_to_the_default() {
         &world,
         "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp}\n\
          \x20   publication: local-direct\n    approvals: none\n\
-         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
 
     world
@@ -332,7 +332,9 @@ fn a_repository_no_rule_matches_falls_through_to_the_default() {
         .stdout(predicate::str::contains(
             "publication: change-open (from the default)",
         ))
-        .stdout(predicate::str::contains("gate: checks (from the default)"));
+        .stdout(predicate::str::contains(
+            "approvals: required (from the default)",
+        ));
 }
 
 #[test]
@@ -348,7 +350,7 @@ fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: required, gate: {kind: pre-push}}\n",
+         default: {publication: local-direct, approvals: required}\n",
     );
 
     // The failure this prevents is silent: the change lands, and nothing later
@@ -361,6 +363,89 @@ fn a_rules_file_that_asks_for_approvals_it_would_never_seek_is_refused() {
         .stderr(predicate::str::contains(
             "combining publication: local-direct with approvals: required",
         ));
+}
+
+#[test]
+fn a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three()
+{
+    // The key an operator's own rules file still carries. Refusing every `onevcs`
+    // command the moment this build landed — before anything could re-apply their
+    // rules — would be a worse failure than reading a key this build has nothing to
+    // do with, so the removal is versioned: 1 and 2 accept it and drop it, 3 has no
+    // such field at all.
+    let world = World::new();
+    let origin = world.bare_origin("gated");
+    let checkout = world.clone_of(&origin, "gated");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/gated.git",
+        ])
+        .assert()
+        .success();
+    let rules = world.home().join("rules.yml");
+
+    for version in ["version: 1", "version: 2\ntrailer_prefix: Zzz-"] {
+        configure_rules(
+            &world,
+            format!(
+                "{version}\nrules:\n\
+                 \x20 - match: {{host: github.com, owner: acme-corp, name: \"*\"}}\n\
+                 \x20   publication: change-open\n    approvals: required\n\
+                 \x20   gate: {{command: [\"just\", \"gate\"]}}\n\
+                 default: {{publication: change-auto, approvals: none, gate: {{kind: checks}}}}\n"
+            ),
+        );
+
+        let assert = world
+            .onevcs()
+            .args(["rules", "check", "gated"])
+            .assert()
+            // Accepted: everything the file says about *publishing* still decides
+            // the policy, and the key that named a verifier decides nothing.
+            .success()
+            .stdout(predicate::str::contains(
+                "publication: change-open (from rule 1)",
+            ))
+            .stdout(predicate::str::contains(
+                "approvals: required (from rule 1)",
+            ))
+            .stdout(predicate::str::contains("gate:").not());
+
+        // …and said out loud once, naming the file to edit, rather than dropped in
+        // silence. Once, because it is the operator's own document and nothing they
+        // can do about it mid-run: a line per command in a run that publishes all
+        // day is noise that gets filtered.
+        let said = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
+        assert_eq!(
+            said.matches("names a gate").count(),
+            1,
+            "one deprecation line, naming the file: {said:?}"
+        );
+        assert!(
+            said.contains(&rules.to_string_lossy().into_owned()),
+            "the line names the file it was read out of: {said:?}"
+        );
+    }
+
+    // At the version that removed it there is no such field, so a file still
+    // carrying one is the stray key it is — refused by name rather than obeyed or
+    // ignored, which is what keeps a declared version worth trusting.
+    configure_rules(
+        &world,
+        "version: 3\nrules: []\n\
+         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+    );
+    world
+        .onevcs()
+        .args(["rules", "check", "gated"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is malformed"))
+        .stderr(predicate::str::contains("unknown field `gate`"));
 }
 
 #[test]
@@ -385,7 +470,7 @@ fn a_trailer_prefix_that_spells_no_git_trailer_key_is_refused_by_name() {
             &world,
             format!(
                 "version: 2\ntrailer_prefix: {prefix}\nrules: []\n\
-                 default: {{publication: change-open, approvals: required, gate: {{kind: checks}}}}\n"
+                 default: {{publication: change-open, approvals: required}}\n"
             ),
         );
         world
@@ -401,7 +486,7 @@ fn a_trailer_prefix_that_spells_no_git_trailer_key_is_refused_by_name() {
     configure_rules(
         &world,
         "version: 2\ntrailer_prefix: Zzz-\nrules: []\n\
-         default: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
     world
         .onevcs()
@@ -423,7 +508,7 @@ fn a_rules_file_written_before_the_trailer_prefix_existed_still_reads_and_means_
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
-    let policy = "default: {publication: change-open, approvals: required, gate: {kind: checks}}";
+    let policy = "default: {publication: change-open, approvals: required}";
 
     // The file every host already has. It keeps working, and it means the keys this
     // crate has always written — which value that is comes from the contract, so
@@ -496,7 +581,7 @@ fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
         .stderr(predicate::str::contains("declares version 7"))
         // Naming the range rather than one version, because more than one is
         // readable now and an operator downgrading a file needs to know which.
-        .stderr(predicate::str::contains("reads versions 1 to 2"));
+        .stderr(predicate::str::contains("reads versions 1 to 3"));
 }
 
 #[test]
@@ -513,7 +598,7 @@ fn a_path_rule_matches_the_checkout_rather_than_the_origin() {
         &world,
         format!(
             "version: 1\nrules:\n  - match: {{path: \"{}/*\"}}\n    publication: local-direct\n\
-             default: {{publication: change-open, approvals: none, gate: {{kind: checks}}}}\n",
+             default: {{publication: change-open, approvals: none}}\n",
             world.path("").to_string_lossy().trim_end_matches('/')
         ),
     );

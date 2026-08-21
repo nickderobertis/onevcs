@@ -24,7 +24,7 @@ use std::path::{Component, Path, PathBuf};
 use clap::CommandFactory;
 use onevcs::cli::Cli;
 use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
-use onevcs::rules::{Approvals, Gate, GateKind, Policy, Rule, RuleMatch, RulesFile};
+use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
     Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy,
@@ -189,8 +189,6 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::Fetch,
         EventKind::LockWait,
         EventKind::LockAcquired,
-        EventKind::GateStarted,
-        EventKind::GateVerdict,
         EventKind::CommitPreserved,
         EventKind::Push,
         EventKind::ChangeOpened,
@@ -209,8 +207,6 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::Fetch
             | EventKind::LockWait
             | EventKind::LockAcquired
-            | EventKind::GateStarted
-            | EventKind::GateVerdict
             | EventKind::CommitPreserved
             | EventKind::Push
             | EventKind::ChangeOpened
@@ -301,7 +297,7 @@ fn seq_is_a_u64_and_rejects_a_value_that_is_not_one() {
 
 #[test]
 fn labels_keep_free_form_extras_beside_the_reserved_keys() {
-    let mut fixture = envelope_fixture("pipeline", "gate-verdict");
+    let mut fixture = envelope_fixture("pipeline", "change-check");
     fixture["labels"]["workstream"] = json!("publish");
     fixture["labels"]["attempt"] = json!(3);
 
@@ -348,7 +344,20 @@ fn an_event_kind_the_contract_does_not_name_is_rejected() {
 
 #[test]
 fn the_contract_and_the_code_name_the_same_event_kinds() {
-    let documented: BTreeSet<String> = backticked_on_line("Event kinds:").into_iter().collect();
+    let approved: BTreeSet<String> = backticked_on_line("Event kinds:").into_iter().collect();
+    // An amendment may retire a kind, and one has: nothing emits `gate-started` or
+    // `gate-verdict` since verification became the merge path's alone. The approved
+    // line is verbatim and stays, so what a consumer is owed is that list minus the
+    // retirements — and a retirement the approved text never named fails here as
+    // loudly as a kind the code invented.
+    let retired: BTreeSet<String> = backticked_on_line("Event kinds retired:")
+        .into_iter()
+        .collect();
+    assert!(
+        !retired.is_empty() && retired.is_subset(&approved),
+        "an amendment retires a kind the approved text never named: {retired:?}"
+    );
+    let documented: BTreeSet<String> = approved.difference(&retired).cloned().collect();
     let implemented: BTreeSet<String> = all_event_kinds().into_iter().map(kind_name).collect();
     assert_eq!(
         documented, implemented,
@@ -356,11 +365,41 @@ fn the_contract_and_the_code_name_the_same_event_kinds() {
     );
 }
 
+/// One documented fixture as a document, with the key version 3 removed taken out.
+///
+/// Versions 1 and 2 still spell a `gate:`, and this type has no such field — so the
+/// two fixtures below are read the way the loader reads a file that declares one of
+/// those versions: the spent key comes out before the shape is enforced. Removing it
+/// here is not a second implementation of that loader, because nothing about a *file
+/// on disk* is decided in this test; what a rules file carrying a gate actually does
+/// on this build is a journey, since it is a warning on stderr and a policy an
+/// operator reads back.
+fn without_gate(fixture: &str) -> serde_yaml_ng::Value {
+    let mut document: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(fixture).expect("a documented fixture is YAML");
+    let drop = |value: Option<&mut serde_yaml_ng::Value>| {
+        if let Some(serde_yaml_ng::Value::Mapping(fields)) = value {
+            fields.remove("gate");
+        }
+    };
+    drop(document.get_mut("default"));
+    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get_mut("rules") {
+        for rule in rules {
+            drop(Some(rule));
+        }
+    }
+    document
+}
+
+/// The same fixture as the shape this build reads.
+fn documented_rules(fixture: &str) -> RulesFile {
+    serde_yaml_ng::from_value(without_gate(fixture)).expect("a documented fixture deserializes")
+}
+
 #[test]
 fn the_rules_fixture_round_trips() {
     let fixture = block("yaml");
-    let rules: RulesFile =
-        serde_yaml_ng::from_str(&fixture).expect("the rules fixture must deserialize");
+    let rules = documented_rules(&fixture);
 
     assert_eq!(rules.version, 1);
     // The version this file predates the trailer prefix, so it names none — and
@@ -379,9 +418,6 @@ fn the_rules_fixture_round_trips() {
                 },
                 publication: Some(MergePolicy::ChangeOpen),
                 approvals: Some(Approvals::Required),
-                gate: Some(Gate::Kind {
-                    kind: GateKind::Checks
-                }),
             },
             Rule {
                 r#match: RuleMatch {
@@ -391,9 +427,6 @@ fn the_rules_fixture_round_trips() {
                 publication: Some(MergePolicy::LocalDirect),
                 // Unset in the fixture, so it falls back to the default policy.
                 approvals: None,
-                gate: Some(Gate::Kind {
-                    kind: GateKind::PrePush
-                }),
             },
         ]
     );
@@ -402,18 +435,14 @@ fn the_rules_fixture_round_trips() {
         Policy {
             publication: MergePolicy::ChangeOpen,
             approvals: Approvals::Required,
-            gate: Gate::Kind {
-                kind: GateKind::Checks
-            },
         }
     );
 
-    let expected: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&fixture).expect("the fixture is YAML");
     let round_tripped =
         serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(
-        round_tripped, expected,
+        round_tripped,
+        without_gate(&fixture),
         "the rules file lost or added a field"
     );
 }
@@ -431,9 +460,8 @@ fn documented_trailer_prefix() -> (String, String) {
 #[test]
 fn the_version_2_fixture_round_trips_with_the_prefix_the_amendment_documents() {
     let (key, default) = documented_trailer_prefix();
-    let fixture = amendment_yaml_spelling("trailer_prefix");
-    let rules: RulesFile =
-        serde_yaml_ng::from_str(&fixture).expect("the version 2 fixture must deserialize");
+    let fixture = amendment_yaml_spelling("version: 2");
+    let rules = documented_rules(&fixture);
 
     assert_eq!(rules.version, 2);
     assert_eq!(rules.trailer_prefix.as_deref(), Some(default.as_str()));
@@ -443,17 +471,15 @@ fn the_version_2_fixture_round_trips_with_the_prefix_the_amendment_documents() {
     );
     // Version 2 is the prefix and nothing else, so everything the approved fixture
     // declares must survive the bump unchanged.
-    let version_1: RulesFile =
-        serde_yaml_ng::from_str(&block("yaml")).expect("the approved fixture deserializes");
+    let version_1 = documented_rules(&block("yaml"));
     assert_eq!(rules.rules, version_1.rules);
     assert_eq!(rules.default, version_1.default);
 
-    let expected: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&fixture).expect("the fixture is YAML");
     let round_tripped =
         serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(
-        round_tripped, expected,
+        round_tripped,
+        without_gate(&fixture),
         "the version 2 rules file lost or added a field"
     );
 }
@@ -465,16 +491,13 @@ fn a_version_2_file_that_configures_no_prefix_omits_the_key_entirely() {
     // would make every reader of an old file meet a value it was never given.
     let (key, _default) = documented_trailer_prefix();
     let unset = block("yaml").replacen("version: 1", "version: 2", 1);
-    let rules: RulesFile = serde_yaml_ng::from_str(&unset).expect("version 2 deserializes");
+    let rules = documented_rules(&unset);
     assert_eq!(rules.version, 2);
     assert_eq!(rules.trailer_prefix, None);
 
     let round_tripped =
         serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
-    assert_eq!(
-        round_tripped,
-        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&unset).expect("the fixture is YAML")
-    );
+    assert_eq!(round_tripped, without_gate(&unset));
     assert!(
         !serde_yaml_ng::to_string(&rules)
             .expect("a rules file serializes")
@@ -484,38 +507,58 @@ fn a_version_2_file_that_configures_no_prefix_omits_the_key_entirely() {
 }
 
 #[test]
-fn a_gate_may_be_an_explicit_command() {
-    let rules: RulesFile = serde_yaml_ng::from_str(
-        "version: 1\n\
-         rules:\n\
-         \x20 - match: {path: \"~/work/*\"}\n\
-         \x20   gate: {command: [just, gate]}\n\
-         default: {publication: change-auto, approvals: none, gate: {kind: pre-push}}\n",
-    )
-    .expect("a command gate is part of the contract");
+fn the_version_3_fixture_round_trips_and_is_the_approved_one_without_its_gate() {
+    let fixture = amendment_yaml_spelling("version: 3");
+    let rules: RulesFile =
+        serde_yaml_ng::from_str(&fixture).expect("the version 3 fixture must deserialize");
+
+    assert_eq!(rules.version, 3);
+    // The amendment says version 3 is the gate going away and nothing else, so
+    // everything the approved fixture declares beside it survives the bump unchanged
+    // — including the trailer prefix version 2 added, which this fixture carries.
+    let approved = documented_rules(&block("yaml"));
+    assert_eq!(rules.rules, approved.rules);
+    assert_eq!(rules.default, approved.default);
+
+    let round_tripped =
+        serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(
-        rules.rules[0].gate,
-        Some(Gate::Command {
-            command: vec!["just".to_owned(), "gate".to_owned()],
-        })
+        round_tripped,
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&fixture).expect("the fixture is YAML"),
+        "the version 3 rules file lost or added a field"
     );
-    assert_eq!(rules.default.publication, MergePolicy::ChangeAuto);
-    assert_eq!(rules.default.approvals, Approvals::None);
+}
+
+#[test]
+fn a_rules_file_that_still_names_a_gate_is_not_a_shape_this_type_reads() {
+    // Which is why a spent key comes out before the shape is enforced rather than
+    // being tolerated by it: `deny_unknown_fields` gets no say in which version it is
+    // reading. A version 3 file naming a gate is refused by the type, and a version 1
+    // or 2 one is readable only because the key was taken out first.
+    let refusal = serde_yaml_ng::from_str::<RulesFile>(&block("yaml"))
+        .expect_err("the approved fixture names a gate, and this type has no such field")
+        .to_string();
+    assert!(
+        refusal.contains("gate"),
+        "the refusal names the key it did not know: {refusal}"
+    );
 }
 
 #[test]
 fn a_malformed_rules_file_is_rejected_at_the_boundary() {
     let cases = [
         // A publication policy the contract does not name.
-        "version: 1\nrules: []\ndefault: {publication: yolo, approvals: required, gate: {kind: checks}}\n",
-        // A gate kind the contract does not name.
-        "version: 1\nrules: []\ndefault: {publication: change-open, approvals: required, gate: {kind: vibes}}\n",
+        "version: 3\nrules: []\ndefault: {publication: yolo, approvals: required}\n",
+        // An approvals value the contract does not name.
+        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: whenever}\n",
         // No default policy at all.
-        "version: 1\nrules: []\n",
+        "version: 3\nrules: []\n",
         // A key nobody declared, which is usually a typo for one that matters.
-        "version: 1\nrules: []\npublication: change-open\ndefault: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+        "version: 3\nrules: []\npublication: change-open\ndefault: {publication: change-open, approvals: required}\n",
+        // The key version 3 took away, which at this version is one of those.
+        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
         // A misspelled match key.
-        "version: 1\nrules: [{match: {hostname: github.com}}]\ndefault: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
+        "version: 3\nrules: [{match: {hostname: github.com}}]\ndefault: {publication: change-open, approvals: required}\n",
     ];
     for case in cases {
         assert!(
@@ -1547,7 +1590,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     let filter = EventFilter {
         include: vec![EventMatcher {
             source: Some(Source::Vcs),
-            kind: Some("gate-*".to_owned()),
+            kind: Some("change-*".to_owned()),
             run_id: Some("R".to_owned()),
             node: Some("service".to_owned()),
             step: Some("implement".to_owned()),
@@ -1559,7 +1602,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
             ..EventMatcher::default()
         }],
     };
-    assert!(filter.matches(&envelope("vcs", "gate-verdict")));
+    assert!(filter.matches(&envelope("vcs", "change-check")));
 
     let grammar = amendment_yaml_spelling("exclude:");
     let parsed = EventFilter::parse(&grammar).expect("the grammar fixture must parse");
@@ -1578,14 +1621,33 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
         },
         "the filter and the grammar the amendment spells disagree"
     );
-    // And it means what the amendment says it means, on the envelope fixture beside
-    // it: the glob admits both gate kinds, a kind outside it is not included, and
-    // the excluded kind is rejected however it was included.
-    assert!(parsed.matches(&envelope("vcs", "gate-started")));
-    assert!(parsed.matches(&envelope("vcs", "gate-verdict")));
-    assert!(!parsed.matches(&envelope("vcs", "push")));
-    assert!(!parsed.matches(&envelope("agentgraph", "gate-verdict")));
+    // And it means what the amendment says it means. The grammar is the *three*
+    // repositories' and its example names `gate-*`, which this crate retired with the
+    // rules gate — so no envelope this build can construct carries a kind that glob
+    // admits, and the semantics are shown on a matcher of the same shape over kinds
+    // it does have. Whether `gate-*` still names something is the other producers'
+    // question; that the fixture parses to exactly this filter is asserted above, and
+    // that is the half this repository owns.
+    let same_shape = EventFilter {
+        include: vec![EventMatcher {
+            source: Some(Source::Vcs),
+            kind: Some("change-*".to_owned()),
+            ..EventMatcher::default()
+        }],
+        exclude: parsed.exclude.clone(),
+    };
+    assert!(same_shape.matches(&envelope("vcs", "change-opened")));
+    assert!(same_shape.matches(&envelope("vcs", "change-check")));
+    assert!(!same_shape.matches(&envelope("vcs", "push")));
+    assert!(!same_shape.matches(&envelope("agentgraph", "change-check")));
+    // The excluded kind is rejected however it was included, which is the grammar's
+    // own rule and is read off the fixture rather than restated.
     assert!(!parsed.matches(&envelope("vcs", "lock-wait")));
+    assert!(!EventFilter {
+        include: Vec::new(),
+        exclude: parsed.exclude.clone(),
+    }
+    .matches(&envelope("vcs", "lock-wait")));
 
     let declarations = amendment_declaring("pub struct EventFilter");
     for declared in [
@@ -2041,7 +2103,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
         PublishOutcome::NothingToPublish,
         PublishOutcome::Failed {
             kind: FailureKind::Gate,
-            reason: "the gate rejected it".to_owned(),
+            reason: "the repository's commit-msg hook turned the subject down".to_owned(),
             retained: Some(Retention::HandedBack(PathBuf::from("/home/agent/onevcs"))),
         },
     ];

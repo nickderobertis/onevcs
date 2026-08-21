@@ -1040,7 +1040,7 @@ fn cut_or_continue(
     // Unguarded, unlike the sync a publication runs: that one tolerates a base no ref
     // names because a branch-keyed verb can be handed one, and here the base is the
     // argument this session was opened with. A session opened against a base nothing
-    // has would gate and publish against nothing, so git's own refusal of the name is
+    // has would publish against nothing, so git's own refusal of the name is
     // the answer.
     integrate(worktree, &integrated, branch, &opened, publication)?;
     Ok(stack_tip)
@@ -1049,7 +1049,7 @@ fn cut_or_continue(
 /// Merge the integration target into the branch this session continues.
 ///
 /// A continued branch was cut from a base that has since moved, and a session that
-/// opened on it without the base would gate, commit, and publish against a tree
+/// opened on it without the base would commit and publish against a tree
 /// nobody has seen. The merge is [`crate::publish::reconcile`], the one this crate
 /// uses everywhere a branch is brought level with what it lands on, so a session and
 /// a publication cannot come to disagree about what a sync does.
@@ -1142,7 +1142,7 @@ fn execution_checkout(
 ///
 /// A worktree the session left dirty is committed behind an incomplete-step marker
 /// before anything else happens, so the work is durable and the branch says plainly
-/// that a step did not finish — which is what makes it require the merge-path gate
+/// that a step did not finish — which is what makes it require the merge path
 /// before it may be published.
 pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
     let mut record = load(token)?;

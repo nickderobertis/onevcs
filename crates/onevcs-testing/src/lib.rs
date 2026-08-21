@@ -38,8 +38,7 @@
 //! git drives the real `Git`. A publication is the sharpest case of that: its host
 //! side really happens — a change request is opened, adopted, and merged on the
 //! [`Hosting`](onevcs::Hosting) it was handed — and its repository side does not,
-//! so nothing here emits a `fetch`, a gate verdict, a push, or a lock it did not
-//! take.
+//! so nothing here emits a `fetch`, a push, or a lock it did not take.
 //!
 //! ```no_run
 //! use onevcs::{Providers, cli::Cli, run_with};

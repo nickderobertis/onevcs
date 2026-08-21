@@ -340,10 +340,10 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
     /// are exercised and what the host recorded is what a journey reads back.
     ///
     /// The repository side is not, and none of it is claimed. There is no origin to
-    /// fetch from, no tree to run a gate in, no push, and no lock to queue behind,
-    /// so no `fetch`, `gate-started`, `gate-verdict`, `push`, `lock-wait`,
-    /// `lock-acquired`, or `merge-queued` event is emitted. What is emitted is what
-    /// was decided: the change that was opened, and the merge that landed.
+    /// fetch from, no tree to build in, no push, and no lock to queue behind, so no
+    /// `fetch`, `push`, `lock-wait`, `lock-acquired`, or `merge-queued` event is
+    /// emitted. What is emitted is what was decided: the change that was opened, and
+    /// the merge that landed.
     fn publish(
         &self,
         token: &SessionToken,

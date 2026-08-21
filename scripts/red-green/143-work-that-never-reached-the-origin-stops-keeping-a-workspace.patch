@@ -1,6 +1,6 @@
 Mutation: a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 Red: the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes
-Red: a_workspace_whose_gate_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed
+Red: a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed
 
 diff --git a/crates/onevcs/src/sweep.rs b/crates/onevcs/src/sweep.rs
 index 1fa5a19..6113c5c 100644

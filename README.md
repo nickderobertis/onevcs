@@ -30,14 +30,15 @@ onevcs events "$token"                             # everything it did, as NDJSO
 A branch that outlived the session that cut it is landed by name instead, under
 that same rules-resolved policy: `onevcs publish-branch feature/thing --repo
 ~/projects/widgets` for work that finished, and `onevcs recover` for a step that
-stopped half way, which publishes it with the attestation that a green gate
+stopped half way, which publishes it with the attestation that verification
 cleared it. Whichever of the three refuses a branch names the one that takes it.
 
 `onevcs status REF` answers what became of a piece of work, asked by whichever
 name you hold — a change request's URL, a session token, a branch, or a commit. It
 reports the identity's resolved policy, the session, every checkout and per-run
 clone holding the branch, whether the change **landed** and what says so, the
-host's checks, the last gate verdict, and the command that advances it. Landing is
+host's checks, the last thing its merge path said about it, and the command that
+advances it. Landing is
 decided from the base's own history — a recorded landing, the change request's
 number in the base's log, or a landing trailer — so a change that squash-merged
 reads as landed rather than as unpublished however far the base has moved since,
@@ -53,27 +54,28 @@ it would lose.
 
 `onevcs sweep [--dry-run] [--min-age-hours HOURS]` reclaims the workspaces those
 landings leave behind. Every branch published by name cuts a run root — a clone, a
-worktree, and the gate's preserved logs — under the state root, and until this rule
+worktree, and the merge path's preserved logs — under the state root, and until this rule
 existed nothing removed one; thirty-one of them filled a host's disk twice in a
 single run. **The rule runs whether or not anybody asks:** each landing enforces it
 over its own family before cutting the next run root, and this verb is the same
 judgement asked deliberately and over every family at once.
 
-A workspace is removed only where this tool can *prove* it is finished: its gate
-recorded a verdict, no live session holds its occupancy lease, it was last written
+A workspace is removed only where this tool can *prove* it is finished: its merge
+path recorded a verdict, no live session holds its occupancy lease, it was last written
 outside the age floor `--min-age-hours` sets, and removing it is something this host
 can do at all. Everything else is retained and reported with the reason — a
 workspace somebody is still publishing in is never removed, and neither is one
 belonging to another manager on a shared state root — and the per-run lifecycle
 clones a session keeps as recovery history are outside it entirely.
 
-Two things a proven-finished workspace still gets to keep. Its preserved gate logs
+Two things a proven-finished workspace still gets to keep. Its preserved logs
 last at least as long as the age floor, because they are what an operator reads
 after a publication failed; and a clone still holding work that never reached the
 origin is kept past the floor too, until enough newer ones stand in front of it —
 under the same bound the per-run lifecycle clones a session keeps are kept under.
 Reclaiming a workspace also **stops the processes that publication left running** —
-a gate is the repository's own verification and verifications start daemons, and
+a publication runs the repository's own verification and verifications start
+daemons, and
 unlinking files a live process holds open frees none of their blocks.
 
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
@@ -108,7 +110,8 @@ onevcs --help
 ```
 
 `--help` is the command surface, and `publish` reserves its own exit codes for a
-gate that failed, a request that was invalid, and a base that moved under it.
+verification that failed, a request that was invalid, and a base that moved under
+it.
 
 ## Embed it
 

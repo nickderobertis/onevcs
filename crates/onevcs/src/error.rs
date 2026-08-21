@@ -22,12 +22,22 @@ pub enum Error {
         operation: &'static str,
     },
 
-    /// The gate this crate runs itself reported failure. The CLI reports this as
-    /// exit code 1. What the *host's* checks reported is [`Error::ChecksFailed`] or
-    /// [`Error::ChecksUnsettled`].
+    /// A publication was refused by something that judged it, where no narrower
+    /// kind says which. Today that is the repository's own `commit-msg` hook turning
+    /// down the subject the publication would land under, and a host that took a
+    /// merge and then reported it unperformed. The CLI reports this as exit code 1.
+    ///
+    /// What the *host's checks* reported is [`Error::ChecksFailed`] or
+    /// [`Error::ChecksUnsettled`], and what its `pre-push` hook said is
+    /// [`Error::PushRejected`].
+    ///
+    /// Named for the tier this crate used to run itself and kept under that name:
+    /// the contract fixes this vocabulary across the three libraries that route on
+    /// it, so a variant is not renamed because the tier behind it went away.
+    // llmlint: ignore[names_match_behavior] the approved contract fixes the spelling.
     #[error("gate failed: {reason}")]
     GateFailed {
-        /// What failed, naming the command that judged it.
+        /// What failed, and what turned it down.
         reason: String,
     },
 

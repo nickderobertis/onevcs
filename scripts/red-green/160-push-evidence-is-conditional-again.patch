@@ -1,52 +1,57 @@
-Mutation: a publishing push records what it wrote only where the policy names a pre-push gate, which is where it used to.
-Red: a_push_a_hook_refuses_records_what_the_hook_wrote_whatever_the_policy_calls_its_gate
+Mutation: a publishing push records what it wrote only where it was refused, and never on the event, so what a green run's merge path said is thrown away.
+Red: a_push_a_hook_refuses_records_what_the_hook_wrote
 Red: a_push_that_is_accepted_records_what_it_wrote_too
+Red: a_pre_push_hook_that_rejects_the_push_is_reported_as_the_merge_path_refusing
+Red: a_refusing_merge_path_stops_the_publication_and_leaves_the_work_where_it_can_be_found
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index 2482b91..ca8441a 100644
+index a94d239..4229209 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -1588,35 +1588,16 @@ fn record_push(context: &Context<'_>, stream: &mut Stream, pushed: &git::Pushed)
-         gate::Ruling::Rejected
-     };
+@@ -1563,33 +1563,20 @@ pub(crate) fn record_push(
+     preserve_under: Option<&Path>,
+ ) -> Result<()> {
      let output = pushed.output();
 -    let stored = stream::store_artifact("log", output);
--    let kept = gate::preserve_log(&context.run_root, &context.branch, output);
--    for error in [stored.as_ref().err(), kept.as_ref().err()]
--        .into_iter()
--        .flatten()
+-    let kept = preserve_under.map(|root| merge_path::preserve_log(root, branch, output));
+-    for error in [
+-        stored.as_ref().err(),
+-        kept.as_ref().and_then(|kept| kept.as_ref().err()),
+-    ]
+-    .into_iter()
+-    .flatten()
 -    {
 -        eprintln!(
--            "onevcs: warning: the push of {:?} is recorded without what it wrote: {error}",
--            context.branch
+-            "onevcs: warning: the push of {branch:?} is recorded without what it wrote: {error}"
 -        );
 -    }
 -    let artifact = stored.ok();
 -    let mut payload = object(json!({
--        "branch": context.branch,
+-        "branch": branch,
 -        "remote": "origin",
--        "accepted": ruling.passed(),
+-        "accepted": pushed.accepted(),
 -        "output": output,
 -    }));
--    if let Ok(preserved) = &kept {
+-    if let Some(Ok(preserved)) = &kept {
 -        payload.insert(
 -            "preserved_log".to_owned(),
 -            json!(preserved.display().to_string()),
 -        );
--    }
--    stream.emit_with(
 +    stream.emit(
-         EventKind::Push,
--        payload,
--        artifact.clone().into_iter().collect(),
++        EventKind::Push,
 +        object(json!({
-+            "branch": context.branch,
++            "branch": branch,
 +            "remote": "origin",
-+            "accepted": ruling.passed(),
++            "accepted": pushed.accepted(),
 +        })),
-     );
-+    let artifact = Some(stream::store_artifact("log", output)?);
-+    let kept: Result<PathBuf> = gate::preserve_log(&context.run_root, &context.branch, output);
-     // A `pre-push` gate's verdict arrives as push output and nowhere else, so the
-     // same evidence is *also* the gate's verdict when the policy names that gate —
-     // reported as one, on the event a consumer reads verdicts from.
++    );
++    if !pushed.accepted() {
++        let _ = stream::store_artifact("log", output)?;
++        if let Some(root) = preserve_under {
++            let _ = merge_path::preserve_log(root, branch, output)?;
++        }
+     }
+-    stream.emit_with(EventKind::Push, payload, artifact.into_iter().collect());
+     Ok(())
+ }
+ 

@@ -25,11 +25,11 @@ use crate::scratch::{
 ///
 /// `change-direct` — push the branch, open a pull request on the real GitHub, and
 /// merge it — because that is the path that reaches every host method the scratch
-/// repository can answer for. The gate is a real command: a repository this tier
-/// has nothing to build in still has to run *something*, and a gate that is not run
-/// is a publication nothing checked.
-const RULES: &str = "version: 2\nrules: []\ndefault:\n  publication: change-direct\n  \
-                     approvals: none\n  gate:\n    command: [\"git\", \"--version\"]\n";
+/// repository can answer for. What verifies the change is the scratch repository's
+/// own merge path, as it is for every repository: this tier proves the interfaces,
+/// and the repository declares no required check.
+const RULES: &str = "version: 3\nrules: []\ndefault:\n  publication: change-direct\n  \
+                     approvals: none\n";
 
 #[test]
 fn a_session_opens_preserves_publishes_and_the_change_lands_on_the_real_repository() {

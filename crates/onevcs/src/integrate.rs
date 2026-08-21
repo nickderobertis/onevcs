@@ -1,17 +1,30 @@
 //! The merge train: landing finished branches on a local base, in order.
 //!
 //! One failure does not block the others. Each candidate merges the current base in
-//! its own worktree, runs the gate there, and is then **squash-published**: its
-//! verified tree becomes one commit built in a detached scratch worktree that the
-//! base checkout fast-forwards onto. Squashing rather than fast-forwarding the
-//! branch itself is what keeps this verb on the same base-history contract as
-//! publication — a recovered incomplete step reaches the base as a trailer on that
-//! one commit and never as the marker and attestation commits themselves.
+//! its own worktree and is then **squash-published**: its tree becomes one commit
+//! built in a detached scratch worktree that the base checkout fast-forwards onto.
+//! Squashing rather than fast-forwarding the branch itself is what keeps this verb
+//! on the same base-history contract as publication — a recovered incomplete step
+//! reaches the base as a trailer on that one commit and never as the marker and
+//! attestation commits themselves.
 //!
-//! The per-candidate gate run is deliberately kept even when the train pushes:
-//! every candidate advances the *local* base before the single push, so without it
-//! unverified commits reach that base and a later aggregate rejection can no longer
-//! say which branch of the train broke it.
+//! # What verifies a train
+//!
+//! **The repository's own `pre-push` hook, at the push that publishes the advanced
+//! base** — the same verifier every other landing of a local-first identity
+//! answers to, reached through [`crate::merge_path::comparison_env`] so the hook
+//! judges against the base the train is publishing onto.
+//!
+//! Verification is therefore per *push* and not per candidate, which costs the
+//! finer attribution a refused aggregate used to get. Without `--push` the train
+//! reaches no merge path at all — that base is the operator's own checkout, and
+//! nothing else builds on it until the push the hook rules on.
+//!
+//! An identity whose merge path runs nothing at all
+//! ([`crate::store::Coverage::None`]) is **warned about rather than refused**, in
+//! the same words `onevcs register` uses: a publication of such an identity is not
+//! refused either, and a train that refused where a publication does not would send
+//! an operator to raw `git merge`, which is verified by even less.
 
 use std::path::{Path, PathBuf};
 
@@ -21,9 +34,9 @@ use crate::error::{Error, Result};
 use crate::event::EventKind;
 use crate::registry::{RepoType, Workflow};
 use crate::store::{self, Resolution};
-use crate::stream::{self, Stream};
+use crate::stream::Stream;
 use crate::workspace::{object, Ref};
-use crate::{gate, git, guidance, home, ids, lock, policy, provenance, publish, queue};
+use crate::{git, guidance, home, ids, lock, merge_path, policy, provenance, publish, queue};
 
 /// What happened to one candidate of the train.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +113,6 @@ pub fn run(
     resolution: &Resolution,
     candidates: &[String],
     push: bool,
-    gate_override: Option<&Vec<String>>,
     stream: &mut Stream,
 ) -> Result<Outcome> {
     if resolution.identity.repo_type == RepoType::Team {
@@ -124,6 +136,19 @@ pub fn run(
         });
     }
     let root = &resolution.publication;
+    // Said before the work rather than after it: the train advances a base, and an
+    // operator who learns afterwards that nothing will ever judge what it landed has
+    // already landed it. The same sentence `onevcs register` prints, because it is
+    // the same fact and a second wording would read as a second problem.
+    if store::merge_path_coverage(resolution, root) == store::Coverage::None {
+        eprintln!(
+            "onevcs: warning: nothing on this identity's merge path runs a gate, so what this \
+             train lands is unproven. Install an executable pre-push hook in {}, or confirm \
+             what covers it with `{}`",
+            root.display(),
+            guidance::command(["onevcs", "repos", "--audit-gates"]),
+        );
+    }
     let base = git::current_branch(root)?;
     if git::is_dirty(root)? {
         return Err(Error::Invalid {
@@ -190,7 +215,7 @@ pub fn run(
         object(json!({"identity": identity})),
     );
 
-    let outcome = train(resolution, &base, candidates, push, gate_override, stream);
+    let outcome = train(resolution, &base, candidates, push, stream);
     drop(turn);
     outcome
 }
@@ -234,7 +259,6 @@ fn train(
     base: &str,
     candidates: &[String],
     push: bool,
-    gate_override: Option<&Vec<String>>,
     stream: &mut Stream,
 ) -> Result<Outcome> {
     let root = &resolution.publication;
@@ -247,15 +271,10 @@ fn train(
         );
     }
     let remote_base = crate::vcs::base_ref(root, base);
-    let environment = gate::comparison_env("origin", base);
+    let environment = merge_path::comparison_env("origin", base);
     let registry = store::load()?;
-    let (file, source) = policy::load(&registry)?;
-    let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &source, &normalized, root);
+    let (file, _) = policy::load(&registry)?;
     let trailers = provenance::from_rules(&file);
-    let gate_command = gate_override
-        .cloned()
-        .or_else(|| gate::own_command(&resolved.policy.gate).cloned());
 
     let initial = git::head_sha(root)?;
     let workspace = home::workspaces_dir()?
@@ -268,13 +287,11 @@ fn train(
         base,
         remote_base: &remote_base,
         workspace: &workspace,
-        gate_command: gate_command.as_ref(),
-        environment: &environment,
         trailers: &trailers,
     };
     let mut branches = Vec::new();
     for branch in candidates {
-        branches.push(one(&train, branch, stream)?);
+        branches.push(one(&train, branch)?);
     }
 
     let mut ending = if git::head_sha(root)? == initial {
@@ -293,16 +310,14 @@ fn train(
             });
         }
         let result = git::push(root, base, "origin", &environment)?;
-        stream.emit(
-            EventKind::Push,
-            object(json!({
-                "branch": base,
-                "remote": "origin",
-                "accepted": result.accepted(),
-            })),
-        );
+        // Through the one recorder every publishing push uses: this push is where the
+        // repository's `pre-push` hook rules on the whole train, so what it wrote is
+        // the verdict and the only account of a refusal there will ever be. No run
+        // root is handed over — the train's scratch workspace is removed a few lines
+        // below, so the stored artifact is what outlives the run.
+        publish::record_push(stream, &Ref::from_git(base), &result, None)?;
         if !result.accepted() {
-            return Err(Error::GateFailed {
+            return Err(Error::PushRejected {
                 reason: format!(
                     "the push of {base:?} was rejected by the merge path: {}",
                     result.refusal().unwrap_or_else(|| result
@@ -331,24 +346,18 @@ struct Train<'a> {
     base: &'a str,
     /// The base the origin currently has, which each candidate syncs with first.
     remote_base: &'a str,
-    /// Where candidate worktrees and preserved gate logs are put.
+    /// Where candidate worktrees are put.
     workspace: &'a Path,
-    /// The gate each candidate is verified by, when the policy names one.
-    gate_command: Option<&'a Vec<String>>,
-    /// The comparison identity every gate run resolves.
-    environment: &'a [(String, String)],
     /// The provenance trailer keys this host reads.
     trailers: &'a provenance::Trailers,
 }
 
-fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome> {
+fn one(train: &Train, branch: &str) -> Result<BranchOutcome> {
     let Train {
         resolution,
         base,
         remote_base,
         workspace,
-        gate_command,
-        environment,
         trailers,
     } = *train;
     let root = &resolution.publication;
@@ -428,36 +437,14 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
                 ),
             ));
         }
-        if let Some(command) = gate_command {
-            stream.emit(
-                EventKind::GateStarted,
-                object(json!({"command": command.join(" "), "branch": branch})),
-            );
-            let verdict = gate::run(&worktree, command, environment);
-            let artifact = stream::store_artifact("log", &verdict.output)?;
-            let preserved = gate::preserve_log(workspace, branch, &verdict.output)?;
-            stream.emit_with(
-                EventKind::GateVerdict,
-                object(json!({
-                    "verdict": verdict.ruling.describe(),
-                    "command": verdict.command,
-                    "branch": branch,
-                    "preserved_log": preserved.display().to_string(),
-                })),
-                vec![artifact],
-            );
-            if !verdict.ruling.passed() {
-                return Ok(skipped(branch, "gate-failed"));
-            }
-        }
         // The candidate merged the base in above, so the base is contained in the
-        // verified tree — unless something advanced it since, which is exactly the
-        // state this must not silently reconcile: the tree that would land is no
-        // longer the tree the gate judged.
+        // tree this would land — unless something advanced it since, which is exactly
+        // the state this must not silently reconcile: what would land is no longer
+        // what was merged.
         if !git::is_ancestor(root, &git::head_sha(root)?, branch)? {
             return Ok(skipped(
                 branch,
-                "not-ready: the base advanced during the gate run",
+                "not-ready: the base advanced while this candidate was being built",
             ));
         }
         let subject =

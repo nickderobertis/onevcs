@@ -109,7 +109,8 @@ pub fn finished_hosted_branch(hosted: &Hosted, branch: &str, subject: &str) {
 /// A branch two checkouts hold, reached the way an operator reaches it: a publication
 /// that does not land hands the branch back, and its session stays open on the same name.
 ///
-/// The fixture's gate must be one that fails; `gate_that_passes` clears the re-run.
+/// The fixture's merge path must be one that refuses; `a_merge_path_that_accepts`
+/// clears the re-run.
 fn handed_back_and_still_open(fixture: &Fixture, branch: &str) -> (PathBuf, PathBuf) {
     let (token, worktree) = fixture.open(&["--branch", branch]);
     let file = format!("{}.txt", branch.replace('/', "-"));
@@ -137,16 +138,10 @@ fn handed_back_and_still_open(fixture: &Fixture, branch: &str) -> (PathBuf, Path
     (worktree, clone)
 }
 
-/// Give the identity a gate that passes, once a journey has used a failing one to
-/// hand a branch back.
-fn gate_that_passes(fixture: &Fixture) {
-    configure_rules(
-        &fixture.world,
-        format!(
-            "version: 1\nrules: []\ndefault: {}\n",
-            local_direct("[\"true\"]")
-        ),
-    );
+/// Give the identity a merge path that accepts, once a journey has used a refusing
+/// one to hand a branch back.
+fn a_merge_path_that_accepts(fixture: &Fixture) {
+    fixture.verified_by("exit 0");
 }
 
 /// Read by its full ref name, so a journey about two copies of a branch is not built
@@ -169,7 +164,7 @@ fn green_check() -> Check {
 
 #[test]
 fn a_complete_branch_of_a_local_identity_lands_on_its_base() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(&fixture, "feature/finished", "feat: finish the thing");
 
     fixture
@@ -192,16 +187,24 @@ fn a_complete_branch_of_a_local_identity_lands_on_its_base() {
         2,
         "one publication commit onto the seed: {log:?}"
     );
-    // The gate ran on the branch before it landed: publishing a branch is a
-    // verification, not a push.
+    // The merge path ruled on the branch as it landed, and the push that carried it
+    // recorded what it wrote.
     let events = fixture.world.events("publish-branch-feature-finished");
     let kinds: Vec<&str> = events
         .iter()
         .filter_map(|event| event["kind"].as_str())
         .collect();
-    for expected in ["gate-started", "gate-verdict", "merge-completed"] {
+    for expected in ["push", "merge-completed"] {
         assert!(kinds.contains(&expected), "{kinds:?} lacks {expected}");
     }
+    let pushes = fixture
+        .world
+        .events_of("publish-branch-feature-finished", "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], true);
+    assert!(
+        pushes[0]["payload"]["preserved_log"].is_string(),
+        "{pushes:?}"
+    );
 }
 
 #[test]
@@ -286,7 +289,10 @@ fn a_complete_branch_of_a_remote_identity_is_landed_by_the_host() {
 
 #[test]
 fn publishing_a_branch_refuses_interrupted_work_and_names_the_verb_that_lands_it() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let (token, worktree) = fixture.open(&["--branch", "feature/interrupted"]);
     fixture
         .world
@@ -341,7 +347,7 @@ fn publishing_a_branch_refuses_interrupted_work_and_names_the_verb_that_lands_it
 
 #[test]
 fn a_branch_no_checkout_has_is_refused_by_the_command_that_lists_the_ones_that_do() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     for (branch, reason) in [
         ("feature/never-existed", "is in none of the checkouts"),
         ("not a branch", "is not a valid branch name"),
@@ -366,7 +372,7 @@ fn a_branch_no_checkout_has_is_refused_by_the_command_that_lists_the_ones_that_d
 
 #[test]
 fn an_explicit_title_is_the_subject_a_branch_publishes_under() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     finished_branch(
         &fixture,
         "feature/retitled",
@@ -646,7 +652,10 @@ fn a_title_publishes_a_recovery_whose_own_subjects_are_all_too_long() {
     // description cut to fit would leave a base branch reading as corruption, so
     // the branch is refused — and before `--title` reached this verb, the only way
     // past it was rewriting a commit on preserved work.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let (token, worktree) = fixture.open(&["--branch", "feature/verbose"]);
     let (long, limit) = a_subject_that_cannot_fit();
     fixture
@@ -757,12 +766,12 @@ fn every_state_a_branch_can_be_in_has_a_verb_that_takes_it() {
 }
 
 #[test]
-fn an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one() {
-    // A recovery attests that a green gate cleared the step that stopped, so an
-    // identity that names no complete bar and whose merge path runs no gate has
+fn an_identity_with_no_bar_is_told_what_would_give_it_one() {
+    // A recovery attests that the step that stopped was verified after all, so an
+    // identity that names no complete bar and whose merge path verifies nothing has
     // nothing to attest *with*. The refusal is the only place an operator finds out
-    // what to configure, so it names the file, both entries that answer it, and the
-    // command that reports which one took effect.
+    // what to configure, so it names the checkout the hook belongs in, the other way
+    // an identity is covered, and the command that reports which one took effect.
     let world = World::new();
     let origin = world.bare_origin("unbarred");
     let checkout = world.clone_of(&origin, "unbarred");
@@ -776,7 +785,7 @@ fn an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one() {
     std::fs::write(
         &rules,
         "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: none, gate: {kind: pre-push}}\n",
+         default: {publication: local-direct, approvals: none}\n",
     )
     .expect("a rules file");
 
@@ -812,23 +821,15 @@ fn an_identity_with_no_bar_is_told_which_rules_entry_would_give_it_one() {
         .code(2)
         .stderr(predicate::str::contains("would attest nothing"))
         .stderr(predicate::str::contains(
-            rules.to_string_lossy().into_owned(),
+            checkout.to_string_lossy().into_owned(),
         ))
-        .stderr(predicate::str::contains("gate: {command: [...]}"))
-        .stderr(predicate::str::contains(format!(
-            "`onevcs rules check {}`",
-            checkout.display()
-        )));
+        .stderr(predicate::str::contains("executable pre-push hook"))
+        .stderr(predicate::str::contains("`onevcs repos --audit-gates`"));
 
-    // …and the entry it names is one that resolves it: giving the identity a gate
-    // command in the rules file is the whole fix, and the same command then lands
+    // …and what it names is what resolves it: putting an executable `pre-push` hook
+    // on the identity's merge path is the whole fix, and the same command then lands
     // the branch.
-    std::fs::write(
-        &rules,
-        "version: 1\nrules: []\n\
-         default: {publication: local-direct, approvals: none, gate: {command: [\"true\"]}}\n",
-    )
-    .expect("a rules file");
+    world.install_pre_push(&checkout, "exit 0");
     world
         .onevcs()
         .args([
@@ -897,7 +898,10 @@ fn a_marker_under_an_unreadable_prefix_is_never_published_as_a_finished_branch()
     // The one shape that would otherwise reach this verb as finished work: a step
     // that stopped, marked under a vocabulary this host is not configured with, so
     // nothing recognizes the marker and nothing refuses it.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     let checkout = fixture.checkout.clone();
     fixture
         .world
@@ -945,7 +949,7 @@ fn a_marker_under_an_unreadable_prefix_is_never_published_as_a_finished_branch()
         &fixture.world,
         format!(
             "version: 2\ntrailer_prefix: Qqq-\nrules: []\ndefault: {}\n",
-            local_direct("[\"true\"]")
+            local_direct()
         ),
     );
     fixture
@@ -968,7 +972,7 @@ fn a_recorded_base_that_is_not_a_branch_names_the_trailer_that_says_so() {
     // is input rather than a name this process decided — and a value that is not a
     // branch is refused naming the trailer it came from, because an operator told
     // only that some name is invalid cannot tell which of them it was.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let checkout = fixture.checkout.clone();
     let prefix = documented_default_prefix();
     fixture
@@ -1118,7 +1122,7 @@ fn a_change_base_that_conflicts_is_refused_once_and_lands_after_it_is_resolved()
     // finished work: the base and the branch changed the same lines, so every
     // re-run merges the same two trees and fails the same way. The message says so,
     // says where the branch is, and names this verb's own invocation as the exit.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/clashing"]);
     fixture.world.commit_file(
         &worktree,
@@ -1261,10 +1265,7 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         .success();
     configure_rules(
         &world,
-        format!(
-            "version: 1\nrules: []\ndefault: {}\n",
-            local_direct("[\"true\"]")
-        ),
+        format!("version: 1\nrules: []\ndefault: {}\n", local_direct()),
     );
 
     let assert = world
@@ -1405,7 +1406,7 @@ fn a_repository_path_that_is_not_text_is_refused_as_the_argument_it_is() {
     // registered, and the refusal would then be about the wrong thing entirely.
     use std::os::unix::ffi::OsStrExt;
 
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let mut bytes = fixture.checkout.as_os_str().as_bytes().to_vec();
     bytes.extend_from_slice(b"/\xff");
     let unreadable = std::ffi::OsStr::from_bytes(&bytes);
@@ -1430,7 +1431,7 @@ fn a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change() {
     // Publishing squashes, so the base gets one subject: a description cut to fit
     // names nothing, and a base branch is the durable record. The refusal names the
     // flag that answers it, and the flag then publishes the branch.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (long, limit) = a_subject_that_cannot_fit();
     finished_branch(&fixture, "feature/unsayable", &long);
 
@@ -1492,15 +1493,17 @@ fn a_branch_with_no_usable_subject_is_refused_until_a_title_names_the_change() {
 }
 
 #[test]
-fn a_gate_that_rejects_a_branch_keeps_it_where_it_was_found() {
-    // Publishing a branch is a verification: the gate runs on the merged tree, and
-    // a branch it rejects reaches no base and is not also lost — the checkout it
-    // was read out of still has it, so the fix and the re-run are both possible.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+fn a_merge_path_that_rejects_a_branch_keeps_it_where_it_was_found() {
+    // Publishing a branch is a verification: the merge path rules on the tree the
+    // push carries, and a branch it rejects reaches no base and is not also lost —
+    // the checkout it was read out of still has it, so the fix and the re-run are
+    // both possible.
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     finished_branch(
         &fixture,
         "feature/rejected",
-        "feat: the thing the gate hates",
+        "feat: the thing the merge path hates",
     );
 
     fixture
@@ -1513,9 +1516,12 @@ fn a_gate_that_rejects_a_branch_keeps_it_where_it_was_found() {
             &fixture.checkout.to_string_lossy(),
         ])
         .assert()
-        // 1 is the contract's code for a gate that rejected the change.
+        // 1 is the contract's code for a verification that rejected the change.
         .code(1)
-        .stderr(predicate::str::contains("rejected \"feature/rejected\""));
+        .stderr(predicate::str::contains("push rejected"))
+        .stderr(predicate::str::contains(
+            "the publishing push of \"feature/rejected\"",
+        ));
     assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
     assert!(fixture
         .world
@@ -1524,11 +1530,15 @@ fn a_gate_that_rejects_a_branch_keeps_it_where_it_was_found() {
 
     // The verdict is on the stream with its log, which is what makes the failure
     // readable after the fact.
-    let verdicts = fixture
+    let pushes = fixture
         .world
-        .events_of("publish-branch-feature-rejected", "gate-verdict");
-    assert_eq!(verdicts.len(), 1, "one gate ran: {verdicts:?}");
-    assert_eq!(verdicts[0]["payload"]["verdict"], "fail");
+        .events_of("publish-branch-feature-rejected", "push");
+    assert_eq!(pushes.len(), 1, "one push was made: {pushes:?}");
+    assert_eq!(pushes[0]["payload"]["accepted"], false);
+    assert!(
+        pushes[0]["payload"]["preserved_log"].is_string(),
+        "{pushes:?}"
+    );
 }
 
 #[test]
@@ -1539,8 +1549,7 @@ fn a_branch_the_host_holds_is_watched_until_it_lands() {
     // verbs reach the same watch `publish` does — there is one publication path, and
     // a change landed by `publish-branch` is reported exactly as one landed by
     // `publish`.
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -1608,8 +1617,7 @@ fn a_branch_the_host_never_lands_is_bounded_and_says_what_was_pending() {
     // change for. It ends at the bound rather than reporting a merge that has not
     // happened, and names the check — and the branch is retained where it was found,
     // because a publication that did not land must not also lose the work.
-    let hosted =
-        Hosted::new("{publication: change-auto, approvals: required, gate: {kind: pre-push}}");
+    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -1661,7 +1669,7 @@ fn a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body
     configure_rules(
         &world,
         "version: 1\nrules: []\n\
-         default: {publication: change-open, approvals: required, gate: {command: [\"true\"]}}\n",
+         default: {publication: change-open, approvals: required}\n",
     );
     world.install_fake_host(&origin);
 
@@ -1805,7 +1813,7 @@ fn a_publish_branch_whose_recorded_stack_already_landed_is_replayed_onto_the_roo
     // work that is already complete: a recovery attested this branch's marker and its
     // publication did not land, so `publish-branch` is what takes it from here — with
     // the stack the marker recorded still on it.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/attested-filter");
     attest_the_marker(&fixture, "feature/attested-filter");
 
@@ -1852,7 +1860,7 @@ fn a_recorded_base_no_ref_resolves_names_what_would_restore_it() {
     // fetch here prunes. Nothing then can tell which of the branch's commits are the
     // change below's — so this is refused where the record is read, rather than handed
     // to git as a revision it will report as unknown.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let prefix = documented_default_prefix();
     let world = &fixture.world;
     world.git(
@@ -1910,7 +1918,7 @@ fn a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command() 
     // separates the two here is only the command an operator is sent back with, and a
     // refusal that named the wrong one would send them to the verb that rejects this
     // branch.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let prefix = documented_default_prefix();
     let world = &fixture.world;
     world.git(
@@ -1956,7 +1964,7 @@ fn a_publish_branch_whose_recorded_base_no_ref_resolves_names_its_own_command() 
 
 #[test]
 fn a_publish_branch_replay_conflict_names_its_own_command() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/attested-clash");
     attest_the_marker(&fixture, "feature/attested-clash");
     fixture.world.git(
@@ -2008,7 +2016,10 @@ fn a_publish_branch_replay_conflict_names_its_own_command() {
 
 #[test]
 fn a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-filter");
 
     fixture
@@ -2042,7 +2053,10 @@ fn a_recovery_whose_recorded_stack_already_landed_is_replayed_onto_the_root() {
 
 #[test]
 fn a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay() {
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
+    // A recovery attests that what stopped was verified after all, so the identity
+    // needs something on its merge path that could have verified it.
+    fixture.verified_by("exit 0");
     a_stacked_incomplete_branch_in_the_checkout(&fixture, "feature/recovered-clash");
     // The root moves again over a file this branch's own work also changed, which
     // correcting the ancestry cannot resolve.
@@ -2108,7 +2122,8 @@ fn a_recoverys_replay_conflict_keeps_the_branch_and_names_the_replay() {
 fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other() {
     // The measured incident: the resolution is committed in the session's worktree, so
     // the run clone is one commit ahead of the copy the failure handed back.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     let (worktree, clone) = handed_back_and_still_open(&fixture, "feature/resolved");
     let stale = tip_of(&fixture, &fixture.checkout, "feature/resolved");
     fixture.world.commit_file(
@@ -2122,7 +2137,7 @@ fn a_branch_two_checkouts_hold_is_published_from_the_copy_that_carries_the_other
         stale, resolved,
         "the journey is about one name at two different commits"
     );
-    gate_that_passes(&fixture);
+    a_merge_path_that_accepts(&fixture);
 
     let assert = fixture
         .world
@@ -2171,7 +2186,8 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
     // Nothing here can tell which is the work, so publishing either would discard
     // somebody's — and the refusal is what an operator can act on, where a silent
     // choice is not.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     let (worktree, clone) = handed_back_and_still_open(&fixture, "feature/two-ways");
     fixture.world.commit_file(
         &worktree,
@@ -2197,7 +2213,7 @@ fn copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one(
         "theirs\n",
         "fix: a different resolution in the checkout",
     );
-    gate_that_passes(&fixture);
+    a_merge_path_that_accepts(&fixture);
     let mine = tip_of(&fixture, &clone, "feature/two-ways");
     let theirs = tip_of(&fixture, &fixture.checkout, "feature/two-ways");
 
@@ -2321,7 +2337,8 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
     // `%ct`, where `%cI` spells a zero UTC offset `+00:00` on one git and `Z` on
     // another and the assertion would be about which git rendered it.
     const AMENDED_AT: &str = "1787114520"; // 2026-08-19T04:42:00Z
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     let (_worktree, clone) = handed_back_and_still_open(&fixture, "feature/amended");
     let original = tip_of(&fixture, &clone, "feature/amended");
     let subject = fixture
@@ -2356,7 +2373,7 @@ fn a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_diff
         subject,
         "…under the same subject, which is what makes the pair unreadable by eye"
     );
-    gate_that_passes(&fixture);
+    a_merge_path_that_accepts(&fixture);
 
     let assert = fixture
         .world
@@ -2485,7 +2502,7 @@ fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searche
     // Closing hands the branch back, so one name is at one commit in two checkouts —
     // nothing to choose between. Which copy was read is what a refusal names, and a base
     // that conflicts is what makes one.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/one-commit"]);
     fixture.world.commit_file(
         &worktree,
@@ -2547,7 +2564,8 @@ fn copies_of_one_branch_at_one_commit_are_read_out_of_the_first_checkout_searche
 fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_other() {
     // A rewrite is indistinguishable from a second line of work on the same name: two
     // tips, neither carrying the other, and only the operator knows which they meant.
-    let fixture = Fixture::local(&local_direct("[\"false\"]"));
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
     let (_worktree, clone) = handed_back_and_still_open(&fixture, "feature/replayed");
     let replaced = tip_of(&fixture, &clone, "feature/replayed");
 
@@ -2582,7 +2600,7 @@ fn a_replayed_copy_that_carries_none_of_the_one_it_replaced_is_refused_like_any_
         replayed, replaced,
         "the replay is what makes the two copies no relation of each other"
     );
-    gate_that_passes(&fixture);
+    a_merge_path_that_accepts(&fixture);
 
     let assert = fixture
         .world
@@ -2618,7 +2636,7 @@ fn recovering_a_branch_whose_copies_diverged_is_refused_by_the_verb_it_was_reach
     // Both verbs meet this refusal, and the command it prints is the one an operator
     // typed: sent to the other one here, they would be refused again — for provenance
     // this time — with the copies still where they were.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let worker = fixture.world.clone_of(&fixture.origin, "worker");
     fixture
         .world
@@ -2702,7 +2720,7 @@ fn a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_land
     // rest, and one no other copy descends from is a divergence whatever became of its
     // content. Judging it separately is what let a lone work-carrying copy be chosen
     // silently beside a tip nothing here descends from.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let worker = fixture.world.clone_of(&fixture.origin, "worker");
     fixture
         .world
@@ -2786,7 +2804,7 @@ fn an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name()
     // "Nothing to publish" is the answer an operator most often disbelieves, because a
     // copy they are looking at is ahead of the base. What settles it is which copies of
     // the name there are and what they hold, so that is said here too.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let (token, tree) = fixture.open(&["--branch", "feature/all-spent"]);
     fixture
         .world
@@ -2857,7 +2875,7 @@ fn every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them
     // Three copies, because the two easiest to leave out of an answer are a copy at the
     // chosen commit and one whose content the base already carries — neither changes what
     // is published, and both are checkouts an operator has to account for.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let worker = fixture.world.clone_of(&fixture.origin, "worker");
     fixture
         .world
@@ -2971,7 +2989,7 @@ fn a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison() {
     // run the ancestry question at all. What it answers instead is the whole of this
     // journey — a verdict that copy loses, not a git failure that ends the landing, so
     // the copy carrying the rest still lands.
-    let fixture = Fixture::local(&local_direct("[\"true\"]"));
+    let fixture = Fixture::local(&local_direct());
     let worker = fixture.world.clone_of(&fixture.origin, "worker");
     fixture
         .world

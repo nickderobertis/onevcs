@@ -1,0 +1,23 @@
+Mutation: the train emits its own thinner push event instead of the one recorder every publishing push uses, so the run whose verification happens only at the push keeps no account of it.
+Red: a_train_whose_merge_path_runs_nothing_is_warned_about_before_it_lands_and_never_refused
+
+diff --git a/crates/onevcs/src/integrate.rs b/crates/onevcs/src/integrate.rs
+index 89d3616..dd8e7ec 100644
+--- a/crates/onevcs/src/integrate.rs
++++ b/crates/onevcs/src/integrate.rs
+@@ -315,7 +315,14 @@ fn train(
+         // the verdict and the only account of a refusal there will ever be. No run
+         // root is handed over — the train's scratch workspace is removed a few lines
+         // below, so the stored artifact is what outlives the run.
+-        publish::record_push(stream, &Ref::from_git(base), &result, None)?;
++        stream.emit(
++            EventKind::Push,
++            object(json!({
++                "branch": base,
++                "remote": "origin",
++                "accepted": result.accepted(),
++            })),
++        );
+         if !result.accepted() {
+             return Err(Error::PushRejected {
+                 reason: format!(

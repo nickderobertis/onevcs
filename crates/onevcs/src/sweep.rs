@@ -45,7 +45,7 @@ use filetime::FileTime;
 use crate::branch::Verb;
 use crate::error::{self, Result};
 use crate::processes::{self, Holder};
-use crate::{gate, git, home, ids, lock, workspace};
+use crate::{git, home, ids, lock, merge_path, workspace};
 
 /// How many dead run roots holding work no origin has are kept past the age floor.
 ///
@@ -482,7 +482,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     let Some(lease) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
         return Ok(Verdict::Retain(Kept::Occupied));
     };
-    if !gate::has_recorded_verdict(run_root) {
+    if !merge_path::has_recorded_verdict(run_root) {
         return Ok(Verdict::Retain(Kept::NoVerdict));
     }
     let written = last_written(run_root);
@@ -798,7 +798,7 @@ impl Kept {
         match self {
             Kept::OwnerUnproven(what) => format!("its owner cannot be proven: {what}"),
             Kept::Occupied => OCCUPIED.to_owned(),
-            Kept::NoVerdict => NO_VERDICT.replace("{}", gate::PRESERVED_LOG_DIRNAME),
+            Kept::NoVerdict => NO_VERDICT.replace("{}", merge_path::PRESERVED_LOG_DIRNAME),
             Kept::Fresh { age, floor } => format!(
                 "it was written {} ago, inside the {} the age floor leaves alone",
                 describe_duration(*age),
