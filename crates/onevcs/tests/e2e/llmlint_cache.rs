@@ -717,6 +717,7 @@ fn the_target_refuses_a_base_it_cannot_judge() {
         ("origin/main", "must be a resolved commit id"),
         (&"0".repeat(40), "missing from this checkout"),
     ] {
+        // llmlint: ignore[tests_mirror_real_usage] The recipe resolves the base before Nx sees it, so only a direct target run reaches this guard.
         workspace
             .run_target(&[("LLMLINT_DIFF_BASE_SHA", base_sha)])
             .failed()
@@ -751,6 +752,7 @@ fn a_host_without_the_judge_is_told_which_command_installs_it() {
 fn the_driver_refuses_to_judge_without_a_base() {
     let workspace = Workspace::new();
 
+    // llmlint: ignore[tests_mirror_real_usage] The recipe defaults the base, so only a direct script run reaches this guard.
     let mut command = Command::new(workspace.root.join("scripts/llmlint-diff.sh"));
     workspace.wire(&mut command, &[]);
     let refused = Reported::from(command.output().expect("the driver script is executable"));

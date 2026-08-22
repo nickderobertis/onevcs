@@ -15,6 +15,13 @@
 # for that direct run; the tier stays safe either way, because an llmlint that
 # cannot report its version or resolve its config also cannot judge the diff, and Nx
 # never caches a task that failed.
+# llmlint: ignore-file[changed_behavior_has_e2e] What this script decides — that a
+# changed plugin rule source or a changed installed llmlint version invalidates a
+# recorded verdict, and that an llmlint which cannot report its version or resolve
+# its config is named rather than hashed — is driven end to end in
+# crates/onevcs/tests/e2e/llmlint_cache.rs. What remains are host-failure guards on
+# the checkout layout and on sha256sum; simulating a broken host is the guard's job,
+# not a journey's.
 set -euo pipefail
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)" || {

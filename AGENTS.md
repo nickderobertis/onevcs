@@ -132,7 +132,10 @@ not tell you:
   toolchain are both judged again. `just lint-llm-diff <base> --skip-nx-cache` is
   the one supported re-judge, deliberately per-invocation; an ambient
   `NX_SKIP_NX_CACHE`/`NX_DISABLE_NX_CACHE` is reported and ignored by this tier,
-  because it would re-roll the judge from every unrelated command. This is why the
+  because it would re-roll the judge from every unrelated command. The target sets
+  `usePty: false`: Nx's pseudo-terminal reader drops a fast task's output outright
+  often enough to catch in a test loop, and this tier's terminal output *is* its
+  verdict. This is why the
   repository root is an Nx project (`project.json`, `workspace`): what it judges is
   the whole tree, which belongs to no one project, and it carries that one target
   rather than a second copy of the crate's `--workspace` ones.

@@ -13,6 +13,11 @@
 # hashes declared environment variables but not target arguments: keying and judging
 # on the same value is what stops a clean verdict computed against one base from
 # being replayed for another.
+# llmlint: ignore-file[changed_behavior_has_e2e] Every journey this script has — a
+# judged and a replayed clean run, findings and a broken toolchain re-judging, a base
+# it refuses, and a host with no llmlint — is driven end to end in
+# crates/onevcs/tests/e2e/llmlint_cache.rs. What remains is one host-failure guard on
+# the checkout layout; simulating a broken host is the guard's job, not a journey's.
 set -euo pipefail
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)" || {

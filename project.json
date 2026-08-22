@@ -6,7 +6,7 @@
   "targets": {
     "lint-llm-diff": {
       "command": "./scripts/llmlint-judge.sh",
-      "options": { "cwd": "." }
+      "options": { "cwd": ".", "usePty": false }
     }
   }
 }

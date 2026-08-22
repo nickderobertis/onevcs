@@ -33,6 +33,12 @@
 # in place of a verdict record: a quiet success would make a replayed run say less
 # than a fresh one, which is the whole value of the replay. Every line this script
 # adds itself names its cause and the next command to run.
+# llmlint: ignore-file[changed_behavior_has_e2e] Every journey this script has — a
+# cache miss and a replay with the provenance each prints, a base it refuses, no base
+# at all, an ambient global cache skip, and the per-invocation re-judge — is driven
+# end to end in crates/onevcs/tests/e2e/llmlint_cache.rs. What remains are
+# host-failure guards on the checkout layout and on temporary storage; simulating a
+# broken host is the guard's job, not a journey's.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -73,6 +79,9 @@ trap 'rm -f "$report"' EXIT
 
 # Streaming mode, so Nx's own output reaches this script whole: it carries both the
 # judge's report and the cache annotation the provenance line below is read from.
+# The target runs with `usePty: false` (project.json) for the same reason: Nx's
+# pseudo-terminal reader can lose a fast task's output entirely — a run that judged
+# the diff then reports no verdict at all, and the replay of it says as little.
 status=0
 LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$report" 2>&1 || status=$?
