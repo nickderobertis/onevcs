@@ -20,6 +20,7 @@
       "{workspaceRoot}/Cargo.lock",
       "sharedGlobals"
     ],
+    "wholeWorkspace": ["{workspaceRoot}/**/*"],
     "crateAndSuiteInputs": [
       "crateSource",
       "{workspaceRoot}/docs/contract.md",
@@ -38,6 +39,14 @@
     "check": {
       "cache": false,
       "dependsOn": ["format-check", "lint", "test", "doc"]
+    },
+    "lint-llm-diff": {
+      "cache": true,
+      "inputs": [
+        "wholeWorkspace",
+        { "env": "LLMLINT_DIFF_BASE_SHA" },
+        { "runtime": "./scripts/llmlint-fingerprint.sh" }
+      ]
     }
   }
 }
