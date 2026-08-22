@@ -99,8 +99,10 @@ not tell you:
   target names across the graph. A target's *body* belongs to its project, never
   to a for-each loop here. The `onevcs` project's targets run `--workspace`, so
   they cover `onevcs-testing` too — which is why `crateSource` in `nx.json` names
-  `crates/**/*` rather than only that project's own root. A second Nx project
-  would run the same `--workspace` commands twice.
+  `crates/**/*` rather than only that project's own root. A second Nx project for
+  the wheel or the npm package would run the same `--workspace` commands twice. The
+  repository root is the one other project, and it carries a single target nothing
+  else could hold — see the judged tier below.
 - **`just red-green` is the evidence, not a check.** A green test proves nothing on
   its own: it has to be observed red for its own behaviour first, and an
   observation nobody can re-make is not evidence. So the observation is an
@@ -112,6 +114,28 @@ not tell you:
   was made from, header totals and every round included. The totals are derived, so
   a mutation added without a re-record would otherwise leave the record asserting a
   tree that no longer exists and nothing would notice.
+- **`just lint-llm-diff` is memoized, and the memo is the whole mechanism.** The
+  judge is non-deterministic and judges every file in the base-to-head diff rather
+  than the hunk that changed, so an uncached tier is an independent roll per gate
+  run — one invocation on one tree has reported both "0 failed" and a finding. The
+  recipe therefore runs the cached Nx `workspace:lint-llm-diff` target
+  (`scripts/llmlint-judge.sh`), keyed on the whole workspace, the *resolved* base
+  commit, and `scripts/llmlint-fingerprint.sh` — the installed llmlint version plus
+  the effective merged config, which is what notices a plugin fetched from outside
+  this repository. Both ends resolve llmlint through
+  `scripts/llmlint-runtime-env.sh`, because `llmlint config` renders
+  `LLMLINT_ONEHARNESS_BIN`: a fingerprint read under the caller's environment keys
+  one judged diff differently per caller, and Nx scores a runtime input that exits
+  non-zero as *no contribution* rather than as an error, so a fingerprint a caller
+  can break replays a verdict the judge configuration has moved on from. Only a
+  clean run is cached — Nx caches successful tasks only — so findings and a broken
+  toolchain are both judged again. `just lint-llm-diff <base> --skip-nx-cache` is
+  the one supported re-judge, deliberately per-invocation; an ambient
+  `NX_SKIP_NX_CACHE`/`NX_DISABLE_NX_CACHE` is reported and ignored by this tier,
+  because it would re-roll the judge from every unrelated command. This is why the
+  repository root is an Nx project (`project.json`, `workspace`): what it judges is
+  the whole tree, which belongs to no one project, and it carries that one target
+  rather than a second copy of the crate's `--workspace` ones.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.
