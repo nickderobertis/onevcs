@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 208. Tests observed red and then green: 242.
+Patches: 211. Tests observed red and then green: 246.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpGLD6mB-project-97285344bfbe/runs/<token>/clone stands on its own parent 498bd4dec329b98113cf11
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp9vrjub-project-972add77c82e/runs/<token>/clone stands on its own parent 9bf32501a9b9db1d04229b
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpBOIPtO-project-cc811bc26777/runs/<token>/clone stands on its own parent 3bca113118d74fc86009b8
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp8Jwkl4-project-15e2325a67d2/runs/<token>/clone stands on its own parent 59761e94732c49a1990524
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -381,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-ea1e5-18cdbde9af87f9dd-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-2efc3c-18ce40ea63907667-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-eda1e-18cdbdf236d01200-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-2f32c4-18ce40ecf471a1ec-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -748,6 +748,27 @@ the harness stops checking a mutation patch header before it runs the round.
 
 - RED `a_round_with_no_one_subject_is_refused_before_any_of_them_runs` — expected a non-zero exit:
 - RED `a_round_that_names_no_test_or_names_one_twice_is_refused` — expected a non-zero exit:
+
+### `210-a-worktree-is-reaped-over-work-its-branch-does-not-carry`
+
+a close goes back to copying only the session's branch out and reaping the worktree, whatever else the clone holds — which is the state that reported "no changes" over a commit a worker made on a branch it cut itself.
+
+- RED `closing_a_session_whose_worker_committed_to_a_branch_it_invented_keeps_the_work` — Unexpected return code, failed var == 2
+- RED `closing_a_session_whose_worker_committed_onto_a_detached_head_names_the_work_and_keeps_it` — Unexpected return code, failed var == 2
+
+### `211-work-the-checkout-already-reaches-is-read-as-stranded`
+
+the strand check stops asking whether the execution checkout already reaches the work, so an ordinary close is refused too and a refused one stays refused forever.
+
+- RED `a_session_holding_nothing_but_its_own_branch_closes_exactly_as_it_did_before` — Unexpected failure.
+- RED `closing_a_session_whose_worker_committed_to_a_branch_it_invented_keeps_the_work` — Unexpected failure.
+- RED `closing_a_session_whose_worker_committed_onto_a_detached_head_names_the_work_and_keeps_it` — Unexpected failure.
+
+### `212-a-refused-hand-back-is-recorded-nowhere`
+
+the hand-back of the session's own branch goes back to discarding its result, so a checkout that would not take the branch is recorded nowhere.
+
+- RED `a_branch_the_execution_checkout_would_not_take_is_recorded_rather_than_discarded` — assertion `left == right` failed: the close records where the branch stayed: Object {"token": String("<token>"), "branch": String("feature/s
 
 ### `21-a-round-is-not-put-back`
 
