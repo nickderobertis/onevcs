@@ -1357,12 +1357,12 @@ fn stranding(record: &Record, stray: &[Stray]) -> Error {
     let total = stray.iter().map(|found| found.commits).sum();
     let checkout = record.execution_checkout.display();
     let mut reason = format!(
-        "session {:?} was not closed: its worktree {} holds {} its branch {:?} does not carry, \
-         on {}, and removing the worktree is what would have made them unreachable.",
+        "session {:?} was not closed: its worktree {} holds work its branch {:?} does not \
+         carry — {} on {} — and removing the worktree is what would have made it unreachable.",
         &*record.token,
         record.worktree.display(),
-        counted(total),
         record.branch,
+        counted(total),
         guidance::listed(&names),
     );
     if refused.is_empty() {
