@@ -15,6 +15,13 @@
 //! twice, which a non-deterministic judge cannot demonstrate. Everything else is
 //! real: the recipe, Nx, git, the cache key, and the scripts under test.
 //!
+//! llmlint: ignore-file[e2e_not_mocked] The judge call is this repository's paid
+//! model boundary, and it is also the one thing these journeys cannot use for real:
+//! the claim under test is that an unchanged tree yields the same verdict twice,
+//! which a non-deterministic judge cannot demonstrate. Counting `--diff` runs is
+//! what proves a verdict was replayed rather than re-rolled; the recipe, Nx, git,
+//! the cache key and every script under test are the real ones.
+//!
 //! The stub is reached the way the real one is: `scripts/llmlint-runtime-env.sh`
 //! puts `$HOME/.local/bin` — where `just setup-llmlint` installs llmlint — ahead of
 //! the caller's PATH, so a journey that owns `HOME` owns the judge, and a journey
@@ -173,6 +180,43 @@ impl Workspace {
             ),
         );
         directory
+    }
+
+    /// The caller's PATH with every `llmlint` on it taken away, so the tier meets a
+    /// host where the judge was never installed.
+    ///
+    /// A directory holding one is replaced by a shadow of itself — a symlink per
+    /// command it held, except that one — rather than dropped: `just`, `node` and
+    /// `git` share a bin directory with llmlint on plenty of hosts, and dropping it
+    /// would fail this journey for the wrong reason on those.
+    fn path_without_llmlint(&self) -> String {
+        let shadows = self
+            .root
+            .parent()
+            .expect("a scratch parent")
+            .join("no-judge");
+        std::env::var("PATH")
+            .unwrap_or_default()
+            .split(':')
+            .enumerate()
+            .map(|(position, directory)| {
+                if !Path::new(directory).join("llmlint").exists() {
+                    return directory.to_owned();
+                }
+                let shadow = shadows.join(position.to_string());
+                std::fs::create_dir_all(&shadow).expect("a shadow bin directory");
+                let entries = std::fs::read_dir(directory).expect("a readable bin directory");
+                for entry in entries.flatten() {
+                    if entry.file_name() == "llmlint" {
+                        continue;
+                    }
+                    let _ =
+                        std::os::unix::fs::symlink(entry.path(), shadow.join(entry.file_name()));
+                }
+                shadow.display().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(":")
     }
 
     fn path_with(&self, directory: &Path) -> String {
@@ -678,5 +722,47 @@ fn the_target_refuses_a_base_it_cannot_judge() {
             .failed()
             .says(expected);
     }
+    assert_eq!(workspace.judge_runs(), 0);
+}
+
+#[test]
+fn a_host_without_the_judge_is_told_which_command_installs_it() {
+    let workspace = Workspace::new();
+    let base = workspace.head();
+    std::fs::remove_file(workspace.home.join(".local/bin/llmlint"))
+        .expect("the pinned judge was there to remove");
+
+    let refused = workspace.lint(&base, &[], &[("PATH", &workspace.path_without_llmlint())]);
+
+    // Checked under the pinned runtime rather than in the recipe, because the
+    // llmlint that has to exist is the one this target judges with.
+    refused
+        .failed()
+        .says("lint-llm-diff: llmlint not installed")
+        .says("just setup-llmlint");
+    assert_eq!(workspace.judge_runs(), 0);
+}
+
+// The recipe defaults the base, so nothing reaches this by running `just
+// lint-llm-diff`; a caller invoking the script itself is how it is reached, and
+// what it must not do is judge the working tree against nothing.
+// llmlint: ignore[tests_mirror_real_usage] Only a direct script run reaches this state.
+#[test]
+fn the_driver_refuses_to_judge_without_a_base() {
+    let workspace = Workspace::new();
+
+    let mut command = Command::new(workspace.root.join("scripts/llmlint-diff.sh"));
+    workspace.wire(&mut command, &[]);
+    let refused = Reported::from(command.output().expect("the driver script is executable"));
+
+    refused
+        .failed()
+        .says("lint-llm-diff: no base given")
+        .says("ACTION: run 'just lint-llm-diff <base>'");
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "a usage error, not a verdict"
+    );
     assert_eq!(workspace.judge_runs(), 0);
 }

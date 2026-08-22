@@ -17,10 +17,16 @@
 #     no override. An inherited one (another repository's, exported into the shell)
 #     would both re-point the harness and move the cache key.
 #
-# It is deliberately not a validation boundary: PATH is inherited rather than
-# replaced, because llmlint is installed outside the checkout and narrowing it here
-# would let the judge and the fingerprint resolve different binaries — the split key
-# this helper exists to prevent.
+# llmlint: ignore-file[boundary_inputs_validated] Neither value this function reads
+# crosses a trust boundary, and validating either would break what it is for. The
+# inherited PATH is deliberately kept rather than narrowed: scripts/setup-llmlint.sh
+# installs llmlint outside the checkout, so an opinion here about which directories
+# may hold it would let the judge and the fingerprint resolve different binaries —
+# the split key this helper exists to prevent. HOME is the shell's own, used to name
+# the directory that install links into and for nothing else; a value that names no
+# such directory simply adds a PATH entry nothing resolves from, identically for both
+# ends. The function is these few lines, so this is file-scoped only because there is
+# no smaller scope to name.
 set -euo pipefail
 
 llmlint_runtime_env() {
