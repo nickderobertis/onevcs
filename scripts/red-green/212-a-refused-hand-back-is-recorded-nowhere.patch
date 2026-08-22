@@ -1,0 +1,18 @@
+Mutation: the hand-back of the session's own branch goes back to discarding its result, so a checkout that would not take the branch is recorded nowhere.
+Red: a_branch_the_execution_checkout_would_not_take_is_recorded_rather_than_discarded
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 9020fc2..efcf716 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -1229,9 +1229,7 @@ pub fn close(token: &str) -> Result<Record> {
+     })?;
+     let mut closed = json!({"token": record.token, "branch": record.branch});
+     if record.clone.is_dir() {
+-        if !hand_back(&record) {
+-            closed["retained"] = json!(record.clone.to_string_lossy());
+-        }
++        let _ = hand_back(&record);
+         let stray = stray_work(&record)?;
+         if !stray.is_empty() {
+             return Err(stranding(&record, &stray));

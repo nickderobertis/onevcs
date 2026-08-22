@@ -1,0 +1,20 @@
+Mutation: the strand check stops asking whether the execution checkout already reaches the work, so an ordinary close is refused too and a refused one stays refused forever.
+Red: a_session_holding_nothing_but_its_own_branch_closes_exactly_as_it_did_before
+Red: closing_a_session_whose_worker_committed_to_a_branch_it_invented_keeps_the_work
+Red: closing_a_session_whose_worker_committed_onto_a_detached_head_names_the_work_and_keeps_it
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index 9020fc2..c042a9b 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -1326,9 +1326,7 @@ fn stranded(record: &Record, reference: &str) -> Result<Option<u64>> {
+     // forward that is not a dead end: the copy `stray_work` makes is exactly what
+     // turns this answer into `None`, so running `onevcs session close` again
+     // releases the worktree rather than refusing a second time.
+-    let held = git::tip(&record.clone, reference)
+-        .is_some_and(|tip| git::refs_reach(&record.execution_checkout, &tip));
+-    Ok((!held).then_some(commits))
++    Ok(Some(commits))
+ }
+ 
+ /// The name a detached head is written under before it is copied out.
