@@ -430,6 +430,27 @@ pub fn has_commit(cwd: &Path, sha: &Sha) -> bool {
     .unwrap_or(false)
 }
 
+/// Whether some ref of this repository already reaches `commit`, with the whole
+/// history behind it.
+///
+/// The question [`has_commit`] does not answer: an object can be in a store and be
+/// reachable from nothing, which is an object gc may drop — so a caller deciding
+/// whether a *copy* of some work elsewhere may be let go has to ask this one.
+/// `--not --all` negates every ref at once, so a count of zero says every commit
+/// behind this one is already held down by something here.
+///
+/// A repository git could not be asked answers `false`: the caller acts on this to
+/// decide whether work is safe elsewhere, and "no answer" must never read as "safe".
+pub fn refs_reach(cwd: &Path, commit: &str) -> bool {
+    run(
+        &["rev-list", "--count", commit, "--not", "--all"],
+        Some(cwd),
+    )
+    .ok()
+    .filter(Output::ok)
+    .is_some_and(|out| out.trimmed() == "0")
+}
+
 /// A ref's commit SHA, or `None` when the repository does not have it.
 pub fn tip(cwd: &Path, reference: &str) -> Option<String> {
     run(
@@ -966,15 +987,37 @@ pub fn branches(cwd: &Path) -> Result<Vec<String>> {
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
     let mut unpublished = Vec::new();
     for branch in branches(cwd)? {
-        let counted = run(
-            &["rev-list", "--count", &branch, "--not", "--remotes=origin"],
-            Some(cwd),
-        )?;
-        if counted.ok() && counted.trimmed().parse::<u64>().unwrap_or(0) > 0 {
+        if unpublished_ahead(cwd, &branch, &[])? > 0 {
             unpublished.push(branch);
         }
     }
     Ok(unpublished)
+}
+
+/// How many commits `reference` holds that no `origin` remote-tracking ref has and
+/// none of `carried` reaches.
+///
+/// One `rev-list` rather than one per exclusion, because everything after `--not`
+/// is negated together — so "ahead of origin and of the branch this session was
+/// for" is the single question git answers, not two answers a caller subtracts.
+///
+/// A ref git declines to count answers `0`, which is what the branch listing above
+/// has always done with one: the names come from git's own listing, so a refusal
+/// means the ref went away between the two commands rather than that it holds work.
+pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
+    let mut args = vec![
+        "rev-list",
+        "--count",
+        reference,
+        "--not",
+        "--remotes=origin",
+    ];
+    args.extend_from_slice(carried);
+    let counted = run(&args, Some(cwd))?;
+    if !counted.ok() {
+        return Ok(0);
+    }
+    Ok(counted.trimmed().parse::<u64>().unwrap_or(0))
 }
 
 /// Whether a branch name is one git will accept.
