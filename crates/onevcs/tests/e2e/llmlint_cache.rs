@@ -57,7 +57,7 @@ struct Workspace {
     /// Judge configuration that lives *outside* the tree, so no file input can see
     /// it change — only the judge configuration fingerprint can.
     plugin: PathBuf,
-    judge_log: PathBuf,
+    judge_history: PathBuf,
 }
 
 impl Workspace {
@@ -73,8 +73,8 @@ impl Workspace {
             &plugin,
             "The change documents every new operator entry point.",
         );
-        let judge_log = base.join("judge-runs.log");
-        std::fs::write(&judge_log, "").expect("the judge log is writable");
+        let judge_history = base.join("judge-history.log");
+        std::fs::write(&judge_history, "").expect("the judge's history is writable");
         write_judge(&judge_bin);
 
         let workspace = Self {
@@ -82,7 +82,7 @@ impl Workspace {
             root,
             judge_bin,
             plugin,
-            judge_log,
+            judge_history,
         };
         workspace.git(&["init", "-q"]);
         workspace.commit("the checkout under test");
@@ -133,7 +133,7 @@ impl Workspace {
         command
             .current_dir(&self.root)
             .env("PATH", self.path_with(&self.judge_bin))
-            .env("FAKE_LLMLINT_LOG", &self.judge_log)
+            .env("FAKE_LLMLINT_HISTORY", &self.judge_history)
             .env("FAKE_LLMLINT_PLUGIN", &self.plugin)
             // The suite is itself run by a gate that may have exported one, and an
             // inherited global cache skip is a state three journeys set deliberately.
@@ -150,18 +150,29 @@ impl Workspace {
             .expect("the cached target records its report where it declares it does")
     }
 
-    /// How many times the judge was actually asked to judge the diff.
+    /// How many times the judge was actually asked to judge the diff, read the way
+    /// an operator asks: `llmlint history`, the judge's own record of its runs.
+    ///
+    /// This is what tells a replayed verdict from a re-judged one without taking the
+    /// tier's own word for it — the provenance line is computed by the script under
+    /// test, so a journey that believed it could not catch it being wrong.
     fn judge_runs(&self) -> usize {
-        self.judge_log().len()
+        self.judge_history().len()
     }
 
-    /// The argument line each judge run was invoked with.
-    fn judge_log(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.judge_log)
-            .expect("the judge log is readable")
-            .lines()
-            .map(str::to_owned)
-            .collect()
+    /// The argument line each judge run was invoked with, as `llmlint history` lists
+    /// them.
+    fn judge_history(&self) -> Vec<String> {
+        let mut command = Command::new("llmlint");
+        command.arg("history");
+        self.wire(&mut command, &[]);
+        let listed = Reported::from(
+            command
+                .output()
+                .expect("the judge this checkout resolves answers `llmlint history`"),
+        );
+        listed.succeeded();
+        listed.stdout.lines().map(str::to_owned).collect()
     }
 
     /// Rewrite the judge configuration that lives outside the tree, which no file
@@ -413,8 +424,12 @@ case "${{1:-}}" in
     cat "$FAKE_LLMLINT_PLUGIN"
     exit 0
     ;;
+  history)
+    cat "$FAKE_LLMLINT_HISTORY"
+    exit 0
+    ;;
 esac
-printf '%s\n' "$*" >>"$FAKE_LLMLINT_LOG"
+printf '%s\n' "$*" >>"$FAKE_LLMLINT_HISTORY"
 {diagnostic} >&2
 if [ "${{FAKE_LLMLINT_EXIT:-0}}" != 0 ]; then
   {finding}
@@ -478,7 +493,7 @@ fn an_unchanged_tree_and_base_replays_the_recorded_verdict() {
     second.succeeded();
     assert_eq!(workspace.judge_runs(), 1, "the judge was rolled twice");
     assert_eq!(
-        workspace.judge_log(),
+        workspace.judge_history(),
         [format!("--diff --diff-base {base}")]
     );
     for run in [&first, &second] {
@@ -638,6 +653,12 @@ fn findings_fail_the_tier_and_are_never_replayed() {
             // reaches the operator at all is, and a driver that dropped Nx's
             // diagnostics would take it with them.
             .says(JUDGE_DIAGNOSTIC);
+        // A run with findings has no answer to give, and everything it does say is
+        // a diagnostic — so stdout, where a clean run's one line goes, stays empty.
+        assert!(
+            run.stdout.is_empty(),
+            "a run with findings answers nothing on stdout: {run}"
+        );
     }
 }
 

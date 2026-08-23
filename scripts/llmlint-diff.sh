@@ -99,8 +99,11 @@ trap 'rm -f "$verdict" "$diagnostics"' EXIT
 status=0
 LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
+# A failed run is all diagnostics — the judge's findings, and whatever Nx said about
+# the task — so all of it goes to stderr. Only the one line a clean run prints is an
+# answer, and that is the only thing this tier ever puts on stdout.
 if [ "$status" -ne 0 ]; then
-  cat "$verdict"
+  cat "$verdict" >&2
   cat "$diagnostics" >&2
 fi
 
