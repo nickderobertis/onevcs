@@ -767,9 +767,13 @@ fn a_missing_pinned_runtime_helper_is_actionable() {
 
     let refused = workspace.lint(&workspace.head(), &[], &[]);
     let printed = workspace.fingerprint(&[]);
+    let refused_by_the_target =
+        workspace.run_nx_target(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
 
     // The recipe meets it through the fingerprint it asks for first, which is the
-    // one an operator diagnosing this would run by hand.
+    // one an operator diagnosing this would run by hand; a run that went straight to
+    // the target through `just nx` meets the target's own refusal instead. Both name
+    // the file and how to put it back.
     refused
         .failed()
         .says_on_stderr("llmlint fingerprint: could not load the pinned runtime environment")
@@ -779,6 +783,10 @@ fn a_missing_pinned_runtime_helper_is_actionable() {
         .failed()
         .says("llmlint fingerprint: could not load the pinned runtime environment")
         .says("restore scripts/llmlint-runtime-env.sh and retry");
+    refused_by_the_target
+        .failed()
+        .says("could not load scripts/llmlint-runtime-env.sh")
+        .says("git checkout -- scripts/llmlint-runtime-env.sh");
     assert_eq!(workspace.judge_runs(), 0);
 }
 

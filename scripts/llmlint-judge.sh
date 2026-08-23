@@ -46,7 +46,7 @@ report=.logs/lint-llm-diff.log
 status=0
 llmlint --diff --diff-base "$base_sha" >"$report" 2>&1 || status=$?
 if [ "$status" -ne 0 ]; then
-  cat "$report" >&2 || echo "lint-llm-diff: the judge left no readable report at $report" >&2
+  cat "$report" >&2
   echo "lint-llm-diff: the judge reported the above against base $base_sha" >&2
   echo "ACTION: clear each finding at the file and line it names, then rerun 'just lint-llm-diff <base>'" >&2
 fi
