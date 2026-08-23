@@ -654,22 +654,42 @@ two shapes rather than a field beside them: a `human-step` target naming a `prob
 and an `automated` target naming an `action:`, each fail to load, naming the target.
 "A human-step target has a probe" is not a state this crate can hold.
 
-The targets live in a new tracked YAML document beside the rules file, reached the
-same way: `Registry` gains an optional `releases` key next to `rules`, **and the
-registry version does not move for it.** That is deliberate, and it is the one
-place this amendment departs from what was asked for.
+The targets live in a new tracked YAML document at one conventional path under the
+state root — `$ONEVCS_HOME/releases.yml` — and nowhere else. **`Registry` gains no
+release-targets key, and the registry version does not move.** That is deliberate,
+and it is the one place this amendment departs from what was asked for.
 
 The registry is *shared host state*: every `onevcs` on a machine reads the one
 document, and `store::load` rewrites it in place the moment it migrates. A version
 this build writes and an already-released build cannot read therefore does not
 degrade that build — it stops it, for every verb, on a host whose operator opted
-into nothing, the first time any newer `onevcs` reads the file. So the key is
-additive instead. Absent, it is omitted, and a host with no release targets has a
-document byte for byte the one an older build already reads and this build does not
-touch. Present, an older build refuses it by name through `deny_unknown_fields` —
-which is the fail-closed answer a version bump was for, without the blast radius.
-A host with no release-targets document at all behaves exactly as it did before
-there was one: every repository has no release targets and adopts fast.
+into nothing, the first time any newer `onevcs` reads the file. An optional key was
+considered as the milder form of that and withdrawn for the same reason one step
+later: every build already in the field declares `deny_unknown_fields` and always
+will, so the moment a host configured a release target, that host's older `onevcs`
+would refuse the registry outright. The key would have been safe exactly until
+somebody used it. So the registry is not read for release targets, not written for
+them, and not touched by this feature in any state, and the document an older build
+is handed is byte for byte unchanged whether or not release targets are configured.
+Relocating the file buys nothing that would pay for that: `ONEVCS_HOME` already
+moves the whole state root, which is every case an override would have served. A
+host with no release-targets document at all behaves exactly as it did before there
+was one: every repository has no release targets and adopts fast.
+
+**And every document this crate loads from the state root is read leniently.** The
+registry, the rules file, the release-targets document, and the per-identity release
+record each accept a version *higher* than the newest this build knows, taking the
+fields understood and ignoring the keys they have no opinion on; only a version below
+the oldest readable one, or a field this build genuinely requires, is refused, and
+such a refusal names the field. Whatever this build then *writes back* carries the
+keys it did not understand and the version it did not understand, so an older
+`onevcs` touching a newer one's state degrades it rather than destroying it, and a
+write never lowers a declared version. `deny_unknown_fields` comes off those types
+for that, which trades a typo being caught for a host that keeps working: an older
+build ignoring a key it cannot honour is degraded, where one refusing the document
+stops every verb on the machine. Leniency covers what this build has **no opinion
+on** — a key it refuses *by name*, such as the `gate:` version 3 of the rules file
+removed, stays refused exactly as it was.
 
 ```yaml
 version: 1
