@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use predicates::prelude::*;
 
-use crate::host::{Hosted, AUTOMATED, REVIEWED};
+use crate::host::{Hosted, AUTOMATED, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::registry::configure_rules;
 use crate::support::{documented_default_prefix, documented_trailer};
@@ -3088,5 +3088,200 @@ fn a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison() {
             worker.display()
         )),
         "and it is named as the copy that was chosen:\n{said}"
+    );
+}
+
+/// Where a branch stands on the origin, or nothing if the origin has no such branch.
+///
+/// Read off the bare origin rather than out of any clone: what makes a push a push is
+/// that the *remote* moved, and a clone's own ref says only what that clone knows.
+fn on_origin(hosted: &Hosted, branch: &str) -> Option<String> {
+    let listed = hosted.world.git(
+        &hosted.origin,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            &format!("refs/heads/{branch}"),
+        ],
+    );
+    let tip = listed.trim().to_owned();
+    (!tip.is_empty()).then_some(tip)
+}
+
+#[test]
+fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_failed() {
+    // The three endings a publishing push can have, driven through the one verb an
+    // operator publishes a finished branch with, because their exit codes cannot tell
+    // them apart: the contract fixes `1` for every verification failure, so what says
+    // which of the three this was is the sentence on stderr and the kind behind it.
+    //
+    // The first is the one that was being reported as the other two. The push reaches
+    // the remote and the host will not then say what blocks the merge — twice in one
+    // session, while the work was on the remote and CI was running on it — and a
+    // manager reading `failed` re-runs finished work or reads a chain as still
+    // blocked. So it says both facts: the branch is on origin, at the commit it was
+    // pushed at, and the merge path could not be read.
+    let hosted = Hosted::new(AUTOMATED);
+    // The rollup answers, and `gh pr checks --required` reports no check at all on the
+    // head — the race a publication reading its checks seconds after pushing meets.
+    hosted.world.host_checks(&[green_check()]);
+    hosted.world.report_no_checks_on_the_head();
+    finished_hosted_branch(&hosted, "feature/unread", "feat: add the unread thing");
+    let pushing = hosted
+        .world
+        .git(&hosted.checkout, &["rev-parse", "refs/heads/feature/unread"]);
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/unread",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 1 is the contract's code for a verification failure, and it does not move:
+        // what is new is which of them this was.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"));
+    let said = stderr_of(&assert);
+    assert!(
+        said.contains(&format!("\"feature/unread\" is on origin at {pushing}")),
+        "the outcome names where the push landed:\n{said}"
+    );
+    assert!(
+        said.contains("the merge path could not be read: "),
+        "and that the merge path is what could not be read:\n{said}"
+    );
+    assert!(
+        said.contains("the host reports no check at all yet on the head of"),
+        "carrying the reason the host gave:\n{said}"
+    );
+    assert!(
+        !said.contains("required check failed") && !said.contains("push rejected"),
+        "and it is neither of the two failures it used to be reported as:\n{said}"
+    );
+    // The fact the old report contradicted: the work really is on the remote, at the
+    // commit this run pushed.
+    assert_eq!(
+        on_origin(&hosted, "feature/unread").as_deref(),
+        Some(pushing.as_str()),
+        "the branch is on the origin at the commit that was pushed"
+    );
+    assert_eq!(
+        hosted.origin_log().len(),
+        1,
+        "and nothing merged, which is why this is still a failure"
+    );
+
+    // The second: a push the merge path *refused*. Nothing reached the remote, so it
+    // is still reported as a refused push and the new outcome has not absorbed it.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[green_check()]);
+    hosted.world.install_pre_push(
+        &hosted.checkout,
+        "echo 'the hook found a secret in the diff' >&2; exit 1",
+    );
+    finished_hosted_branch(&hosted, "feature/refused", "feat: add the refused thing");
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/refused",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("push rejected"));
+    let said = stderr_of(&assert);
+    assert!(
+        !said.contains("pushed, merge path unverified"),
+        "a push that never landed is not reported as one that did:\n{said}"
+    );
+    assert_eq!(
+        on_origin(&hosted, "feature/refused"),
+        None,
+        "and nothing of it reached the origin"
+    );
+
+    // The third: a required check that genuinely concluded red. The merge path
+    // answered, and its answer is still what is reported.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("failure"),
+        required: true,
+    }]);
+    finished_hosted_branch(&hosted, "feature/reddened", "feat: add the reddened thing");
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/reddened",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "required check \"gate\" concluded failure",
+        ));
+    let said = stderr_of(&assert);
+    assert!(
+        !said.contains("pushed, merge path unverified"),
+        "a merge path that ruled is reported as having ruled:\n{said}"
+    );
+    assert_eq!(hosted.origin_log().len(), 1, "and a red check lands nothing");
+}
+
+#[test]
+fn a_repository_that_declares_no_required_check_publishes_as_it_always_has() {
+    // The other half of the distinction above, and the one that must not move: a
+    // repository with no branch protection genuinely has nothing blocking its merges,
+    // and `gh` says so in a sentence one word away from the one that means a head
+    // nothing has reported on yet. Read the two the same way and either every
+    // unprotected repository becomes unpublishable, or a merge is waved through on a
+    // head no verification has begun on.
+    //
+    // Under `change-direct`, which is the policy that asks for the merge itself and so
+    // is the one that acts on "nothing blocks it". `change-auto` fails closed on the
+    // same answer for a reason of its own — it waits for a merge the host performs,
+    // and a host holding a change behind a check nobody declared performs none — which
+    // `host.rs` already drives.
+    let hosted = Hosted::new(DIRECT);
+    hosted.world.host_checks(&[Check {
+        name: "coverage-comment",
+        status: "completed",
+        conclusion: Some("success"),
+        required: false,
+    }]);
+    finished_hosted_branch(
+        &hosted,
+        "feature/unprotected",
+        "feat: add the unprotected thing",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/unprotected",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        hosted.origin_log()[0], "feat: add the unprotected thing (#1)",
+        "a repository that requires nothing still lands its change"
     );
 }

@@ -99,7 +99,7 @@ pub const REVIEWED: &str = "{publication: change-open, approvals: required}";
 pub const AUTOMATED: &str = "{publication: change-auto, approvals: required}";
 /// Asks the host for the merge itself, so it is the policy that waits on whatever
 /// checks the host says block one first.
-const DIRECT: &str = "{publication: change-direct, approvals: none}";
+pub const DIRECT: &str = "{publication: change-direct, approvals: none}";
 
 #[test]
 fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
