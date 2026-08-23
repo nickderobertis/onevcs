@@ -1,0 +1,20 @@
+Mutation: a count is taken against every name it was given, so one that no longer resolves — a session branch its worker renamed — takes the whole revision walk down with it and the refusal reads as no work at all.
+Red: closing_a_session_whose_worker_renamed_the_branch_out_from_under_it_keeps_the_work
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index 193d99a..ae56fe2 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -1028,11 +1028,7 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
+ // are revisions git named and git resolves, and every other function in this module
+ // spells one the same way.
+ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
+-    let held: Vec<&str> = carried
+-        .iter()
+-        .copied()
+-        .filter(|name| tip(cwd, name).is_some())
+-        .collect();
++    let held: Vec<&str> = carried.to_vec();
+     let mut args = vec![
+         "rev-list",
+         "--count",
