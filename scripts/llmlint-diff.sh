@@ -70,28 +70,32 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
 fi
 unset NX_SKIP_NX_CACHE NX_DISABLE_NX_CACHE
 
-report="$(mktemp)" || {
+verdict="$(mktemp)" && diagnostics="$(mktemp)" || {
   echo "lint-llm-diff: could not open temporary storage for the judge report" >&2
   echo "ACTION: free disk space in \$TMPDIR and retry" >&2
   exit 1
 }
-trap 'rm -f "$report"' EXIT
+trap 'rm -f "$verdict" "$diagnostics"' EXIT
 
 # Streaming mode, so Nx's own output reaches this script whole: it carries both the
 # judge's report and the cache annotation the provenance line below is read from.
-# The target runs with `usePty: false` (project.json) for the same reason: Nx's
-# pseudo-terminal reader can lose a fast task's output entirely — a run that judged
-# the diff then reports no verdict at all, and the replay of it says as little.
+# Nothing is merged here — each of Nx's streams is handed back on the side it
+# arrived on, so the verdict stays readable on stdout. (Nx itself folds a task's own
+# stderr into its stdout when it reports a finished task; that is upstream of this.)
+# The target runs with `usePty: false` (project.json), which is needed regardless:
+# Nx's pseudo-terminal reader can lose a fast task's output entirely — a run that
+# judged the diff then reports no verdict at all, and the replay of it says as little.
 status=0
 LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
-  bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$report" 2>&1 || status=$?
-cat "$report"
+  bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
+cat "$verdict"
+cat "$diagnostics" >&2
 
 # Provenance comes from Nx's own cache reporting: the annotation on the task line,
 # or the summary line it prints only when it replayed a task instead of running it.
 # Both are matched because only the first is safe at any size — Nx replays a hit as
 # one burst, so a large replay can arrive with its summary line truncated.
-if grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)' "$report"; then
+if grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)' "$verdict" "$diagnostics"; then
   echo "lint-llm-diff: replayed the recorded verdict for base $base_sha (Nx cache hit)" >&2
 else
   echo "lint-llm-diff: judged this diff against base $base_sha (Nx cache miss)" >&2

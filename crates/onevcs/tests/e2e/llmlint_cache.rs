@@ -40,6 +40,9 @@ const PASS_VERDICT: &str = "fake-judge: 31 passed, 0 failed";
 /// What a run with findings says. Never cached, so never replayed.
 const FAIL_FINDING: &str = "fake-judge finding: tool_output_is_signal in scripts/llmlint-diff.sh";
 const FAIL_VERDICT: &str = "fake-judge: 30 passed, 1 failed";
+/// What the judge says about the run rather than about the diff — llmlint's own
+/// harness view, which it writes to stderr.
+const JUDGE_DIAGNOSTIC: &str = "fake-judge: asked the harness for 31 verdicts";
 /// The provenance the recipe prints, which is how an operator tells a fresh
 /// verdict from a replayed one without reading Nx's task log.
 const CACHE_HIT: &str = "replayed the recorded verdict for base";
@@ -293,6 +296,28 @@ impl Reported {
         self
     }
 
+    /// The judge's verdict is this tier's answer, so it belongs on stdout — where a
+    /// caller can read it — rather than mixed into the diagnostics.
+    #[track_caller]
+    fn says_on_stdout(&self, expected: &str) -> &Self {
+        assert!(
+            self.stdout.contains(expected),
+            "expected {expected:?} on stdout in {self}"
+        );
+        self
+    }
+
+    /// Everything about the run rather than about the diff — the provenance line,
+    /// and every refusal — is a diagnostic.
+    #[track_caller]
+    fn says_on_stderr(&self, expected: &str) -> &Self {
+        assert!(
+            self.stderr.contains(expected),
+            "expected {expected:?} on stderr in {self}"
+        );
+        self
+    }
+
     #[track_caller]
     fn silent_about(&self, unexpected: &str) -> &Self {
         assert!(
@@ -378,6 +403,7 @@ fn write_judge(directory: &Path) {
     ;;
 esac
 printf '%s\n' "$*" >>"$FAKE_LLMLINT_LOG"
+echo "{JUDGE_DIAGNOSTIC}" >&2
 if [ "${{FAKE_LLMLINT_EXIT:-0}}" != 0 ]; then
   echo "{FAIL_FINDING}"
   echo "{FAIL_VERDICT}"
@@ -432,11 +458,11 @@ fn an_unchanged_tree_and_base_replays_the_recorded_verdict() {
     for run in [&first, &second] {
         // The replayed run has to say everything the judged one said: the report is
         // the tier's product, and Nx replays it in place of a verdict record.
-        run.says(PASS_REPORT).says(PASS_VERDICT);
+        run.says_on_stdout(PASS_REPORT).says_on_stdout(PASS_VERDICT);
     }
     // "Green" is a claim about one base commit, so the provenance names it.
-    first.says(&format!("{CACHE_MISS} {base}"));
-    second.says(&format!("{CACHE_HIT} {base}"));
+    first.says_on_stderr(&format!("{CACHE_MISS} {base}"));
+    second.says_on_stderr(&format!("{CACHE_HIT} {base}"));
 }
 
 #[test]
@@ -567,9 +593,14 @@ fn findings_fail_the_tier_and_are_never_replayed() {
     assert_eq!(workspace.judge_runs(), 2, "a red must be judged again");
     for run in [&first, &second] {
         run.failed()
-            .says(FAIL_FINDING)
-            .says(FAIL_VERDICT)
-            .says(CACHE_MISS);
+            .says_on_stdout(FAIL_FINDING)
+            .says_on_stdout(FAIL_VERDICT)
+            .says_on_stderr(CACHE_MISS)
+            // Nx hands a task's two streams back merged onto its own stdout, so
+            // where the harness view lands is not this tier's to decide — that it
+            // reaches the operator at all is, and a driver that dropped Nx's
+            // diagnostics would take it with them.
+            .says(JUDGE_DIAGNOSTIC);
     }
 }
 
@@ -698,8 +729,8 @@ fn an_unresolvable_base_is_refused_before_the_judge_runs() {
 
     refused
         .failed()
-        .says("'no-such-ref' does not resolve to a commit")
-        .says("ACTION: fetch it")
+        .says_on_stderr("'no-such-ref' does not resolve to a commit")
+        .says_on_stderr("ACTION: fetch it")
         .silent_about(PASS_VERDICT);
     assert_eq!(workspace.judge_runs(), 0);
 }
