@@ -177,19 +177,16 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 5);
+    assert_eq!(stored["version"], 6);
     assert_eq!(stored["identities"][&key]["gate"], "make check");
 }
 
 #[test]
-fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() {
-    // The registry is **shared host state**: every `onevcs` on a machine reads the
-    // one document, and a read that migrates rewrites it in place. So what this
-    // holds is not only that an older document still loads — it is that this build
-    // does not *touch* it. A version an already-released build cannot read, written
-    // into a host whose operator configured no release targets, stops every verb on
-    // that host; this suite put one into `~/.onevcs` once and every `onevcs` command
-    // there refused until it was restored by hand.
+fn a_version_5_registry_migrates_lazily_and_keeps_meaning_no_release_targets() {
+    // The version this build wrote until it learned about releases. There is no
+    // field to fill in — an absent `releases` key *is* "no release targets" — so
+    // what the migration does is move the number and nothing else, on the first
+    // read that needs it, with no migration command for anybody to run.
     let world = World::new();
     let origin = world.bare_origin("v5");
     let checkout = world.clone_of(&origin, "v5");
@@ -204,17 +201,18 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
         "version: 3\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
     )
     .expect("a rules file the registry names");
-    let document = serde_json::json!({
-        "version": 5,
-        "identities": {
-            &key: {"origin": &key, "workflow": "local", "repo_type": "single-owner",
-                   "gate": "just gate"}
-        },
-        "checkouts": {"v5": {"path": checkout.to_string_lossy(), "identity": &key}},
-        "rules": rules.to_string_lossy(),
-    });
-    write_registry(&world, &document);
-    let before = std::fs::read_to_string(world.home().join("registry.json")).expect("a registry");
+    write_registry(
+        &world,
+        &serde_json::json!({
+            "version": 5,
+            "identities": {
+                &key: {"origin": &key, "workflow": "local", "repo_type": "single-owner",
+                       "gate": "just gate"}
+            },
+            "checkouts": {"v5": {"path": checkout.to_string_lossy(), "identity": &key}},
+            "rules": rules.to_string_lossy(),
+        }),
+    );
 
     world
         .onevcs()
@@ -226,11 +224,20 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
             rules.to_string_lossy().into_owned(),
         ));
 
-    assert_eq!(
-        std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
-        before,
-        "a build that learned about release targets leaves a document that names none \
-         byte for byte as it found it"
+    // The migration is written back once, in one atomic replacement, and carries
+    // everything the document already said.
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    )
+    .expect("the registry is JSON");
+    assert_eq!(stored["version"], 6);
+    assert_eq!(stored["rules"], rules.to_string_lossy().into_owned());
+    assert_eq!(stored["identities"][&key]["gate"], "just gate");
+    assert_eq!(stored["checkouts"]["v5"]["identity"], key.as_str());
+    assert!(
+        stored.get("releases").is_none(),
+        "an absent release-targets reference stays absent rather than becoming a null \
+         nobody wrote: {stored}"
     );
 
     // …and the repository behaves as it always did: no release targets, and the
@@ -328,7 +335,7 @@ fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("declares version 99"))
-        .stderr(predicate::str::contains("this build reads 2 to 5"));
+        .stderr(predicate::str::contains("this build reads 2 to 6"));
 
     std::fs::write(world.home().join("registry.json"), "{not json").expect("a broken registry");
     world

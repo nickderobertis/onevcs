@@ -406,14 +406,15 @@ script written beside them that answered to what they asked.
 `releases.rs` is the document, `probe.rs` runs a probe, and `release.rs` is
 everything else. Five things are easy to undo by accident.
 
-- **The registry version did not move, and must not.** The `releases` key is
-  optional at version 5. That document is shared host state — one per machine,
-  rewritten in place by whichever `onevcs` migrates it first — so bumping it stops
-  every already-released build on a host whose operator configured nothing. This
-  repository has watched that happen: a suite run wrote a bumped registry into
-  `~/.onevcs`, and every `onevcs` verb on that host refused until it was restored by
-  hand. `deny_unknown_fields` is what makes the additive key fail closed for an older
-  build that meets one that *is* configured.
+- **A test never runs this binary against an operator's state root.** Every verb
+  that resolves a repository reads the registry, migrates what it finds, and writes
+  it back, so a journey that inherited `~/.onevcs` is a test mutating the host it
+  runs on — and at version 6 that write is one an already-released `onevcs` refuses,
+  which stops every verb on that host until somebody restores the document. This
+  suite did exactly that once. `support::onevcs()` and `World::onevcs()` both point
+  at a scratch `ONEVCS_HOME`, `tests/e2e/smoke.rs` runs the published-smoke script
+  through one helper that sets one, and nothing here may spawn the binary without
+  one.
 
 - **The style is the shape, not a label.** A probe lives on `ReleaseMethod::Automated`
   and nowhere else, so `ReleaseTarget::probe()` answers `None` for a human-step target
