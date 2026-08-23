@@ -708,6 +708,7 @@ fn a_missing_pinned_runtime_helper_is_actionable() {
         .expect("the pinned runtime helper was there to remove");
 
     let printed = workspace.fingerprint(&[]);
+    // llmlint: ignore[tests_mirror_real_usage] The recipe's own half of this refusal is asserted beside it; only a direct target run reaches the target's.
     let judged = workspace.run_target(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
 
     printed
@@ -766,6 +767,7 @@ fn a_host_without_the_judge_is_told_which_command_installs_it() {
 
     let no_judge: &[(&str, &str)] = &[("PATH", &workspace.path_without_llmlint())];
     let refused = workspace.lint(&base, &[], no_judge);
+    // llmlint: ignore[tests_mirror_real_usage] The recipe's own half of this refusal is asserted beside it; only a direct target run reaches the target's.
     let refused_directly = workspace.run_target(&[("LLMLINT_DIFF_BASE_SHA", &base), no_judge[0]]);
 
     // The recipe stops at the fingerprint, which is the first thing that needs the
@@ -850,4 +852,29 @@ fn a_judge_configuration_that_cannot_be_fingerprinted_stops_the_tier() {
     // configuration nothing can read back.
     assert_eq!(workspace.judge_runs(), 1);
     refused.silent_about(CACHE_HIT);
+}
+
+// The recipe forwards everything after the base to Nx, so what a caller may put
+// there is this tier's boundary — and `just lint-llm-diff <base> --skip-nx-cache` is
+// exactly how an operator reaches it.
+#[test]
+fn an_argument_that_is_not_an_nx_option_is_refused_before_anything_is_judged() {
+    let workspace = Workspace::new();
+    let base = workspace.head();
+
+    let refused = workspace.lint(&base, &["; rm -rf /"], &[]);
+    let forced = workspace.lint(&base, &["--skip-nx-cache"], &[]);
+
+    refused
+        .failed()
+        .says_on_stderr("'; rm -rf /' is not an Nx option")
+        .says_on_stderr("ACTION: pass an Nx option");
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "a usage error, not a verdict"
+    );
+    // The option this guard exists to let through still does what it is for.
+    forced.succeeded().says_on_stderr(CACHE_MISS);
+    assert_eq!(workspace.judge_runs(), 1);
 }

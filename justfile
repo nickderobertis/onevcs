@@ -283,6 +283,11 @@ lint-llm-validate *args:
 # one tier is re-judged on purpose: `just lint-llm-diff <base> --skip-nx-cache`.
 # scripts/llmlint-diff.sh carries the rest — what is keyed, what is cached, and why
 # an ambient global cache skip is reported and ignored here.
+#
+# `[positional-arguments]` rather than `{{nx_args}}`: interpolation would splice the
+# caller's words into this line for the shell to parse, and what they are allowed to
+# be is the script's decision, made against each argument as it arrived.
 # llmlint scoped to the files this branch changed since it forked from main.
+[positional-arguments]
 lint-llm-diff base="origin/main" *nx_args:
-    @./scripts/llmlint-diff.sh {{quote(base)}} {{nx_args}}
+    @./scripts/llmlint-diff.sh "$@"

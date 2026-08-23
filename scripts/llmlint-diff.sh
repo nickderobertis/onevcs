@@ -64,6 +64,21 @@ base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
   exit 1
 }
 
+# Everything after the base is forwarded to Nx, and `just` hands each argument over
+# as it was typed rather than as a spliced command line — so this is where their
+# shape is checked. An Nx option is a narrow thing; anything else is a caller's word
+# that would reach Nx's own argument parser as something it may read another way.
+for argument in "$@"; do
+  case "$argument" in
+    --[A-Za-z0-9]* | -[A-Za-z0-9]) ;;
+    *)
+      echo "lint-llm-diff: '$argument' is not an Nx option, and everything after the base is passed to Nx" >&2
+      echo "ACTION: pass an Nx option — '--skip-nx-cache' re-judges this tier alone — or drop the argument" >&2
+      exit 2
+      ;;
+  esac
+done
+
 # Nx scores a runtime input that exits non-zero as *no contribution* rather than as
 # an error, so a fingerprint that cannot be produced does not fail the tier — it
 # silently shrinks the key to the tree and the base, and replays a verdict the judge
