@@ -1,0 +1,38 @@
+Mutation: a publication whose push landed and whose merge-path read then failed reports the read failure as itself, so work that is on the remote settles as a publication that never landed.
+Red: a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_failed
+
+diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
+index d7088f9..6411f4d 100644
+--- a/crates/onevcs/src/publish.rs
++++ b/crates/onevcs/src/publish.rs
+@@ -1204,28 +1204,8 @@ fn publish_as_change(
+ /// passes through too: `70` is the code this repository fixes for a seam with no
+ /// body, and a seam nobody wrote is not a merge path that could not be read.
+ fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> Error {
+-    match unread {
+-        verdict @ (Error::ChecksFailed { .. }
+-        | Error::ChecksUnsettled { .. }
+-        | Error::NotImplemented { .. }) => verdict,
+-        unread => Error::PushedUnverified {
+-            reason: format!(
+-                "{branch:?} is on origin{at} and the merge path could not be read: {unread}. The \
+-                 work reached the remote, so re-publishing it would repeat what already landed \
+-                 there — read the change request on the host, and land the branch with \
+-                 `{command}` once the host answers",
+-                branch = context.branch,
+-                at = pushed_at.map_or_else(String::new, |sha| format!(" at {sha}")),
+-                command = guidance::command([
+-                    "onevcs",
+-                    "publish-branch",
+-                    &context.branch,
+-                    "--repo",
+-                    &context.resolution.publication.to_string_lossy(),
+-                ]),
+-            ),
+-        },
+-    }
++    let _ = (context, pushed_at);
++    unread
+ }
+ 
+ /// Open or adopt the change request for a branch already on the remote, and ask the
