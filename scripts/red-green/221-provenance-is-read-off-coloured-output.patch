@@ -1,0 +1,16 @@
+Mutation: the tier reads Nx's cache reporting without stripping colour, so a replayed verdict reports itself as freshly judged wherever something forces colour.
+Red: a_forced_colour_environment_does_not_disguise_a_replay
+
+diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+index f000209..7416892 100755
+--- a/scripts/llmlint-diff.sh
++++ b/scripts/llmlint-diff.sh
+@@ -117,7 +117,7 @@ fi
+ # judge reads back to us, so an unanchored match can be quoted into a finding. The
+ # escape is spelled as a literal character rather than `\x1B`, which BSD sed does
+ # not read.
+-escape=$'\033'
++escape=
+ if sed "s/${escape}\[[0-9;]*m//g" "$verdict" "$diagnostics" |
+   grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)'; then
+   provenance="replayed the recorded verdict for base $base_sha (Nx cache hit)"

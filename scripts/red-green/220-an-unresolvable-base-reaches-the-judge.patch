@@ -1,0 +1,20 @@
+Mutation: the tier stops resolving the base ref to a commit before judging, so a ref naming nothing becomes a cache key nothing can invalidate.
+Red: an_unresolvable_base_is_refused_before_the_judge_runs
+
+diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+index f000209..5346529 100755
+--- a/scripts/llmlint-diff.sh
++++ b/scripts/llmlint-diff.sh
+@@ -43,11 +43,7 @@ cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
+ # key nothing can invalidate.
+ base="${1:-origin/main}"
+ [ "$#" -eq 0 ] || shift
+-base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
+-  echo "lint-llm-diff: '$base' does not resolve to a commit" >&2
+-  echo "ACTION: fetch it ('git fetch origin') or pass a base this checkout has" >&2
+-  exit 1
+-}
++base_sha="$(git rev-parse --verify --quiet "${base}^{commit}" || printf "%s" "$base")"
+ 
+ # Everything after the base is forwarded to Nx, and `just` hands each argument over
+ # as it was typed rather than as a spliced command line — so this is where their

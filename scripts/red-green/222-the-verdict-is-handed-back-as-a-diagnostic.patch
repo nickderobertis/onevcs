@@ -1,0 +1,16 @@
+Mutation: the tier folds the judge's verdict into its diagnostics, so a caller reading the answer has to filter it out of the noise.
+Red: an_unchanged_tree_and_base_replays_the_recorded_verdict
+
+diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+index f000209..d09aac5 100755
+--- a/scripts/llmlint-diff.sh
++++ b/scripts/llmlint-diff.sh
+@@ -131,7 +131,7 @@ fi
+ report=.logs/lint-llm-diff.log
+ if [ "$status" -eq 0 ]; then
+   summary="$(grep -m1 -E '^[0-9]+ rules: ' "$report" 2>/dev/null || true)"
+-  echo "lint-llm-diff: ${provenance}${summary:+ — $summary} (full report: $report)"
++  echo "lint-llm-diff: ${provenance}${summary:+ — $summary} (full report: $report)" >&2
+ else
+   echo "lint-llm-diff: $provenance" >&2
+ fi
