@@ -481,15 +481,11 @@ impl World {
     }
 
     /// Make the substituted host report **no check at all** on the change request's
-    /// head, which is what `gh` says about a head nothing has registered a run on
-    /// yet.
+    /// head, which is what `gh` says about a head nothing has registered a run on yet.
     ///
-    /// The first seconds of every pushed head, and deliberately neither of the two
-    /// answers beside it: `report_checks_that_do_not_say_if_they_block` is a host
-    /// declining the question, and a `host_checks` with no required row is a
-    /// repository that requires nothing. This is the race between a push and the CI
-    /// that has not noticed it, which is the shape a publication reading its checks
-    /// immediately walks into.
+    /// Neither of the two answers beside it:
+    /// `report_checks_that_do_not_say_if_they_block` is a host declining the question,
+    /// and a `host_checks` with no required row is a repository that requires nothing.
     pub fn report_no_checks_on_the_head(&self) {
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
         std::fs::write(self.path("gh-state/no-checks-yet"), "")

@@ -3093,17 +3093,13 @@ fn a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison() {
 
 #[test]
 fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_failed() {
-    // The three endings a publishing push can have, driven through the one verb an
-    // operator publishes a finished branch with, because their exit codes cannot tell
-    // them apart: the contract fixes `1` for every verification failure, so what says
-    // which of the three this was is the sentence on stderr and the kind behind it.
+    // The three endings a publishing push can have, through the verb an operator
+    // publishes a finished branch with. Their exit codes cannot tell them apart — the
+    // contract fixes `1` for every verification failure — so what says which this was
+    // is the sentence on stderr.
     //
-    // The first is the one that was being reported as the other two. The push reaches
-    // the remote and the host will not then say what blocks the merge — twice in one
-    // session, while the work was on the remote and CI was running on it — and a
-    // manager reading `failed` re-runs finished work or reads a chain as still
-    // blocked. So it says both facts: the branch is on origin, at the commit it was
-    // pushed at, and the merge path could not be read.
+    // First: the push reaches the remote and the host will not then say what blocks
+    // the merge. This is the one that read as the other two.
     let hosted = Hosted::new(AUTOMATED);
     // The rollup answers, and `gh pr checks --required` reports no check at all on the
     // head — the race a publication reading its checks seconds after pushing meets.
@@ -3231,18 +3227,13 @@ fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_faile
 
 #[test]
 fn a_repository_that_declares_no_required_check_publishes_as_it_always_has() {
-    // The other half of the distinction above, and the one that must not move: a
-    // repository with no branch protection genuinely has nothing blocking its merges,
-    // and `gh` says so in a sentence one word away from the one that means a head
-    // nothing has reported on yet. Read the two the same way and either every
-    // unprotected repository becomes unpublishable, or a merge is waved through on a
-    // head no verification has begun on.
+    // The other half of the distinction above, and the one that must not move: read
+    // the two the same way and either every unprotected repository becomes
+    // unpublishable, or a merge is waved through on a head nothing has begun on.
     //
-    // Under `change-direct`, which is the policy that asks for the merge itself and so
-    // is the one that acts on "nothing blocks it". `change-auto` fails closed on the
-    // same answer for a reason of its own — it waits for a merge the host performs,
-    // and a host holding a change behind a check nobody declared performs none — which
-    // `host.rs` already drives.
+    // Under `change-direct`, the policy that asks for the merge itself and so the one
+    // that acts on "nothing blocks it". `change-auto` fails closed on the same answer
+    // for a reason of its own, which `host.rs` drives.
     let hosted = Hosted::new(DIRECT);
     hosted.world.host_checks(&[Check {
         name: "coverage-comment",

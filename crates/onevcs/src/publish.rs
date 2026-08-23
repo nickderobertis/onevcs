@@ -1116,20 +1116,12 @@ fn publish_as_change(
     environment: &[(String, String)],
     push: Push,
 ) -> Result<PublishOutcome> {
-    // Read before anything is pushed, and that is the whole reason they are read
-    // here: the host slug and the watch's knobs are *this build's own input* — an
-    // identity that names no host, a `--policy` asking a local repository for a change
-    // request, a misspelled `ONEVCS_CHECK_SOURCE`, a bound that is not a number — and
-    // input is rejected at its boundary. Read for the first time further down, each
-    // one would refuse with the branch already on the remote, and the refusal would
-    // read as a merge path nobody could verify rather than as the misconfiguration it
-    // is.
+    // Input, rejected at its boundary rather than half way through the watch below,
+    // where the branch would already be on the remote and the refusal would read as a
+    // merge path nobody could verify.
     refuse_an_unhosted_identity(&context.resolution.key)?;
     if context.effective != MergePolicy::ChangeOpen {
-        // Only the policies that watch read them, so only those are held to them: a
-        // publication that opens a change request and stops never asks the host a
-        // second time, and refusing it over a knob it does not use would be this
-        // build inventing a failure.
+        // Only the policies that watch read these, so only those are held to them.
         gh::checks_timeout()?;
         gh::checks_poll()?;
         crate::host::check_source_names_a_source()?;
@@ -1213,12 +1205,9 @@ fn publish_as_change(
 
 /// Refuse an identity that has no host at all, before anything is pushed.
 ///
-/// Half of [`change_host`]'s question, asked early, because only half of it is about
-/// configuration: a *local* identity being asked for a change request is a policy
-/// nobody can honour, and pushing first would put a branch on a remote to no purpose.
-/// The other half — a **hosted** identity on a host this build has no implementation
-/// for — is deliberately left until after the push, because there the branch reaching
-/// the origin is not what is missing, and `edges.rs` holds that behaviour.
+/// Half of [`change_host`]'s question, and only that half: a **hosted** identity this
+/// build has no implementation for is left until after the push, because there the
+/// branch reaching the origin is not what is missing, and `edges.rs` holds that.
 fn refuse_an_unhosted_identity(identity: &str) -> Result<()> {
     match change_host(identity) {
         Ok(_) | Err(Error::NotImplemented { .. }) => Ok(()),
@@ -1229,15 +1218,10 @@ fn refuse_an_unhosted_identity(identity: &str) -> Result<()> {
 /// A push that reached the remote and a merge path that could not then be read,
 /// reported as the one thing it is rather than as a publication that failed.
 ///
-/// This covers the answers nobody got. Four failures pass through it untouched,
-/// because each is a meaning the contract fixes for a kind of its own:
-/// [`Error::ChecksFailed`], [`Error::ChecksUnsettled`], [`Error::NotImplemented`],
-/// and [`Error::GateFailed`] — which the amendment naming this vocabulary fixes for
-/// "a host that took a merge and then reported it unperformed". That last one shares
-/// this defect's shape, the push having landed, and is reported rather than
-/// re-pointed: which kind a meaning belongs to is an amendment somebody approves.
-///
-/// A push the merge path *refused* never reaches here at all: it returned above.
+/// This covers the answers nobody got. What passes through is every failure the
+/// contract already fixes a kind for — [`Error::GateFailed`] included, which it fixes
+/// for a host that took a merge and then reported it unperformed: that shares this
+/// defect's shape, and re-pointing a meaning is an amendment somebody approves.
 fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> Error {
     match unread {
         verdict @ (Error::ChecksFailed { .. }
@@ -1264,12 +1248,11 @@ fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> 
     }
 }
 
-/// Open or adopt the change request for a branch already on the remote, and ask the
-/// host to land it.
+/// Open or adopt the change request for a branch **already on the remote**, and ask
+/// the host to land it.
 ///
-/// Split from the push above so that the one thing every failure in here has in
-/// common — the push has landed — is a property of the function rather than of a
-/// comment somebody has to remember to keep true.
+/// Separate from the push above so that what every failure in here has in common is a
+/// property of the function rather than a comment somebody has to keep true.
 fn land_as_change(
     context: &Context<'_>,
     stream: &mut Stream,
