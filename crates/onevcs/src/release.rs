@@ -847,8 +847,22 @@ fn read(identity: &str) -> Result<Record> {
 }
 
 fn read_at(path: &Path, identity: &str) -> Result<Record> {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Ok(Record::empty(identity));
+    // A record that is not there is a repository nothing has been recorded for yet,
+    // and that is an answer. Every *other* way a read fails is a record this host
+    // has and cannot see — and treating one as empty would be worse than refusing:
+    // the next acknowledgement is written under the same lock, over a document whose
+    // contents nobody read.
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Record::empty(identity))
+        }
+        Err(failure) => {
+            return Err(error::invalid(format!(
+                "cannot read the release record at {}: {failure}",
+                path.display()
+            )))
+        }
     };
     let record: Record = serde_json::from_str(&raw).map_err(|failure| {
         error::invalid(format!(

@@ -486,6 +486,16 @@ fn a_script_probe_runs_from_the_publication_checkout_at_its_base_and_never_from_
     assert_eq!(latest["state"], "released");
     assert_eq!(latest["version"], "3.0.0");
 
+    // The table says what this target is answered by, arguments included, which is
+    // how an operator tells one script probe from another.
+    assert!(
+        releasing
+            .says(&["targets", "project"])
+            .contains("wheel\tautomated\tscript scripts/probe.sh wheel"),
+        "the table names the script and the arguments it is given: {}",
+        releasing.says(&["targets", "project"])
+    );
+
     let log = std::fs::read_to_string(releasing.fixture.world.path("probe-log"))
         .expect("the script recorded where it ran");
     let checkout = releasing.fixture.checkout.to_string_lossy().into_owned();
@@ -1550,6 +1560,20 @@ fn a_release_record_this_build_cannot_read_is_refused_rather_than_answered_aroun
     // filename collision leave behind, and there is deliberately no command that
     // produces one. It is the same affordance `tests/e2e/registry.rs` uses to drive the
     // registry's own refusals, and what is under test is what the real binary then says.
+    // A record that is *there* and cannot be read at all is not an absent record:
+    // the next acknowledgement is written under the same lock, and treating this as
+    // empty would replace a document nobody read.
+    std::fs::write(&record, [0x7b, 0xff, 0x7d]).expect("a record that is not text");
+    let refused = releasing
+        .release(&["status", "feature/one", "--target", "container"])
+        .failure()
+        .code(2);
+    assert!(
+        String::from_utf8_lossy(&refused.get_output().stderr)
+            .contains("cannot read the release record at"),
+        "a record this host cannot read is refused rather than answered around"
+    );
+
     for (contents, expected) in [
         ("{not json".to_owned(), "is not one this build reads"),
         (
