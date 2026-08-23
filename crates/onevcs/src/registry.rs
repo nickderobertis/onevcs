@@ -1,10 +1,10 @@
 //! The registry document: which repository identities exist, which checkouts
 //! belong to each, and where the rules and release-targets files live.
 //!
-//! Version 5 is version 4's identities and checkouts plus a rules reference;
-//! version 6 is that plus a release-targets reference. The document is replaced
-//! atomically under process-shared locks, and a v2–v5 document is migrated lazily
-//! on read.
+//! Version 5 is version 4's identities and checkouts plus a rules reference, and
+//! since then an **optional** release-targets reference beside it. The document is
+//! replaced atomically under process-shared locks, and a v2–v4 document is migrated
+//! lazily on read.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Registry {
-    /// The schema version. `6` is the shape declared here; `2`–`5` are migrated
+    /// The schema version. `5` is the shape declared here; `2`–`4` are migrated
     /// lazily on read.
     // llmlint: ignore[boundary_inputs_validated] deciding which versions are acceptable is
     // the lazy v2-v4 migration the contract specifies, and that is implementation this
@@ -34,6 +34,15 @@ pub struct Registry {
     /// Where the release-targets file lives. Absent means the conventional path
     /// under the state root, and — where nothing is there either — that no
     /// repository has release targets and every one of them adopts fast.
+    ///
+    /// Optional at version 5 rather than the reason for a version 6, because the
+    /// registry is shared host state: a document a build writes is the document
+    /// every other `onevcs` on that machine then reads. Absent, it is omitted, so a
+    /// host that configures no release targets has a document byte for byte the one
+    /// a build that never heard of this key already reads. Present, that build
+    /// refuses it by name through `deny_unknown_fields` — which is the fail-closed
+    /// answer a version bump would have given, without stopping every host that
+    /// opted into nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub releases: Option<PathBuf>,
 }

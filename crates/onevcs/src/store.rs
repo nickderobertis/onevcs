@@ -6,7 +6,7 @@
 //! concurrent registrations are both retained rather than one overwriting the
 //! other.
 //!
-//! A document older than version 6 is migrated **lazily**, on the first read that
+//! A document older than version 5 is migrated **lazily**, on the first read that
 //! needs it: an operator never runs a migration command, and an interrupted one
 //! cannot leave half a document behind.
 
@@ -20,7 +20,17 @@ use crate::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use crate::{git, home, lock};
 
 /// The version this build writes.
-pub const VERSION: u32 = 6;
+///
+/// It did **not** move when the release-targets reference was added, and that is a
+/// decision rather than an oversight. The registry is *shared host state*: every
+/// `onevcs` on this machine reads the one document, and `load` rewrites it in place
+/// the moment it migrates. So a version this build writes and an already-released
+/// build cannot read does not degrade that build — it stops it, for every verb, on
+/// a host whose operator opted into nothing. Adding an optional key that older
+/// builds never see is the change that costs them nothing; `deny_unknown_fields` is
+/// what keeps it honest, so a document that *does* name a release-targets file is
+/// refused by name there rather than half-read.
+pub const VERSION: u32 = 5;
 /// What an identity's gate is recorded as when nothing could be detected.
 pub const NOOP_GATE: &str = "<no-op>";
 
@@ -194,23 +204,11 @@ fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
             ),
         })?;
     match version {
-        VERSION_6 => {
+        VERSION_5 => {
             let registry: Registry = serde_json::from_value(value.clone())
                 .map_err(error::at("read the registry at", path))?;
             coherent(path, &registry)?;
             Ok((registry, false))
-        }
-        // Version 6 added one optional key, so a version 5 document already *is* the
-        // shape declared here — `releases` is absent, which is what "this host has no
-        // release targets" is spelled as. Nothing is filled in; only the number moves,
-        // and it moves so that a document this build has written cannot be read by an
-        // older one as a document that never had the key.
-        VERSION_5 => {
-            let mut registry: Registry = serde_json::from_value(value.clone())
-                .map_err(error::at("read the registry at", path))?;
-            registry.version = VERSION;
-            coherent(path, &registry)?;
-            Ok((registry, true))
         }
         2..=4 => {
             let migrated = legacy(path, object, version as u32)?;
@@ -226,8 +224,7 @@ fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
     }
 }
 
-const VERSION_6: u64 = VERSION as u64;
-const VERSION_5: u64 = VERSION_6 - 1;
+const VERSION_5: u64 = VERSION as u64;
 
 /// Reject a document whose records disagree with each other.
 ///
@@ -264,7 +261,7 @@ fn coherent(path: &Path, registry: &Registry) -> Result<()> {
     Ok(())
 }
 
-/// Read a version 2, 3, or 4 document into the version 6 shape.
+/// Read a version 2, 3, or 4 document into the version 5 shape.
 ///
 /// Each older version omits one field, and each omission has one answer that is
 /// evidence rather than a guess:

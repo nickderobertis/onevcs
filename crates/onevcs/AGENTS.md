@@ -404,7 +404,16 @@ script written beside them that answered to what they asked.
 ## Releases are what follows a landing, and two distinctions carry the whole thing
 
 `releases.rs` is the document, `probe.rs` runs a probe, and `release.rs` is
-everything else. Four things are easy to undo by accident.
+everything else. Five things are easy to undo by accident.
+
+- **The registry version did not move, and must not.** The `releases` key is
+  optional at version 5. That document is shared host state — one per machine,
+  rewritten in place by whichever `onevcs` migrates it first — so bumping it stops
+  every already-released build on a host whose operator configured nothing. This
+  repository has watched that happen: a suite run wrote a bumped registry into
+  `~/.onevcs`, and every `onevcs` verb on that host refused until it was restored by
+  hand. `deny_unknown_fields` is what makes the additive key fail closed for an older
+  build that meets one that *is* configured.
 
 - **The style is the shape, not a label.** A probe lives on `ReleaseMethod::Automated`
   and nowhere else, so `ReleaseTarget::probe()` answers `None` for a human-step target

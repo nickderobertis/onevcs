@@ -655,11 +655,21 @@ and an `automated` target naming an `action:`, each fail to load, naming the tar
 "A human-step target has a probe" is not a state this crate can hold.
 
 The targets live in a new tracked YAML document beside the rules file, reached the
-same way: `Registry` gains an optional `releases` key next to `rules`, and the
-registry document rises to **version 6** for it. A version 5 document still loads
-and means "no release targets" — the key is absent, which is what that is spelled as
-— and a host with no document at all behaves exactly as it did before there was one:
-every repository has no release targets and adopts fast.
+same way: `Registry` gains an optional `releases` key next to `rules`, **and the
+registry version does not move for it.** That is deliberate, and it is the one
+place this amendment departs from what was asked for.
+
+The registry is *shared host state*: every `onevcs` on a machine reads the one
+document, and `store::load` rewrites it in place the moment it migrates. A version
+this build writes and an already-released build cannot read therefore does not
+degrade that build — it stops it, for every verb, on a host whose operator opted
+into nothing, the first time any newer `onevcs` reads the file. So the key is
+additive instead. Absent, it is omitted, and a host with no release targets has a
+document byte for byte the one an older build already reads and this build does not
+touch. Present, an older build refuses it by name through `deny_unknown_fields` —
+which is the fail-closed answer a version bump was for, without the blast radius.
+A host with no release-targets document at all behaves exactly as it did before
+there was one: every repository has no release targets and adopts fast.
 
 ```yaml
 version: 1
