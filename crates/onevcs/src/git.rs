@@ -1013,13 +1013,6 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// that is the reason to reject it rather than the reason to assume it away.
 ///
 /// [`workspace::close`]: crate::workspace::close
-// llmlint: ignore[changed_behavior_has_e2e] no journey can reach this refusal: real git
-// answers `--count` with a count, so driving it would mean putting a program that is not
-// git on the path — and substituting git is the one thing this suite's e2e tier does not
-// do (`tests/e2e/lifecycle.rs` says so at the top: the remote host's decisioning is the
-// single exception). A boundary check whose failure the boundary cannot produce is still
-// the right shape; what it must not do is read that answer as none, and what the answer
-// *is* read as is covered by the close journeys above it.
 pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
     let mut args = vec![
         "rev-list",
@@ -1034,6 +1027,8 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
         return Ok(0);
     }
     let answer = counted.trimmed();
+    // llmlint: ignore[changed_behavior_has_e2e] driving this would mean a program that is
+    // not git on the path, which this suite's e2e tier does not put there.
     answer.parse::<u64>().map_err(|_| {
         error::invalid(format!(
             "git counted the commits {reference:?} holds and answered {answer:?}, which is not \
