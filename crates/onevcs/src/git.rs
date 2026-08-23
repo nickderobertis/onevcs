@@ -441,6 +441,10 @@ pub fn has_commit(cwd: &Path, sha: &Sha) -> bool {
 ///
 /// A repository git could not be asked answers `false`: the caller acts on this to
 /// decide whether work is safe elsewhere, and "no answer" must never read as "safe".
+// llmlint: ignore[changed_behavior_has_e2e] that answer cannot be staged on its own: a
+// clone borrows its objects from the checkout this asks about, so a checkout git cannot
+// read is a clone it cannot read either, and the close refuses at the count before this
+// is reached — which is the journey `a_close_whose_execution_checkout_is_gone_…` drives.
 // llmlint: ignore[invalid_states_unrepresentable] a revision is whatever git's parser
 // accepts, and this crate's `Sha` validates nothing, so a wrapper would rule out no
 // state — the value comes out of git and goes straight back to it.
@@ -1043,6 +1047,10 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     args.extend_from_slice(&held);
     let counted = run(&args, Some(cwd))?;
     if !counted.ok() {
+        // llmlint: ignore[changed_behavior_has_e2e] the reference going away between a
+        // listing and this count is a race with another process, which no journey can
+        // stage without a second writer in the clone; the refusal it falls through to is
+        // driven end to end by the close whose execution checkout is gone.
         if tip(cwd, reference).is_none() {
             return Ok(0);
         }

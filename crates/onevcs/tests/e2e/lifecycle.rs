@@ -915,6 +915,52 @@ fn closing_a_session_whose_worker_renamed_the_branch_out_from_under_it_keeps_the
 }
 
 #[test]
+fn a_close_whose_execution_checkout_is_gone_keeps_the_work_rather_than_assuming_it_is_safe() {
+    // Every question this guard asks is asked of git, and a session's clone borrows its
+    // objects from the execution checkout — so a checkout an operator moved or deleted is
+    // a clone git cannot answer about at all. "No answer" must not read as "nothing here":
+    // that is the same reap under a different cause, and this is the case where it would
+    // take the work with it for good, because the objects were in the checkout too.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture.world.git(
+        &worktree,
+        &["checkout", "-q", "-b", "fix/invented", "origin/main"],
+    );
+    fixture
+        .world
+        .commit_file(&worktree, "work.txt", "work\n", "fix: the thing");
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    let clone = worktree.parent().expect("a run root").join("clone");
+    std::fs::remove_dir_all(&fixture.checkout).expect("the operator's checkout is gone");
+
+    // It refuses in git's own words rather than in this crate's: what an operator has to
+    // act on here is the checkout that is not there, and no verb of this tool puts it back.
+    let refusal = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "a count nobody got is not a count of none",
+        ))
+        .stderr(predicate::str::contains("fix/invented"));
+    let said = String::from_utf8(refusal.get_output().stderr.clone()).expect("text");
+    assert!(
+        said.contains(&clone.to_string_lossy().into_owned()),
+        "the refusal names the clone it could not read:\n{said}"
+    );
+
+    assert!(worktree.is_dir(), "a refused close reaps nothing");
+    assert_eq!(
+        fixture.world.git(&clone, &["rev-parse", "fix/invented"]),
+        stranded,
+        "and the branch is still where the work was left"
+    );
+}
+
+#[test]
 fn a_session_holding_nothing_but_its_own_branch_closes_exactly_as_it_did_before() {
     let fixture = Fixture::local(&local_direct());
     // The execution checkout's own base is ahead of origin — unpushed local commits are

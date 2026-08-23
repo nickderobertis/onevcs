@@ -167,9 +167,15 @@ pub fn run(
         })?,
         None => asked.clone(),
     };
+    let source = source_of(registry, &resolution, repo, &destination, &asked, from)?;
     // Refused before anything is fetched: the whole promise of this verb is that no
     // working tree moves, and pointing a checked-out branch somewhere else leaves
     // git holding an index and a tree that describe a commit the ref no longer names.
+    //
+    // After the source is resolved rather than before, though nothing between the two
+    // fetches: the command this refusal prints carries the `--from` it was given, and a
+    // `--from` nobody has decided the meaning of is a value to refuse rather than to
+    // hand back to an operator to paste.
     let current = git::current_branch(&destination)?;
     if current == *name {
         return Err(Error::Invalid {
@@ -183,7 +189,6 @@ pub fn run(
         });
     }
 
-    let source = source_of(registry, &resolution, repo, &destination, &asked, from)?;
     let scratch = format!("refs/onevcs/import/{}", ids::unique());
     let fetched = git::fetch_into_ref(
         &destination,
