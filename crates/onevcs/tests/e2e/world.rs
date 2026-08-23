@@ -480,6 +480,18 @@ impl World {
             .expect("a host that answers partially");
     }
 
+    /// Make the substituted host report **no check at all** on the change request's
+    /// head, which is what `gh` says about a head nothing has registered a run on yet.
+    ///
+    /// Neither of the two answers beside it:
+    /// `report_checks_that_do_not_say_if_they_block` is a host declining the question,
+    /// and a `host_checks` with no required row is a repository that requires nothing.
+    pub fn report_no_checks_on_the_head(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/no-checks-yet"), "")
+            .expect("a host with nothing reported on the head yet");
+    }
+
     /// Tell the substituted host that somebody closed a change request without
     /// merging it, which is an action on the host and no verb of this crate's.
     ///
@@ -972,6 +984,13 @@ case "$subcommand" in
     # It resolves the same check runs the rollup does, so a credential refused
     # there is refused here — this command is not a second way in.
     readable_rollup || refused_graphql
+    if [ -f "$STATE/no-checks-yet" ]; then
+      # What `gh` says about a head nothing has reported on yet, on every form of
+      # this call — deliberately one word away from the "no required checks" wording
+      # further down, which says the opposite: that the repository requires none.
+      printf "no checks reported on the '%s' branch\n" "$PR_HEAD" >&2
+      exit 1
+    fi
     if [ "$only_required" = "0" ]; then
       case "$malformed" in
         no-check-list)

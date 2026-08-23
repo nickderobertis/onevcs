@@ -899,6 +899,21 @@ fn a_host_bound_that_cannot_be_read_is_refused_at_the_boundary() {
             .assert()
             .code(2)
             .stderr(predicate::str::contains(name));
+        // Read before anything is pushed: a bound that is not a number is this
+        // build's own input, and a refusal that arrived with the branch already on
+        // the remote would read as a merge path nobody could verify.
+        assert_eq!(
+            world.git(
+                &origin,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/feature/bounded",
+                ],
+            ),
+            "",
+            "{name} is refused before the branch reaches the origin"
+        );
     }
 }
 
@@ -2593,7 +2608,10 @@ fn a_host_that_will_not_say_whether_a_check_blocks_the_merge_is_not_guessed_at()
         .onevcs()
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains(
             "does not say whether it blocks the merge",
         ));
@@ -2717,7 +2735,10 @@ fn a_host_that_opens_something_other_than_a_change_request_is_not_followed() {
             .onevcs()
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so this is a merge
+            // path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(expected));
         assert!(
             world.events_of(&token, "change-opened").is_empty(),
@@ -2809,7 +2830,10 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so every shape here
+            // is a merge path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(expected));
         assert_eq!(
             world
