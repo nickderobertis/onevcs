@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 208. Tests observed red and then green: 242.
+Patches: 226. Tests observed red and then green: 264.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpGLD6mB-project-97285344bfbe/runs/<token>/clone stands on its own parent 498bd4dec329b98113cf11
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpSLK6wW-project-d1884433a1fc/runs/<token>/clone stands on its own parent 07fb167dd60870cd9aba2a
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpBOIPtO-project-cc811bc26777/runs/<token>/clone stands on its own parent 3bca113118d74fc86009b8
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpOkraIx-project-dcb58e1ea303/runs/<token>/clone stands on its own parent 2287c12ee927b30f8d8bb1
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -381,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-ea1e5-18cdbde9af87f9dd-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-314fc8-18ce49685896bf00-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-eda1e-18cdbdf236d01200-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-317c6a-18ce496add39e487-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -749,11 +749,133 @@ the harness stops checking a mutation patch header before it runs the round.
 - RED `a_round_with_no_one_subject_is_refused_before_any_of_them_runs` — expected a non-zero exit:
 - RED `a_round_that_names_no_test_or_names_one_twice_is_refused` — expected a non-zero exit:
 
+### `210-the-judged-tier-is-not-memoized`
+
+the judged tier stops being cached, so every invocation is a fresh roll of a non-deterministic judge.
+
+- RED `a_callers_judge_binary_does_not_change_the_verdict` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+- RED `a_cleared_finding_replays_the_green_that_replaced_it` — expected "replayed the recorded verdict for base" in exit status: 0
+- RED `a_forced_colour_environment_does_not_disguise_a_replay` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+- RED `an_advanced_base_is_judged_again_and_then_replays_per_base` — expected "replayed the recorded verdict for base" in exit status: 0
+- RED `an_ambient_global_cache_skip_is_reported_and_ignored` — assertion `left == right` failed
+- RED `an_unchanged_tree_and_base_replays_the_recorded_verdict` — assertion `left == right` failed: the judge was rolled twice
+- RED `skip_nx_cache_judges_again_without_replacing_the_recorded_verdict` — expected "replayed the recorded verdict for base" in exit status: 0
+
+### `211-the-judge-configuration-leaves-the-cache-key`
+
+the judge configuration fingerprint stops keying the cache, so a rule change nothing in the tree records replays the old verdict.
+
+- RED `a_changed_judge_configuration_is_still_seen_through_a_callers_environment` — expected "judged this diff against base" on stderr in exit status: 0
+- RED `a_changed_judge_configuration_outside_the_tree_is_judged_again` — expected "judged this diff against base" in exit status: 0
+- RED `a_changed_llmlint_version_is_judged_again` — expected "judged this diff against base" in exit status: 0
+
+### `212-the-base-commit-leaves-the-cache-key`
+
+the resolved base commit stops keying the cache, so a verdict computed against one comparison answers for another.
+
+- RED `an_advanced_base_is_judged_again_and_then_replays_per_base` — expected "judged this diff against base" in exit status: 0
+
+### `213-the-cache-key-covers-one-file-instead-of-the-tree`
+
+the cache key narrows from the whole workspace to one file, so a changed tree replays a verdict about the tree before it.
+
+- RED `a_changed_tree_is_judged_again` — expected "judged this diff against base" in exit status: 0
+
+### `214-an-ambient-global-cache-skip-is-honoured`
+
+the judged tier stops ignoring an ambient global Nx cache skip, so an unrelated command's environment re-rolls the judge.
+
+- RED `an_ambient_global_cache_skip_is_reported_and_ignored` — assertion `left == right` failed
+
+### `215-a-callers-judge-binary-reaches-the-fingerprint`
+
+the pinned runtime stops dropping the caller's LLMLINT_ONEHARNESS_BIN, which `llmlint config` renders — so one judged diff keys differently per caller.
+
+- RED `a_callers_judge_binary_does_not_change_the_verdict` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+
+### `216-a-fingerprint-that-cannot-be-produced-says-nothing`
+
+the fingerprint stops naming a judge toolchain it cannot read, and reports a digest of nothing instead.
+
+- RED `a_host_without_the_judge_is_told_which_command_installs_it` — expected "run 'just setup-llmlint'" on stderr in exit status: 1
+- RED `the_fingerprint_names_an_unusable_judge_toolchain` — expected a failure, got exit status: 0
+
+### `217-the-tier-judges-with-a-key-it-could-not-build`
+
+the tier stops asking for the fingerprint before it judges, so a judge configuration nobody can read back silently leaves the cache key.
+
+- RED `a_host_that_cannot_hash_the_judge_configuration_stops_the_tier` — expected a failure, got exit status: 0
+- RED `a_host_without_the_judge_is_told_which_command_installs_it` — expected "the judge configuration could not be fingerprinted" on stderr in exit status: 1
+- RED `a_judge_configuration_that_cannot_be_fingerprinted_stops_the_tier` — expected a failure, got exit status: 0
+- RED `a_missing_pinned_runtime_helper_is_actionable` — expected "the judge configuration could not be fingerprinted" on stderr in exit status: 1
+
+### `218-the-target-judges-whatever-base-it-is-handed`
+
+the cached target stops checking that the base it was handed is a commit this checkout has.
+
+- RED `the_target_run_through_just_nx_refuses_a_base_it_cannot_judge` — expected "must be a resolved commit id" in exit status: 1
+
+### `219-a-judge-that-found-something-reports-success`
+
+the judged tier stops carrying llmlint's exit status, so findings and a broken toolchain are recorded as a clean verdict.
+
+- RED `a_judge_that_never_reached_a_verdict_is_never_replayed` — assertion `left == right` failed
+- RED `findings_fail_the_tier_and_are_never_replayed` — assertion `left == right` failed: a red must be judged again
+
 ### `21-a-round-is-not-put-back`
 
 the harness stops reverting a round once it is over.
 
 - RED `a_round_is_recorded_and_the_tree_is_left_as_it_was_found` — Unexpected failure: subject.txt says mutated
+
+### `220-an-unresolvable-base-reaches-the-judge`
+
+the tier stops resolving the base ref to a commit before judging, so a ref naming nothing becomes a cache key nothing can invalidate.
+
+- RED `an_unresolvable_base_is_refused_before_the_judge_runs` — expected "'no-such-ref' does not resolve to a commit" on stderr in exit status: 1
+
+### `221-provenance-is-read-off-coloured-output`
+
+the tier reads Nx's cache reporting without stripping colour, so a replayed verdict reports itself as freshly judged wherever something forces colour.
+
+- RED `a_forced_colour_environment_does_not_disguise_a_replay` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+
+### `222-the-verdict-is-handed-back-as-a-diagnostic`
+
+the tier folds the judge's verdict into its diagnostics, so a caller reading the answer has to filter it out of the noise.
+
+- RED `an_unchanged_tree_and_base_replays_the_recorded_verdict` — expected "fake-judge: 31 rules checked" on stdout in exit status: 0
+- RED `findings_fail_the_tier_and_are_never_replayed` — expected "fake-judge finding: tool_output_is_signal in scripts/llmlint-diff.sh" on stdout in exit status: 1
+
+### `223-the-judges-own-view-of-the-run-is-dropped`
+
+the tier drops what the judge said about the run rather than about the diff, so a finding arrives with no harness view behind it.
+
+- RED `findings_fail_the_tier_and_are_never_replayed` — expected "fake-judge: asked the harness for 31 verdicts" in exit status: 1
+
+### `224-forwarded-arguments-are-not-checked`
+
+the tier stops checking that what it forwards to Nx is an Nx option, so a caller's word reaches Nx's argument parser as whatever it reads it as.
+
+- RED `an_argument_that_is_not_an_nx_option_is_refused_before_anything_is_judged` — expected a failure, got exit status: 0
+
+### `225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off`
+
+the fingerprint stops naming a host that cannot hash the judge configuration, and prints an empty digest instead.
+
+- RED `a_host_that_cannot_hash_the_judge_configuration_stops_the_tier` — expected a failure, got exit status: 0
+
+### `226-temporary-storage-that-cannot-be-opened-is-ignored`
+
+the tier stops saying where to point TMPDIR when it cannot open storage for the judge's report.
+
+- RED `a_tier_with_nowhere_to_write_its_report_says_where_to_point_it` — expected "could not open temporary storage for the judge report" on stderr in exit status: 1
+
+### `227-the-pinned-runtime-helper-is-optional`
+
+the fingerprint stops refusing when the pinned runtime environment cannot be loaded, and keys the cache under whatever the caller's environment was.
+
+- RED `a_missing_pinned_runtime_helper_is_actionable` — expected "llmlint fingerprint: could not load the pinned runtime environment" on stderr in exit status: 1
 
 ### `22-a-dirty-tree-is-mutated-anyway`
 

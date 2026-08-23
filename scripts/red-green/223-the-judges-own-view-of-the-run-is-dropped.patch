@@ -1,0 +1,15 @@
+Mutation: the tier drops what the judge said about the run rather than about the diff, so a finding arrives with no harness view behind it.
+Red: findings_fail_the_tier_and_are_never_replayed
+
+diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+index 6d874a7..3ace260 100755
+--- a/scripts/llmlint-diff.sh
++++ b/scripts/llmlint-diff.sh
+@@ -97,7 +97,6 @@ status=0
+ LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
+   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
+ cat "$verdict"
+-cat "$diagnostics" >&2
+ 
+ # Provenance comes from Nx's own cache reporting: the annotation on the task line,
+ # or the summary line it prints only when it replayed a task instead of running it.

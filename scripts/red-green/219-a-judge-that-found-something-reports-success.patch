@@ -1,0 +1,14 @@
+Mutation: the judged tier stops carrying llmlint's exit status, so findings and a broken toolchain are recorded as a clean verdict.
+Red: a_judge_that_never_reached_a_verdict_is_never_replayed
+Red: findings_fail_the_tier_and_are_never_replayed
+
+diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
+index 1529158..dccd69e 100755
+--- a/scripts/llmlint-judge.sh
++++ b/scripts/llmlint-judge.sh
+@@ -33,4 +33,4 @@ git rev-parse --verify --quiet "${base_sha}^{commit}" >/dev/null || {
+ }
+ 
+ llmlint_runtime_env
+-exec llmlint --diff --diff-base "$base_sha"
++llmlint --diff --diff-base "$base_sha" || true

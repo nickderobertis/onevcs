@@ -1,0 +1,16 @@
+Mutation: the cached target stops checking that the base it was handed is a commit this checkout has.
+Red: the_target_run_through_just_nx_refuses_a_base_it_cannot_judge
+
+diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
+index 1529158..fc53a5a 100755
+--- a/scripts/llmlint-judge.sh
++++ b/scripts/llmlint-judge.sh
+@@ -23,7 +23,7 @@ cd "$(dirname -- "$0")/.."
+ # anything — so it is checked for the shape the recipe resolves, and for presence in
+ # this checkout, before a judge call is paid for.
+ base_sha="${LLMLINT_DIFF_BASE_SHA:-}"
+-[[ "$base_sha" =~ ^[0-9a-f]{40,64}$ ]] || {
++[[ -n "${base_sha}x" ]] || {
+   echo "lint-llm-diff: LLMLINT_DIFF_BASE_SHA must be a resolved commit id; run 'just lint-llm-diff <base>' rather than this target directly" >&2
+   exit 1
+ }

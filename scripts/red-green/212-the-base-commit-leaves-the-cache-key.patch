@@ -1,0 +1,15 @@
+Mutation: the resolved base commit stops keying the cache, so a verdict computed against one comparison answers for another.
+Red: an_advanced_base_is_judged_again_and_then_replays_per_base
+
+diff --git a/nx.json b/nx.json
+index a358daf..8e41b3f 100644
+--- a/nx.json
++++ b/nx.json
+@@ -44,7 +44,6 @@
+       "cache": true,
+       "inputs": [
+         "wholeWorkspace",
+-        { "env": "LLMLINT_DIFF_BASE_SHA" },
+         { "runtime": "./scripts/llmlint-fingerprint.sh" }
+       ]
+     }
