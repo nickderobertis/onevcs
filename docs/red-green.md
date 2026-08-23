@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 229. Tests observed red and then green: 264.
+Patches: 230. Tests observed red and then green: 264.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpKg55wx-project-d63751fe5c93/runs/<token>/clone stands on its own parent b89d289651db3bf10cdcf2
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpgz82CO-project-7274f855035d/runs/<token>/clone stands on its own parent a8caa4e430529f7fa96e92
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpWxZjj7-project-a3dd87b459df/runs/<token>/clone stands on its own parent f1de4a640b89625aced930
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmp9ThzJV-project-71033152c147/runs/<token>/clone stands on its own parent 78a1c629b2afa034d1a713
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -381,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-2d293-18ce5016151ad715-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-2baf16-18ce52a12d0e7571-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-30d78-18ce5018cf88cace-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-2bdd4c-18ce52a437b0894e-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -901,6 +901,12 @@ a run with findings hands the judge's report back on stdout, where a caller read
 
 - RED `findings_fail_the_tier_and_are_never_replayed` — a run with findings answers nothing on stdout: exit status: 1
 
+### `231-the-target-does-not-name-a-missing-runtime-helper`
+
+the cached target stops naming the pinned runtime environment it could not load, leaving a run that went straight to it with the shell's own error.
+
+- RED `a_missing_pinned_runtime_helper_is_actionable` — expected "could not load scripts/llmlint-runtime-env.sh" in exit status: 1
+
 ### `23-a-patch-is-taken-on-trust`
 
 the harness stops checking that a patch is one git can read and apply.
@@ -1290,7 +1296,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
