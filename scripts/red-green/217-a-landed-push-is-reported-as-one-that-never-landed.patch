@@ -2,12 +2,12 @@ Mutation: a publication whose push landed and whose merge-path read then failed 
 Red: a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_failed
 
 diff --git a/crates/onevcs/src/publish.rs b/crates/onevcs/src/publish.rs
-index f04644d..993d2b9 100644
+index 42e18e4..7d90a69 100644
 --- a/crates/onevcs/src/publish.rs
 +++ b/crates/onevcs/src/publish.rs
-@@ -1213,29 +1213,8 @@ fn publish_as_change(
- ///
- /// A push the merge path *refused* never reaches here at all: it returned above.
+@@ -1223,29 +1223,8 @@ fn refuse_an_unhosted_identity(identity: &str) -> Result<()> {
+ /// for a host that took a merge and then reported it unperformed: that shares this
+ /// defect's shape, and re-pointing a meaning is an amendment somebody approves.
  fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> Error {
 -    match unread {
 -        verdict @ (Error::ChecksFailed { .. }
@@ -36,4 +36,4 @@ index f04644d..993d2b9 100644
 +    unread
  }
  
- /// Open or adopt the change request for a branch already on the remote, and ask the
+ /// Open or adopt the change request for a branch **already on the remote**, and ask
