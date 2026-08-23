@@ -2,20 +2,34 @@ Mutation: the tier stops saying where to point TMPDIR when it cannot open storag
 Red: a_tier_with_nowhere_to_write_its_report_says_where_to_point_it
 
 diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
-index 19e450c..28a4941 100755
+index e3cde0e..7dec72e 100755
 --- a/scripts/llmlint-diff.sh
 +++ b/scripts/llmlint-diff.sh
-@@ -81,11 +81,8 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
+@@ -81,25 +81,10 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
  fi
  unset NX_SKIP_NX_CACHE NX_DISABLE_NX_CACHE
  
--verdict="$(mktemp)" && diagnostics="$(mktemp)" || {
+-# The directory is checked rather than inferred from `mktemp`'s status, because
+-# `mktemp` is not the only thing that needs it: Nx stages its own native bindings
+-# under TMPDIR, so a tier that got past a `mktemp` with a fallback of its own (BSD's
+-# has one) reaches Nx and fails with a TypeError about a constructor instead of with
+-# the one thing an operator can act on. Templated for the same reason — a bare
+-# `mktemp` is a GNU extension.
+ tmp_root="${TMPDIR:-/tmp}"
+-verdict=""
+-diagnostics=""
+-if [ -d "$tmp_root" ] && [ -w "$tmp_root" ]; then
+-  verdict="$(mktemp "${tmp_root%/}/lint-llm-diff.XXXXXX" 2>/dev/null || true)"
+-  diagnostics="$(mktemp "${tmp_root%/}/lint-llm-diff.XXXXXX" 2>/dev/null || true)"
+-fi
++verdict="$(mktemp "${tmp_root%/}/lint-llm-diff.XXXXXX" 2>/dev/null || echo /dev/null)"
++diagnostics="$(mktemp "${tmp_root%/}/lint-llm-diff.XXXXXX" 2>/dev/null || echo /dev/null)"
+ trap 'rm -f -- "$verdict" "$diagnostics"' EXIT
+-if [ -z "$verdict" ] || [ -z "$diagnostics" ]; then
 -  echo "lint-llm-diff: could not open temporary storage for the judge report" >&2
 -  echo "ACTION: point TMPDIR at a writable directory with free space, then retry" >&2
 -  exit 1
--}
-+verdict="$(mktemp || echo /dev/null)"
-+diagnostics="$(mktemp || echo /dev/null)"
- trap 'rm -f "$verdict" "$diagnostics"' EXIT
+-fi
  
  # Streaming mode, so Nx's own output reaches this script whole: it carries both the
+ # judge's report and the cache annotation the provenance line below is read from.

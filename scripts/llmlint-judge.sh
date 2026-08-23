@@ -18,12 +18,16 @@
 set -euo pipefail
 
 cd "$(dirname -- "$0")/.."
-# shellcheck source=scripts/llmlint-runtime-env.sh
-. scripts/llmlint-runtime-env.sh 2>/dev/null || {
+# Checked for before it is sourced, for the reason scripts/llmlint-fingerprint.sh
+# spells out: `.` is a special builtin, and on a bash that enforces POSIX here a
+# missing file ends the script before the refusal below could name it.
+if [ ! -r scripts/llmlint-runtime-env.sh ]; then
   echo "lint-llm-diff: could not load scripts/llmlint-runtime-env.sh, which pins the environment this tier judges under" >&2
   echo "ACTION: restore that file from git ('git checkout -- scripts/llmlint-runtime-env.sh') and retry" >&2
   exit 1
-}
+fi
+# shellcheck source=scripts/llmlint-runtime-env.sh
+. scripts/llmlint-runtime-env.sh
 # The base is external input to this target — an operator driving it through
 # `just nx run workspace:lint-llm-diff`, or a stale environment, can hand it
 # anything — so it is checked for the shape the recipe resolves, and for presence in

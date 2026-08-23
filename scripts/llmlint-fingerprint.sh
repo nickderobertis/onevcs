@@ -18,11 +18,17 @@
 set -euo pipefail
 
 cd "$(dirname -- "$0")/.."
-# shellcheck source=scripts/llmlint-runtime-env.sh
-. scripts/llmlint-runtime-env.sh || {
+# Checked for before it is sourced, rather than after: `.` is a POSIX special
+# builtin, and a bash old enough to enforce that (3.2 — still `/bin/bash` on macOS)
+# exits the script outright when the file is missing, before any `||` handler can
+# run. The refusal below would then never be printed, and the only account of a key
+# that cannot be built would be the shell's own "No such file or directory".
+if [ ! -r scripts/llmlint-runtime-env.sh ]; then
   echo "llmlint fingerprint: could not load the pinned runtime environment; restore scripts/llmlint-runtime-env.sh and retry" >&2
   exit 1
-}
+fi
+# shellcheck source=scripts/llmlint-runtime-env.sh
+. scripts/llmlint-runtime-env.sh
 # Resolved under the same runtime environment the target judges under, so the key
 # describes the judge configuration the run would use rather than the caller's.
 llmlint_runtime_env
