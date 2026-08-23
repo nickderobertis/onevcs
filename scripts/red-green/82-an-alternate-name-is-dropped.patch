@@ -3,10 +3,10 @@ Red: a_spent_name_does_not_block_an_import_under_another
 Red: a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree
 
 diff --git a/crates/onevcs/src/import.rs b/crates/onevcs/src/import.rs
-index 06503c5..d36c07a 100644
+index 6f3f786..71ce620 100644
 --- a/crates/onevcs/src/import.rs
 +++ b/crates/onevcs/src/import.rs
-@@ -139,12 +139,8 @@ pub fn run(
+@@ -161,12 +161,8 @@ pub fn run(
               checkout it is in"
          ),
      })?;
@@ -18,6 +18,6 @@ index 06503c5..d36c07a 100644
 -    };
 +    let name = asked.clone();
 +    let _ = under;
+     let source = source_of(registry, &resolution, repo, &destination, &asked, from)?;
      // Refused before anything is fetched: the whole promise of this verb is that no
      // working tree moves, and pointing a checked-out branch somewhere else leaves
-     // git holding an index and a tree that describe a commit the ref no longer names.
