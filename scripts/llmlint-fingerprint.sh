@@ -27,6 +27,9 @@ if [ ! -r scripts/llmlint-runtime-env.sh ]; then
   echo "llmlint fingerprint: could not load the pinned runtime environment; restore scripts/llmlint-runtime-env.sh and retry" >&2
   exit 1
 fi
+# The directive below is a resolution hint rather than a silenced diagnostic:
+# it tells shellcheck which file this path is, so the function sourced here is
+# checked against its definition instead of assumed.
 # shellcheck source=scripts/llmlint-runtime-env.sh
 . scripts/llmlint-runtime-env.sh
 # Resolved under the same runtime environment the target judges under, so the key
