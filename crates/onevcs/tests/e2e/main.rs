@@ -54,11 +54,10 @@ mod landing;
 mod library;
 #[cfg(unix)]
 mod lifecycle;
-// Unix only: it copies this checkout, symlinks its Nx install, and reaches the
-// judge through a `$HOME/.local/bin` the pinned runtime prefers — all POSIX. Its
-// own header carries the reason its judge call is the one substituted boundary.
+// Unix only: it copies this checkout, shares its Nx install through a symlink, and
+// resolves the judged tier's `llmlint` off PATH — all POSIX. Its own header carries
+// the reason the judge it resolves is one this suite installs.
 #[cfg(unix)]
-// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod llmlint_cache;
 mod packaging;
 // Unix only: its hosted journeys publish through the same substituted `gh` as

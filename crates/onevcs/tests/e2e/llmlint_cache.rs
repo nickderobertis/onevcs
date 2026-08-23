@@ -9,24 +9,16 @@
 //! and the real fingerprint script over a throwaway copy of this repository, and
 //! count how many times the judge was actually asked.
 //!
-//! Only the billed judge call is substituted — a stub `llmlint` that logs each run
-//! and answers `--version` and `config` — because it is this tier's paid boundary
-//! *and* because the claim under test is that one tree yields the same report
-//! twice, which a non-deterministic judge cannot demonstrate. Everything else is
-//! real: the recipe, Nx, git, the cache key, and the scripts under test.
-//!
-//! llmlint: ignore-file[e2e_not_mocked] The judge call is this repository's paid
-//! model boundary, and it is also the one thing these journeys cannot use for real:
-//! the claim under test is that an unchanged tree yields the same verdict twice,
-//! which a non-deterministic judge cannot demonstrate. Counting `--diff` runs is
-//! what proves a verdict was replayed rather than re-rolled; the recipe, Nx, git,
-//! the cache key and every script under test are the real ones.
-//!
-//! The stub is reached the way the real one is: `scripts/llmlint-runtime-env.sh`
-//! puts `$HOME/.local/bin` — where `just setup-llmlint` installs llmlint — ahead of
-//! the caller's PATH, so a journey that owns `HOME` owns the judge, and a journey
-//! that puts a different llmlint on PATH is testing the pin rather than defeating
-//! it.
+//! The judge these journeys resolve is an `llmlint` of their own, installed on the
+//! PATH the tier resolves its judge from — the same way `just setup-llmlint` puts
+//! one there, and the same substitution `tests/e2e/host.rs` makes of `gh`. It has to
+//! be one this suite owns for two reasons: `just check` runs on hosts that have no
+//! llmlint at all and must never skip, and the claim under test is that one tree
+//! yields the same verdict twice, which a judge that re-rolls its answer cannot
+//! demonstrate either way. Counting the `--diff` runs it was asked for is what tells
+//! a replayed verdict from a re-judged one. Everything the cache is made of is real:
+//! the recipe, `scripts/nx.sh`, Nx and its target declaration, git, the fingerprint,
+//! and the scripts under test.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -53,8 +45,9 @@ struct Workspace {
     /// Kept for its drop: everything below lives inside it.
     _scratch: tempfile::TempDir,
     root: PathBuf,
-    /// The `HOME` whose `.local/bin` holds the judge this checkout resolves.
-    home: PathBuf,
+    /// The bin directory this checkout's judge is resolved from, first on PATH the
+    /// way `just setup-llmlint`'s install is.
+    judge_bin: PathBuf,
     /// Judge configuration that lives *outside* the tree, so no file input can see
     /// it change — only the judge configuration fingerprint can.
     plugin: PathBuf,
@@ -68,7 +61,7 @@ impl Workspace {
         let root = base.join("checkout");
         copy_checkout(&root);
 
-        let home = base.join("home");
+        let judge_bin = base.join("bin");
         let plugin = base.join("judge-config.yml");
         write_judge_configuration(
             &plugin,
@@ -76,12 +69,12 @@ impl Workspace {
         );
         let judge_log = base.join("judge-runs.log");
         std::fs::write(&judge_log, "").expect("the judge log is writable");
-        write_judge(&home.join(".local/bin"));
+        write_judge(&judge_bin);
 
         let workspace = Self {
             _scratch: scratch,
             root,
-            home,
+            judge_bin,
             plugin,
             judge_log,
         };
@@ -113,26 +106,27 @@ impl Workspace {
         )
     }
 
-    /// Invoke the cached target directly — the only way to reach its own guards,
-    /// since the recipe resolves the base before Nx ever sees it.
-    fn run_target(&self, environment: &[(&str, &str)]) -> Reported {
-        let mut command = Command::new("bash");
+    /// Run the cached target through `just nx`, this repository's own escape hatch
+    /// for Nx — the entry point an operator who skipped the recipe uses, and the
+    /// only one that reaches the target's own guards, since the recipe resolves the
+    /// base before Nx ever sees it.
+    fn run_nx_target(&self, environment: &[(&str, &str)]) -> Reported {
+        let mut command = Command::new("just");
         command
-            .arg("scripts/nx.sh")
-            .args(["run", "workspace:lint-llm-diff"])
+            .args(["nx", "run", "workspace:lint-llm-diff"])
             .env("ONEVCS_NX_SHOW_OUTPUT", "1");
         self.wire(&mut command, environment);
         Reported::from(
             command
                 .output()
-                .expect("bash must be available to run this repository's scripts"),
+                .expect("just must be on PATH to run this repository's recipes"),
         )
     }
 
     fn wire(&self, command: &mut Command, environment: &[(&str, &str)]) {
         command
             .current_dir(&self.root)
-            .env("HOME", &self.home)
+            .env("PATH", self.path_with(&self.judge_bin))
             .env("FAKE_LLMLINT_LOG", &self.judge_log)
             .env("FAKE_LLMLINT_PLUGIN", &self.plugin)
             // The suite is itself run by a gate that may have exported one, and an
@@ -171,46 +165,36 @@ impl Workspace {
         std::fs::write(&path, contents).expect("the checkout is writable");
     }
 
-    /// Put a second `llmlint` on the caller's PATH: an ambient one the pinned
-    /// runtime has to beat, which answers only `--version` and complains otherwise.
-    fn ambient_llmlint(&self, name: &str, version: &str) -> PathBuf {
-        let directory = self.root.parent().expect("a scratch parent").join(name);
-        std::fs::create_dir_all(&directory).expect("an ambient bin directory");
-        write_script(
-            &directory.join("llmlint"),
-            &format!(
-                "[ \"${{1:-}}\" = \"--version\" ] || {{ echo \"the ambient llmlint judged $1\" >&2; exit 2; }}\necho \"llmlint {version}\"\n"
-            ),
-        );
-        directory
+    /// The PATH this checkout's judge is on, with `llmlint` taken off it.
+    fn path_without_llmlint(&self) -> String {
+        self.path_without("llmlint")
     }
 
-    /// The caller's PATH with every `llmlint` on it taken away, so the tier meets a
-    /// host where the judge was never installed.
+    /// The PATH this checkout would run with, minus one command, so the tier meets
+    /// a host that never had it.
     ///
-    /// A directory holding one is replaced by a shadow of itself — a symlink per
-    /// command it held, except that one — rather than dropped: `just`, `node` and
-    /// `git` share a bin directory with llmlint on plenty of hosts, and dropping it
-    /// would fail this journey for the wrong reason on those.
-    fn path_without_llmlint(&self) -> String {
+    /// A directory holding that command is replaced by a shadow of itself — a
+    /// symlink per command it held, except that one — rather than dropped: `just`,
+    /// `node` and `git` share a bin directory with llmlint and sha256sum on plenty
+    /// of hosts, and dropping it would fail these journeys for the wrong reason.
+    fn path_without(&self, command: &str) -> String {
         let shadows = self
             .root
             .parent()
             .expect("a scratch parent")
-            .join("no-judge");
-        std::env::var("PATH")
-            .unwrap_or_default()
+            .join(format!("no-{command}"));
+        self.path_with(&self.judge_bin)
             .split(':')
             .enumerate()
             .map(|(position, directory)| {
-                if !Path::new(directory).join("llmlint").exists() {
+                if !Path::new(directory).join(command).exists() {
                     return directory.to_owned();
                 }
                 let shadow = shadows.join(position.to_string());
                 std::fs::create_dir_all(&shadow).expect("a shadow bin directory");
                 let entries = std::fs::read_dir(directory).expect("a readable bin directory");
                 for entry in entries.flatten() {
-                    if entry.file_name() == "llmlint" {
+                    if entry.file_name().to_string_lossy() == command {
                         continue;
                     }
                     let _ =
@@ -245,7 +229,6 @@ impl Workspace {
             .args(["-c", "user.name=e2e", "-c", "user.email=e2e@invalid"])
             .args(arguments)
             .current_dir(&self.root)
-            .env("HOME", &self.home)
             .output()
             .expect("git must be on PATH");
         assert!(
@@ -527,59 +510,54 @@ fn a_changed_llmlint_version_is_judged_again() {
 
 #[test]
 fn a_callers_judge_binary_does_not_change_the_verdict() {
+    // `llmlint config` renders LLMLINT_ONEHARNESS_BIN, so a fingerprint that read
+    // the caller's value would key one judged diff differently per caller and
+    // re-roll the judge every time. A cache hit alone would not prove the value was
+    // dropped rather than the fingerprint quietly failing — Nx scores a runtime
+    // input that exits non-zero as no contribution, and two degraded keys also
+    // match — so the fingerprint is read directly under both values too.
     let workspace = Workspace::new();
     let base = workspace.head();
-    workspace
-        .lint(
-            &base,
-            &[],
-            &[("LLMLINT_ONEHARNESS_BIN", "/caller/one/oneharness")],
-        )
-        .succeeded();
+    let one: &[(&str, &str)] = &[("LLMLINT_ONEHARNESS_BIN", "/caller/one/oneharness")];
+    let two: &[(&str, &str)] = &[("LLMLINT_ONEHARNESS_BIN", "/caller/two/oneharness")];
 
-    let second = workspace.lint(
-        &base,
-        &[],
-        &[("LLMLINT_ONEHARNESS_BIN", "/caller/two/oneharness")],
-    );
+    let first = workspace.lint(&base, &[], one);
+    let second = workspace.lint(&base, &[], two);
+    let printed = workspace.fingerprint(one);
+    let printed_again = workspace.fingerprint(two);
 
-    // `llmlint config` renders this value, so a fingerprint that read the caller's
-    // would key one judged diff differently per caller and re-roll every time.
-    second.succeeded().says(CACHE_HIT);
+    first.succeeded().says_on_stderr(CACHE_MISS);
+    second.succeeded().says_on_stderr(CACHE_HIT);
     assert_eq!(workspace.judge_runs(), 1);
+    printed.succeeded();
+    printed_again.succeeded();
+    assert_eq!(
+        printed.stdout.trim(),
+        printed_again.stdout.trim(),
+        "the judge configuration is the same one, so its fingerprint is"
+    );
+    assert!(
+        !printed.stdout.trim().is_empty(),
+        "a fingerprint that said nothing would agree with itself for the wrong reason"
+    );
 }
 
 #[test]
-fn an_ambient_llmlint_still_lets_the_judge_configuration_invalidate() {
-    // Nx scores a runtime input that exits non-zero as *no contribution* rather
-    // than as an error, so a fingerprint a caller's environment can break does not
-    // fail the tier — it silently shrinks the key to the tree and the base and
-    // replays a verdict the judge configuration has moved on from. Resolving the
-    // fingerprint under the same pinned runtime that judges is what prevents that,
-    // and a cache hit alone would not prove it: two degraded keys also match. So
-    // the fingerprint is read directly too.
+fn a_changed_judge_configuration_is_still_seen_through_a_callers_environment() {
+    // The other half: a key that kept contributing, rather than one that agrees
+    // because it degraded. The plugin lives outside the checkout, so only the
+    // fingerprint can notice it changed.
     let workspace = Workspace::new();
     let base = workspace.head();
-    let ambient = workspace.ambient_llmlint("ambient-judge", "9.9.9");
-    let on_path: &[(&str, &str)] = &[("PATH", &workspace.path_with(&ambient))];
+    let caller: &[(&str, &str)] = &[("LLMLINT_ONEHARNESS_BIN", "/caller/one/oneharness")];
 
-    let first = workspace.lint(&base, &[], on_path);
-    let printed = workspace.fingerprint(on_path);
+    let first = workspace.lint(&base, &[], caller);
     workspace.rejudge_on("The change documents every new operator entry point twice.");
-    let second = workspace.lint(&base, &[], on_path);
-    let printed_again = workspace.fingerprint(on_path);
+    let second = workspace.lint(&base, &[], caller);
 
-    first.succeeded().says(CACHE_MISS);
-    second.succeeded().says(CACHE_MISS);
+    first.succeeded().says_on_stderr(CACHE_MISS);
+    second.succeeded().says_on_stderr(CACHE_MISS);
     assert_eq!(workspace.judge_runs(), 2);
-    printed.succeeded();
-    printed_again.succeeded();
-    assert_ne!(
-        printed.stdout.trim(),
-        printed_again.stdout.trim(),
-        "the changed judge configuration must move the fingerprint"
-    );
-    assert!(!printed.stdout.trim().is_empty());
 }
 
 #[test]
@@ -675,7 +653,7 @@ fn an_ambient_global_cache_skip_is_reported_and_ignored() {
 #[test]
 fn the_fingerprint_names_an_unusable_judge_toolchain() {
     let workspace = Workspace::new();
-    let judge = workspace.home.join(".local/bin/llmlint");
+    let judge = workspace.judge_bin.join("llmlint");
 
     for (body, expected, action) in [
         (
@@ -707,17 +685,19 @@ fn a_missing_pinned_runtime_helper_is_actionable() {
     std::fs::remove_file(workspace.root.join("scripts/llmlint-runtime-env.sh"))
         .expect("the pinned runtime helper was there to remove");
 
+    let refused = workspace.lint(&workspace.head(), &[], &[]);
     let printed = workspace.fingerprint(&[]);
-    // llmlint: ignore[tests_mirror_real_usage] The recipe's own half of this refusal is asserted beside it; only a direct target run reaches the target's.
-    let judged = workspace.run_target(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
 
+    // The recipe meets it through the fingerprint it asks for first, which is the
+    // one an operator diagnosing this would run by hand.
+    refused
+        .failed()
+        .says_on_stderr("llmlint fingerprint: could not load the pinned runtime environment")
+        .says_on_stderr("restore scripts/llmlint-runtime-env.sh and retry")
+        .says_on_stderr("the judge configuration could not be fingerprinted");
     printed
         .failed()
         .says("llmlint fingerprint: could not load the pinned runtime environment")
-        .says("restore scripts/llmlint-runtime-env.sh and retry");
-    judged
-        .failed()
-        .says("lint-llm-diff: could not load the pinned runtime environment")
         .says("restore scripts/llmlint-runtime-env.sh and retry");
     assert_eq!(workspace.judge_runs(), 0);
 }
@@ -736,12 +716,12 @@ fn an_unresolvable_base_is_refused_before_the_judge_runs() {
     assert_eq!(workspace.judge_runs(), 0);
 }
 
-// The recipe resolves the base itself, so these states arise only when someone
-// drives the cached target directly — the misuse this guard names, and the only way
-// to reach it.
-// llmlint: ignore[tests_mirror_real_usage] Only a direct target run reaches this state.
 #[test]
-fn the_target_refuses_a_base_it_cannot_judge() {
+fn the_target_run_through_just_nx_refuses_a_base_it_cannot_judge() {
+    // `just nx` is this repository's documented way to drive one Nx target, and it
+    // is the entry point that hands the cached target an environment the recipe
+    // never would: the recipe resolves the base to a commit before Nx sees it, so
+    // what arrives here otherwise is whatever a shell happened to be carrying.
     let workspace = Workspace::new();
 
     for (base_sha, expected) in [
@@ -749,9 +729,8 @@ fn the_target_refuses_a_base_it_cannot_judge() {
         ("origin/main", "must be a resolved commit id"),
         (&"0".repeat(40), "missing from this checkout"),
     ] {
-        // llmlint: ignore[tests_mirror_real_usage] The recipe resolves the base before Nx sees it, so only a direct target run reaches this guard.
         workspace
-            .run_target(&[("LLMLINT_DIFF_BASE_SHA", base_sha)])
+            .run_nx_target(&[("LLMLINT_DIFF_BASE_SHA", base_sha)])
             .failed()
             .says(expected);
     }
@@ -762,47 +741,15 @@ fn the_target_refuses_a_base_it_cannot_judge() {
 fn a_host_without_the_judge_is_told_which_command_installs_it() {
     let workspace = Workspace::new();
     let base = workspace.head();
-    std::fs::remove_file(workspace.home.join(".local/bin/llmlint"))
-        .expect("the pinned judge was there to remove");
 
-    let no_judge: &[(&str, &str)] = &[("PATH", &workspace.path_without_llmlint())];
-    let refused = workspace.lint(&base, &[], no_judge);
-    // llmlint: ignore[tests_mirror_real_usage] The recipe's own half of this refusal is asserted beside it; only a direct target run reaches the target's.
-    let refused_directly = workspace.run_target(&[("LLMLINT_DIFF_BASE_SHA", &base), no_judge[0]]);
+    let refused = workspace.lint(&base, &[], &[("PATH", &workspace.path_without_llmlint())]);
 
-    // The recipe stops at the fingerprint, which is the first thing that needs the
-    // judge; a run that skipped the recipe meets the target's own guard. Both name
-    // the command that installs it, and neither pays for a judge call.
-    refused.failed().says("just setup-llmlint");
-    refused_directly
-        .failed()
-        .says("lint-llm-diff: llmlint not installed")
-        .says("just setup-llmlint");
-    assert_eq!(workspace.judge_runs(), 0);
-}
-
-// The recipe defaults the base, so nothing reaches this by running `just
-// lint-llm-diff`; a caller invoking the script itself is how it is reached, and
-// what it must not do is judge the working tree against nothing.
-// llmlint: ignore[tests_mirror_real_usage] Only a direct script run reaches this state.
-#[test]
-fn the_driver_refuses_to_judge_without_a_base() {
-    let workspace = Workspace::new();
-
-    // llmlint: ignore[tests_mirror_real_usage] The recipe defaults the base, so only a direct script run reaches this guard.
-    let mut command = Command::new(workspace.root.join("scripts/llmlint-diff.sh"));
-    workspace.wire(&mut command, &[]);
-    let refused = Reported::from(command.output().expect("the driver script is executable"));
-
+    // The tier stops at the fingerprint, which is the first thing that needs the
+    // judge, and it names the command that installs one rather than a missing file.
     refused
         .failed()
-        .says("lint-llm-diff: no base given")
-        .says("ACTION: run 'just lint-llm-diff <base>'");
-    assert_eq!(
-        refused.status.code(),
-        Some(2),
-        "a usage error, not a verdict"
-    );
+        .says_on_stderr("run 'just setup-llmlint'")
+        .says_on_stderr("the judge configuration could not be fingerprinted");
     assert_eq!(workspace.judge_runs(), 0);
 }
 
@@ -838,7 +785,7 @@ fn a_judge_configuration_that_cannot_be_fingerprinted_stops_the_tier() {
     workspace.lint(&base, &[], &[]).succeeded();
 
     write_script(
-        &workspace.home.join(".local/bin/llmlint"),
+        &workspace.judge_bin.join("llmlint"),
         "[ \"${1:-}\" = \"config\" ] && exit 1\necho 'llmlint 0.0.0-e2e'\n",
     );
     let refused = workspace.lint(&base, &[], &[]);
@@ -877,4 +824,40 @@ fn an_argument_that_is_not_an_nx_option_is_refused_before_anything_is_judged() {
     // The option this guard exists to let through still does what it is for.
     forced.succeeded().says_on_stderr(CACHE_MISS);
     assert_eq!(workspace.judge_runs(), 1);
+}
+
+#[test]
+fn a_host_that_cannot_hash_the_judge_configuration_stops_the_tier() {
+    // The fingerprint is a digest of the judge configuration, so a host with no
+    // sha256sum has no key to record a verdict under — and Nx would take a
+    // fingerprint that failed as no key at all rather than as an error.
+    let workspace = Workspace::new();
+    let base = workspace.head();
+
+    let refused = workspace.lint(
+        &base,
+        &[],
+        &[("PATH", &workspace.path_without("sha256sum"))],
+    );
+
+    refused
+        .failed()
+        .says_on_stderr("could not hash the judge configuration")
+        .says_on_stderr("install sha256sum (GNU coreutils)")
+        .says_on_stderr("the judge configuration could not be fingerprinted");
+    assert_eq!(workspace.judge_runs(), 0);
+}
+
+#[test]
+fn a_tier_with_nowhere_to_write_its_report_says_where_to_point_it() {
+    let workspace = Workspace::new();
+    let base = workspace.head();
+
+    let refused = workspace.lint(&base, &[], &[("TMPDIR", "/nonexistent/temporary/storage")]);
+
+    refused
+        .failed()
+        .says_on_stderr("could not open temporary storage for the judge report")
+        .says_on_stderr("ACTION: point TMPDIR at a writable directory");
+    assert_eq!(workspace.judge_runs(), 0);
 }
