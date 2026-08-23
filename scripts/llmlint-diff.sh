@@ -28,36 +28,18 @@
 # contract is cache replay, so this tier reports and ignores one. Every other Nx
 # target still honours it.
 #
-# llmlint: ignore-file[tool_output_is_signal] A successful run prints the judge's own
-# report and one line of provenance, because Nx replays this task's terminal output
-# in place of a verdict record: a quiet success would make a replayed run say less
-# than a fresh one, which is the whole value of the replay. Every line this script
-# adds itself names its cause and the next command to run.
-# llmlint: ignore-file[changed_behavior_has_e2e] Every journey this script has — a
-# cache miss and a replay with the provenance each prints, a base it refuses, no base
-# at all, an ambient global cache skip, and the per-invocation re-judge — is driven
-# end to end in crates/onevcs/tests/e2e/llmlint_cache.rs. What remains are
-# host-failure guards on the checkout layout and on temporary storage; simulating a
-# broken host is the guard's job, not a journey's.
+# What this prints is the judge's own report, which llmlint wrote and Nx replays; the
+# lines this script adds are one of provenance and, on a refusal, the cause and the
+# next command to run.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT" || {
-  echo "lint-llm-diff: cannot enter the repository root $ROOT" >&2
-  echo "ACTION: run this from a checkout whose directories are readable" >&2
-  exit 1
-}
+cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 # The base is a caller's ref, so it is resolved — not trusted — before anything is
 # judged: a ref that names no commit is refused here rather than becoming a cache
 # key nothing can invalidate.
-base="${1:-}"
-[ -n "$base" ] || {
-  echo "lint-llm-diff: no base given" >&2
-  echo "ACTION: run 'just lint-llm-diff <base>', e.g. 'just lint-llm-diff origin/main'" >&2
-  exit 2
-}
-shift
+base="${1:-origin/main}"
+[ "$#" -eq 0 ] || shift
 base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
   echo "lint-llm-diff: '$base' does not resolve to a commit" >&2
   echo "ACTION: fetch it ('git fetch origin') or pass a base this checkout has" >&2
@@ -98,7 +80,7 @@ unset NX_SKIP_NX_CACHE NX_DISABLE_NX_CACHE
 
 verdict="$(mktemp)" && diagnostics="$(mktemp)" || {
   echo "lint-llm-diff: could not open temporary storage for the judge report" >&2
-  echo "ACTION: free disk space in \$TMPDIR and retry" >&2
+  echo "ACTION: point TMPDIR at a writable directory with free space, then retry" >&2
   exit 1
 }
 trap 'rm -f "$verdict" "$diagnostics"' EXIT

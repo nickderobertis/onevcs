@@ -1,39 +1,20 @@
 #!/usr/bin/env bash
 # One source for the environment this repository's llmlint judge runs under.
 #
-# Sourced by both ends of the cached tier — `scripts/llmlint-judge.sh`, which
-# judges, and `scripts/llmlint-fingerprint.sh`, which keys the cache on the judge
+# Sourced by both ends of the cached tier — `scripts/llmlint-judge.sh`, which judges,
+# and `scripts/llmlint-fingerprint.sh`, which keys the cache on the judge
 # configuration. That sharing is the point: `llmlint config` renders
-# `LLMLINT_ONEHARNESS_BIN` into its output, so a fingerprint that read the caller's
+# `LLMLINT_ONEHARNESS_BIN` into its output, so a fingerprint that read a caller's
 # value would hash one judged diff to a different key per caller, and the
 # non-deterministic judge would re-roll every time.
 #
-# What it pins, and why each is the value `scripts/setup-llmlint.sh` provisions:
-#   * `$HOME/.local/bin` first on PATH — that is where `uv tool install` links the
-#     llmlint this repository asks for, so a different llmlint sitting earlier in a
-#     caller's PATH neither judges the diff nor keys the cache.
-#   * no `LLMLINT_ONEHARNESS_BIN` — llmlint >= 0.3.17 finds `oneharness` beside its
-#     own binary in that tool venv, which is why setup installs no wrapper and sets
-#     no override. An inherited one (another repository's, exported into the shell)
-#     would both re-point the harness and move the cache key.
-#
-# llmlint: ignore-file[boundary_inputs_validated] Neither value this function reads
-# crosses a trust boundary, and validating either would break what it is for. The
-# inherited PATH is deliberately kept rather than narrowed: scripts/setup-llmlint.sh
-# installs llmlint outside the checkout, so an opinion here about which directories
-# may hold it would let the judge and the fingerprint resolve different binaries —
-# the split key this helper exists to prevent. HOME is the shell's own, used to name
-# the directory that install links into and for nothing else; a value that names no
-# such directory simply adds a PATH entry nothing resolves from, identically for both
-# ends. The function is these few lines, so this is file-scoped only because there is
-# no smaller scope to name.
+# Dropping that variable is also what the judge itself needs: `scripts/setup-llmlint.sh`
+# installs no wrapper and sets no override, because llmlint >= 0.3.17 finds
+# `oneharness` beside its own binary in the tool venv. An inherited value — another
+# repository's, exported into the shell — would re-point the harness as well as move
+# the key.
 set -euo pipefail
 
 llmlint_runtime_env() {
-  # A host with no HOME has no such install to prefer; both ends then resolve
-  # llmlint from the same inherited PATH, which is still one shared answer.
-  if [ -n "${HOME:-}" ]; then
-    export PATH="$HOME/.local/bin:$PATH"
-  fi
   unset LLMLINT_ONEHARNESS_BIN
 }

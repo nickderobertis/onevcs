@@ -13,43 +13,24 @@
 # hashes declared environment variables but not target arguments: keying and judging
 # on the same value is what stops a clean verdict computed against one base from
 # being replayed for another.
-# llmlint: ignore-file[changed_behavior_has_e2e] Every journey this script has — a
-# judged and a replayed clean run, findings and a broken toolchain re-judging, a base
-# it refuses, and a host with no llmlint — is driven end to end in
-# crates/onevcs/tests/e2e/llmlint_cache.rs. What remains is one host-failure guard on
-# the checkout layout; simulating a broken host is the guard's job, not a journey's.
 set -euo pipefail
 
-root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)" || {
-  echo "lint-llm-diff: could not locate the repository from this script; re-clone the checkout and retry" >&2
-  exit 1
-}
+cd "$(dirname -- "$0")/.."
 # shellcheck source=scripts/llmlint-runtime-env.sh
-. "$root/scripts/llmlint-runtime-env.sh" || {
-  echo "lint-llm-diff: could not load the pinned runtime environment; restore scripts/llmlint-runtime-env.sh and retry" >&2
-  exit 1
-}
-# The base is external input to this target — an operator or a stale environment can
-# hand it anything — so it is checked for the shape the recipe resolves and for
-# presence in this checkout before a judge call is paid for.
+. scripts/llmlint-runtime-env.sh
+# The base is external input to this target — an operator driving it through
+# `just nx run workspace:lint-llm-diff`, or a stale environment, can hand it
+# anything — so it is checked for the shape the recipe resolves, and for presence in
+# this checkout, before a judge call is paid for.
 base_sha="${LLMLINT_DIFF_BASE_SHA:-}"
 [[ "$base_sha" =~ ^[0-9a-f]{40,64}$ ]] || {
   echo "lint-llm-diff: LLMLINT_DIFF_BASE_SHA must be a resolved commit id; run 'just lint-llm-diff <base>' rather than this target directly" >&2
   exit 1
 }
-git -C "$root" rev-parse --verify --quiet "${base_sha}^{commit}" >/dev/null || {
+git rev-parse --verify --quiet "${base_sha}^{commit}" >/dev/null || {
   echo "lint-llm-diff: base commit '$base_sha' is missing from this checkout; fetch it and retry" >&2
   exit 1
 }
 
-# Checked under the pinned runtime rather than in the recipe: the llmlint that has
-# to exist is the one this target judges with, which is not necessarily the one on
-# the caller's PATH.
 llmlint_runtime_env
-command -v llmlint >/dev/null 2>&1 || {
-  echo "lint-llm-diff: llmlint not installed — run 'just setup-llmlint'" >&2
-  exit 1
-}
-
-# llmlint: ignore[tool_output_is_signal] The judge's per-rule report is this tier's product, not chatter: Nx replays this run's terminal output in place of a verdict record, so a quiet success would leave a replayed run saying less than a fresh one — and llmlint's own findings already name each rule and the file it fired on.
 exec llmlint --diff --diff-base "$base_sha"
