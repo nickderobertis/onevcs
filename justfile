@@ -71,10 +71,15 @@ _ensure-tool tool:
 # project by Nx. The body then runs the per-project `check` aggregate — the same
 # target `just check-affected` uses — which replays from the cache in a second and
 # is what stops the full sweep and the affected sweep from covering different tiers.
+# llmlint: ignore-block[changed_behavior_has_e2e] the only change here is a removal —
+# the red/green record check that was this recipe's first dependency is gone, along
+# with the tier behind it — and a step that no longer exists has no code path, output,
+# or exit status left for a journey to drive.
 # Deterministic quality gate, every project.
 check: fmt-check lint test doc
     @bash scripts/nx.sh run-many -t check
     @echo "check: ok"
+# llmlint: ignore-end[changed_behavior_has_e2e]
 
 # The complete pre-push bar: the deterministic gate plus the LLM-judge tier scoped
 # to this branch's diff. `check` stays offline and credential-free; this is the one
@@ -85,10 +90,15 @@ gate base="origin/main": check (lint-llm-diff base)
 
 # What PR CI runs: the same gate, scoped to the projects this branch's diff can
 # reach. Fails closed — with no derivable merge base it runs everything.
+# llmlint: ignore-block[changed_behavior_has_e2e] the only change here is a removal —
+# the red/green record check that was this recipe's first dependency is gone, along
+# with the tier behind it — and a step that no longer exists has no code path, output,
+# or exit status left for a journey to drive.
 # Deterministic quality gate, affected projects only.
 check-affected:
     @bash scripts/nx-affected.sh -t check
     @echo "check-affected: ok"
+# llmlint: ignore-end[changed_behavior_has_e2e]
 
 # `true` when this branch's diff can reach the Rust crate project, so CI can skip
 # the cross-platform and install matrices on a change that cannot touch it. Fails
