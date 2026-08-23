@@ -589,6 +589,50 @@ path itself now, through the same coverage question `onevcs repos --audit-gates`
 answers, so the guard, the registration warning, and the audit cannot disagree about
 which identities are covered.
 
+**A push that landed and a merge path that could not be read is its own failure.**
+Everything a publication does after its publishing push is a read of the *host*, and
+until now a read that failed was reported with a kind that says the publication did
+not land: a host that would not answer surfaced as `Invalid`, and the work was on the
+remote the whole time. Twice in one session a publication settled as failed while its
+branch was on the remote and CI was running on it, and the two obvious reactions to
+that status — re-running finished work, or reading a chain as still blocked — are
+both wrong and both expensive.
+
+So the vocabulary widens by one kind, which is the only thing a router that branches
+on the kind can see:
+
+```rust
+pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented,
+                       ChecksFailed, ChecksUnsettled, PushRejected,
+                       PushedUnverified }  // 1 | 2 | 3 | 70 | 1 | 1 | 1 | 1
+```
+
+`PushedUnverified` is a publishing push that reached the remote followed by a merge
+path this build could not read, and its `reason` names both facts: where the push
+landed, and what stopped the read. It keeps **exit code 1**, the code the contract
+already fixes for a verification failure, so a process that only reads `$?` sees
+nothing change. `Error` gains the matching variant; it is `#[non_exhaustive]`, which
+is what makes that additive.
+
+It narrows rather than absorbs. A required check that concluded red is still
+`ChecksFailed`, the watch's own bound elapsing is still `ChecksUnsettled`, and a push
+the merge path refused is still `PushRejected` — a refused push never reaches the
+host reads at all. `NotImplemented` passes through it too: `70` is the code this
+repository fixes for a seam with no body, and a seam nobody wrote is not a merge path
+that could not be read. And so does `GateFailed`, which the amendment above fixes for
+"a host that took a merge and then reported it unperformed": that case shares this
+defect's shape — the push landed, and the operator is not told so — but the meaning
+of a kind is the contract's, so it is reported here rather than re-pointed.
+
+The one host answer that changes with it is the empty check list. `gh pr checks
+--required` says `no required checks reported on the '<branch>' branch` for a
+repository that declares none, and `no checks reported on the '<branch>' branch` for a
+head nothing has reported on yet — the shape every head wears for the first seconds
+after a push. The first is an answer and stays one, so a repository with no branch
+protection is readable and publishable exactly as before. The second is a race and is
+refused under its own wording, because reading it as the first would wave a merge
+through on a head no verification has begun on.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

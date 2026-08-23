@@ -92,6 +92,24 @@ pub enum Error {
         /// git's own per-ref refusal, which is what an operator acts on.
         reason: String,
     },
+
+    /// The publishing push **reached the remote**, and the merge path could not
+    /// then be read. The CLI reports this as exit code 1.
+    ///
+    /// A kind of its own rather than a reason clause on the three above, because a
+    /// router branches on the *kind*: a sentence added to [`Error::ChecksFailed`]
+    /// still routes as "the checks said no". Widening a vocabulary fixed across the
+    /// libraries that route on it is the amendment in `docs/contract.md`, which
+    /// records why.
+    #[error("pushed, merge path unverified: {reason}")]
+    // llmlint: ignore[invalid_states_unrepresentable] the approved contract fixes every
+    // variant of this enum as one `reason: String`, and three libraries route on that
+    // shape. Splitting this one into a landing field and a cause field would add public
+    // surface the contract does not name and leave one variant unlike its siblings.
+    PushedUnverified {
+        /// Where the push landed, and what stopped the merge path being read.
+        reason: String,
+    },
 }
 
 /// The result type every fallible entry point in this crate returns.

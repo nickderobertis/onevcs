@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 215. Tests observed red and then green: 249.
+Patches: 217. Tests observed red and then green: 251.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpt0IJCa-project-65af3b635d7a/runs/<token>/clone stands on its own parent afc913a1a0f191b6147683
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpYUSQmd-project-71cb24a5f5fe/runs/<token>/clone stands on its own parent 72a6da76cc8971fed9db83
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpDUqzI0-project-48e6109f3da4/runs/<token>/clone stands on its own parent 24f8d56312d6b5ed350157
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpIvVjpJ-project-c6a88f1e8d28/runs/<token>/clone stands on its own parent bd3568fe2bafe9a495c28e
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -381,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-97bfc-18ce54c9bcf266be-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-12b49f-18ce5b22c4d00d2e-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-9a823-18ce54cc34b5b05c-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-12e144-18ce5b253c49fc28-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -562,7 +562,7 @@ a change-auto publication arms the host's merge and settles at queued, which is 
 
 a change-direct publication stops consulting the host's checks before it asks for the merge, so a repository's required checks are observed for nobody.
 
-- RED `a_host_that_will_not_describe_a_change_requests_checks_still_opens_one` — Unexpected return code, failed var == 2
+- RED `a_host_that_will_not_describe_a_change_requests_checks_still_opens_one` — Unexpected return code, failed var == 1
 - RED `a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed` — assertion `left == right` failed: []
 
 ### `167-a-landing-is-never-recorded`
@@ -582,7 +582,7 @@ a landing that could not be written down fails the publication, which reports a 
 
 the amendment stops naming one of the failures a publication can end with.
 
-- RED `the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_code` — assertion `left == right` failed: exactly one `rust` amendment must declare "ChecksFailed, ChecksUnsettled, PushRejected }"; found 0
+- RED `the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_code` — the amendment no longer declares the failure kind PushRejected
 
 ### `16-the-trains-arguments-are-only-diagnosed`
 
@@ -793,6 +793,18 @@ a count is taken against every name it was given, so one that no longer resolves
 a count git refused is read as none again, whatever the reference — so a clone whose objects went with the checkout answers "nothing here" and the worktree is reaped over the only copy of the work.
 
 - RED `a_close_whose_execution_checkout_is_gone_keeps_the_work_rather_than_assuming_it_is_safe` — Unexpected return code, failed var == 2
+
+### `217-a-landed-push-is-reported-as-one-that-never-landed`
+
+a publication whose push landed and whose merge-path read then failed reports the read failure as itself, so work that is on the remote settles as a publication that never landed.
+
+- RED `a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_failed` — Unexpected return code, failed var == 1
+
+### `218-an-unprotected-repository-is-read-as-a-head-nothing-has-reported-on`
+
+the two empty check lists gh answers with are read as one, so a repository that declares no required check is treated as a head nothing has reported on yet and becomes unpublishable.
+
+- RED `a_repository_that_declares_no_required_check_publishes_as_it_always_has` — Unexpected failure.
 
 ### `21-a-round-is-not-put-back`
 

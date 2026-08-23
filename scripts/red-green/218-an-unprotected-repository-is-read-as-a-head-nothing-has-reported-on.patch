@@ -1,0 +1,36 @@
+Mutation: the two empty check lists gh answers with are read as one, so a repository that declares no required check is treated as a head nothing has reported on yet and becomes unpublishable.
+Red: a_repository_that_declares_no_required_check_publishes_as_it_always_has
+
+diff --git a/crates/onevcs/src/host.rs b/crates/onevcs/src/host.rs
+index f241308..4de8915 100644
+--- a/crates/onevcs/src/host.rs
++++ b/crates/onevcs/src/host.rs
+@@ -36,7 +36,7 @@ fn usable(answer: &gh::Answer) -> bool {
+ /// Deliberately neither a prefix of [`NO_REQUIRED_CHECKS`] nor prefixed by it: the
+ /// two sentences are `gh`'s own, they are one word apart, and they say opposite
+ /// things.
+-const NO_CHECKS_YET: &str = "no checks reported on the ";
++const NO_CHECKS_YET: &str = "no ";
+ 
+ /// Whether a failing `gh pr checks --required` failed by *answering* "none".
+ ///
+@@ -441,6 +441,9 @@ impl GitHub {
+             // failing: refusing here would make every unprotected repository
+             // unreadable, and "nothing blocks the merge" is what the publication
+             // path already knows how to act on.
++            if no_checks_yet(&answer) {
++                return Err(unregistered(&cr.url, answer.stderr.trim()));
++            }
+             if no_required_checks(&answer) {
+                 return Ok(BTreeSet::new());
+             }
+@@ -450,9 +453,6 @@ impl GitHub {
+             // wording, because "the host would not say which of its checks block" is
+             // about an answer that came back unreadable and this is about an answer
+             // that has not been produced.
+-            if no_checks_yet(&answer) {
+-                return Err(unregistered(&cr.url, answer.stderr.trim()));
+-            }
+             return Err(unsaid(&cr.url, &answer.detail()));
+         }
+         let value = gh::json(&answer.stdout)?;

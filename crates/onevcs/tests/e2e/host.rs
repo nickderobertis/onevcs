@@ -77,6 +77,24 @@ impl Hosted {
         token_of(&stdout)
     }
 
+    /// Where a branch stands on the bare origin, or nothing if the origin has no such
+    /// branch.
+    ///
+    /// Read off the origin rather than out of any clone: what makes a push a push is
+    /// that the *remote* moved, and a clone's own ref says only what that clone knows.
+    pub fn branch_on_origin(&self, branch: &str) -> Option<String> {
+        let tip = self.world.git(
+            &self.origin,
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                &format!("refs/heads/{branch}"),
+            ],
+        );
+        let tip = tip.trim().to_owned();
+        (!tip.is_empty()).then_some(tip)
+    }
+
     /// Land content on the base from outside every session this fixture opened, as
     /// somebody else's change request squash-merging does.
     fn land_on_base(&self, file: &str, contents: &str, subject: &str) {
@@ -99,7 +117,7 @@ pub const REVIEWED: &str = "{publication: change-open, approvals: required}";
 pub const AUTOMATED: &str = "{publication: change-auto, approvals: required}";
 /// Asks the host for the merge itself, so it is the policy that waits on whatever
 /// checks the host says block one first.
-const DIRECT: &str = "{publication: change-direct, approvals: none}";
+pub const DIRECT: &str = "{publication: change-direct, approvals: none}";
 
 #[test]
 fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
@@ -156,7 +174,10 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so this is a merge
+            // path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(
                 "Resource not accessible by personal access token",
             ))
@@ -288,7 +309,10 @@ fn the_actions_source_is_refused_rather_than_read_as_nothing_blocking() {
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so each of these is a
+            // merge path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(reason));
         assert_eq!(
             hosted.origin_log().len(),
@@ -318,7 +342,10 @@ fn an_unrelated_access_refusal_does_not_discard_the_complete_check_source() {
         .onevcs()
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains(
             "another field said Resource not accessible",
         ));
@@ -393,7 +420,10 @@ fn an_explicit_status_check_source_never_falls_back_to_actions() {
         .env("ONEVCS_CHECK_SOURCE", "status-checks")
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains(
             "Resource not accessible by personal access token",
         ));
@@ -560,6 +590,10 @@ fn a_check_source_this_build_cannot_read_is_refused_where_it_is_named() {
             "it must be \"auto\", \"status-checks\", or \"actions\"",
         ));
     assert_eq!(hosted.origin_log().len(), 1);
+    // And nothing was pushed: the knob is this build's own input, so it is read
+    // before the branch reaches the remote rather than half way through the watch,
+    // where the refusal would read as a merge path nobody could verify.
+    assert_eq!(hosted.branch_on_origin("feature/misconfigured"), None);
 }
 
 #[test]
@@ -2473,7 +2507,10 @@ fn a_repository_that_disallows_auto_merge_reports_the_hosts_refusal() {
         .onevcs()
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains("Auto-merge is not enabled"));
     assert_eq!(hosted.origin_log().len(), 1);
 }
@@ -2543,6 +2580,22 @@ fn a_local_identity_cannot_be_asked_to_open_a_change_request() {
         .stderr(predicate::str::contains(
             "local identity publishes with local-direct",
         ));
+    // Refused before anything is pushed. An identity with no host is a policy nobody
+    // can honour, so putting the branch on a remote first would be work done for a
+    // publication that cannot happen — and the refusal would arrive with the branch
+    // already there, reading as a merge path nobody could verify.
+    assert_eq!(
+        world.git(
+            &origin,
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                "refs/heads/feature/nowhere",
+            ],
+        ),
+        "",
+        "nothing reached the origin"
+    );
 }
 
 #[test]

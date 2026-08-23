@@ -196,8 +196,10 @@ pub enum FailureKind {
     /// kind says which — the repository's own `commit-msg` hook turning down the
     /// subject, or a host that took a merge and then reported it unperformed. What
     /// the *host's checks* reported is [`ChecksFailed`](FailureKind::ChecksFailed)
-    /// or [`ChecksUnsettled`](FailureKind::ChecksUnsettled), and what its `pre-push`
-    /// hook said is [`PushRejected`](FailureKind::PushRejected).
+    /// or [`ChecksUnsettled`](FailureKind::ChecksUnsettled), what its `pre-push`
+    /// hook said is [`PushRejected`](FailureKind::PushRejected), and a push that
+    /// landed with the merge path unreadable behind it is
+    /// [`PushedUnverified`](FailureKind::PushedUnverified).
     ///
     /// Named for the tier this crate used to run itself and kept under that name:
     /// the contract fixes this vocabulary across the three libraries that route on
@@ -223,6 +225,15 @@ pub enum FailureKind {
     /// The publishing push was refused by the merge path. The reason carries git's
     /// own per-ref refusal.
     PushRejected,
+    /// The publishing push **reached the remote**, and the merge path could not
+    /// then be read. The reason names both: where the push landed, and what stopped
+    /// the read.
+    ///
+    /// Widening the vocabulary rather than adding a clause to the three above is
+    /// the decision recorded on [`Error::PushedUnverified`], and the reasoning is
+    /// there: a router branches on the kind, so only a kind can stop work that is
+    /// on the remote reading as work that never landed.
+    PushedUnverified,
 }
 
 impl FailureKind {
@@ -240,7 +251,8 @@ impl FailureKind {
             FailureKind::Gate
             | FailureKind::ChecksFailed
             | FailureKind::ChecksUnsettled
-            | FailureKind::PushRejected => 1,
+            | FailureKind::PushRejected
+            | FailureKind::PushedUnverified => 1,
             // llmlint: ignore-end[cli_output_contract]
             FailureKind::Invalid => 2,
             FailureKind::SyncConflict => 3,
@@ -263,6 +275,7 @@ impl FailureKind {
             Error::ChecksFailed { .. } => FailureKind::ChecksFailed,
             Error::ChecksUnsettled { .. } => FailureKind::ChecksUnsettled,
             Error::PushRejected { .. } => FailureKind::PushRejected,
+            Error::PushedUnverified { .. } => FailureKind::PushedUnverified,
             _ => FailureKind::Invalid,
         }
     }
@@ -1103,6 +1116,17 @@ fn publish_as_change(
     environment: &[(String, String)],
     push: Push,
 ) -> Result<PublishOutcome> {
+    // Input, rejected at its boundary rather than half way through the watch below,
+    // where the branch would already be on the remote and the refusal would read as a
+    // merge path nobody could verify.
+    refuse_an_unhosted_identity(&context.resolution.key)?;
+    if context.effective != MergePolicy::ChangeOpen {
+        // Only the policies that watch read these, so only those are held to them.
+        gh::checks_timeout()?;
+        gh::checks_poll()?;
+        crate::host::check_source_names_a_source()?;
+    }
+
     // A branch this publication replayed is not a descendant of the one the host has
     // for it — the change below's commits are gone from it — so the push replaces one
     // commit and no other, and git refuses it if the host is anywhere else. Every
@@ -1169,6 +1193,71 @@ fn publish_as_change(
         });
     }
 
+    // Everything past here reads the *host*, and the push above has already reached
+    // the remote: from this point a failure is a merge path this build could not
+    // read rather than a publication that never landed. The commit is taken from the
+    // tree that was pushed rather than asked of the remote, because asking the remote
+    // is one more read that can fail for the very reason being reported.
+    let pushed_at = git::tip(&context.worktree, &context.branch);
+    land_as_change(context, stream, subject)
+        .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
+}
+
+/// Refuse an identity that has no host at all, before anything is pushed.
+///
+/// Half of [`change_host`]'s question, and only that half: a **hosted** identity this
+/// build has no implementation for is left until after the push, because there the
+/// branch reaching the origin is not what is missing, and `edges.rs` holds that.
+fn refuse_an_unhosted_identity(identity: &str) -> Result<()> {
+    match change_host(identity) {
+        Ok(_) | Err(Error::NotImplemented { .. }) => Ok(()),
+        Err(no_host) => Err(no_host),
+    }
+}
+
+/// A push that reached the remote and a merge path that could not then be read,
+/// reported as the one thing it is rather than as a publication that failed.
+///
+/// This covers the answers nobody got. What passes through is every failure the
+/// contract already fixes a kind for — [`Error::GateFailed`] included, which it fixes
+/// for a host that took a merge and then reported it unperformed: that shares this
+/// defect's shape, and re-pointing a meaning is an amendment somebody approves.
+fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> Error {
+    match unread {
+        verdict @ (Error::ChecksFailed { .. }
+        | Error::ChecksUnsettled { .. }
+        | Error::GateFailed { .. }
+        | Error::NotImplemented { .. }) => verdict,
+        unread => Error::PushedUnverified {
+            reason: format!(
+                "{branch:?} is on origin{at} and the merge path could not be read: {unread}. The \
+                 work reached the remote, so re-publishing it would repeat what already landed \
+                 there — read the change request on the host, and land the branch with \
+                 `{command}` once the host answers",
+                branch = context.branch,
+                at = pushed_at.map_or_else(String::new, |sha| format!(" at {sha}")),
+                command = guidance::command([
+                    "onevcs",
+                    "publish-branch",
+                    &context.branch,
+                    "--repo",
+                    &context.resolution.publication.to_string_lossy(),
+                ]),
+            ),
+        },
+    }
+}
+
+/// Open or adopt the change request for a branch **already on the remote**, and ask
+/// the host to land it.
+///
+/// Separate from the push above so that what every failure in here has in common is a
+/// property of the function rather than a comment somebody has to keep true.
+fn land_as_change(
+    context: &Context<'_>,
+    stream: &mut Stream,
+    subject: &str,
+) -> Result<PublishOutcome> {
     let slug = change_host(&context.resolution.key)?;
     let host = context.hosting.for_repo(&slug)?;
     // Who the host believes is calling travels with the change: a change request
