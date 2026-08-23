@@ -75,7 +75,17 @@ impl Workspace {
         );
         let judge_history = base.join("judge-history.log");
         std::fs::write(&judge_history, "").expect("the judge's history is writable");
+        // llmlint: ignore-block[e2e_not_mocked] the judge this installs is the
+        // subject of these journeys, not a dependency mocked out of them: the
+        // property under test is that one tree, one base and one judge
+        // configuration yield exactly one verdict, and telling "replayed" from
+        // "re-judged and happened to agree" means counting judge invocations,
+        // which means owning the judge. The reasoning is in full above
+        // `write_judge`, which this line calls. Every other subprocess these
+        // journeys drive — `just`, the recipe, Nx and its cache, git over a real
+        // checkout — is the real one.
         write_judge(&judge_bin);
+        // llmlint: ignore-end[e2e_not_mocked]
 
         let workspace = Self {
             _scratch: scratch,
