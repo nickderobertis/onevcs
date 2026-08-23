@@ -764,11 +764,15 @@ fn a_host_without_the_judge_is_told_which_command_installs_it() {
     std::fs::remove_file(workspace.home.join(".local/bin/llmlint"))
         .expect("the pinned judge was there to remove");
 
-    let refused = workspace.lint(&base, &[], &[("PATH", &workspace.path_without_llmlint())]);
+    let no_judge: &[(&str, &str)] = &[("PATH", &workspace.path_without_llmlint())];
+    let refused = workspace.lint(&base, &[], no_judge);
+    let refused_directly = workspace.run_target(&[("LLMLINT_DIFF_BASE_SHA", &base), no_judge[0]]);
 
-    // Checked under the pinned runtime rather than in the recipe, because the
-    // llmlint that has to exist is the one this target judges with.
-    refused
+    // The recipe stops at the fingerprint, which is the first thing that needs the
+    // judge; a run that skipped the recipe meets the target's own guard. Both name
+    // the command that installs it, and neither pays for a judge call.
+    refused.failed().says("just setup-llmlint");
+    refused_directly
         .failed()
         .says("lint-llm-diff: llmlint not installed")
         .says("just setup-llmlint");
@@ -819,4 +823,31 @@ fn a_forced_colour_environment_does_not_disguise_a_replay() {
     second.succeeded().says_on_stderr(CACHE_HIT);
     third.succeeded().says_on_stderr(CACHE_HIT);
     assert_eq!(workspace.judge_runs(), 1);
+}
+
+#[test]
+fn a_judge_configuration_that_cannot_be_fingerprinted_stops_the_tier() {
+    // Nx scores a runtime input that exits non-zero as no contribution rather than
+    // as an error, so a fingerprint nobody can produce would quietly shrink the key
+    // to the tree and the base — and replay a verdict recorded under a judge
+    // configuration that has since moved on. The tier refuses instead.
+    let workspace = Workspace::new();
+    let base = workspace.head();
+    workspace.lint(&base, &[], &[]).succeeded();
+
+    write_script(
+        &workspace.home.join(".local/bin/llmlint"),
+        "[ \"${1:-}\" = \"config\" ] && exit 1\necho 'llmlint 0.0.0-e2e'\n",
+    );
+    let refused = workspace.lint(&base, &[], &[]);
+
+    refused
+        .failed()
+        .says_on_stderr("'llmlint config' failed")
+        .says_on_stderr("the judge configuration could not be fingerprinted")
+        .says_on_stderr("scripts/llmlint-fingerprint.sh");
+    // Neither judged again nor replayed: the recorded verdict is keyed to a judge
+    // configuration nothing can read back.
+    assert_eq!(workspace.judge_runs(), 1);
+    refused.silent_about(CACHE_HIT);
 }

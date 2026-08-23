@@ -64,6 +64,17 @@ base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
   exit 1
 }
 
+# Nx scores a runtime input that exits non-zero as *no contribution* rather than as
+# an error, so a fingerprint that cannot be produced does not fail the tier — it
+# silently shrinks the key to the tree and the base, and replays a verdict the judge
+# configuration may have moved on from. Asked here first, where it can refuse instead
+# of degrading; it reports its own cause, and this says what the cause cost.
+./scripts/llmlint-fingerprint.sh >/dev/null || {
+  echo "lint-llm-diff: the judge configuration could not be fingerprinted, so no verdict can be keyed to it" >&2
+  echo "ACTION: clear what the fingerprint reported above — 'scripts/llmlint-fingerprint.sh' asks again — then retry" >&2
+  exit 1
+}
+
 if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
   echo "lint-llm-diff: ignoring the ambient global Nx cache skip; it would re-roll this non-deterministic tier from every unrelated command" >&2
   echo "ACTION: force a fresh judgement of this tier alone with 'just lint-llm-diff $base --skip-nx-cache'" >&2
