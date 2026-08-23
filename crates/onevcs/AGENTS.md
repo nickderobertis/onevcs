@@ -406,28 +406,21 @@ script written beside them that answered to what they asked.
 `releases.rs` is the document, `probe.rs` runs a probe, and `release.rs` is
 everything else. Six things are easy to undo by accident.
 
-- **The registry is not part of this feature, and must not become part of it.** The
-  releases document is at `$ONEVCS_HOME/releases.yml` and nowhere else; no release
-  verb reads or writes the registry, and its version did not move. That document is
-  shared host state — one per machine, rewritten in place by whichever `onevcs`
-  migrates it first — so a version, *or a key*, an already-released build cannot read
-  stops every verb on a host whose operator configured nothing. This repository has
-  watched that happen: a suite run wrote a bumped registry into `~/.onevcs`, and
-  every `onevcs` verb on that host refused until it was restored by hand. An optional
-  key is the same failure postponed, because those builds declare
-  `deny_unknown_fields` and always will — the first host to configure a target would
-  trip it. `docs/inferred-surface.md` carries the argument in full; do not repeat it.
+- **The registry is not part of this feature.** The releases document is at
+  `$ONEVCS_HOME/releases.yml` and nowhere else, no release verb reads or writes the
+  registry, and its version did not move. Adding a key there is the reflex to
+  resist: builds already in the field declare `deny_unknown_fields`, so the first
+  host to configure a target would stop every one of them.
 
 - **Every state-root document is read leniently, and written back whole.** The
-  registry, the rules file, the releases document, and the per-identity release
-  record each accept a version above the newest this build knows and keys it has no
-  opinion on, and `remainder.rs` is what hands those keys back when a verb rewrites
-  the document. A write never lowers a declared version. What is still refused: a
-  version below the oldest readable one, a field this build genuinely requires
-  (named in the refusal), and a key it refuses *by name* — the rules file's `gate:`
-  at version 3. `tests/e2e/state_root.rs` is the other half of this: it scans for a
-  spawn that reaches the binary without a scratch state root, because leniency makes
-  a stray invocation harmless and only the guard stops there being one.
+  registry, the rules file, the releases document, and the release record each
+  accept a version above the newest this build knows and keys it has no opinion on;
+  `remainder.rs` hands those keys back when a verb rewrites the document, and a
+  write never lowers a declared version. Still refused: a version below the oldest
+  readable one, a required field (named), and a key refused *by name* — the rules
+  file's `gate:` at version 3. `tests/e2e/state_root.rs` is the other half: it scans
+  for a spawn reaching the binary without a scratch state root, because leniency
+  makes a stray invocation harmless and only the guard stops there being one.
 
 - **The style is the shape, not a label.** A probe lives on `ReleaseMethod::Automated`
   and nowhere else, so `ReleaseTarget::probe()` answers `None` for a human-step target

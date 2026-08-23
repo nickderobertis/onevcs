@@ -1165,6 +1165,32 @@ fn a_release_targets_file_this_build_cannot_honour_is_refused_where_it_is_read()
              targets:\n      - {name: crate, style: automated, probe: {script: /etc/probe.sh}}\n",
             "absolute script path",
         ),
+        // Operator-written text this crate prints on one line: an action beside the
+        // wait it explains, and a probe argument wherever the probe is named. A value
+        // carrying a control character renders as something other than what it is, so
+        // it is refused where the document is read rather than by whichever renderer
+        // met it first.
+        (
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+             targets:\n      - {name: crate, style: human-step, action: \"push it\\nthen tag \
+             it\"}\n",
+            "not one printable line",
+        ),
+        (
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+             targets:\n      - {name: crate, style: automated, probe: {script: probe.sh, args: \
+             [\"--tag\\nreleased\"]}}\n",
+            "control character",
+        ),
+        (
+            &format!(
+                "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{name: \
+                 '*'}}\n    targets:\n      - {{name: crate, style: human-step, action: \
+                 {action:?}}}\n",
+                action = "push it ".repeat(40),
+            ),
+            "at most 200 characters",
+        ),
         // A name that could not be a record key, a file-safe token, and an operand.
         (
             "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \

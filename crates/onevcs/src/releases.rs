@@ -239,6 +239,22 @@ pub struct TargetName(String);
 /// enough that a refusal quoting one is still a sentence.
 const MAX_TARGET_NAME: usize = 64;
 
+/// How long a human step's action may be. It is one instruction rendered on one
+/// line beside the wait it explains, not the procedure behind it.
+const MAX_ACTION: usize = 200;
+
+/// Whether a value from the release-targets file renders as the one line it is
+/// printed on.
+///
+/// An `action` and a script probe's arguments are both operator-written text that
+/// this crate prints — in a table, in a refusal, and in an event payload — so a
+/// value carrying a newline or a control character renders as something other than
+/// what it is wherever it lands. Checked where the document is read, which is the
+/// boundary it arrives at, rather than by whichever renderer met it first.
+fn renders_on_one_line(value: &str) -> bool {
+    !value.chars().any(char::is_control)
+}
+
 impl TryFrom<String> for TargetName {
     type Error = String;
 
@@ -722,6 +738,13 @@ impl TryFrom<StoredTarget> for ReleaseTarget {
                          reads to know what to do, so a blank one is a wait nobody can act on"
                     ));
                 }
+                if !renders_on_one_line(&action) || action.chars().count() > MAX_ACTION {
+                    return Err(format!(
+                        "the release target {name:?} has an action that is not one printable \
+                         line of at most {MAX_ACTION} characters; it is rendered beside the wait \
+                         it explains, so it says what to do rather than how"
+                    ));
+                }
                 ReleaseMethod::HumanStep { action }
             }
         };
@@ -763,9 +786,17 @@ impl StoredProbe {
             )),
             (Some(script), None) => {
                 relative_to_the_repository(&script, name)?;
+                let args = self.args.unwrap_or_default();
+                if let Some(argument) = args.iter().find(|it| !renders_on_one_line(it)) {
+                    return Err(format!(
+                        "the release target {name:?} names a probe argument carrying a control \
+                         character ({argument:?}); an argument is printed wherever the probe is \
+                         named, so it has to be the one line it renders as"
+                    ));
+                }
                 Ok(Probe::Script {
                     script,
-                    args: self.args.unwrap_or_default(),
+                    args,
                     timeout_seconds,
                 })
             }

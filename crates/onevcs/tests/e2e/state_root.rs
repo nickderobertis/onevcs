@@ -18,6 +18,14 @@
 //! the thing that went wrong was not a helper missing an `.env` call — it was a
 //! second spawn nobody remembered was there.
 
+// llmlint: ignore-file[tests_mirror_real_usage] what this module asserts is the
+// *absence* of a spawn, and no amount of driving the CLI can show that a second one
+// does not exist — running every journey proves only that the ones written today
+// point somewhere scratch, which is exactly what was true on the day this suite wrote
+// a registry into `~/.onevcs`. Reading the sources is the only thing that sees a spawn
+// nobody has run yet, so it is the subject here rather than a shortcut around one.
+// Every other module in this directory drives the real binary.
+
 use std::path::{Path, PathBuf};
 
 use crate::support::workspace_root;
