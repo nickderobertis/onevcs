@@ -102,6 +102,10 @@ pub enum Error {
     /// libraries that route on it is the amendment in `docs/contract.md`, which
     /// records why.
     #[error("pushed, merge path unverified: {reason}")]
+    // llmlint: ignore[invalid_states_unrepresentable] the approved contract fixes every
+    // variant of this enum as one `reason: String`, and three libraries route on that
+    // shape. Splitting this one into a landing field and a cause field would add public
+    // surface the contract does not name and leave one variant unlike its siblings.
     PushedUnverified {
         /// Where the push landed, and what stopped the merge path being read.
         reason: String,
