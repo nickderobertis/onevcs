@@ -22,7 +22,8 @@ use crate::providers::Providers;
 use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::{Registry, RepoType, Workflow};
 use crate::releases::{
-    Acknowledgement, Baseline, Probe, ReleaseAnswer, ReleaseStatus, ReleaseTarget, TargetName,
+    Acknowledgement, Baseline, Probe, ReleaseAnswer, ReleaseMethod, ReleaseStatus, ReleaseTarget,
+    TargetName,
 };
 use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
@@ -885,18 +886,21 @@ fn release_targets(args: &ReleaseTargetsArgs) -> Result<u8> {
 }
 
 /// How a table names what one target is answered by.
+///
+/// Read off the *method*, which is the one place a target's body lives: there is no
+/// pair of answers here to render, because the style is the shape.
 fn describe(target: &ReleaseTarget) -> String {
-    match (target.probe(), target.action()) {
-        (Some(Probe::Script { script, args, .. }), _) => match args.is_empty() {
+    match &target.release {
+        ReleaseMethod::Automated {
+            probe: Probe::Script { script, args, .. },
+        } => match args.is_empty() {
             true => format!("script {}", script.display()),
             false => format!("script {} {}", script.display(), args.join(" ")),
         },
-        (Some(Probe::Shell { shell, .. }), _) => format!("shell {shell}"),
-        (None, Some(action)) => format!("action: {action}"),
-        // Unrepresentable: a target is one style or the other, and each carries its
-        // own body. Rendered rather than panicked over, because a report is not the
-        // place to end a process.
-        (None, None) => "nothing".to_owned(),
+        ReleaseMethod::Automated {
+            probe: Probe::Shell { shell, .. },
+        } => format!("shell {shell}"),
+        ReleaseMethod::HumanStep { action } => format!("action: {action}"),
     }
 }
 

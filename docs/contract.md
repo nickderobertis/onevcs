@@ -890,8 +890,14 @@ takes `Providers`, for the reason `session_holders` does not: what a repository
 releases is this host's own configuration and its own record, and there is nothing
 there for an implementation of either interface to answer.
 
-The command surface is written down in `docs/inferred-surface.md` beside the other
-verbs the approved usage block does not spell.
+Four verbs, each also taking `--json`: `onevcs release targets REPO`, `onevcs
+release latest REPO [--target NAME]`, `onevcs release status REF [--target NAME]`,
+and `onevcs release acknowledge REF --target NAME --version VERSION
+[--supersede]`. `REPO` is the identity key, registered alias, origin URL, or path
+every other command takes, and `REF` is the four-spelling reference `onevcs status`
+takes. The approved usage block below is committed verbatim, so — as with every
+verb added since it was written — the block a parser is reconciled against is the
+one in the inferred-surface record.
 
 Event kinds added: `release-probed`, `release-acknowledged`, `release-observed`.
 

@@ -88,6 +88,12 @@ impl Releasing {
         std::fs::write(directory.join(target), version).expect("an answer");
     }
 
+    /// Take a target's answer away, so its probe cannot answer at all.
+    fn answers_nothing(&self, target: &str) {
+        std::fs::remove_file(self.fixture.world.path("answers").join(target))
+            .expect("the answer was there to remove");
+    }
+
     /// Commit a probe script into the repository being released, on its base.
     ///
     /// This is the form that exists because the repository carries it: it runs from
@@ -265,6 +271,13 @@ fn a_target_with_no_release_at_landing_is_carried_by_the_first_version_it_ever_a
     // Nothing has ever been released, which the probe says by printing nothing.
     releasing.answers("crate", "");
     releasing.land("feature/first");
+
+    assert_eq!(
+        releasing.json(&["latest", "project"]),
+        serde_json::json!({"state": "no-release"}),
+        "a probe that prints nothing has answered: there is no release yet"
+    );
+    assert_eq!(releasing.says(&["latest", "project"]), "no release yet");
 
     let waiting = releasing.json(&["status", "feature/first"]);
     assert_eq!(waiting["state"], "not-released");
@@ -907,6 +920,63 @@ fn every_release_event_carries_the_fields_the_amendment_declares() {
         2,
         "a landing is observed as released once"
     );
+
+    // The other two outcomes a probe has, each recorded as what it was and neither
+    // carrying a version it did not answer.
+    releasing.answers("crate", "");
+    releasing.says(&["latest", "project", "--target", "crate"]);
+    releasing.answers_nothing("crate");
+    releasing.says(&["latest", "project", "--target", "crate"]);
+    let mut outcomes: Vec<String> = releasing
+        .events_of("release-probed")
+        .iter()
+        .map(|event| {
+            event["payload"]["outcome"]
+                .as_str()
+                .expect("every probe records what it answered")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        outcomes.split_off(outcomes.len() - 2),
+        vec!["no-release".to_owned(), "not-answered".to_owned()],
+        "the two answers a probe gives that are not a version are recorded as \
+         themselves"
+    );
+    for event in releasing.events_of("release-probed") {
+        let carries = event["payload"].get("version").is_some();
+        assert_eq!(
+            carries,
+            event["payload"]["outcome"] == "released",
+            "only a probe that answered a version carries one: {event}"
+        );
+    }
+
+    // …and a correction says what it replaced, which a first record has nothing to
+    // say about.
+    releasing
+        .release(&[
+            "acknowledge",
+            "feature/one",
+            "--target",
+            "container",
+            "--version",
+            "2026.8.24",
+            "--supersede",
+        ])
+        .success();
+    let acknowledged = releasing.events_of("release-acknowledged");
+    let replacement = acknowledged.last().expect("the correction was recorded");
+    assert_eq!(replacement["payload"]["version"], "2026.8.24");
+    assert_eq!(
+        replacement["payload"]["superseded"], "2026.8.23",
+        "the event names the version it replaced: {replacement}"
+    );
+    assert_eq!(
+        releasing.events_of("release-observed").len(),
+        2,
+        "a correction to a release already observed is not a second release"
+    );
 }
 
 #[test]
@@ -930,6 +1000,17 @@ fn a_host_with_no_release_targets_file_behaves_exactly_as_it_did_before_there_wa
     );
     assert_eq!(targets["targets"], serde_json::json!([]));
     assert!(targets.get("default_target").is_none());
+
+    // …and the table says the same thing in words, which is what an operator meets
+    // first when they wonder why nothing is waiting on a release.
+    world
+        .onevcs()
+        .args(["release", "targets", "project"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("adoption: fast"))
+        .stdout(predicate::str::contains("default target: none"))
+        .stdout(predicate::str::contains("targets: none"));
 
     // Asking about a target where there are none says so and names what to do.
     let refused = world

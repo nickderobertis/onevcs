@@ -644,9 +644,15 @@ pub fn acknowledge(
     }
     let identity = located.releases.identity.clone();
     let actor = actor();
-    let recorded = write_acknowledgement(
-        &identity, named, &commit, version, &actor, supersede, reference,
-    )?;
+    let recorded = write_acknowledgement(&Recording {
+        identity: &identity,
+        target: named,
+        commit: &commit,
+        version,
+        actor: &actor,
+        supersede,
+        reference,
+    })?;
     if let Some(written) = recorded.written {
         let mut payload = json_object(json!({
             "identity": identity,
@@ -890,16 +896,34 @@ struct Written {
     was_a_correction: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_acknowledgement(
-    identity: &str,
-    target: &TargetName,
-    commit: &str,
-    version: &str,
-    actor: &str,
+/// One acknowledgement as it was asked for: what to record, against what, and
+/// whether the operator said to replace what is already there.
+///
+/// A value rather than seven arguments, because every one of them is the *same*
+/// request and a call site that transposed two of them — the version and the actor
+/// are both strings — would compile.
+struct Recording<'a> {
+    identity: &'a str,
+    target: &'a TargetName,
+    commit: &'a str,
+    version: &'a str,
+    actor: &'a str,
     supersede: bool,
-    reference: &str,
-) -> Result<Recorded> {
+    /// The reference the operator typed, so a refusal names the invocation they
+    /// would run rather than one they would have to translate.
+    reference: &'a str,
+}
+
+fn write_acknowledgement(asked: &Recording<'_>) -> Result<Recorded> {
+    let Recording {
+        identity,
+        target,
+        commit,
+        version,
+        actor,
+        supersede,
+        reference,
+    } = *asked;
     update(identity, |record| {
         let existing = record
             .acknowledgements
