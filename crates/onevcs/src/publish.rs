@@ -1197,16 +1197,26 @@ fn publish_as_change(
 ///
 /// Why this is a kind of its own is recorded on [`Error::PushedUnverified`]. What is
 /// decided *here* is which failures it covers, and it covers the answers nobody got.
-/// A verdict the merge path actually reached passes through untouched — a required
-/// check that concluded red is still [`Error::ChecksFailed`], and the watch's own
-/// bound elapsing is still [`Error::ChecksUnsettled`] — and a push the merge path
-/// refused never reaches here, because it returned above. [`Error::NotImplemented`]
-/// passes through too: `70` is the code this repository fixes for a seam with no
-/// body, and a seam nobody wrote is not a merge path that could not be read.
+/// Everything the contract already fixes a meaning for passes through untouched:
+///
+/// - [`Error::ChecksFailed`] — a required check the merge path ran and concluded red.
+/// - [`Error::ChecksUnsettled`] — the watch's own bound elapsing, whichever of its
+///   three endings that was.
+/// - [`Error::GateFailed`] — which the amendment that named this vocabulary fixes for
+///   "a host that took a merge and then reported it unperformed", the one host answer
+///   in here that *is* an answer rather than the absence of one. It shares this
+///   defect's shape — the push landed, and the operator is not told so — but the
+///   meaning of a kind is the contract's, and re-pointing one is an amendment
+///   somebody has to approve rather than a clause. Reported, not resolved here.
+/// - [`Error::NotImplemented`] — `70` is the code this repository fixes for a seam
+///   with no body, and a seam nobody wrote is not a merge path that could not be read.
+///
+/// A push the merge path *refused* never reaches here at all: it returned above.
 fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> Error {
     match unread {
         verdict @ (Error::ChecksFailed { .. }
         | Error::ChecksUnsettled { .. }
+        | Error::GateFailed { .. }
         | Error::NotImplemented { .. }) => verdict,
         unread => Error::PushedUnverified {
             reason: format!(

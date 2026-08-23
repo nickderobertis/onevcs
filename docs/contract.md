@@ -619,7 +619,10 @@ It narrows rather than absorbs. A required check that concluded red is still
 the merge path refused is still `PushRejected` — a refused push never reaches the
 host reads at all. `NotImplemented` passes through it too: `70` is the code this
 repository fixes for a seam with no body, and a seam nobody wrote is not a merge path
-that could not be read.
+that could not be read. And so does `GateFailed`, which the amendment above fixes for
+"a host that took a merge and then reported it unperformed": that case shares this
+defect's shape — the push landed, and the operator is not told so — but the meaning
+of a kind is the contract's, so it is reported here rather than re-pointed.
 
 The one host answer that changes with it is the empty check list. `gh pr checks
 --required` says `no required checks reported on the '<branch>' branch` for a
