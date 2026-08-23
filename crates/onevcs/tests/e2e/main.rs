@@ -88,6 +88,11 @@ mod seam;
 mod scripts;
 #[cfg(unix)]
 mod smoke;
+// The guard that keeps every other module here off the operator's own state root.
+// It reads this repository's sources rather than driving the binary, which is the
+// only way to see a spawn that does *not* exist — the thing that went wrong was a
+// second one nobody remembered.
+mod state_root;
 // Unix only: the `commit-msg` hooks these install are POSIX shell.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.

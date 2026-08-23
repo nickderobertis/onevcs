@@ -28,12 +28,17 @@ use crate::support::{binary_dir, workspace_root};
 /// read was written into it, and every `onevcs` command on that host refused until
 /// somebody restored it by hand.
 fn smoking(
-    install: &Path,
+    install: Option<&Path>,
     home: &Path,
     label: &str,
     expect_version: &str,
 ) -> std::process::Command {
-    let mut path = OsString::from(install);
+    // `None` is the binary this build just compiled, resolved here rather than by
+    // each journey: `tests/e2e/state_root.rs` scans for a spawn that reaches this
+    // crate's binary outside one of the helpers that points it at a scratch state
+    // root, and putting the compiled binary on a `PATH` is one of those spawns.
+    let install = install.map_or_else(binary_dir, Path::to_path_buf);
+    let mut path = OsString::from(&install);
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
     let mut command = std::process::Command::new("bash");
@@ -61,7 +66,7 @@ fn the_release_smoke_script_passes_against_this_build() {
     // own, because it runs verbs that write one.
     let home = tempfile::tempdir().expect("a scratch state root");
     let output = smoking(
-        &binary_dir(),
+        None,
         home.path(),
         "the freshly compiled onevcs",
         env!("CARGO_PKG_VERSION"),
@@ -106,7 +111,7 @@ fn the_smoke_script_names_an_install_that_cannot_run_rather_than_dying_quietly()
 
         let home = tempfile::tempdir().expect("a scratch state root");
         let output = smoking(
-            install.path(),
+            Some(install.path()),
             home.path(),
             "an install that unpacked wrong",
             env!("CARGO_PKG_VERSION"),
@@ -136,7 +141,7 @@ fn the_smoke_script_names_an_install_that_cannot_run_rather_than_dying_quietly()
 fn the_smoke_script_reports_a_version_mismatch_rather_than_passing() {
     let home = tempfile::tempdir().expect("a scratch state root");
     let output = smoking(
-        &binary_dir(),
+        None,
         home.path(),
         "a registry serving the wrong payload",
         "0.0.0-not-this-build",
@@ -169,7 +174,7 @@ fn a_state_root_the_binary_cannot_read_is_reported_with_what_to_do_about_it() {
         .expect("a state root nothing can read");
 
     let output = smoking(
-        &binary_dir(),
+        None,
         home.path(),
         "an install that cannot read its state root",
         env!("CARGO_PKG_VERSION"),

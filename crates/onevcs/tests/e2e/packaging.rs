@@ -144,10 +144,24 @@ fn npm_install(scratch: &Path, with_platform_package: bool) -> PathBuf {
     project
 }
 
-/// Run the `onevcs` command npm installed, the way its caller does.
+/// Run the `onevcs` command npm installed, the way its caller does — over a state
+/// root belonging to this journey and to nothing else.
+///
+/// **Every spawn here goes through this.** The launcher execs the packaged binary,
+/// and the verbs below it resolve a repository: they read the state root, migrate
+/// what they find, and write it back. A journey that let them find the operator's
+/// own would be a test mutating the host it runs on, which this suite has already
+/// done once — see `tests/e2e/state_root.rs`, whose guard is why there is one
+/// spawn helper in this file rather than several.
 fn run_installed(project: &Path, argv: &[&str]) -> std::process::Output {
+    let home = project
+        .parent()
+        .expect("the project was installed inside a scratch directory")
+        .join("state");
+    std::fs::create_dir_all(&home).expect("a scratch state root");
     Command::new(project.join("node_modules/.bin").join(INSTALLED_COMMAND))
         .args(argv)
+        .env("ONEVCS_HOME", &home)
         // A caller runs the command from wherever they are, not from the project
         // it was installed into.
         .current_dir(workspace_root())

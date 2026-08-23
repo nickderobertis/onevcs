@@ -68,6 +68,22 @@ if ! command -v onevcs >/dev/null 2>&1; then
     "install it first — 'pip install onevcs-cli', 'npm install -g onevcs-cli', or 'cargo install onevcs'"
 fi
 
+# This script runs verbs that *read the state root and write it back*, so it never
+# runs against whichever one the caller happened to have. A caller that named one
+# is honoured — `tests/e2e/smoke.rs` points every journey at its own — and one that
+# named none gets a scratch root of this run's own, removed on the way out. The
+# incident this prevents is on the record: this file ran `onevcs resolve` under a
+# developer's real HOME from their own test suite, the build under test wrote a
+# registry version the installed `onevcs` could not read into `~/.onevcs`, and every
+# `onevcs` command on that host refused until an operator restored the file by hand.
+if [ -z "${ONEVCS_HOME:-}" ]; then
+  ONEVCS_HOME="$(mktemp -d)"
+  export ONEVCS_HOME
+  # shellcheck disable=SC2064 # the path is expanded now on purpose: the variable
+  # may be gone or reassigned by the time the trap fires.
+  trap "rm -rf '$ONEVCS_HOME'" EXIT
+fi
+
 # Windows ships the same bytes with CRLF once anything touches them, so strip CR
 # everywhere rather than let a line ending decide the verdict.
 strip_cr() { tr -d '\r'; }
