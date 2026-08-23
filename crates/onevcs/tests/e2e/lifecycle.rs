@@ -741,6 +741,109 @@ fn a_branch_the_execution_checkout_would_not_take_is_recorded_rather_than_discar
 }
 
 #[test]
+fn a_stray_branch_the_execution_checkout_would_not_take_names_the_verb_that_lands_it() {
+    // Both halves of the failure at once: the worker committed to a branch it cut
+    // itself, and the execution checkout has since spent that name on something else —
+    // so the copy that makes the journeys above safe is the one git turns down, and the
+    // work is reachable from nowhere but the clone this close was about to reap. The
+    // refusal has to carry the operator all the way to a durable copy anyway.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture.world.git(
+        &worktree,
+        &["checkout", "-q", "-b", "fix/invented", "origin/main"],
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "work.txt",
+        "work\n",
+        "fix: the thing the worker did",
+    );
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "other.txt",
+        "other\n",
+        "chore: something else",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["branch", "fix/invented", "main"]);
+    let clone = worktree.parent().expect("a run root").join("clone");
+
+    let refusal = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("fix/invented"));
+    let said = String::from_utf8(refusal.get_output().stderr.clone()).expect("text");
+    assert!(
+        said.contains("would not take"),
+        "the refusal says the copy was turned down:\n{said}"
+    );
+    assert!(
+        said.contains(&clone.to_string_lossy().into_owned()),
+        "…and names the only place the work still is:\n{said}"
+    );
+    assert!(worktree.is_dir(), "a refused close reaps nothing");
+
+    // Run as printed, because printing it is a claim that pasting it is the next move.
+    // It refuses too — the name is spent — and that refusal is the one that names the
+    // second name, which is what an operator actually needs here.
+    let import = said
+        .split('`')
+        .find(|span| span.starts_with("onevcs import "))
+        .expect("the refusal names the import that lands it")
+        .to_owned();
+    let spent = fixture.world.shell(&import).assert().code(2);
+    let over = String::from_utf8(spent.get_output().stderr.clone()).expect("text");
+    assert!(
+        over.contains("not a fast-forward"),
+        "the import says why the name would not take it:\n{over}"
+    );
+    let under_another_name = over
+        .split('`')
+        .find(|span| span.starts_with("onevcs import "))
+        .expect("the import names the second name that lands it")
+        .to_owned();
+    assert!(
+        under_another_name.contains("--as"),
+        "…which is a second name:\n{over}"
+    );
+    fixture
+        .world
+        .shell(&under_another_name)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(stranded.clone()));
+
+    // The work is durable now, so the close the first refusal named releases the
+    // worktree rather than refusing a second time.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(!worktree.is_dir(), "the second close releases the worktree");
+    // The question the incident was diagnosed with, asked of the checkout that outlives
+    // the run root: the object is there, and a branch carries it.
+    fixture
+        .world
+        .git(&fixture.checkout, &["cat-file", "-e", &stranded]);
+    let carrying = fixture
+        .world
+        .git(&fixture.checkout, &["branch", "--contains", &stranded]);
+    assert!(
+        carrying.contains("fix-invented"),
+        "a branch in the execution checkout carries the work: {carrying:?}"
+    );
+}
+
+#[test]
 fn a_session_holding_nothing_but_its_own_branch_closes_exactly_as_it_did_before() {
     let fixture = Fixture::local(&local_direct());
     // The execution checkout's own base is ahead of origin — unpushed local commits are
