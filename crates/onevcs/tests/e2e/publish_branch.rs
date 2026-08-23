@@ -3091,23 +3091,6 @@ fn a_copy_whose_checkout_cannot_see_the_others_commit_loses_the_comparison() {
     );
 }
 
-/// Where a branch stands on the origin, or nothing if the origin has no such branch.
-///
-/// Read off the bare origin rather than out of any clone: what makes a push a push is
-/// that the *remote* moved, and a clone's own ref says only what that clone knows.
-fn on_origin(hosted: &Hosted, branch: &str) -> Option<String> {
-    let listed = hosted.world.git(
-        &hosted.origin,
-        &[
-            "for-each-ref",
-            "--format=%(objectname)",
-            &format!("refs/heads/{branch}"),
-        ],
-    );
-    let tip = listed.trim().to_owned();
-    (!tip.is_empty()).then_some(tip)
-}
-
 #[test]
 fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_failed() {
     // The three endings a publishing push can have, driven through the one verb an
@@ -3166,7 +3149,7 @@ fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_faile
     // The fact the old report contradicted: the work really is on the remote, at the
     // commit this run pushed.
     assert_eq!(
-        on_origin(&hosted, "feature/unread").as_deref(),
+        hosted.branch_on_origin("feature/unread").as_deref(),
         Some(pushing.as_str()),
         "the branch is on the origin at the commit that was pushed"
     );
@@ -3204,7 +3187,7 @@ fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_faile
         "a push that never landed is not reported as one that did:\n{said}"
     );
     assert_eq!(
-        on_origin(&hosted, "feature/refused"),
+        hosted.branch_on_origin("feature/refused"),
         None,
         "and nothing of it reached the origin"
     );

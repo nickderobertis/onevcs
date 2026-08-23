@@ -899,6 +899,21 @@ fn a_host_bound_that_cannot_be_read_is_refused_at_the_boundary() {
             .assert()
             .code(2)
             .stderr(predicate::str::contains(name));
+        // Read before anything is pushed: a bound that is not a number is this
+        // build's own input, and a refusal that arrived with the branch already on
+        // the remote would read as a merge path nobody could verify.
+        assert_eq!(
+            world.git(
+                &origin,
+                &[
+                    "for-each-ref",
+                    "--format=%(objectname)",
+                    "refs/heads/feature/bounded",
+                ],
+            ),
+            "",
+            "{name} is refused before the branch reaches the origin"
+        );
     }
 }
 

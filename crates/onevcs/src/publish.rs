@@ -1124,7 +1124,7 @@ fn publish_as_change(
     // one would refuse with the branch already on the remote, and the refusal would
     // read as a merge path nobody could verify rather than as the misconfiguration it
     // is.
-    hosted_identity(&context.resolution.key)?;
+    refuse_an_unhosted_identity(&context.resolution.key)?;
     if context.effective != MergePolicy::ChangeOpen {
         // Only the policies that watch read them, so only those are held to them: a
         // publication that opens a change request and stops never asks the host a
@@ -1219,7 +1219,7 @@ fn publish_as_change(
 /// The other half — a **hosted** identity on a host this build has no implementation
 /// for — is deliberately left until after the push, because there the branch reaching
 /// the origin is not what is missing, and `edges.rs` holds that behaviour.
-fn hosted_identity(identity: &str) -> Result<()> {
+fn refuse_an_unhosted_identity(identity: &str) -> Result<()> {
     match change_host(identity) {
         Ok(_) | Err(Error::NotImplemented { .. }) => Ok(()),
         Err(no_host) => Err(no_host),
@@ -1229,21 +1229,13 @@ fn hosted_identity(identity: &str) -> Result<()> {
 /// A push that reached the remote and a merge path that could not then be read,
 /// reported as the one thing it is rather than as a publication that failed.
 ///
-/// Why this is a kind of its own is recorded on [`Error::PushedUnverified`]. What is
-/// decided *here* is which failures it covers, and it covers the answers nobody got.
-/// Everything the contract already fixes a meaning for passes through untouched:
-///
-/// - [`Error::ChecksFailed`] — a required check the merge path ran and concluded red.
-/// - [`Error::ChecksUnsettled`] — the watch's own bound elapsing, whichever of its
-///   three endings that was.
-/// - [`Error::GateFailed`] — which the amendment that named this vocabulary fixes for
-///   "a host that took a merge and then reported it unperformed", the one host answer
-///   in here that *is* an answer rather than the absence of one. It shares this
-///   defect's shape — the push landed, and the operator is not told so — but the
-///   meaning of a kind is the contract's, and re-pointing one is an amendment
-///   somebody has to approve rather than a clause. Reported, not resolved here.
-/// - [`Error::NotImplemented`] — `70` is the code this repository fixes for a seam
-///   with no body, and a seam nobody wrote is not a merge path that could not be read.
+/// This covers the answers nobody got. Four failures pass through it untouched,
+/// because each is a meaning the contract fixes for a kind of its own:
+/// [`Error::ChecksFailed`], [`Error::ChecksUnsettled`], [`Error::NotImplemented`],
+/// and [`Error::GateFailed`] — which the amendment naming this vocabulary fixes for
+/// "a host that took a merge and then reported it unperformed". That last one shares
+/// this defect's shape, the push having landed, and is reported rather than
+/// re-pointed: which kind a meaning belongs to is an amendment somebody approves.
 ///
 /// A push the merge path *refused* never reaches here at all: it returned above.
 fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> Error {
