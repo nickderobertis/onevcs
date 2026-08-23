@@ -1202,10 +1202,15 @@ const NAMED_SHA: usize = 12;
 struct Stray {
     /// The local branch it is reachable from — minted here where a detached head
     /// had no name of its own.
-    branch: String,
+    branch: Ref,
     /// How many commits neither the session's branch nor any `origin` ref has.
     commits: u64,
     /// Whether the execution checkout took the copy offered to it.
+    // llmlint: ignore[invalid_states_unrepresentable] the question is total and binary —
+    // the checkout took the copy or it did not — so a `bool` has no third state for a
+    // type to rule out, and an enum here would spell the same two answers twice. What a
+    // domain type does earn is the field above, whose valid values are git's rather than
+    // the language's.
     preserved: bool,
 }
 
@@ -1281,7 +1286,7 @@ fn hand_back(record: &Record) -> bool {
 /// preserving the work where it can be preserved is worth more than refusing to
 /// touch it, and the copy is what gives the refusal a way forward.
 fn stray_work(record: &Record) -> Result<Vec<Stray>> {
-    let mut found: Vec<(String, u64)> = Vec::new();
+    let mut found: Vec<(Ref, u64)> = Vec::new();
     // The detached head first, because it is the case with no name: one is minted
     // for it here, so a copy has something to fetch and `onevcs recoverable` has
     // something to offer a verb for.
@@ -1289,12 +1294,15 @@ fn stray_work(record: &Record) -> Result<Vec<Stray>> {
         let head = git::head_sha(&record.worktree)?;
         if let Some(commits) = stranded(record, &head)? {
             let branch = detached_name(&record.branch, &head);
+            // Named after the write rather than before it: this is the one name here
+            // git did not produce, and a ref git has just written is a name git took.
             git::update_ref(&record.clone, &format!("refs/heads/{branch}"), &head)?;
-            found.push((branch, commits));
+            found.push((Ref::from_git(branch), commits));
         }
     }
     for branch in git::branches(&record.clone)? {
-        if branch.as_str() == &*record.branch || found.iter().any(|(held, _)| *held == branch) {
+        let branch = Ref::from_git(branch);
+        if *branch == *record.branch || found.iter().any(|(held, _)| **held == *branch) {
             continue;
         }
         if let Some(commits) = stranded(record, &branch)? {
@@ -1348,11 +1356,11 @@ fn detached_name(branch: &Ref, head: &str) -> String {
 /// message says which of them it took: an operator reading it needs to know whether
 /// the work is already somewhere durable before deciding what to do with it.
 fn stranding(record: &Record, stray: &[Stray]) -> Error {
-    let names: Vec<&str> = stray.iter().map(|found| found.branch.as_str()).collect();
+    let names: Vec<&str> = stray.iter().map(|found| &*found.branch).collect();
     let refused: Vec<&str> = stray
         .iter()
         .filter(|found| !found.preserved)
-        .map(|found| found.branch.as_str())
+        .map(|found| &*found.branch)
         .collect();
     let total = stray.iter().map(|found| found.commits).sum();
     let checkout = record.execution_checkout.display();
