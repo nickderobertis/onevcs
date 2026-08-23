@@ -441,6 +441,9 @@ pub fn has_commit(cwd: &Path, sha: &Sha) -> bool {
 ///
 /// A repository git could not be asked answers `false`: the caller acts on this to
 /// decide whether work is safe elsewhere, and "no answer" must never read as "safe".
+// llmlint: ignore[invalid_states_unrepresentable] a revision is whatever git's parser
+// accepts, and this crate's `Sha` validates nothing, so a wrapper would rule out no
+// state — the value comes out of git and goes straight back to it.
 pub fn refs_reach(cwd: &Path, commit: &str) -> bool {
     run(
         &["rev-list", "--count", commit, "--not", "--all"],
@@ -1021,6 +1024,9 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// build does not understand is not output saying none.
 ///
 /// [`workspace::close`]: crate::workspace::close
+// llmlint: ignore[invalid_states_unrepresentable] the same as `refs_reach` above: these
+// are revisions git named and git resolves, and every other function in this module
+// spells one the same way.
 pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
     let held: Vec<&str> = carried
         .iter()

@@ -1322,6 +1322,9 @@ fn stray_work(record: &Record) -> Result<Vec<Stray>> {
 
 /// How many commits a ref in the session's clone would take with the worktree, or
 /// `None` where letting the clone go costs nothing.
+// llmlint: ignore[invalid_states_unrepresentable] a branch and a detached head are one
+// question here — what this revision holds — and git answers it for either, so an enum
+// would name a distinction neither this function nor `git rev-list` makes.
 fn stranded(record: &Record, reference: &str) -> Result<Option<u64>> {
     let commits = git::unpublished_ahead(&record.clone, reference, &[&*record.branch])?;
     if commits == 0 {
@@ -1345,6 +1348,9 @@ fn stranded(record: &Record, reference: &str) -> Result<Option<u64>> {
 /// left it and two detached heads of one session cannot collide. A suffix rather
 /// than a path segment: git refuses a branch `a/b` beside a branch `a`, so
 /// `onevcs/s-…/detached` is a name that could not be created at all.
+// llmlint: ignore[invalid_states_unrepresentable] `git::head_sha` produced this and the
+// name is text either way; the crate's `Sha` is the contract's wrapper and validates
+// nothing, so spelling it here would make no state unrepresentable.
 fn detached_name(branch: &Ref, head: &str) -> String {
     let short: String = head.chars().take(NAMED_SHA).collect();
     format!("{branch}-detached-{short}")
