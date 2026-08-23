@@ -838,6 +838,82 @@ fn an_index_answering_about_another_crate_stops_the_release_by_saying_so() {
     );
 }
 
+/// A real bash with `mapfile` and `readarray` taken away, which is the shell macOS
+/// ships: both are bash 4 builtins and bash 3.2 has neither.
+///
+/// They are shadowed by exported *functions* rather than by substituting the shell,
+/// because bash looks a function up before a builtin and carries an exported one
+/// through the environment into the child it `exec`s — so the script under test runs
+/// in an ordinary bash that answers "command not found" to exactly what bash 3.2
+/// answers it to, with nothing else about the run altered.
+const WITHOUT_BASH_FOUR_BUILTINS: &str = concat!(
+    r#"mapfile() { echo "bash: mapfile: command not found" >&2; return 127; }; "#,
+    r#"readarray() { echo "bash: readarray: command not found" >&2; return 127; }; "#,
+    r#"export -f mapfile readarray; exec bash "$@""#,
+);
+
+fn without_bash_four_builtins(script: &Path, args: &[&str]) -> Reported {
+    let output = Command::new("bash")
+        .args(["-c", WITHOUT_BASH_FOUR_BUILTINS, "_"])
+        .arg(script)
+        .args(args)
+        .current_dir(workspace_root())
+        .output()
+        .expect("bash must be available to run this repository's scripts");
+    Reported::from(output)
+}
+
+#[test]
+fn a_script_the_macos_legs_run_still_reports_where_the_shell_has_no_bash_four_builtins() {
+    // `mapfile` is a bash 4 builtin, macOS ships bash 3.2, and a script that reaches
+    // for one there aborts on that line — *before* the message it exists to print.
+    // Which is how this repository's macOS job went red on a run every Linux job
+    // called green. `retry-install.sh` is the script most exposed to it: the verify
+    // legs of `release.yml` and `published-smoke.yml` run it on `macos-latest` and
+    // `macos-15-intel`, so that shell is where a red matrix leg is read from.
+    //
+    // Proved by running the committed script in a shell that has neither builtin,
+    // rather than by reading the script for them.
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    // First that the shell really is missing them — otherwise everything below is a
+    // green test of nothing.
+    let canary = scratch.path().join("canary.sh");
+    std::fs::write(
+        &canary,
+        "#!/usr/bin/env bash\nset -euo pipefail\n\
+         mapfile -t lines < <(printf 'one\\n')\nprintf 'read %s\\n' \"${#lines[@]}\"\n",
+    )
+    .expect("a canary script");
+    without_bash_four_builtins(&canary, &[])
+        .failed()
+        .said("mapfile: command not found");
+
+    // …then that the script's refusal reaches the operator there anyway, rather than
+    // the shell's own abort standing where the argument error should be.
+    let script = workspace_root().join("scripts/retry-install.sh");
+    without_bash_four_builtins(&script, &["--budget", "ten minutes", "--", "true"])
+        .failed()
+        .said("--budget needs a whole number of seconds, not 'ten minutes'")
+        .said("ACTION: run 'retry-install.sh");
+
+    // …and that the loop itself runs to a verdict there, which is the path a green
+    // verify leg takes: a command that installs first time, reported as one line.
+    without_bash_four_builtins(
+        &script,
+        &[
+            "--budget",
+            "60",
+            "--label",
+            "onevcs-cli 9.9.9 from the test registry",
+            "--",
+            "true",
+        ],
+    )
+    .succeeded()
+    .printed("onevcs-cli 9.9.9 from the test registry: installed on attempt 1");
+}
+
 /// Every shell script this repository runs, so a construct is caught wherever one
 /// is added rather than only in the file where one was found.
 fn shell_scripts(under: &Path, found: &mut Vec<PathBuf>) {
@@ -905,12 +981,10 @@ fn bash_four_only(line: &str) -> Option<&'static str> {
 
 #[test]
 fn no_script_reaches_for_something_the_shell_macos_ships_does_not_have() {
-    // macOS ships bash 3.2, and a script that reaches for a bash 4 construct aborts
-    // on that line — *before* the diagnostic it exists to print. Which is how this
-    // repository's macOS job went red on a run every Linux job called green. So the
-    // whole tree is held to that bar, including the constructs no run would fail
-    // loudly on: `${v^^}` fails at *expansion* time under bash 3.2, so what it
-    // guards silently becomes nothing rather than stopping.
+    // The runtime journey above proves one script on one path. This holds the whole
+    // tree to the same bar, including the constructs no run would fail loudly on:
+    // `${v^^}` fails at *expansion* time under bash 3.2, so what it guards silently
+    // becomes nothing rather than stopping.
     //
     // A comment naming one of these is the warning, not the use, so only what bash
     // would execute is read.
