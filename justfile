@@ -270,7 +270,24 @@ lint-llm-validate *args:
     llmlint validate {{args}}
 
 # The blocking `llmlint` PR check; `just gate` runs it before you push.
+#
+# It routes through the cached Nx `workspace:lint-llm-diff` target rather than
+# calling llmlint directly, because the judge is non-deterministic and the unit it
+# judges is the whole base-to-head diff: without a memo, every worker gate, every
+# publication gate and every CI run over one tree is an independent roll, and rolls
+# of one branch have named a different rule each time. An unchanged tree judged
+# against an unchanged base replays its own recorded verdict instead.
+#
+# The name and the argument shape are unchanged, so nothing that calls this has to
+# change; what the trailing arguments reach is Nx rather than llmlint, which is how
+# one tier is re-judged on purpose: `just lint-llm-diff <base> --skip-nx-cache`.
+# scripts/llmlint-diff.sh carries the rest — what is keyed, what is cached, and why
+# an ambient global cache skip is reported and ignored here.
+#
+# `[positional-arguments]` rather than `{{nx_args}}`: interpolation would splice the
+# caller's words into this line for the shell to parse, and what they are allowed to
+# be is the script's decision, made against each argument as it arrived.
 # llmlint scoped to the files this branch changed since it forked from main.
-lint-llm-diff base="origin/main" *args:
-    @command -v llmlint >/dev/null 2>&1 || { echo "llmlint not installed — run 'just setup-llmlint'" >&2; exit 1; }
-    llmlint --diff --diff-base "{{base}}" {{args}}
+[positional-arguments]
+lint-llm-diff base="origin/main" *nx_args:
+    @./scripts/llmlint-diff.sh "$@"

@@ -1,0 +1,24 @@
+Mutation: the tier stops checking that what it forwards to Nx is an Nx option, so a caller's word reaches Nx's argument parser as whatever it reads it as.
+Red: an_argument_that_is_not_an_nx_option_is_refused_before_anything_is_judged
+
+diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+index 19e450c..3591b14 100755
+--- a/scripts/llmlint-diff.sh
++++ b/scripts/llmlint-diff.sh
+@@ -53,16 +53,6 @@ base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
+ # as it was typed rather than as a spliced command line — so this is where their
+ # shape is checked. An Nx option is a narrow thing; anything else is a caller's word
+ # that would reach Nx's own argument parser as something it may read another way.
+-for argument in "$@"; do
+-  case "$argument" in
+-    --[A-Za-z0-9]* | -[A-Za-z0-9]) ;;
+-    *)
+-      echo "lint-llm-diff: '$argument' is not an Nx option, and everything after the base is passed to Nx" >&2
+-      echo "ACTION: pass an Nx option — '--skip-nx-cache' re-judges this tier alone — or drop the argument" >&2
+-      exit 2
+-      ;;
+-  esac
+-done
+ 
+ # Nx scores a runtime input that exits non-zero as *no contribution* rather than as
+ # an error, so a fingerprint that cannot be produced does not fail the tier — it

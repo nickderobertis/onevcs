@@ -1,0 +1,14 @@
+Mutation: the pinned runtime stops dropping the caller's LLMLINT_ONEHARNESS_BIN, which `llmlint config` renders — so one judged diff keys differently per caller.
+Red: a_callers_judge_binary_does_not_change_the_verdict
+
+diff --git a/scripts/llmlint-runtime-env.sh b/scripts/llmlint-runtime-env.sh
+index 6d0120e..d5b0d9e 100755
+--- a/scripts/llmlint-runtime-env.sh
++++ b/scripts/llmlint-runtime-env.sh
+@@ -16,5 +16,5 @@
+ set -euo pipefail
+ 
+ llmlint_runtime_env() {
+-  unset LLMLINT_ONEHARNESS_BIN
++  :
+ }

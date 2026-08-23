@@ -1,0 +1,28 @@
+Mutation: the cached target stops naming the pinned runtime environment it could not load, leaving a run that went straight to it with the shell's own error.
+Red: a_missing_pinned_runtime_helper_is_actionable
+
+diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
+index 69d4e47..e07f6cd 100755
+--- a/scripts/llmlint-judge.sh
++++ b/scripts/llmlint-judge.sh
+@@ -18,19 +18,11 @@
+ set -euo pipefail
+ 
+ cd "$(dirname -- "$0")/.."
+-# Checked for before it is sourced, for the reason scripts/llmlint-fingerprint.sh
+-# spells out: `.` is a special builtin, and on a bash that enforces POSIX here a
+-# missing file ends the script before the refusal below could name it.
+-if [ ! -r scripts/llmlint-runtime-env.sh ]; then
+-  echo "lint-llm-diff: could not load scripts/llmlint-runtime-env.sh, which pins the environment this tier judges under" >&2
+-  echo "ACTION: restore that file from git ('git checkout -- scripts/llmlint-runtime-env.sh') and retry" >&2
+-  exit 1
+-fi
+ # The directive below is a resolution hint rather than a silenced diagnostic:
+ # it tells shellcheck which file this path is, so the function sourced here is
+ # checked against its definition instead of assumed.
+ # shellcheck source=scripts/llmlint-runtime-env.sh
+-. scripts/llmlint-runtime-env.sh
++. scripts/llmlint-runtime-env.sh 2>/dev/null || true
+ # The base is external input to this target — an operator driving it through
+ # `just nx run workspace:lint-llm-diff`, or a stale environment, can hand it
+ # anything — so it is checked for the shape the recipe resolves, and for presence in

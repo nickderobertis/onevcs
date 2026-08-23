@@ -1,0 +1,12 @@
+{
+  "name": "workspace",
+  "$schema": "./node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:repo"],
+  "targets": {
+    "lint-llm-diff": {
+      "command": "./scripts/llmlint-judge.sh",
+      "options": { "cwd": ".", "usePty": false }
+    }
+  }
+}
