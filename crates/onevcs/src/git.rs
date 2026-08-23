@@ -1004,6 +1004,15 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// A ref git declines to count answers `0`, which is what the branch listing above
 /// has always done with one: the names come from git's own listing, so a refusal
 /// means the ref went away between the two commands rather than that it holds work.
+///
+/// A count that succeeded and is not a number is refused instead, because the two
+/// are not the same answer. `0` here is what tells [`workspace::close`] a clone can
+/// be let go of, so reading output this build does not understand as `0` is how
+/// output nobody anticipated becomes deleted work — the one failure this whole path
+/// exists to prevent. Git does not produce it, which is why no journey drives it;
+/// that is the reason to reject it rather than the reason to assume it away.
+///
+/// [`workspace::close`]: crate::workspace::close
 pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
     let mut args = vec![
         "rev-list",
@@ -1017,7 +1026,13 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     if !counted.ok() {
         return Ok(0);
     }
-    Ok(counted.trimmed().parse::<u64>().unwrap_or(0))
+    let answer = counted.trimmed();
+    answer.parse::<u64>().map_err(|_| {
+        error::invalid(format!(
+            "git counted the commits {reference:?} holds and answered {answer:?}, which is not \
+             a number of commits"
+        ))
+    })
 }
 
 /// Whether a branch name is one git will accept.
