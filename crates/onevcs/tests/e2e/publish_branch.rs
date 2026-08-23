@@ -3127,9 +3127,10 @@ fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_faile
     hosted.world.host_checks(&[green_check()]);
     hosted.world.report_no_checks_on_the_head();
     finished_hosted_branch(&hosted, "feature/unread", "feat: add the unread thing");
-    let pushing = hosted
-        .world
-        .git(&hosted.checkout, &["rev-parse", "refs/heads/feature/unread"]);
+    let pushing = hosted.world.git(
+        &hosted.checkout,
+        &["rev-parse", "refs/heads/feature/unread"],
+    );
 
     let assert = hosted
         .world
@@ -3238,7 +3239,11 @@ fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_faile
         !said.contains("pushed, merge path unverified"),
         "a merge path that ruled is reported as having ruled:\n{said}"
     );
-    assert_eq!(hosted.origin_log().len(), 1, "and a red check lands nothing");
+    assert_eq!(
+        hosted.origin_log().len(),
+        1,
+        "and a red check lands nothing"
+    );
 }
 
 #[test]
@@ -3281,7 +3286,8 @@ fn a_repository_that_declares_no_required_check_publishes_as_it_always_has() {
         .success()
         .stdout(predicate::str::contains("merged at"));
     assert_eq!(
-        hosted.origin_log()[0], "feat: add the unprotected thing (#1)",
+        hosted.origin_log()[0],
+        "feat: add the unprotected thing (#1)",
         "a repository that requires nothing still lands its change"
     );
 }

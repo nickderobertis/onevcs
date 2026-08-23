@@ -2593,7 +2593,10 @@ fn a_host_that_will_not_say_whether_a_check_blocks_the_merge_is_not_guessed_at()
         .onevcs()
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains(
             "does not say whether it blocks the merge",
         ));
@@ -2717,7 +2720,10 @@ fn a_host_that_opens_something_other_than_a_change_request_is_not_followed() {
             .onevcs()
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so this is a merge
+            // path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(expected));
         assert!(
             world.events_of(&token, "change-opened").is_empty(),
@@ -2809,7 +2815,10 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so every shape here
+            // is a merge path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(expected));
         assert_eq!(
             world

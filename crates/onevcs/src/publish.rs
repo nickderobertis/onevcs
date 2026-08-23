@@ -1116,6 +1116,25 @@ fn publish_as_change(
     environment: &[(String, String)],
     push: Push,
 ) -> Result<PublishOutcome> {
+    // Read before anything is pushed, and that is the whole reason they are read
+    // here: the host slug and the watch's knobs are *this build's own input* — an
+    // identity that names no host, a `--policy` asking a local repository for a change
+    // request, a misspelled `ONEVCS_CHECK_SOURCE`, a bound that is not a number — and
+    // input is rejected at its boundary. Read for the first time further down, each
+    // one would refuse with the branch already on the remote, and the refusal would
+    // read as a merge path nobody could verify rather than as the misconfiguration it
+    // is.
+    hosted_identity(&context.resolution.key)?;
+    if context.effective != MergePolicy::ChangeOpen {
+        // Only the policies that watch read them, so only those are held to them: a
+        // publication that opens a change request and stops never asks the host a
+        // second time, and refusing it over a knob it does not use would be this
+        // build inventing a failure.
+        gh::checks_timeout()?;
+        gh::checks_poll()?;
+        crate::host::check_source_names_a_source()?;
+    }
+
     // A branch this publication replayed is not a descendant of the one the host has
     // for it — the change below's commits are gone from it — so the push replaces one
     // commit and no other, and git refuses it if the host is anywhere else. Every
@@ -1190,6 +1209,21 @@ fn publish_as_change(
     let pushed_at = git::tip(&context.worktree, &context.branch);
     land_as_change(context, stream, subject)
         .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
+}
+
+/// Refuse an identity that has no host at all, before anything is pushed.
+///
+/// Half of [`change_host`]'s question, asked early, because only half of it is about
+/// configuration: a *local* identity being asked for a change request is a policy
+/// nobody can honour, and pushing first would put a branch on a remote to no purpose.
+/// The other half — a **hosted** identity on a host this build has no implementation
+/// for — is deliberately left until after the push, because there the branch reaching
+/// the origin is not what is missing, and `edges.rs` holds that behaviour.
+fn hosted_identity(identity: &str) -> Result<()> {
+    match change_host(identity) {
+        Ok(_) | Err(Error::NotImplemented { .. }) => Ok(()),
+        Err(no_host) => Err(no_host),
+    }
 }
 
 /// A push that reached the remote and a merge path that could not then be read,

@@ -156,7 +156,10 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so this is a merge
+            // path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(
                 "Resource not accessible by personal access token",
             ))
@@ -288,7 +291,10 @@ fn the_actions_source_is_refused_rather_than_read_as_nothing_blocking() {
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
             .args(["publish", &token])
             .assert()
-            .code(2)
+            // 1, not 2: the push had already reached the remote, so each of these is a
+            // merge path nobody could read rather than input nobody could parse.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
             .stderr(predicate::str::contains(reason));
         assert_eq!(
             hosted.origin_log().len(),
@@ -318,7 +324,10 @@ fn an_unrelated_access_refusal_does_not_discard_the_complete_check_source() {
         .onevcs()
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains(
             "another field said Resource not accessible",
         ));
@@ -393,7 +402,10 @@ fn an_explicit_status_check_source_never_falls_back_to_actions() {
         .env("ONEVCS_CHECK_SOURCE", "status-checks")
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains(
             "Resource not accessible by personal access token",
         ));
@@ -2473,7 +2485,10 @@ fn a_repository_that_disallows_auto_merge_reports_the_hosts_refusal() {
         .onevcs()
         .args(["publish", &token])
         .assert()
-        .code(2)
+        // 1, not 2: the push had already reached the remote, so this is a merge path
+        // nobody could read rather than input nobody could parse.
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
         .stderr(predicate::str::contains("Auto-merge is not enabled"));
     assert_eq!(hosted.origin_log().len(), 1);
 }

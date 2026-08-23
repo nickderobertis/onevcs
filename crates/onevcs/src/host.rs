@@ -104,6 +104,16 @@ fn consult() -> Result<Consult> {
     }
 }
 
+/// Read the operator's check-source knob and answer whether it names a source.
+///
+/// Exposed so a publication can refuse a misspelling of it **before** it pushes. The
+/// knob is this build's own input rather than anything the host says, and input is
+/// rejected at its boundary — not half way through a watch, with a branch already on
+/// the remote and the refusal reading as a merge path nobody could verify.
+pub(crate) fn check_source_names_a_source() -> Result<()> {
+    consult().map(|_| ())
+}
+
 /// How many entries an Actions listing is asked for at once, which is the most
 /// GitHub will return in one page.
 const PAGE: u32 = 100;
