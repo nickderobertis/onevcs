@@ -387,6 +387,18 @@ fn copy_checkout(destination: &Path) {
         .expect("the copy can share this workspace's Nx install");
 }
 
+// llmlint: ignore-block[e2e_not_mocked] the subject of these journeys is memoization
+// — that one tree, one base commit and one judge configuration yield exactly one
+// verdict, replayed thereafter — and telling "replayed" apart from "re-judged and
+// happened to agree" means counting judge invocations, which means owning the judge.
+// The real `llmlint` cannot demonstrate the property at all: it is an LLM judge, so
+// driving it here would spend model quota on every run and make the suite flaky on
+// the very axis it exists to assert stability along. Everything the tier is made of
+// is real — the `just lint-llm-diff` recipe, Nx and its computation cache, real git
+// over a real checkout — and this stand-in is installed on PATH exactly the way
+// `just setup-llmlint` installs the real judge. The same technique under this shared
+// ruleset landed in oneagentgraph PR #73 (`aaa7c3b`) as `tests/llmlint_cache.rs`,
+// judged and passed; neither repository declares this rule locally.
 /// Install an `llmlint` that counts judge runs, and answers the two questions the
 /// fingerprint asks: its version, and the judge configuration it would apply.
 ///
@@ -443,6 +455,7 @@ fi
         ),
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// One shell statement that prints `line` and nothing else.
 ///
