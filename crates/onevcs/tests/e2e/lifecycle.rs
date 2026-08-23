@@ -546,8 +546,23 @@ fn closing_a_session_whose_worker_committed_to_a_branch_it_invented_keeps_the_wo
         "fix: the thing the worker did",
     );
     let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    // …and then again on a second one, because a worker that cut one name cuts two, and a
+    // refusal naming only the branch it happened to meet first is a report an operator
+    // would act on and still lose work to.
+    fixture.world.git(
+        &worktree,
+        &["checkout", "-q", "-b", "chore/also-invented", "origin/main"],
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "more.txt",
+        "more\n",
+        "chore: the other thing the worker did",
+    );
+    let also = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
 
-    // The close refuses rather than reaping, and says what it found and where it put it.
+    // The close refuses rather than reaping, and says what it found and where it put it —
+    // every branch of it, and what they hold between them.
     let refusal = fixture
         .world
         .onevcs()
@@ -556,7 +571,8 @@ fn closing_a_session_whose_worker_committed_to_a_branch_it_invented_keeps_the_wo
         .code(2)
         .stderr(predicate::str::contains("was not closed"))
         .stderr(predicate::str::contains("fix/invented"))
-        .stderr(predicate::str::contains("1 commit"))
+        .stderr(predicate::str::contains("chore/also-invented"))
+        .stderr(predicate::str::contains("2 commits"))
         .stderr(predicate::str::contains("onevcs recoverable"))
         .stderr(predicate::str::contains(format!(
             "onevcs session close {token}"
@@ -597,13 +613,13 @@ fn closing_a_session_whose_worker_committed_to_a_branch_it_invented_keeps_the_wo
         .assert()
         .success();
     assert!(!worktree.is_dir(), "the second close releases the worktree");
-    assert_eq!(
-        fixture
-            .world
-            .git(&fixture.checkout, &["rev-parse", "fix/invented"]),
-        stranded,
-        "and the work outlives the run root"
-    );
+    for (branch, tip) in [("fix/invented", &stranded), ("chore/also-invented", &also)] {
+        assert_eq!(
+            &fixture.world.git(&fixture.checkout, &["rev-parse", branch]),
+            tip,
+            "and every branch's work outlives the run root"
+        );
+    }
     assert_eq!(fixture.world.events_of(&token, "session-closed").len(), 1);
 }
 
@@ -841,6 +857,61 @@ fn a_stray_branch_the_execution_checkout_would_not_take_names_the_verb_that_land
         carrying.contains("fix-invented"),
         "a branch in the execution checkout carries the work: {carrying:?}"
     );
+}
+
+#[test]
+fn closing_a_session_whose_worker_renamed_the_branch_out_from_under_it_keeps_the_work() {
+    // The third way a worker's commits end up on a name the session did not cut, and the
+    // one the guard could not see: the branch was not invented beside the session's, it
+    // *was* the session's and was renamed. Nothing answers to the name in the record any
+    // more, so what the rename holds was counted against a ref that is not there — git
+    // refuses the whole walk over one unknown name, and that refusal read as "none".
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture.world.git(
+        &worktree,
+        &["branch", "-m", "feature/session", "fix/renamed"],
+    );
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "fix: the first thing");
+    fixture
+        .world
+        .commit_file(&worktree, "two.txt", "two\n", "fix: the second thing");
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("fix/renamed"))
+        .stderr(predicate::str::contains("2 commits"))
+        .stderr(predicate::str::contains("onevcs recoverable"));
+
+    assert!(worktree.is_dir(), "a refused close reaps nothing");
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "fix/renamed"]),
+        stranded,
+        "the renamed branch reached the execution checkout"
+    );
+
+    // And the way out is the ordinary one: the work is durable now, so the same close
+    // releases the worktree the second time.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(!worktree.is_dir(), "the second close releases the worktree");
+    fixture
+        .world
+        .git(&fixture.checkout, &["cat-file", "-e", &stranded]);
 }
 
 #[test]

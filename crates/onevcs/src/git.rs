@@ -1001,19 +1001,32 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// is negated together — so "ahead of origin and of the branch this session was
 /// for" is the single question git answers, not two answers a caller subtracts.
 ///
-/// A ref git declines to count answers `0`, which is what the branch listing above
-/// has always done with one: the names come from git's own listing, so a refusal
-/// means the ref went away between the two commands rather than that it holds work.
+/// `0` is the answer that tells [`workspace::close`] a clone can be let go of, so
+/// every way this could reach it without having counted is one way to delete work.
+/// Three of them are handled here rather than by the callers reading the number.
 ///
-/// A count that succeeded and is not a number is refused instead, because the two
-/// are not the same answer. `0` here is what tells [`workspace::close`] a clone can
-/// be let go of, so reading output this build does not understand as `0` is how
-/// output nobody anticipated becomes deleted work — the one failure this whole path
-/// exists to prevent. Git does not produce it, which is why no journey drives it;
-/// that is the reason to reject it rather than the reason to assume it away.
+/// A `carried` name that does not resolve is dropped instead of being passed on. Git
+/// refuses the whole walk over one unknown name, and the refusal used to read as `0`
+/// — which is how a session whose worker *renamed* its branch was reaped: the work
+/// was on a name nothing outside the run root knew, and the name it was measured
+/// against no longer existed. A ref that is not there carries nothing, and saying so
+/// is not the same as failing to ask.
+///
+/// A count git still declines is `0` only where `reference` itself has gone, which is
+/// what the branch listing above has always assumed with one: the names come from
+/// git's own listing, so a refusal means the ref went away between the two commands.
+/// Anything else is git failing at a question it could answer, and that is refused.
+///
+/// A count that succeeded and is not a number is refused too, because output this
+/// build does not understand is not output saying none.
 ///
 /// [`workspace::close`]: crate::workspace::close
 pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
+    let held: Vec<&str> = carried
+        .iter()
+        .copied()
+        .filter(|name| tip(cwd, name).is_some())
+        .collect();
     let mut args = vec![
         "rev-list",
         "--count",
@@ -1021,10 +1034,18 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
         "--not",
         "--remotes=origin",
     ];
-    args.extend_from_slice(carried);
+    args.extend_from_slice(&held);
     let counted = run(&args, Some(cwd))?;
     if !counted.ok() {
-        return Ok(0);
+        if tip(cwd, reference).is_none() {
+            return Ok(0);
+        }
+        return Err(error::invalid(format!(
+            "git could not count what {reference:?} holds in {}, and a count nobody got is \
+             not a count of none: {}",
+            cwd.display(),
+            counted.stderr.trim(),
+        )));
     }
     let answer = counted.trimmed();
     // llmlint: ignore[changed_behavior_has_e2e] driving this would mean a program that is
