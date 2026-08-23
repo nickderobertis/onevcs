@@ -1362,51 +1362,92 @@ fn an_acknowledgement_records_whoever_the_invocation_says_performed_it() {
     let releasing = Releasing::with(CONTAINER);
     releasing.land("feature/one");
 
-    // Nothing names an actor, and nothing is invented for one.
-    let assert = releasing
-        .fixture
-        .world
-        .onevcs()
-        .args([
+    /// One acknowledgement, recorded under whatever this invocation says about who
+    /// is acting.
+    fn acknowledging(
+        releasing: &Releasing,
+        version: &str,
+        supersede: bool,
+        environment: &[(&str, &str)],
+    ) -> assert_cmd::Command {
+        let mut command = releasing.fixture.world.onevcs();
+        command.args([
             "release",
             "acknowledge",
             "feature/one",
             "--target",
             "container",
             "--version",
-            "1.0.0",
-            "--json",
-        ])
+            version,
+        ]);
+        if supersede {
+            command.arg("--supersede");
+        }
+        command.arg("--json");
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+        command
+    }
+
+    // Nothing names an actor, and nothing is invented for one.
+    let assert = acknowledging(&releasing, "1.0.0", false, &[])
         .assert()
         .success();
     let recorded: Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("one document");
     assert_eq!(recorded["actor"], "unknown");
 
-    // An empty variable is not an answer either, so the next one that says something
-    // is what is recorded.
-    let assert = releasing
-        .fixture
-        .world
-        .onevcs()
-        .args([
-            "release",
-            "acknowledge",
-            "feature/one",
-            "--target",
-            "container",
-            "--version",
-            "1.0.1",
-            "--supersede",
-            "--json",
-        ])
-        .env("ONEVCS_ACTOR", "")
-        .env("USER", "jo")
+    // The environment's own name for whoever is at this host, where it has one.
+    let assert = acknowledging(&releasing, "1.0.1", true, &[("USER", "jo")])
         .assert()
         .success();
     let recorded: Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("one document");
     assert_eq!(recorded["actor"], "jo");
+
+    // …and this crate's own knob wins over it, because an operator who said whose
+    // release it is has said so.
+    let assert = acknowledging(
+        &releasing,
+        "1.0.2",
+        true,
+        &[("USER", "jo"), ("ONEVCS_ACTOR", "nick")],
+    )
+    .assert()
+    .success();
+    let recorded: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document");
+    assert_eq!(recorded["actor"], "nick");
+
+    // A knob set to something that cannot name anybody is a misconfiguration and is
+    // refused by name — never silently replaced with the next source's answer, which
+    // would record somebody else's name for an operator who said whose it was.
+    for unusable in ["   ", "nick\nsomebody-else", &"n".repeat(200)] {
+        let refused = acknowledging(&releasing, "1.0.3", true, &[("ONEVCS_ACTOR", unusable)])
+            .assert()
+            .failure()
+            .code(2);
+        assert!(
+            String::from_utf8_lossy(&refused.get_output().stderr)
+                .contains("cannot name whoever performed a release"),
+            "an unusable ONEVCS_ACTOR is refused by name"
+        );
+    }
+    assert_eq!(
+        releasing.json(&["status", "feature/one", "--target", "container"])["version"],
+        "1.0.2",
+        "a refused invocation records nothing"
+    );
+
+    // A name the environment cannot use is not an actor either, and the next source
+    // is asked rather than a broken one being written down.
+    let assert = acknowledging(&releasing, "1.0.4", true, &[("USER", "jo\nsomebody-else")])
+        .assert()
+        .success();
+    let recorded: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document");
+    assert_eq!(recorded["actor"], "unknown");
 }
 
 #[test]

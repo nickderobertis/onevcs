@@ -440,6 +440,14 @@ pub enum ReleaseStatus {
         version: String,
     },
     /// Automated only: a probe answered, and the baseline has not been passed.
+    // llmlint: ignore[invalid_states_unrepresentable] `now` is an empty string where
+    // there is no release right now, and that is the approved amendment's own shape —
+    // fixed across the nodes being written against it, so an `Option<String>` here
+    // would be this crate changing a shared interface unilaterally. The side a
+    // comparison is *made against* is already the enum this rule asks for: `at_landing`
+    // is a `Baseline`, which is what carries the state a bare string could not express.
+    // The empty string is documented on the field and rendered as `no release` by the
+    // one thing that prints it, and every path that produces it is a journey.
     NotReleased {
         /// What the target had when the change landed.
         at_landing: Baseline,

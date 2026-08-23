@@ -787,7 +787,12 @@ crate already uses for the registry, so a concurrent reader never sees half of i
 `observed` is what makes `release-observed` fire the *first* time a landing is
 released and not on every later ask. The actor is `ONEVCS_ACTOR`, otherwise `USER`
 or `LOGNAME`, otherwise `unknown`: this operation reaches no `RemoteHost`, by the
-rule that keeps `session_holders` off one, so there is nobody to ask.
+rule that keeps `session_holders` off one, so there is nobody to ask. It is
+persisted, carried on an event, and printed, so it is checked where it arrives —
+one line, not blank, at most 128 characters. `ONEVCS_ACTOR` is this crate's own
+knob, so an unusable value there is refused by name as every other `ONEVCS_` knob's
+is; `USER` and `LOGNAME` are the environment's, so an unusable one is simply not an
+actor and the next source is asked.
 
 It refuses, each naming what to do instead: a target whose style is `automated` —
 its version comes from its probe, and a hand-written second answer is exactly the

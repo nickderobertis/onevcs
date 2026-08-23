@@ -643,7 +643,7 @@ pub fn acknowledge(
         )));
     }
     let identity = located.releases.identity.clone();
-    let actor = actor();
+    let actor = actor()?;
     let recorded = write_acknowledgement(&Recording {
         identity: &identity,
         target: named,
@@ -675,17 +675,54 @@ pub fn acknowledge(
     Ok(recorded.acknowledgement)
 }
 
-/// Who is recording an acknowledgement.
-fn actor() -> String {
-    for name in [ACTOR_ENV, "USER", "LOGNAME"] {
+/// How long an actor's name may be. Long enough for any name, a machine account,
+/// or an address; short enough that a record quoting one is still a line.
+const MAX_ACTOR: usize = 128;
+
+/// Who is recording an acknowledgement, checked where it arrives.
+///
+/// The value is persisted, carried on an event, and printed in a table, so it is
+/// input like any other and is refused at this boundary rather than wherever it is
+/// first rendered. The two sources are not held to the same rule, because they are
+/// not the same statement:
+///
+/// * [`ACTOR_ENV`] is **this crate's own knob**, so a value that cannot be an actor
+///   is a misconfiguration and is refused by name — as every other `ONEVCS_` knob's
+///   unusable value is. Silently ignoring it would record somebody else's name for
+///   an operator who said whose it was.
+/// * `USER` and `LOGNAME` are the environment's, set for nobody's benefit in
+///   particular, so an unusable one is simply not an actor and the next source is
+///   asked. What is left is [`UNKNOWN_ACTOR`], which is what a host that says
+///   nothing records rather than having somebody invented for it.
+fn actor() -> Result<String> {
+    if let Some(named) = std::env::var_os(ACTOR_ENV) {
+        let named = named.to_string_lossy().trim().to_owned();
+        return match usable_actor(&named) {
+            true => Ok(named),
+            false => Err(error::invalid(format!(
+                "{ACTOR_ENV} is set to {named:?}, which cannot name whoever performed a release: \
+                 it must be one line of at most {MAX_ACTOR} characters, and not blank"
+            ))),
+        };
+    }
+    for name in ["USER", "LOGNAME"] {
         if let Some(value) = std::env::var_os(name) {
             let value = value.to_string_lossy().trim().to_owned();
-            if !value.is_empty() {
-                return value;
+            if usable_actor(&value) {
+                return Ok(value);
             }
         }
     }
-    UNKNOWN_ACTOR.to_owned()
+    Ok(UNKNOWN_ACTOR.to_owned())
+}
+
+/// Whether a value can name whoever performed a release.
+///
+/// One line, because a record and an event carry it and a table prints it: a value
+/// carrying a newline or a control character renders as something other than what
+/// it is wherever it lands.
+fn usable_actor(value: &str) -> bool {
+    !value.is_empty() && value.chars().count() <= MAX_ACTOR && !value.chars().any(char::is_control)
 }
 
 /// Record, once, that a landing has been released — and say so on the stream.
