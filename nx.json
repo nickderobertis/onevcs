@@ -42,6 +42,7 @@
     },
     "lint-llm-diff": {
       "cache": true,
+      "outputs": ["{workspaceRoot}/.logs/lint-llm-diff.log"],
       "inputs": [
         "wholeWorkspace",
         { "env": "LLMLINT_DIFF_BASE_SHA" },

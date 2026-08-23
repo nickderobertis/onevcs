@@ -28,9 +28,12 @@
 # contract is cache replay, so this tier reports and ignores one. Every other Nx
 # target still honours it.
 #
-# What this prints is the judge's own report, which llmlint wrote and Nx replays; the
-# lines this script adds are one of provenance and, on a refusal, the cause and the
-# next command to run.
+# A clean run says one line: which base was judged, whether the verdict was replayed
+# or freshly rolled, what it was, and where the report it came from is kept. The
+# report itself is `.logs/lint-llm-diff.log`, the cached target's declared Nx output,
+# so a replayed verdict is restored as a file rather than reprinted. A run that
+# failed prints everything the judge and Nx said, because that is what has to be
+# cleared.
 set -euo pipefail
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
@@ -96,8 +99,10 @@ trap 'rm -f "$verdict" "$diagnostics"' EXIT
 status=0
 LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
-cat "$verdict"
-cat "$diagnostics" >&2
+if [ "$status" -ne 0 ]; then
+  cat "$verdict"
+  cat "$diagnostics" >&2
+fi
 
 # Provenance comes from Nx's own cache reporting: the annotation on the task line,
 # or the summary line it prints only when it replayed a task instead of running it.
@@ -115,8 +120,19 @@ cat "$diagnostics" >&2
 escape=$'\033'
 if sed "s/${escape}\[[0-9;]*m//g" "$verdict" "$diagnostics" |
   grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)'; then
-  echo "lint-llm-diff: replayed the recorded verdict for base $base_sha (Nx cache hit)" >&2
+  provenance="replayed the recorded verdict for base $base_sha (Nx cache hit)"
 else
-  echo "lint-llm-diff: judged this diff against base $base_sha (Nx cache miss)" >&2
+  provenance="judged this diff against base $base_sha (Nx cache miss)"
+fi
+
+# The one line a clean run owes: llmlint's own count of what it judged, lifted from
+# the report the target recorded, and the path to the rest of it. A judge that
+# renames that line costs the summary, never the report or the provenance.
+report=.logs/lint-llm-diff.log
+if [ "$status" -eq 0 ]; then
+  summary="$(grep -m1 -E '^[0-9]+ rules: ' "$report" 2>/dev/null || true)"
+  echo "lint-llm-diff: ${provenance}${summary:+ — $summary} (full report: $report)"
+else
+  echo "lint-llm-diff: $provenance" >&2
 fi
 exit "$status"

@@ -25,16 +25,22 @@ use std::process::{Command, Output};
 
 use crate::support::workspace_root;
 
-/// What a clean judge run says, itemized the way llmlint's own report is: a
-/// replayed run has to carry all of it, not a summary reconstructed from a record.
-const PASS_REPORT: &str = "fake-judge: 31 rules checked";
-const PASS_VERDICT: &str = "fake-judge: 31 passed, 0 failed";
+/// The line llmlint counts its work on, which the tier lifts into the one line a
+/// clean run prints.
+const PASS_SUMMARY: &str = "31 rules: 31 passed, 0 failed";
+/// The rest of a clean report, which belongs in the recorded report rather than on
+/// a caller's terminal — and has to survive a replay, or a restored verdict says
+/// less than the run it stands for.
+const PASS_DETAIL: &str = "fake-judge: every rule passed over 6 judged files";
+const HISTORY_POINTER: &str = "See full results with `llmlint history 0ff1ce`";
 /// What a run with findings says. Never cached, so never replayed.
 const FAIL_FINDING: &str = "fake-judge finding: tool_output_is_signal in scripts/llmlint-diff.sh";
-const FAIL_VERDICT: &str = "fake-judge: 30 passed, 1 failed";
+const FAIL_SUMMARY: &str = "31 rules: 30 passed, 1 failed";
 /// What the judge says about the run rather than about the diff — llmlint's own
 /// harness view, which it writes to stderr.
 const JUDGE_DIAGNOSTIC: &str = "fake-judge: asked the harness for 31 verdicts";
+/// Where the cached target records the report, and Nx restores it from.
+const RECORDED_REPORT: &str = ".logs/lint-llm-diff.log";
 /// The provenance the recipe prints, which is how an operator tells a fresh
 /// verdict from a replayed one without reading Nx's task log.
 const CACHE_HIT: &str = "replayed the recorded verdict for base";
@@ -136,6 +142,12 @@ impl Workspace {
         for (key, value) in environment {
             command.env(key, value);
         }
+    }
+
+    /// The report the cached target recorded, which Nx restores on a replay.
+    fn recorded_report(&self) -> String {
+        std::fs::read_to_string(self.root.join(RECORDED_REPORT))
+            .expect("the cached target records its report where it declares it does")
     }
 
     /// How many times the judge was actually asked to judge the diff.
@@ -371,10 +383,27 @@ fn copy_checkout(destination: &Path) {
 /// environment selected — the same two things the real `llmlint config` renders,
 /// and the pair a caller's environment must not be able to move.
 fn write_judge(directory: &Path) {
+    let diagnostic = echo_literally(JUDGE_DIAGNOSTIC);
+    let finding = echo_literally(FAIL_FINDING);
+    let fail_summary = echo_literally(FAIL_SUMMARY);
+    let detail = echo_literally(PASS_DETAIL);
+    let pass_summary = echo_literally(PASS_SUMMARY);
+    let pointer = echo_literally(HISTORY_POINTER);
     write_script(
         &directory.join("llmlint"),
         &format!(
-            r#"case "${{1:-}}" in
+            r#"# This judge is `llmlint` on its own PATH, so anything it runs by accident it
+# runs on itself. One line of its report quotes `llmlint history <id>` in backticks,
+# and a double-quoted echo of that ran the command instead of printing it: one bash
+# process per level until the host could not fork. Every literal below is emitted
+# single-quoted, and this guard makes any future slip cost one process rather than
+# the machine.
+if [ -n "${{FAKE_LLMLINT_ACTIVE:-}}" ]; then
+  echo "fake llmlint: refusing to re-enter itself with $*" >&2
+  exit 97
+fi
+export FAKE_LLMLINT_ACTIVE=1
+case "${{1:-}}" in
   --version)
     echo "llmlint ${{FAKE_LLMLINT_VERSION:-0.0.0-e2e}}"
     exit 0
@@ -386,17 +415,31 @@ fn write_judge(directory: &Path) {
     ;;
 esac
 printf '%s\n' "$*" >>"$FAKE_LLMLINT_LOG"
-echo "{JUDGE_DIAGNOSTIC}" >&2
+{diagnostic} >&2
 if [ "${{FAKE_LLMLINT_EXIT:-0}}" != 0 ]; then
-  echo "{FAIL_FINDING}"
-  echo "{FAIL_VERDICT}"
+  {finding}
+  {fail_summary}
   exit "$FAKE_LLMLINT_EXIT"
 fi
-echo "{PASS_REPORT}"
-echo "{PASS_VERDICT}"
+{detail}
+{pass_summary}
+{pointer}
 "#
         ),
     );
+}
+
+/// One shell statement that prints `line` and nothing else.
+///
+/// Single-quoted, because these lines are llmlint's own report text and one of them
+/// quotes a command in backticks — which a double-quoted `echo` would *run*. In a
+/// stub that is `llmlint` on the PATH it is installed on, that ran itself.
+fn echo_literally(line: &str) -> String {
+    assert!(
+        !line.contains('\''),
+        "a single quote would end the quoting that keeps this line literal: {line}"
+    );
+    format!("echo '{line}'")
 }
 
 /// The judge configuration this checkout pins from outside its own tree, as
@@ -439,13 +482,28 @@ fn an_unchanged_tree_and_base_replays_the_recorded_verdict() {
         [format!("--diff --diff-base {base}")]
     );
     for run in [&first, &second] {
-        // The replayed run has to say everything the judged one said: the report is
-        // the tier's product, and Nx replays it in place of a verdict record.
-        run.says_on_stdout(PASS_REPORT).says_on_stdout(PASS_VERDICT);
+        // A clean run owes one line, and it has to be worth reading: what was
+        // judged, against which commit, whether the answer was rolled or restored,
+        // and where the report behind it is.
+        run.says_on_stdout(PASS_SUMMARY)
+            .says_on_stdout(RECORDED_REPORT)
+            .silent_about(PASS_DETAIL);
+        assert_eq!(
+            run.stdout.lines().count(),
+            1,
+            "a clean run says one line: {run}"
+        );
     }
     // "Green" is a claim about one base commit, so the provenance names it.
-    first.says_on_stderr(&format!("{CACHE_MISS} {base}"));
-    second.says_on_stderr(&format!("{CACHE_HIT} {base}"));
+    first.says_on_stdout(&format!("{CACHE_MISS} {base}"));
+    second.says_on_stdout(&format!("{CACHE_HIT} {base}"));
+    // And the replayed run is worth as much as the judged one: Nx restored the
+    // report itself, itemization and history pointer included.
+    let restored = workspace.recorded_report();
+    assert!(
+        restored.contains(PASS_DETAIL) && restored.contains(HISTORY_POINTER),
+        "the restored report says everything the judged one did: {restored}"
+    );
 }
 
 #[test]
@@ -526,8 +584,8 @@ fn a_callers_judge_binary_does_not_change_the_verdict() {
     let printed = workspace.fingerprint(one);
     let printed_again = workspace.fingerprint(two);
 
-    first.succeeded().says_on_stderr(CACHE_MISS);
-    second.succeeded().says_on_stderr(CACHE_HIT);
+    first.succeeded().says_on_stdout(CACHE_MISS);
+    second.succeeded().says_on_stdout(CACHE_HIT);
     assert_eq!(workspace.judge_runs(), 1);
     printed.succeeded();
     printed_again.succeeded();
@@ -555,8 +613,8 @@ fn a_changed_judge_configuration_is_still_seen_through_a_callers_environment() {
     workspace.rejudge_on("The change documents every new operator entry point twice.");
     let second = workspace.lint(&base, &[], caller);
 
-    first.succeeded().says_on_stderr(CACHE_MISS);
-    second.succeeded().says_on_stderr(CACHE_MISS);
+    first.succeeded().says_on_stdout(CACHE_MISS);
+    second.succeeded().says_on_stdout(CACHE_MISS);
     assert_eq!(workspace.judge_runs(), 2);
 }
 
@@ -571,8 +629,9 @@ fn findings_fail_the_tier_and_are_never_replayed() {
     assert_eq!(workspace.judge_runs(), 2, "a red must be judged again");
     for run in [&first, &second] {
         run.failed()
-            .says_on_stdout(FAIL_FINDING)
-            .says_on_stdout(FAIL_VERDICT)
+            .says(FAIL_FINDING)
+            .says(FAIL_SUMMARY)
+            .says_on_stderr("ACTION: clear each finding at the file and line it names")
             .says_on_stderr(CACHE_MISS)
             // Nx hands a task's two streams back merged onto its own stdout, so
             // where the harness view lands is not this tier's to decide — that it
@@ -609,7 +668,7 @@ fn a_cleared_finding_replays_the_green_that_replaced_it() {
 
     red.failed();
     green.succeeded().says(CACHE_MISS);
-    settled.succeeded().says(CACHE_HIT).says(PASS_VERDICT);
+    settled.succeeded().says(CACHE_HIT).says(PASS_SUMMARY);
     assert_eq!(workspace.judge_runs(), 2);
 }
 
@@ -712,7 +771,7 @@ fn an_unresolvable_base_is_refused_before_the_judge_runs() {
         .failed()
         .says_on_stderr("'no-such-ref' does not resolve to a commit")
         .says_on_stderr("ACTION: fetch it")
-        .silent_about(PASS_VERDICT);
+        .silent_about(PASS_SUMMARY);
     assert_eq!(workspace.judge_runs(), 0);
 }
 
@@ -766,11 +825,11 @@ fn a_forced_colour_environment_does_not_disguise_a_replay() {
     let second = workspace.lint(&base, &[], &[("FORCE_COLOR", "1")]);
     let third = workspace.lint(&base, &[], &[("FORCE_COLOR", "1")]);
 
-    first.succeeded().says_on_stderr(CACHE_MISS);
+    first.succeeded().says_on_stdout(CACHE_MISS);
     // Twice, because Nx annotates a replay two different ways: the summary line on
     // the first hit, and `[existing outputs match the cache]` on the next.
-    second.succeeded().says_on_stderr(CACHE_HIT);
-    third.succeeded().says_on_stderr(CACHE_HIT);
+    second.succeeded().says_on_stdout(CACHE_HIT);
+    third.succeeded().says_on_stdout(CACHE_HIT);
     assert_eq!(workspace.judge_runs(), 1);
 }
 
@@ -822,7 +881,7 @@ fn an_argument_that_is_not_an_nx_option_is_refused_before_anything_is_judged() {
         "a usage error, not a verdict"
     );
     // The option this guard exists to let through still does what it is for.
-    forced.succeeded().says_on_stderr(CACHE_MISS);
+    forced.succeeded().says_on_stdout(CACHE_MISS);
     assert_eq!(workspace.judge_runs(), 1);
 }
 
