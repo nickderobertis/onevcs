@@ -1119,21 +1119,22 @@ fn a_registry_without_a_rules_reference_omits_the_field() {
 }
 
 #[test]
-fn a_v6_registry_carries_a_release_targets_reference_beside_the_rules_one() {
-    // The amendment that taught this crate about releases raises the registry by
-    // one for the key it adds. Both spellings are here because both have to keep
-    // working: a document that names the file, and a document written before there
-    // was a key to name it with, which means "no release targets" and stays that
-    // way — an absent key is omitted rather than written as a null nobody wrote.
+fn the_release_targets_reference_is_an_optional_key_that_moves_no_version() {
+    // The registry is shared host state, so what a build *writes* is what every
+    // other `onevcs` on that machine then reads. Both spellings are here because
+    // both have to keep working, and the second is the one that matters: a document
+    // that names no release-targets file is byte for byte the one a build that never
+    // heard of the key already reads, and the version does not move for a key such a
+    // build will never meet.
     let document = json!({
-        "version": 6,
+        "version": 5,
         "identities": {},
         "checkouts": {},
         "rules": "/home/agent/.config/onevcs/rules.yaml",
         "releases": "/home/agent/.config/onevcs/releases.yaml",
     });
     let registry: Registry =
-        serde_json::from_value(document.clone()).expect("a v6 document must deserialize");
+        serde_json::from_value(document.clone()).expect("a document naming both must deserialize");
     assert_eq!(
         registry.releases,
         Some(PathBuf::from("/home/agent/.config/onevcs/releases.yaml"))
@@ -1143,7 +1144,7 @@ fn a_v6_registry_carries_a_release_targets_reference_beside_the_rules_one() {
         document
     );
 
-    let without = json!({"version": 6, "identities": {}, "checkouts": {}});
+    let without = json!({"version": 5, "identities": {}, "checkouts": {}});
     let registry: Registry = serde_json::from_value(without.clone()).expect("releases is optional");
     assert_eq!(registry.releases, None);
     assert_eq!(
