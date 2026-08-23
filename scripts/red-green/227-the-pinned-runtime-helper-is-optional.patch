@@ -1,0 +1,19 @@
+Mutation: the fingerprint stops refusing when the pinned runtime environment cannot be loaded, and keys the cache under whatever the caller's environment was.
+Red: a_missing_pinned_runtime_helper_is_actionable
+
+diff --git a/scripts/llmlint-fingerprint.sh b/scripts/llmlint-fingerprint.sh
+index 1f52597..edabbb2 100755
+--- a/scripts/llmlint-fingerprint.sh
++++ b/scripts/llmlint-fingerprint.sh
+@@ -19,10 +19,7 @@ set -euo pipefail
+ 
+ cd "$(dirname -- "$0")/.."
+ # shellcheck source=scripts/llmlint-runtime-env.sh
+-. scripts/llmlint-runtime-env.sh || {
+-  echo "llmlint fingerprint: could not load the pinned runtime environment; restore scripts/llmlint-runtime-env.sh and retry" >&2
+-  exit 1
+-}
++. scripts/llmlint-runtime-env.sh 2>/dev/null || llmlint_runtime_env() { :; }
+ # Resolved under the same runtime environment the target judges under, so the key
+ # describes the judge configuration the run would use rather than the caller's.
+ llmlint_runtime_env
