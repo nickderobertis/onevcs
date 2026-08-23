@@ -564,9 +564,10 @@ fn a_rules_file_that_still_names_a_gate_is_no_shape_this_type_holds() {
     // that a version 3 file naming one is refused **by name** is
     // `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three`
     // in tests/e2e/registry.rs, over the real binary.
-    let read: RulesFile = serde_yaml_ng::from_str(&block("yaml"))
-        .expect("the approved fixture names a gate, and a key this type has no opinion on is not \
-                 a reason to refuse a whole document");
+    let read: RulesFile = serde_yaml_ng::from_str(&block("yaml")).expect(
+        "the approved fixture names a gate, and a key this type has no opinion on is not \
+                 a reason to refuse a whole document",
+    );
     let round_tripped =
         serde_yaml_ng::to_value(&read).expect("a rules file serializes back to YAML");
     assert_eq!(

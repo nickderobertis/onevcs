@@ -30,12 +30,12 @@ use crate::error::{self, Result};
 use crate::event::EventKind;
 use crate::landed::Landed;
 use crate::registry::Registry;
-use crate::remainder::Remainder;
 use crate::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
     ReleaseRule, ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease,
     TargetName, VERSION,
 };
+use crate::remainder::Remainder;
 use crate::stream::Stream;
 use crate::{git, home, ids, lock, policy, probe, status, store};
 

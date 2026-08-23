@@ -199,8 +199,7 @@ fn empty() -> Registry {
 /// carried beyond it put back.
 fn serialize(registry: &Registry, carried: &Remainder) -> Result<String> {
     let named = PathBuf::from("the registry");
-    let mut document =
-        serde_json::to_value(registry).map_err(error::at("serialize", &named))?;
+    let mut document = serde_json::to_value(registry).map_err(error::at("serialize", &named))?;
     carried.restore(&mut document);
     let mut json =
         serde_json::to_string_pretty(&document).map_err(error::at("serialize", &named))?;

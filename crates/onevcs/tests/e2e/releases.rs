@@ -1111,10 +1111,7 @@ fn a_release_targets_file_this_build_cannot_honour_is_refused_where_it_is_read()
         ),
         // A field this build genuinely requires, missing. Leniency covers keys and
         // versions it has no opinion on; a document it cannot act on is named.
-        (
-            "version: 1\nrepositories: []\n",
-            "missing field `default`",
-        ),
+        ("version: 1\nrepositories: []\n", "missing field `default`"),
         (
             "version: 1\ndefault:\n  adoption: eventually\nrepositories: []\n",
             "malformed",

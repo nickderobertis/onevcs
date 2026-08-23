@@ -308,7 +308,10 @@ fn a_releases_key_in_the_registry_is_a_stray_key_and_never_a_reference() {
     let written: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&registry).expect("a registry"))
             .expect("the registry is JSON");
-    assert_eq!(written["releases"], elsewhere.to_string_lossy().into_owned());
+    assert_eq!(
+        written["releases"],
+        elsewhere.to_string_lossy().into_owned()
+    );
 }
 
 #[test]
@@ -359,7 +362,9 @@ fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("declares version 1"))
-        .stderr(predicate::str::contains("this build reads version 2 and newer"));
+        .stderr(predicate::str::contains(
+            "this build reads version 2 and newer",
+        ));
 
     std::fs::write(world.home().join("registry.json"), "{not json").expect("a broken registry");
     world
@@ -377,10 +382,7 @@ fn a_registry_missing_a_field_this_build_requires_is_refused_and_names_it() {
     // identity to answer about, so the refusal names the field rather than reporting
     // a repository it made up half of.
     let world = World::new();
-    write_registry(
-        &world,
-        &serde_json::json!({"version": 5, "checkouts": {}}),
-    );
+    write_registry(&world, &serde_json::json!({"version": 5, "checkouts": {}}));
     world
         .onevcs()
         .arg("repos")
@@ -409,7 +411,10 @@ fn a_registry_missing_a_field_this_build_requires_is_refused_and_names_it() {
 
     // A document with no version at all cannot even be asked which shape it is, and
     // says so naming the versions that are readable.
-    write_registry(&world, &serde_json::json!({"identities": {}, "checkouts": {}}));
+    write_registry(
+        &world,
+        &serde_json::json!({"identities": {}, "checkouts": {}}),
+    );
     world
         .onevcs()
         .arg("repos")
@@ -452,7 +457,11 @@ fn a_registry_a_later_build_wrote_is_read_rather_than_refusing_every_verb() {
         .to_owned();
     write_registry(&world, &from_a_later_build(&key, &checkout));
 
-    let assert = world.onevcs().args(["resolve", "future"]).assert().success();
+    let assert = world
+        .onevcs()
+        .args(["resolve", "future"])
+        .assert()
+        .success();
     let value: serde_json::Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
     assert_eq!(value["identity"], key);

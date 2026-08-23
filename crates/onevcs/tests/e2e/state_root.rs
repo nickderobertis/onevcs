@@ -232,10 +232,7 @@ fn declares(line: &str) -> bool {
 /// unambiguous: every declaration starts its own line, so the last one before a
 /// line is the one that encloses it.
 fn enclosing_function(body: &str, line: usize) -> Option<&str> {
-    body.lines()
-        .take(line)
-        .filter_map(declared_function)
-        .last()
+    body.lines().take(line).filter_map(declared_function).last()
 }
 
 fn declared_function(line: &str) -> Option<&str> {

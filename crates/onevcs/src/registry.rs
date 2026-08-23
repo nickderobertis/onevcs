@@ -13,9 +13,9 @@
 //!
 //! Nothing here declares `deny_unknown_fields`, and that is deliberate: a document a
 //! *newer* build wrote must still load here, carrying whatever keys that build
-//! named. [`store`](crate::store) is what keeps those keys — it reads the remainder
-//! this shape ignored and writes it back — so an older build meeting a newer host's
-//! registry degrades rather than stopping it.
+//! named. `store` is what keeps those keys — it reads the remainder this shape
+//! ignored and writes it back — so an older build meeting a newer host's registry
+//! degrades rather than stopping it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
