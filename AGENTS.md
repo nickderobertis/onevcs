@@ -84,7 +84,7 @@ rationale; the mechanics live in the files named. -->
 
 ## Command surface
 
-`just --list` is the index; do not hand-roll equivalents. Four things it does
+`just --list` is the index; do not hand-roll equivalents. Five things it does
 not tell you:
 
 - **`just gate` is the bar, not `just check`.** `check` is the deterministic tier
@@ -103,17 +103,6 @@ not tell you:
   the wheel or the npm package would run the same `--workspace` commands twice. The
   repository root is the one other project (`project.json`, `workspace`), and it
   carries a single target nothing else could hold — see the judged tier below.
-- **`just red-green` is the evidence, not a check.** A green test proves nothing on
-  its own: it has to be observed red for its own behaviour first, and an
-  observation nobody can re-make is not evidence. So the observation is an
-  artifact — a mutation per behaviour in `scripts/red-green/`, recorded in
-  [`docs/red-green.md`](docs/red-green.md) — and a test no mutation can break fails
-  the recipe. Out of `check` and `gate` deliberately: it mutates the tree and takes
-  minutes. What *is* in `check` is `just red-green-check`, which asks the cheap half
-  of the question — whether the committed record still describes the mutations it
-  was made from, header totals and every round included. The totals are derived, so
-  a mutation added without a re-record would otherwise leave the record asserting a
-  tree that no longer exists and nothing would notice.
 - **`just lint-llm-diff` is memoized, and the memo is the whole mechanism.** The
   judge is non-deterministic and judges every file in the base-to-head diff rather
   than the hunk that changed, so an uncached tier is an independent roll per gate

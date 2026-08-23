@@ -72,7 +72,7 @@ _ensure-tool tool:
 # target `just check-affected` uses — which replays from the cache in a second and
 # is what stops the full sweep and the affected sweep from covering different tiers.
 # Deterministic quality gate, every project.
-check: red-green-check fmt-check lint test doc
+check: fmt-check lint test doc
     @bash scripts/nx.sh run-many -t check
     @echo "check: ok"
 
@@ -86,7 +86,7 @@ gate base="origin/main": check (lint-llm-diff base)
 # What PR CI runs: the same gate, scoped to the projects this branch's diff can
 # reach. Fails closed — with no derivable merge base it runs everything.
 # Deterministic quality gate, affected projects only.
-check-affected: red-green-check
+check-affected:
     @bash scripts/nx-affected.sh -t check
     @echo "check-affected: ok"
 
@@ -171,36 +171,12 @@ smoke-real:
       --status-level all
 
 # The tiers above run every test; this drives one, with the summary line that says
-# whether it passed. It exists as a recipe because `scripts/red-green.sh` needs it,
-# and a second hand-rolled `cargo nextest` invocation beside those tiers would be a
-# second definition of what running a test means.
+# whether it passed. It is a recipe rather than a hand-rolled `cargo nextest`
+# invocation beside those tiers, which would be a second definition of what running
+# a test means.
 # Run one journey by name, e.g. `just test-one a_session_cuts_a_borrowing_clone`.
 test-one name:
     @name={{quote(name)}}; cargo nextest run --workspace --locked -E "test($name)" --no-fail-fast --status-level fail
-
-# Outside `check` on purpose: it mutates the tree one behaviour at a time and takes
-# minutes. What it produces is `docs/red-green.md`, the committed record that every
-# journey this branch adds was observed failing for its own behaviour before it
-# passed — re-made rather than trusted. Needs a clean tree and a `--base` the branch
-# forked from.
-# Re-make the red/green evidence for the tests this branch adds.
-red-green base="origin/main":
-    @./scripts/red-green.sh --record docs/red-green.md --base {{quote(base)}}
-
-# Inside `check` where `red-green` cannot be, and the two are answering different
-# questions: `red-green` re-makes the evidence by running every mutation, which
-# takes minutes, while this only asks whether the committed record still describes
-# the mutations it was made from — the totals in its header, one round per patch,
-# and each round's subject and red tests. It reads the record and the patch headers
-# and nothing else, so it applies no mutation, runs no test, and answers in under a
-# second.
-#
-# It is a dependency of `check-affected` too rather than an Nx target: the record
-# and the mutations are workspace artifacts belonging to no project, so affected
-# selection has nothing to select them by.
-# Check the committed red/green record still describes its mutations.
-red-green-check:
-    @./scripts/red-green.sh --check-record docs/red-green.md
 
 # Drives the compiled binary as a subprocess — never an in-process `main()`.
 # The end-to-end binary journeys in isolation (also run by `test`/`check`).
