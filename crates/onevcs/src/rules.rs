@@ -8,23 +8,30 @@
 //! merge path is the verifier — the host's required checks for a remote-first
 //! identity, the `pre-push` hook for a local-first one — and a second tier beside
 //! it front-ran the real one and threw the answer away.
+//!
+//! Nothing here declares `deny_unknown_fields`, so a file a *newer* build wrote
+//! loads on this one: the keys it understands decide the policy and the rest are
+//! ignored. What that trades away is a typo being caught, and it is traded
+//! deliberately — an older build refusing an operator's whole rules file stops every
+//! verb on the host. A key this build refuses *by name* is unaffected: the `gate:`
+//! version 3 removed is refused where the file is loaded, which is also the only
+//! place that knows which version declared it.
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 /// A rules file, as it is stored on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RulesFile {
     /// The schema version: `1` is this shape without `trailer_prefix`, `2` with it,
     /// `3` without `gate`.
     // llmlint: ignore[boundary_inputs_validated] which versions this build can read is the
-    // loader's question rather than this type's, and it answers it: it refuses one outside
-    // the range it reads, refuses a trailer_prefix in a version that predates the key, and
-    // drops a `gate:` from a version that still had one before this type ever sees it.
-    // The shape is enforced here — an undeclared publication or approvals value, a missing
-    // default, or a stray key is rejected at this boundary and asserted in
-    // tests/contract.rs.
+    // loader's question rather than this type's, and it answers it: it refuses one below
+    // the oldest it reads, refuses a trailer_prefix in a version that predates the key,
+    // drops a `gate:` from a version that still had one before this type ever sees it, and
+    // refuses one by name at the version that removed it. The shape is enforced here — an
+    // undeclared publication or approvals value, or a missing default, is rejected at this
+    // boundary and asserted in tests/contract.rs.
     pub version: u32,
     /// The prefix every provenance trailer key carries, written and read.
     ///
@@ -102,7 +109,6 @@ impl std::fmt::Display for TrailerPrefix {
 
 /// One rule: what it matches, and which parts of the policy it sets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Rule {
     /// What this rule applies to.
     #[serde(rename = "match")]
@@ -118,7 +124,6 @@ pub struct Rule {
 /// What a rule applies to. Every field is optional; the ones that are set must
 /// all match.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuleMatch {
     /// The identity's host, e.g. `github.com`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,7 +141,6 @@ pub struct RuleMatch {
 
 /// A complete policy: every field a rule may set, all of them decided.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Policy {
     /// How a change is published.
     pub publication: MergePolicy,

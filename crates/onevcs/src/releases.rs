@@ -12,6 +12,14 @@
 //! field beside them: a human-step target naming a `probe:` and an automated target
 //! naming an `action:` are both refused where the document is read, and "a
 //! human-step target has a probe" is not a state this crate can hold.
+//!
+//! Nothing here declares `deny_unknown_fields`. A document a *newer* build wrote
+//! loads on this one, which takes the fields it understands and ignores the keys it
+//! has no opinion on — an older `onevcs` on a host whose release targets were
+//! configured by a newer one is degraded, never stopped. What a target's own shape
+//! still refuses it refuses by naming the target, because those are not keys this
+//! build has no opinion on: they are the two forms of a probe, and which one a
+//! target carries is the whole of what makes it answerable.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,15 +37,14 @@ pub const DEFAULT_PROBE_TIMEOUT_SECONDS: u64 = 60;
 
 /// A release-targets file, as it is stored on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReleasesFile {
     /// The schema version: `1` is the shape declared here.
     // llmlint: ignore[boundary_inputs_validated] which versions this build reads is the
     // loader's question rather than this type's, and `release::load` answers it: a
-    // document outside the range is refused by number, before the shape is enforced, so
-    // a file written for a later schema fails closed instead of being half-read. What
-    // the shape can reject — an undeclared adoption, a target whose style and body
-    // disagree, a stray key — is rejected here and asserted in tests/contract.rs.
+    // document below this one is refused by number, before the shape is enforced, and a
+    // later one is read as this shape with whatever it names beyond it ignored. What the
+    // shape can reject — an undeclared adoption, or a target whose style and body
+    // disagree — is rejected here and asserted in tests/contract.rs.
     pub version: u32,
     /// The rules, in priority order: the first one that matches wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -48,7 +55,6 @@ pub struct ReleasesFile {
 
 /// The global rung of the adoption chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReleaseDefault {
     /// What a repository no rule names adopts.
     pub adoption: Adoption,
@@ -56,7 +62,6 @@ pub struct ReleaseDefault {
 
 /// One rule: what it matches, what that repository adopts, and what it releases.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReleaseRule {
     /// What this rule applies to, in the rules file's own vocabulary.
     #[serde(rename = "match")]
@@ -374,7 +379,7 @@ pub enum BaselineRecord {
 /// conflating any pair of them is how a change gets reported as released when it is
 /// not.
 #[derive(Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "state", rename_all = "kebab-case")]
 enum StoredBaseline {
     At {
         version: String,
@@ -579,7 +584,6 @@ impl RepositoryReleases {
 /// beside a name, so that every refusal can **name the target it is about** — which
 /// is the whole of what an operator needs to find the four lines they wrote.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct StoredTarget {
     name: TargetName,
     style: ReleaseStyle,
@@ -592,7 +596,6 @@ struct StoredTarget {
 /// A probe as the document spells it: both forms' keys, exactly one of which a
 /// target may name.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct StoredProbe {
     #[serde(default)]
     script: Option<PathBuf>,

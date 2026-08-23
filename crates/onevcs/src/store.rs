@@ -9,6 +9,12 @@
 //! A document older than version 5 is migrated **lazily**, on the first read that
 //! needs it: an operator never runs a migration command, and an interrupted one
 //! cannot leave half a document behind.
+//!
+//! A document *newer* than version 5 is read rather than refused. This build takes
+//! the fields it understands, keeps the rest as a [`Remainder`] it writes back
+//! untouched, and never lowers the version it found — so a newer `onevcs` sharing
+//! this state root is degraded by an older one touching its registry, not undone by
+//! it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +23,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{self, Error, Result};
 use crate::registry::{Checkout, Identity, Registry, RepoType, Workflow};
+use crate::remainder::Remainder;
 use crate::{git, home, lock};
 
 /// The version this build writes.
@@ -27,10 +34,13 @@ use crate::{git, home, lock};
 /// the moment it migrates. So a version this build writes and an already-released
 /// build cannot read does not degrade that build — it stops it, for every verb, on
 /// a host whose operator opted into nothing. Adding an optional key that older
-/// builds never see is the change that costs them nothing; `deny_unknown_fields` is
-/// what keeps it honest, so a document that *does* name a release-targets file is
-/// refused by name there rather than half-read.
+/// builds never see is the change that costs them nothing: a build that never heard
+/// of it refuses a registry that *does* name one, by name, and reads every registry
+/// that does not exactly as it always has.
 pub const VERSION: u32 = 5;
+
+/// The oldest document this build still migrates.
+pub const OLDEST_VERSION: u32 = 2;
 /// What an identity's gate is recorded as when nothing could be detected.
 pub const NOOP_GATE: &str = "<no-op>";
 
@@ -148,12 +158,12 @@ pub fn load() -> Result<Registry> {
         return Ok(empty());
     };
     let value: Value = serde_json::from_str(&raw).map_err(not_json(&path))?;
-    let (registry, migrated) = migrate(&path, value)?;
-    if migrated {
+    let read = migrate(&path, value)?;
+    if read.migrated {
         let _guard = lock::exclusive(&registry_identity())?;
-        home::atomic_write(&path, &serialize(&registry)?)?;
+        home::atomic_write(&path, &serialize(&read.registry, &read.carried)?)?;
     }
-    Ok(registry)
+    Ok(read.registry)
 }
 
 /// Apply `change` to the registry under its lock, then replace the document.
@@ -163,12 +173,16 @@ pub fn load() -> Result<Registry> {
 pub fn update<T>(change: impl FnOnce(&mut Registry) -> Result<T>) -> Result<T> {
     let _guard = lock::exclusive(&registry_identity())?;
     let path = home::registry_path()?;
-    let mut registry = match std::fs::read_to_string(&path) {
-        Ok(raw) => migrate(&path, serde_json::from_str(&raw).map_err(not_json(&path))?)?.0,
-        Err(_) => empty(),
+    let mut read = match std::fs::read_to_string(&path) {
+        Ok(raw) => migrate(&path, serde_json::from_str(&raw).map_err(not_json(&path))?)?,
+        Err(_) => Read {
+            registry: empty(),
+            migrated: false,
+            carried: Remainder::default(),
+        },
     };
-    let outcome = change(&mut registry)?;
-    home::atomic_write(&path, &serialize(&registry)?)?;
+    let outcome = change(&mut read.registry)?;
+    home::atomic_write(&path, &serialize(&read.registry, &read.carried)?)?;
     Ok(outcome)
 }
 
@@ -182,15 +196,29 @@ fn empty() -> Registry {
     }
 }
 
-fn serialize(registry: &Registry) -> Result<String> {
-    let mut json = serde_json::to_string_pretty(registry)
-        .map_err(error::at("serialize", &PathBuf::from("the registry")))?;
+/// The document to write: this build's shape, with whatever the one on disk
+/// carried beyond it put back.
+fn serialize(registry: &Registry, carried: &Remainder) -> Result<String> {
+    let named = PathBuf::from("the registry");
+    let mut document =
+        serde_json::to_value(registry).map_err(error::at("serialize", &named))?;
+    carried.restore(&mut document);
+    let mut json =
+        serde_json::to_string_pretty(&document).map_err(error::at("serialize", &named))?;
     json.push('\n');
     Ok(json)
 }
 
-/// Read a document of any supported version, reporting whether it had to move.
-fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
+/// A registry document as it was read: the shape this build acts on, whether it had
+/// to be migrated to get there, and everything it carried beyond that shape.
+struct Read {
+    registry: Registry,
+    migrated: bool,
+    carried: Remainder,
+}
+
+/// Read a document of any readable version, reporting whether it had to move.
+fn migrate(path: &Path, value: Value) -> Result<Read> {
     let object = value.as_object().ok_or_else(|| Error::Invalid {
         reason: format!("the registry at {} must be a JSON object", path.display()),
     })?;
@@ -199,32 +227,54 @@ fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
         .and_then(Value::as_u64)
         .ok_or_else(|| Error::Invalid {
             reason: format!(
-                "the registry at {} declares no version; versions 2 to {VERSION} are readable",
+                "the registry at {} declares no version; version {OLDEST_VERSION} and \
+                 newer are readable",
                 path.display()
             ),
         })?;
     match version {
-        VERSION_5 => {
+        // This version and every later one. A newer document is read as this shape
+        // rather than refused: refusing it would stop every verb on a host a newer
+        // `onevcs` had touched, where reading it costs only the keys this build has
+        // no opinion on — which are kept, not dropped.
+        current if current >= u64::from(VERSION) => {
             let registry: Registry = serde_json::from_value(value.clone())
                 .map_err(error::at("read the registry at", path))?;
             coherent(path, &registry)?;
-            Ok((registry, false))
+            let carried = Remainder::between(
+                &value,
+                &serde_json::to_value(&registry)
+                    .map_err(error::at("read the registry at", path))?,
+            );
+            Ok(Read {
+                registry,
+                migrated: false,
+                carried,
+            })
         }
         2..=4 => {
-            let migrated = legacy(path, object, version as u32)?;
-            coherent(path, &migrated)?;
-            Ok((migrated, true))
+            let registry = legacy(path, object, version as u32)?;
+            coherent(path, &registry)?;
+            let carried = Remainder::between(
+                &value,
+                &serde_json::to_value(&registry)
+                    .map_err(error::at("read the registry at", path))?,
+            );
+            Ok(Read {
+                registry,
+                migrated: true,
+                carried,
+            })
         }
         other => Err(Error::Invalid {
             reason: format!(
-                "the registry at {} declares version {other}; this build reads 2 to {VERSION}",
+                "the registry at {} declares version {other}; this build reads version \
+                 {OLDEST_VERSION} and newer",
                 path.display()
             ),
         }),
     }
 }
-
-const VERSION_5: u64 = VERSION as u64;
 
 /// Reject a document whose records disagree with each other.
 ///

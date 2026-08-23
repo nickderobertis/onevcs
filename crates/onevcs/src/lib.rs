@@ -63,6 +63,7 @@ mod recover;
 pub mod registry;
 mod release;
 pub mod releases;
+mod remainder;
 pub mod rules;
 mod session;
 mod status;

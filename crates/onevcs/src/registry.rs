@@ -5,6 +5,12 @@
 //! since then an **optional** release-targets reference beside it. The document is
 //! replaced atomically under process-shared locks, and a v2–v4 document is migrated
 //! lazily on read.
+//!
+//! Nothing here declares `deny_unknown_fields`, and that is deliberate: a document a
+//! *newer* build wrote must still load here, carrying whatever keys that build
+//! named. [`store`](crate::store) is what keeps those keys — it reads the remainder
+//! this shape ignored and writes it back — so an older build meeting a newer host's
+//! registry degrades rather than stopping it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -13,15 +19,15 @@ use serde::{Deserialize, Serialize};
 
 /// The registry document as it is stored on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Registry {
     /// The schema version. `5` is the shape declared here; `2`–`4` are migrated
-    /// lazily on read.
-    // llmlint: ignore[boundary_inputs_validated] deciding which versions are acceptable is
-    // the lazy v2-v4 migration the contract specifies, and that is implementation this
-    // interface-only crate does not carry yet. Everything the shape can reject — an
-    // unknown workflow or repo_type, a missing gate, a stray key — is rejected here and
-    // asserted in tests/contract.rs.
+    /// lazily on read, and a version a later build declared is read as this shape
+    /// and written back at the number it arrived under.
+    // llmlint: ignore[boundary_inputs_validated] which versions are readable is the
+    // loader's question rather than this type's, and `store::migrate` answers it: a
+    // document below the oldest readable version is refused by number, and an older one
+    // is migrated. Everything the shape can reject — an unknown workflow or repo_type, a
+    // missing gate — is rejected here and asserted in tests/contract.rs.
     pub version: u32,
     /// Every known repository identity, keyed by its normalized origin
     /// (`github.com/owner/name`, or a path for a local one).
@@ -39,10 +45,11 @@ pub struct Registry {
     /// registry is shared host state: a document a build writes is the document
     /// every other `onevcs` on that machine then reads. Absent, it is omitted, so a
     /// host that configures no release targets has a document byte for byte the one
-    /// a build that never heard of this key already reads. Present, that build
-    /// refuses it by name through `deny_unknown_fields` — which is the fail-closed
-    /// answer a version bump would have given, without stopping every host that
-    /// opted into nothing.
+    /// a build that never heard of this key already reads. An already-installed
+    /// build that meets one which *is* configured refuses it by name — those builds
+    /// still declare `deny_unknown_fields` — and refusing a reference it cannot
+    /// honour is the degraded answer, where a version it cannot read would have
+    /// stopped every verb on the host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub releases: Option<PathBuf>,
 }
@@ -50,7 +57,6 @@ pub struct Registry {
 /// One repository identity. Every checkout that normalizes to the same origin
 /// shares this metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Identity {
     /// The normalized origin this identity is keyed by.
     pub origin: String,
@@ -64,7 +70,6 @@ pub struct Identity {
 
 /// One registered checkout of a repository identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Checkout {
     /// Where the checkout lives.
     pub path: PathBuf,

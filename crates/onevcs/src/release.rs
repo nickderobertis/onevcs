@@ -30,6 +30,7 @@ use crate::error::{self, Result};
 use crate::event::EventKind;
 use crate::landed::Landed;
 use crate::registry::Registry;
+use crate::remainder::Remainder;
 use crate::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
     ReleaseRule, ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease,
@@ -50,7 +51,13 @@ pub const ACTOR_ENV: &str = "ONEVCS_ACTOR";
 /// What an acknowledgement records as its actor when nothing names one.
 pub const UNKNOWN_ACTOR: &str = "unknown";
 
-/// The version of the per-identity release record this build writes and reads.
+/// The version of the per-identity release record this build writes.
+///
+/// A record declaring a *later* version is read too, as this shape: it is state
+/// under this host's own root, and an older `onevcs` refusing it would take out
+/// every release verb on a host a newer one had touched. What that record carried
+/// beyond this shape is kept and written back, and the version it arrived under is
+/// never lowered.
 pub const RECORD_VERSION: u32 = 1;
 
 /// Where a host configures its release targets without editing the registry
@@ -98,15 +105,18 @@ pub fn load(registry: &Registry) -> Result<ReleasesFile> {
     // The version is read before the shape is enforced, and refused before it too:
     // which keys a document may carry is a fact about the version it declares, so a
     // version this build does not read is answered as that rather than as whichever
-    // of its keys this build happened not to recognize.
+    // of its keys this build happened not to recognize. Only a version *below* this
+    // one is refused — a later one is read as this shape, ignoring what it names
+    // beyond it, because refusing it would stop every release verb on a host a newer
+    // `onevcs` had configured.
     if let Some(declared) = document
         .get("version")
         .and_then(serde_yaml_ng::Value::as_u64)
     {
-        if declared != u64::from(VERSION) {
+        if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(
                 "the release-targets file at {} declares version {declared}; this build reads \
-                 version {VERSION}",
+                 version {VERSION} and newer",
                 path.display()
             )));
         }
@@ -783,7 +793,6 @@ fn observe(
 /// The per-identity release record: what each target had at each landing, what a
 /// person has acknowledged, and which landings have been reported as released.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Record {
     version: u32,
     identity: String,
@@ -793,12 +802,15 @@ struct Record {
     acknowledgements: BTreeMap<String, BTreeMap<String, StoredAcknowledgement>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     observed: BTreeMap<String, BTreeMap<String, String>>,
+    /// Whatever the document on disk carried beyond this shape, kept so that a
+    /// write from this build does not destroy what a newer one recorded.
+    #[serde(skip)]
+    carried: Remainder,
 }
 
 /// One acknowledgement as it is stored: the identity, the target, and the landing
 /// commit are the keys it is filed under, so the record holds what is left.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct StoredAcknowledgement {
     version: String,
     recorded_at: String,
@@ -815,6 +827,7 @@ impl Record {
             baselines: BTreeMap::new(),
             acknowledgements: BTreeMap::new(),
             observed: BTreeMap::new(),
+            carried: Remainder::default(),
         }
     }
 
@@ -874,20 +887,35 @@ fn read_at(path: &Path, identity: &str) -> Result<Record> {
             )))
         }
     };
-    let record: Record = serde_json::from_str(&raw).map_err(|failure| {
+    let document: serde_json::Value = serde_json::from_str(&raw).map_err(|failure| {
         error::invalid(format!(
             "the release record at {} is not one this build reads: {failure}",
             path.display()
         ))
     })?;
-    if record.version != RECORD_VERSION {
+    let mut record: Record = serde_json::from_value(document.clone()).map_err(|failure| {
+        error::invalid(format!(
+            "the release record at {} is not one this build reads: {failure}",
+            path.display()
+        ))
+    })?;
+    if record.version < RECORD_VERSION {
         return Err(error::invalid(format!(
             "the release record at {} declares version {}; this build reads version \
-             {RECORD_VERSION}",
+             {RECORD_VERSION} and newer",
             path.display(),
             record.version
         )));
     }
+    record.carried = Remainder::between(
+        &document,
+        &serde_json::to_value(&record).map_err(|failure| {
+            error::invalid(format!(
+                "the release record at {} is not one this build reads: {failure}",
+                path.display()
+            ))
+        })?,
+    );
     if record.identity != identity {
         return Err(error::invalid(format!(
             "the release record at {} is about {other:?} rather than {identity:?}; two identities \
@@ -910,9 +938,12 @@ fn update<T>(identity: &str, change: impl FnOnce(&mut Record) -> Result<T>) -> R
     let path = record_path(identity)?;
     let mut record = read_at(&path, identity)?;
     let outcome = change(&mut record)?;
-    let mut json = serde_json::to_string_pretty(&record).map_err(|failure| {
+    let cannot = |failure: serde_json::Error| {
         error::invalid(format!("cannot serialize the release record: {failure}"))
-    })?;
+    };
+    let mut document = serde_json::to_value(&record).map_err(cannot)?;
+    record.carried.restore(&mut document);
+    let mut json = serde_json::to_string_pretty(&document).map_err(cannot)?;
     json.push('\n');
     home::atomic_write(&path, &json)?;
     Ok(outcome)
