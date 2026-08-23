@@ -20,7 +20,7 @@
 //!   `NoRelease`, because nothing being released now proves nothing was released
 //!   then.
 
-use std::collections::BTreeMap;
+use std::collections::{btree_map, BTreeMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -736,17 +736,33 @@ fn observe(
     version: &str,
     stream: &mut Stream,
 ) -> Result<()> {
-    if read(identity)?.is_observed(&target.name, commit) {
+    // Asked and answered in **one** locked update, because they are one question.
+    // Read first and write second would be two, and two `onevcs release status`
+    // processes asking about the same released landing would both read "not
+    // observed", both write, and both emit — which is the duplicate a consumer
+    // renders as the work having been released twice. The record is what decides it,
+    // under the same process-shared lock every other write to it takes, so exactly
+    // one invocation on this host is ever the one that inserted it.
+    let inserted = update(identity, |record| {
+        let landings = record.observed.entry(target.name.to_string()).or_default();
+        match landings.entry(commit.to_owned()) {
+            // Already observed, and the version it was observed at is left exactly as
+            // it was: "the release that carried this work" happens to a landing once,
+            // so a later ask reports it and rewrites nothing.
+            btree_map::Entry::Occupied(_) => Ok(false),
+            btree_map::Entry::Vacant(slot) => {
+                slot.insert(version.to_owned());
+                Ok(true)
+            }
+        }
+    })?;
+    if !inserted {
         return Ok(());
     }
-    update(identity, |record| {
-        record
-            .observed
-            .entry(target.name.to_string())
-            .or_default()
-            .insert(commit.to_owned(), version.to_owned());
-        Ok(())
-    })?;
+    // Emitted after the record is written and outside the lock it was written under,
+    // in that order for the reason every other record in this crate is: the durable
+    // fact is the record, and an event announcing a release the record does not hold
+    // is the one of the two that cannot be reconciled afterwards.
     stream.emit(
         EventKind::ReleaseObserved,
         json_object(json!({
@@ -808,12 +824,6 @@ impl Record {
 
     fn acknowledgement(&self, target: &TargetName, commit: &str) -> Option<StoredAcknowledgement> {
         self.acknowledgements.get(&**target)?.get(commit).cloned()
-    }
-
-    fn is_observed(&self, target: &TargetName, commit: &str) -> bool {
-        self.observed
-            .get(&**target)
-            .is_some_and(|landings| landings.contains_key(commit))
     }
 }
 

@@ -218,6 +218,21 @@ fn write_script(path: &Path, body: &str) {
         .expect("an executable script");
 }
 
+/// A shell probe that announces itself, waits to be let go, and only then answers.
+///
+/// What it exists for is a race a journey has to be able to *stage*: every process
+/// asking about the same landing has to reach the moment after its probe answered
+/// at about the same instant, and a fixed sleep hoping for that is the flake this
+/// replaces. Each run appends a line before it waits, so the journey can see how
+/// many are held, and none of them proceeds until the journey says so.
+fn holding(target: &str) -> String {
+    format!(
+        "      - name: {target}\n        style: automated\n        probe:\n          shell: \
+         'printf \"x\\n\" >> \"$HOME/waiting\"; while [ ! -f \"$HOME/go\" ]; do sleep 0.02; \
+         done; cat \"$HOME/answers/{target}\"'\n          timeout_seconds: 30\n"
+    )
+}
+
 /// A shell probe that answers whatever this journey last wrote for that target.
 fn answering(target: &str) -> String {
     format!(
@@ -1833,4 +1848,150 @@ fn a_target_a_repository_does_not_declare_is_refused_naming_the_ones_it_does() {
         .stderr(predicate::str::contains(
             "may hold only letters, digits, '-', '_', and '.'",
         ));
+}
+
+#[test]
+fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
+    // "The release that carried this work" is a thing that happens to a landing
+    // once, and a consumer renders each `release-observed` as exactly that — so two
+    // of them for one landing is a consumer told the work was released twice. Two
+    // `onevcs release status` invocations are two *processes*, so nothing in one
+    // process's memory can decide it: the record under its process-shared lock has
+    // to, and the check and the insert have to be one turn of that lock rather than
+    // an unlocked read followed by a write.
+    const ASKING: usize = 4;
+
+    let releasing = Releasing::with(&holding("crate"));
+    releasing.answers("crate", "1.0.0\n");
+    let go = releasing.fixture.world.path("go");
+    let waiting = releasing.fixture.world.path("waiting");
+    // The landing's own baseline is captured by a probe like any other, so it is let
+    // through before the race is staged. It is also what brings the release record —
+    // and the lock that orders every write to it — into existence.
+    std::fs::write(&go, "").expect("the landing's probe is not held");
+    releasing.land("feature/one");
+    std::fs::remove_file(&go).expect("the gate closes again");
+    std::fs::remove_file(&waiting).expect("the landing's probe is not one of the racers");
+    // …and a release goes out, so every ask below finds the landing released.
+    releasing.answers("crate", "1.0.1\n");
+
+    // Every lock this world has so far, held exactly as a second `onevcs` writing
+    // under one holds it. Which of them orders the release record is deliberately
+    // not something this journey knows — holding all of them needs no name for any,
+    // and the only one an ask below actually contends is that one. The stream the
+    // asks record their probes on has not been written yet, so its lock is not among
+    // these and they are not held away from reporting what they did.
+    let held: Vec<std::fs::File> = releasing
+        .fixture
+        .world
+        .locks()
+        .iter()
+        .filter(|lock| lock.extension().is_some_and(|kind| kind == "lock"))
+        .map(|lock| World::occupy(lock))
+        .collect();
+    assert!(
+        !held.is_empty(),
+        "the landing wrote a release record, so this world has locks to hold"
+    );
+
+    let asks: Vec<std::thread::JoinHandle<std::process::Output>> = (0..ASKING)
+        .map(|_| {
+            let mut command = releasing.fixture.world.onevcs();
+            command.args(["release", "status", "feature/one", "--target", "crate"]);
+            std::thread::spawn(move || command.output().expect("release status runs"))
+        })
+        .collect();
+
+    // Read rather than timed, twice. Every ask is held inside its own probe until
+    // all of them are; then they are all let go at once, and the record is not
+    // handed over until every one of them has said what its probe answered — which
+    // is the statement immediately before the one under test.
+    World::until("every ask is held in its probe", || {
+        std::fs::read_to_string(&waiting)
+            .map(|held| held.lines().count() >= ASKING)
+            .unwrap_or(false)
+    });
+    std::fs::write(&go, "").expect("every ask is let go at once");
+    World::until("every ask has answered its probe", || {
+        releasing
+            .events_of("release-probed")
+            .iter()
+            .filter(|event| event["payload"]["version"] == "1.0.1")
+            .count()
+            >= ASKING
+    });
+    drop(held);
+
+    for ask in asks {
+        let output = ask.join().expect("an ask finishes");
+        assert!(
+            output.status.success(),
+            "every ask succeeds: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "released: crate 1.0.1 (automated)",
+            "every ask reports the same release"
+        );
+    }
+
+    // The landing commit as the base carries it, in full: it is the only thing that
+    // correlates this event, because it fires outside any session.
+    let landing = releasing
+        .fixture
+        .world
+        .git(&releasing.fixture.checkout, &["rev-parse", "main"]);
+    assert_eq!(landing.len(), 40, "the full commit, never abbreviated");
+
+    let observed = releasing.events_of("release-observed");
+    assert_eq!(
+        observed.len(),
+        1,
+        "one landing is released once, however many processes ask about it at once: \
+         {observed:#?}"
+    );
+    let payload = &observed[0]["payload"];
+    assert_eq!(payload["landing_commit"], landing.as_str());
+    assert_eq!(payload["target"], "crate");
+    assert_eq!(payload["style"], "automated");
+    assert_eq!(payload["version"], "1.0.1");
+
+    // Every event the asks wrote together is one whole line with a number of its
+    // own: a shared stream is numbered under the lock that orders it, so a consumer
+    // reading these for loss sees a series rather than the same number four times.
+    let numbers: Vec<u64> = releasing
+        .events()
+        .iter()
+        .filter(|event| {
+            event["stream"]
+                .as_str()
+                .is_some_and(|stream| stream.starts_with("releases-"))
+        })
+        .map(|event| event["seq"].as_u64().expect("every event is numbered"))
+        .collect();
+    let mut ordered = numbers.clone();
+    ordered.sort_unstable();
+    ordered.dedup();
+    assert_eq!(
+        ordered.len(),
+        numbers.len(),
+        "no two events written at once share a sequence number: {numbers:?}"
+    );
+
+    // …and the record says the same thing, which is what decided it: one
+    // observation, at the version that carried the work.
+    let record = std::fs::read_dir(releasing.fixture.world.home().join("releases"))
+        .expect("a releases directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .next()
+        .expect("one record");
+    let stored: Value = serde_json::from_str(&std::fs::read_to_string(&record).expect("a record"))
+        .expect("the record is JSON");
+    assert_eq!(
+        stored["observed"],
+        serde_json::json!({"crate": {landing.clone(): "1.0.1"}}),
+        "the record holds exactly one observation for the landing"
+    );
 }

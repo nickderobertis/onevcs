@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 use crate::error::{self, Result};
 use crate::event::{ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Source};
 use crate::session::SessionToken;
-use crate::{home, ids};
+use crate::{home, ids, lock};
 
 /// The envelope schema version this build emits.
 pub const ENVELOPE_VERSION: u32 = 1;
@@ -57,6 +57,16 @@ pub struct Stream {
     id: String,
     seq: u64,
     labels: Labels,
+    /// Whether processes other than this one append to the same file *at the same
+    /// time*, which decides where `seq` comes from.
+    ///
+    /// A session's stream is written by whichever process holds the session, one at
+    /// a time, so its sequence is counted once at open and carried in memory. A
+    /// repository's release stream is not: two `onevcs release status` invocations
+    /// for one identity are two processes appending together, and a number each of
+    /// them counted before the other wrote is the same number twice — which is
+    /// exactly the gap a consumer reads as a lost event.
+    shared: bool,
 }
 
 impl Stream {
@@ -68,9 +78,7 @@ impl Stream {
     pub fn open(token: &str) -> Result<Self> {
         let path = path_for(token)?;
         home::ensure_dir(path.parent().expect("a stream lives in a directory"))?;
-        let seq = std::fs::read_to_string(&path)
-            .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count() as u64)
-            .unwrap_or(0);
+        let seq = recorded(&path);
         let mut labels = Labels::default();
         labels
             .extra
@@ -80,6 +88,7 @@ impl Stream {
             id: token.to_owned(),
             seq,
             labels,
+            shared: false,
         })
     }
 
@@ -96,6 +105,9 @@ impl Stream {
         let mut stream = Self::open(&format!("releases-{}", ids::short_digest(identity)))?;
         stream.labels.extra.remove("session");
         stream.label("identity", identity);
+        // Several `onevcs release status` processes ask about one identity at once,
+        // and every one of them appends here.
+        stream.shared = true;
         Ok(stream)
     }
 
@@ -124,6 +136,30 @@ impl Stream {
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
     ) {
+        // A stream several processes write at once numbers its events under the
+        // lock that orders them, so the sequence is one series over the file rather
+        // than one per process — and the whole envelope is written inside that turn,
+        // because a number taken before the write and used after it is the same
+        // number twice.
+        let _turn = match self.shared {
+            true => match lock::exclusive(&stream_identity(&self.id)) {
+                Ok(turn) => Some(turn),
+                // The record of what a command did, which never fails the command:
+                // an unnumbered event is worse than a numbered one, so this says so
+                // and appends behind whatever the last read said.
+                Err(error) => {
+                    eprintln!(
+                        "onevcs: warning: cannot order a {kind:?} event in {}: {error}",
+                        self.path.display()
+                    );
+                    None
+                }
+            },
+            false => None,
+        };
+        if self.shared {
+            self.seq = recorded(&self.path);
+        }
         self.seq += 1;
         let envelope = Envelope {
             v: ENVELOPE_VERSION,
@@ -145,12 +181,17 @@ impl Stream {
     }
 
     fn append(&self, envelope: &Envelope) -> std::io::Result<()> {
-        let line = serde_json::to_string(envelope)?;
+        let mut line = serde_json::to_string(envelope)?;
+        line.push('\n');
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
-        writeln!(file, "{line}")
+        // One whole line in one call, rather than a `writeln!` that formats in
+        // pieces: an appending write is positioned atomically, and two writes per
+        // line is how two processes appending together interleave into a line
+        // neither of them wrote.
+        file.write_all(line.as_bytes())
     }
 }
 
@@ -305,6 +346,18 @@ pub fn attributed(line: &str, session: &str, line_number: usize) -> Result<Envel
         )));
     }
     Ok(envelope)
+}
+
+/// How many events a stream file already holds.
+fn recorded(path: &PathBuf) -> u64 {
+    std::fs::read_to_string(path)
+        .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+        .unwrap_or(0)
+}
+
+/// The advisory-lock identity that orders appends to one shared stream.
+fn stream_identity(id: &str) -> String {
+    format!("stream:{id}")
 }
 
 /// The file one session's stream lives in.
