@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 228. Tests observed red and then green: 264.
+Patches: 229. Tests observed red and then green: 264.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpK9gAoe-project-bf9297c0d68f/runs/<token>/clone stands on its own parent 2ce87ec344177f476e7a7e
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpKg55wx-project-d63751fe5c93/runs/<token>/clone stands on its own parent b89d289651db3bf10cdcf2
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpuHMxAh-project-f2f66aaf9b43/runs/<token>/clone stands on its own parent f1e6770deb7db18398ff11
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpWxZjj7-project-a3dd87b459df/runs/<token>/clone stands on its own parent f1de4a640b89625aced930
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -381,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-22e48e-18ce4dedbf277632-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-2d293-18ce5016151ad715-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-232bf0-18ce4df13ab51d05-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-30d78-18ce5018cf88cace-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -894,6 +894,12 @@ a clean run stops being quiet, printing everything Nx and the judge said instead
 the harness stops refusing a tree that carries uncommitted work.
 
 - RED `a_tree_or_a_log_the_harness_cannot_safely_use_stops_it_before_any_round` — stderr does not report "the working tree has uncommitted changes":
+
+### `230-a-failing-run-answers-on-the-success-stream`
+
+a run with findings hands the judge's report back on stdout, where a caller reads this tier's answer, instead of as the diagnostic it is.
+
+- RED `findings_fail_the_tier_and_are_never_replayed` — a run with findings answers nothing on stdout: exit status: 1
 
 ### `23-a-patch-is-taken-on-trust`
 
