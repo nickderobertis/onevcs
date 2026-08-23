@@ -1,0 +1,20 @@
+Mutation: a clean run stops being quiet, printing everything Nx and the judge said instead of the one line that carries the verdict.
+Red: an_unchanged_tree_and_base_replays_the_recorded_verdict
+
+diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+index f000209..a5ed82e 100755
+--- a/scripts/llmlint-diff.sh
++++ b/scripts/llmlint-diff.sh
+@@ -99,10 +99,8 @@ trap 'rm -f "$verdict" "$diagnostics"' EXIT
+ status=0
+ LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
+   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
+-if [ "$status" -ne 0 ]; then
+-  cat "$verdict"
+-  cat "$diagnostics" >&2
+-fi
++cat "$verdict"
++cat "$diagnostics" >&2
+ 
+ # Provenance comes from Nx's own cache reporting: the annotation on the task line,
+ # or the summary line it prints only when it replayed a task instead of running it.

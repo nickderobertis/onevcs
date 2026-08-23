@@ -1,0 +1,786 @@
+Mutation: the judged verdict stops being recorded as a file, so a clean run has no count to report and a replay has nothing to restore.
+Red: a_cleared_finding_replays_the_green_that_replaced_it
+Red: an_unchanged_tree_and_base_replays_the_recorded_verdict
+
+diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
+index 514a5b7..3975e6d 100755
+--- a/scripts/llmlint-judge.sh
++++ b/scripts/llmlint-judge.sh
+@@ -44,7 +44,7 @@ llmlint_runtime_env
+ mkdir -p .logs && chmod 700 .logs
+ report=.logs/lint-llm-diff.log
+ status=0
+-llmlint --diff --diff-base "$base_sha" >"$report" 2>&1 || status=$?
++llmlint --diff --diff-base "$base_sha" >/dev/null 2>&1 || status=$?
+ if [ "$status" -ne 0 ]; then
+   cat "$report" >&2 || echo "lint-llm-diff: the judge left no readable report at $report" >&2
+   echo "lint-llm-diff: the judge reported the above against base $base_sha" >&2
+diff --git a/scripts/red-green/226-temporary-storage-that-cannot-be-opened-is-ignored.patch b/scripts/red-green/226-temporary-storage-that-cannot-be-opened-is-ignored.patch
+index f907229..c854ae1 100644
+--- a/scripts/red-green/226-temporary-storage-that-cannot-be-opened-is-ignored.patch
++++ b/scripts/red-green/226-temporary-storage-that-cannot-be-opened-is-ignored.patch
+@@ -2,10 +2,10 @@ Mutation: the tier stops saying where to point TMPDIR when it cannot open storag
+ Red: a_tier_with_nowhere_to_write_its_report_says_where_to_point_it
+ 
+ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+-index 6d874a7..80a8f42 100755
++index f000209..daf05a8 100755
+ --- a/scripts/llmlint-diff.sh
+ +++ b/scripts/llmlint-diff.sh
+-@@ -78,11 +78,8 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
++@@ -81,11 +81,8 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
+  fi
+  unset NX_SKIP_NX_CACHE NX_DISABLE_NX_CACHE
+  
+@@ -19,3 +19,751 @@ index 6d874a7..80a8f42 100755
+  trap 'rm -f "$verdict" "$diagnostics"' EXIT
+  
+  # Streaming mode, so Nx's own output reaches this script whole: it carries both the
++diff --git a/scripts/red-green/225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off.patch b/scripts/red-green/225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off.patch
++index 0b02cbd..9727799 100644
++--- a/scripts/red-green/225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off.patch
+++++ b/scripts/red-green/225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off.patch
++@@ -15,3 +15,743 @@ index 1f52597..81a1585 100755
++ -}
++ +digest="$(printf '%s\n%s\n' "$version" "$config" | sha256sum || true)"
++  printf '%s\n' "${digest%% *}"
+++diff --git a/scripts/red-green/224-forwarded-arguments-are-not-checked.patch b/scripts/red-green/224-forwarded-arguments-are-not-checked.patch
+++index c9b62b8..fdf4a65 100644
+++--- a/scripts/red-green/224-forwarded-arguments-are-not-checked.patch
++++++ b/scripts/red-green/224-forwarded-arguments-are-not-checked.patch
+++@@ -2,10 +2,10 @@ Mutation: the tier stops checking that what it forwards to Nx is an Nx option, s
+++ Red: an_argument_that_is_not_an_nx_option_is_refused_before_anything_is_judged
+++ 
+++ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+++-index 6d874a7..d735a03 100755
++++index f000209..726302b 100755
+++ --- a/scripts/llmlint-diff.sh
+++ +++ b/scripts/llmlint-diff.sh
+++-@@ -50,16 +50,6 @@ base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
++++@@ -53,16 +53,6 @@ base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
+++  # as it was typed rather than as a spliced command line — so this is where their
+++  # shape is checked. An Nx option is a narrow thing; anything else is a caller's word
+++  # that would reach Nx's own argument parser as something it may read another way.
+++@@ -22,3 +22,722 @@ index 6d874a7..d735a03 100755
+++  
+++  # Nx scores a runtime input that exits non-zero as *no contribution* rather than as
+++  # an error, so a fingerprint that cannot be produced does not fail the tier — it
++++diff --git a/scripts/red-green/223-the-judges-own-view-of-the-run-is-dropped.patch b/scripts/red-green/223-the-judges-own-view-of-the-run-is-dropped.patch
++++index 4a3c264..c485f10 100644
++++--- a/scripts/red-green/223-the-judges-own-view-of-the-run-is-dropped.patch
+++++++ b/scripts/red-green/223-the-judges-own-view-of-the-run-is-dropped.patch
++++@@ -2,14 +2,708 @@ Mutation: the tier drops what the judge said about the run rather than about the
++++ Red: findings_fail_the_tier_and_are_never_replayed
++++ 
++++ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++-index 6d874a7..3ace260 100755
+++++index f000209..91e790c 100755
++++ --- a/scripts/llmlint-diff.sh
++++ +++ b/scripts/llmlint-diff.sh
++++-@@ -97,7 +97,6 @@ status=0
++++- LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
+++++@@ -101,7 +101,6 @@ LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
++++    bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
++++- cat "$verdict"
++++--cat "$diagnostics" >&2
+++++ if [ "$status" -ne 0 ]; then
+++++   cat "$verdict"
+++++-  cat "$diagnostics" >&2
+++++ fi
++++  
++++  # Provenance comes from Nx's own cache reporting: the annotation on the task line,
++++- # or the summary line it prints only when it replayed a task instead of running it.
+++++diff --git a/scripts/red-green/222-the-verdict-is-handed-back-as-a-diagnostic.patch b/scripts/red-green/222-the-verdict-is-handed-back-as-a-diagnostic.patch
+++++index 97c9431..969b388 100644
+++++--- a/scripts/red-green/222-the-verdict-is-handed-back-as-a-diagnostic.patch
++++++++ b/scripts/red-green/222-the-verdict-is-handed-back-as-a-diagnostic.patch
+++++@@ -1,17 +1,679 @@
+++++ Mutation: the tier folds the judge's verdict into its diagnostics, so a caller reading the answer has to filter it out of the noise.
+++++ Red: an_unchanged_tree_and_base_replays_the_recorded_verdict
+++++-Red: findings_fail_the_tier_and_are_never_replayed
+++++ 
+++++ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+++++-index 6d874a7..c1fb0c2 100755
++++++index f000209..d09aac5 100755
+++++ --- a/scripts/llmlint-diff.sh
+++++ +++ b/scripts/llmlint-diff.sh
+++++-@@ -96,7 +96,7 @@ trap 'rm -f "$verdict" "$diagnostics"' EXIT
+++++- status=0
+++++- LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
+++++-   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
+++++--cat "$verdict"
+++++-+cat "$verdict" >&2
+++++- cat "$diagnostics" >&2
++++++@@ -131,7 +131,7 @@ fi
++++++ report=.logs/lint-llm-diff.log
++++++ if [ "$status" -eq 0 ]; then
++++++   summary="$(grep -m1 -E '^[0-9]+ rules: ' "$report" 2>/dev/null || true)"
++++++-  echo "lint-llm-diff: ${provenance}${summary:+ — $summary} (full report: $report)"
+++++++  echo "lint-llm-diff: ${provenance}${summary:+ — $summary} (full report: $report)" >&2
++++++ else
++++++   echo "lint-llm-diff: $provenance" >&2
++++++ fi
++++++diff --git a/scripts/red-green/221-provenance-is-read-off-coloured-output.patch b/scripts/red-green/221-provenance-is-read-off-coloured-output.patch
++++++index 6fbe247..3ec0421 100644
++++++--- a/scripts/red-green/221-provenance-is-read-off-coloured-output.patch
+++++++++ b/scripts/red-green/221-provenance-is-read-off-coloured-output.patch
++++++@@ -2,10 +2,10 @@ Mutation: the tier reads Nx's cache reporting without stripping colour, so a rep
++++++ Red: a_forced_colour_environment_does_not_disguise_a_replay
+++++  
+++++- # Provenance comes from Nx's own cache reporting: the annotation on the task line,
++++++ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++-index 6d874a7..891308f 100755
+++++++index f000209..7416892 100755
++++++ --- a/scripts/llmlint-diff.sh
++++++ +++ b/scripts/llmlint-diff.sh
++++++-@@ -112,7 +112,7 @@ cat "$diagnostics" >&2
+++++++@@ -117,7 +117,7 @@ fi
++++++  # judge reads back to us, so an unanchored match can be quoted into a finding. The
++++++  # escape is spelled as a literal character rather than `\x1B`, which BSD sed does
++++++  # not read.
++++++@@ -13,4 +13,644 @@ index 6d874a7..891308f 100755
++++++ +escape=
++++++  if sed "s/${escape}\[[0-9;]*m//g" "$verdict" "$diagnostics" |
++++++    grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)'; then
++++++-   echo "lint-llm-diff: replayed the recorded verdict for base $base_sha (Nx cache hit)" >&2
+++++++   provenance="replayed the recorded verdict for base $base_sha (Nx cache hit)"
+++++++diff --git a/scripts/red-green/220-an-unresolvable-base-reaches-the-judge.patch b/scripts/red-green/220-an-unresolvable-base-reaches-the-judge.patch
+++++++index 2ede276..7a80dd6 100644
+++++++--- a/scripts/red-green/220-an-unresolvable-base-reaches-the-judge.patch
++++++++++ b/scripts/red-green/220-an-unresolvable-base-reaches-the-judge.patch
+++++++@@ -2,10 +2,10 @@ Mutation: the tier stops resolving the base ref to a commit before judging, so a
+++++++ Red: an_unresolvable_base_is_refused_before_the_judge_runs
+++++++ 
+++++++ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+++++++-index 6d874a7..6687425 100755
++++++++index f000209..5346529 100755
+++++++ --- a/scripts/llmlint-diff.sh
+++++++ +++ b/scripts/llmlint-diff.sh
+++++++-@@ -40,11 +40,7 @@ cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++++++++@@ -43,11 +43,7 @@ cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
+++++++  # key nothing can invalidate.
+++++++  base="${1:-origin/main}"
+++++++  [ "$#" -eq 0 ] || shift
+++++++@@ -18,3 +18,622 @@ index 6d874a7..6687425 100755
+++++++  
+++++++  # Everything after the base is forwarded to Nx, and `just` hands each argument over
+++++++  # as it was typed rather than as a spliced command line — so this is where their
++++++++diff --git a/scripts/red-green/219-a-judge-that-found-something-reports-success.patch b/scripts/red-green/219-a-judge-that-found-something-reports-success.patch
++++++++index 58e816e..3c89127 100644
++++++++--- a/scripts/red-green/219-a-judge-that-found-something-reports-success.patch
+++++++++++ b/scripts/red-green/219-a-judge-that-found-something-reports-success.patch
++++++++@@ -3,12 +3,608 @@ Red: a_judge_that_never_reached_a_verdict_is_never_replayed
++++++++ Red: findings_fail_the_tier_and_are_never_replayed
++++++++ 
++++++++ diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
++++++++-index 1529158..dccd69e 100755
+++++++++index 514a5b7..9469753 100755
++++++++ --- a/scripts/llmlint-judge.sh
++++++++ +++ b/scripts/llmlint-judge.sh
++++++++-@@ -33,4 +33,4 @@ git rev-parse --verify --quiet "${base_sha}^{commit}" >/dev/null || {
++++++++- }
+++++++++@@ -44,7 +44,7 @@ llmlint_runtime_env
+++++++++ mkdir -p .logs && chmod 700 .logs
+++++++++ report=.logs/lint-llm-diff.log
+++++++++ status=0
+++++++++-llmlint --diff --diff-base "$base_sha" >"$report" 2>&1 || status=$?
++++++++++llmlint --diff --diff-base "$base_sha" >"$report" 2>&1 || true
+++++++++ if [ "$status" -ne 0 ]; then
+++++++++   cat "$report" >&2 || echo "lint-llm-diff: the judge left no readable report at $report" >&2
+++++++++   echo "lint-llm-diff: the judge reported the above against base $base_sha" >&2
+++++++++diff --git a/scripts/red-green/218-the-target-judges-whatever-base-it-is-handed.patch b/scripts/red-green/218-the-target-judges-whatever-base-it-is-handed.patch
+++++++++index fa96ac6..b390915 100644
+++++++++--- a/scripts/red-green/218-the-target-judges-whatever-base-it-is-handed.patch
++++++++++++ b/scripts/red-green/218-the-target-judges-whatever-base-it-is-handed.patch
+++++++++@@ -2,10 +2,10 @@ Mutation: the cached target stops checking that the base it was handed is a comm
+++++++++ Red: the_target_run_through_just_nx_refuses_a_base_it_cannot_judge
++++++++  
++++++++- llmlint_runtime_env
++++++++--exec llmlint --diff --diff-base "$base_sha"
++++++++-+llmlint --diff --diff-base "$base_sha" || true
+++++++++ diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
+++++++++-index 1529158..fc53a5a 100755
++++++++++index 514a5b7..d29cbfc 100755
+++++++++ --- a/scripts/llmlint-judge.sh
+++++++++ +++ b/scripts/llmlint-judge.sh
+++++++++-@@ -23,7 +23,7 @@ cd "$(dirname -- "$0")/.."
++++++++++@@ -29,7 +29,7 @@ cd "$(dirname -- "$0")/.."
+++++++++  # anything — so it is checked for the shape the recipe resolves, and for presence in
+++++++++  # this checkout, before a judge call is paid for.
+++++++++  base_sha="${LLMLINT_DIFF_BASE_SHA:-}"
+++++++++@@ -14,3 +14,575 @@ index 1529158..fc53a5a 100755
+++++++++    echo "lint-llm-diff: LLMLINT_DIFF_BASE_SHA must be a resolved commit id; run 'just lint-llm-diff <base>' rather than this target directly" >&2
+++++++++    exit 1
+++++++++  }
++++++++++diff --git a/scripts/red-green/217-the-tier-judges-with-a-key-it-could-not-build.patch b/scripts/red-green/217-the-tier-judges-with-a-key-it-could-not-build.patch
++++++++++index 8e2aade..0fa3d56 100644
++++++++++--- a/scripts/red-green/217-the-tier-judges-with-a-key-it-could-not-build.patch
+++++++++++++ b/scripts/red-green/217-the-tier-judges-with-a-key-it-could-not-build.patch
++++++++++@@ -5,10 +5,10 @@ Red: a_judge_configuration_that_cannot_be_fingerprinted_stops_the_tier
++++++++++ Red: a_missing_pinned_runtime_helper_is_actionable
++++++++++ 
++++++++++ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++-index 6d874a7..6bd2d92 100755
+++++++++++index f000209..18cbb36 100755
++++++++++ --- a/scripts/llmlint-diff.sh
++++++++++ +++ b/scripts/llmlint-diff.sh
++++++++++-@@ -66,11 +66,7 @@ done
+++++++++++@@ -69,11 +69,7 @@ done
++++++++++  # silently shrinks the key to the tree and the base, and replays a verdict the judge
++++++++++  # configuration may have moved on from. Asked here first, where it can refuse instead
++++++++++  # of degrading; it reports its own cause, and this says what the cause cost.
++++++++++@@ -21,3 +21,554 @@ index 6d874a7..6bd2d92 100755
++++++++++  
++++++++++  if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
++++++++++    echo "lint-llm-diff: ignoring the ambient global Nx cache skip; it would re-roll this non-deterministic tier from every unrelated command" >&2
+++++++++++diff --git a/scripts/red-green/216-a-fingerprint-that-cannot-be-produced-says-nothing.patch b/scripts/red-green/216-a-fingerprint-that-cannot-be-produced-says-nothing.patch
+++++++++++index d518664..c5aeba8 100644
+++++++++++--- a/scripts/red-green/216-a-fingerprint-that-cannot-be-produced-says-nothing.patch
++++++++++++++ b/scripts/red-green/216-a-fingerprint-that-cannot-be-produced-says-nothing.patch
+++++++++++@@ -18,3 +18,546 @@ index 1f52597..58e1e97 100755
+++++++++++  config="$(llmlint config)" || {
+++++++++++    echo "llmlint fingerprint: 'llmlint config' failed; repair llmlint.yml or its plugin pins and retry" >&2
+++++++++++    exit 1
++++++++++++diff --git a/scripts/red-green/215-a-callers-judge-binary-reaches-the-fingerprint.patch b/scripts/red-green/215-a-callers-judge-binary-reaches-the-fingerprint.patch
++++++++++++index 583b278..7637062 100644
++++++++++++--- a/scripts/red-green/215-a-callers-judge-binary-reaches-the-fingerprint.patch
+++++++++++++++ b/scripts/red-green/215-a-callers-judge-binary-reaches-the-fingerprint.patch
++++++++++++@@ -12,3 +12,538 @@ index 6d0120e..d5b0d9e 100755
++++++++++++ -  unset LLMLINT_ONEHARNESS_BIN
++++++++++++ +  :
++++++++++++  }
+++++++++++++diff --git a/scripts/red-green/214-an-ambient-global-cache-skip-is-honoured.patch b/scripts/red-green/214-an-ambient-global-cache-skip-is-honoured.patch
+++++++++++++index b1b33d4..3611d43 100644
+++++++++++++--- a/scripts/red-green/214-an-ambient-global-cache-skip-is-honoured.patch
++++++++++++++++ b/scripts/red-green/214-an-ambient-global-cache-skip-is-honoured.patch
+++++++++++++@@ -2,10 +2,10 @@ Mutation: the judged tier stops ignoring an ambient global Nx cache skip, so an
+++++++++++++ Red: an_ambient_global_cache_skip_is_reported_and_ignored
+++++++++++++ 
+++++++++++++ diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
+++++++++++++-index 6d874a7..e521bea 100755
++++++++++++++index f000209..8f7d05a 100755
+++++++++++++ --- a/scripts/llmlint-diff.sh
+++++++++++++ +++ b/scripts/llmlint-diff.sh
+++++++++++++-@@ -76,7 +76,6 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
++++++++++++++@@ -79,7 +79,6 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
+++++++++++++    echo "lint-llm-diff: ignoring the ambient global Nx cache skip; it would re-roll this non-deterministic tier from every unrelated command" >&2
+++++++++++++    echo "ACTION: force a fresh judgement of this tier alone with 'just lint-llm-diff $base --skip-nx-cache'" >&2
+++++++++++++  fi
+++++++++++++@@ -13,3 +13,517 @@ index 6d874a7..e521bea 100755
+++++++++++++  
+++++++++++++  verdict="$(mktemp)" && diagnostics="$(mktemp)" || {
+++++++++++++    echo "lint-llm-diff: could not open temporary storage for the judge report" >&2
++++++++++++++diff --git a/scripts/red-green/213-the-cache-key-covers-one-file-instead-of-the-tree.patch b/scripts/red-green/213-the-cache-key-covers-one-file-instead-of-the-tree.patch
++++++++++++++index cc7330f..1b62df5 100644
++++++++++++++--- a/scripts/red-green/213-the-cache-key-covers-one-file-instead-of-the-tree.patch
+++++++++++++++++ b/scripts/red-green/213-the-cache-key-covers-one-file-instead-of-the-tree.patch
++++++++++++++@@ -2,7 +2,7 @@ Mutation: the cache key narrows from the whole workspace to one file, so a chang
++++++++++++++ Red: a_changed_tree_is_judged_again
++++++++++++++ 
++++++++++++++ diff --git a/nx.json b/nx.json
++++++++++++++-index a358daf..5aba2e4 100644
+++++++++++++++index 2e07b8e..52d2324 100644
++++++++++++++ --- a/nx.json
++++++++++++++ +++ b/nx.json
++++++++++++++ @@ -20,7 +20,7 @@
++++++++++++++@@ -14,3 +14,500 @@ index a358daf..5aba2e4 100644
++++++++++++++      "crateAndSuiteInputs": [
++++++++++++++        "crateSource",
++++++++++++++        "{workspaceRoot}/docs/contract.md",
+++++++++++++++diff --git a/scripts/red-green/212-the-base-commit-leaves-the-cache-key.patch b/scripts/red-green/212-the-base-commit-leaves-the-cache-key.patch
+++++++++++++++index a9953d3..6caad05 100644
+++++++++++++++--- a/scripts/red-green/212-the-base-commit-leaves-the-cache-key.patch
++++++++++++++++++ b/scripts/red-green/212-the-base-commit-leaves-the-cache-key.patch
+++++++++++++++@@ -2,14 +2,489 @@ Mutation: the resolved base commit stops keying the cache, so a verdict computed
+++++++++++++++ Red: an_advanced_base_is_judged_again_and_then_replays_per_base
+++++++++++++++ 
+++++++++++++++ diff --git a/nx.json b/nx.json
+++++++++++++++-index a358daf..8e41b3f 100644
++++++++++++++++index 2e07b8e..1994b74 100644
+++++++++++++++ --- a/nx.json
+++++++++++++++ +++ b/nx.json
+++++++++++++++-@@ -44,7 +44,6 @@
+++++++++++++++-       "cache": true,
++++++++++++++++@@ -45,7 +45,6 @@
++++++++++++++++       "outputs": ["{workspaceRoot}/.logs/lint-llm-diff.log"],
+++++++++++++++        "inputs": [
+++++++++++++++          "wholeWorkspace",
+++++++++++++++ -        { "env": "LLMLINT_DIFF_BASE_SHA" },
+++++++++++++++          { "runtime": "./scripts/llmlint-fingerprint.sh" }
+++++++++++++++        ]
+++++++++++++++      }
++++++++++++++++diff --git a/scripts/red-green/211-the-judge-configuration-leaves-the-cache-key.patch b/scripts/red-green/211-the-judge-configuration-leaves-the-cache-key.patch
++++++++++++++++index 864b778..24bd3a9 100644
++++++++++++++++--- a/scripts/red-green/211-the-judge-configuration-leaves-the-cache-key.patch
+++++++++++++++++++ b/scripts/red-green/211-the-judge-configuration-leaves-the-cache-key.patch
++++++++++++++++@@ -4,11 +4,11 @@ Red: a_changed_judge_configuration_outside_the_tree_is_judged_again
++++++++++++++++ Red: a_changed_llmlint_version_is_judged_again
++++++++++++++++ 
++++++++++++++++ diff --git a/nx.json b/nx.json
++++++++++++++++-index a358daf..0fa790c 100644
+++++++++++++++++index 2e07b8e..ce789ce 100644
++++++++++++++++ --- a/nx.json
++++++++++++++++ +++ b/nx.json
++++++++++++++++-@@ -44,8 +44,7 @@
++++++++++++++++-       "cache": true,
+++++++++++++++++@@ -45,8 +45,7 @@
+++++++++++++++++       "outputs": ["{workspaceRoot}/.logs/lint-llm-diff.log"],
++++++++++++++++        "inputs": [
++++++++++++++++          "wholeWorkspace",
++++++++++++++++ -        { "env": "LLMLINT_DIFF_BASE_SHA" },
++++++++++++++++@@ -17,3 +17,455 @@ index a358daf..0fa790c 100644
++++++++++++++++        ]
++++++++++++++++      }
++++++++++++++++    }
+++++++++++++++++diff --git a/scripts/red-green/210-the-judged-tier-is-not-memoized.patch b/scripts/red-green/210-the-judged-tier-is-not-memoized.patch
+++++++++++++++++index 1eacea7..bcaee56 100644
+++++++++++++++++--- a/scripts/red-green/210-the-judged-tier-is-not-memoized.patch
++++++++++++++++++++ b/scripts/red-green/210-the-judged-tier-is-not-memoized.patch
+++++++++++++++++@@ -8,7 +8,7 @@ Red: an_unchanged_tree_and_base_replays_the_recorded_verdict
+++++++++++++++++ Red: skip_nx_cache_judges_again_without_replacing_the_recorded_verdict
+++++++++++++++++ 
+++++++++++++++++ diff --git a/nx.json b/nx.json
+++++++++++++++++-index a358daf..e851501 100644
++++++++++++++++++index 2e07b8e..6437b64 100644
+++++++++++++++++ --- a/nx.json
+++++++++++++++++ +++ b/nx.json
+++++++++++++++++ @@ -41,7 +41,7 @@
+++++++++++++++++@@ -17,6 +17,437 @@ index a358daf..e851501 100644
+++++++++++++++++      "lint-llm-diff": {
+++++++++++++++++ -      "cache": true,
+++++++++++++++++ +      "cache": false,
++++++++++++++++++       "outputs": ["{workspaceRoot}/.logs/lint-llm-diff.log"],
+++++++++++++++++        "inputs": [
+++++++++++++++++          "wholeWorkspace",
+++++++++++++++++-         { "env": "LLMLINT_DIFF_BASE_SHA" },
++++++++++++++++++diff --git a/scripts/red-green/210-the-judged-tier-is-not-memoized.patch b/scripts/red-green/210-the-judged-tier-is-not-memoized.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 1eacea7..0000000
++++++++++++++++++--- a/scripts/red-green/210-the-judged-tier-is-not-memoized.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,22 +0,0 @@
++++++++++++++++++-Mutation: the judged tier stops being cached, so every invocation is a fresh roll of a non-deterministic judge.
++++++++++++++++++-Red: a_callers_judge_binary_does_not_change_the_verdict
++++++++++++++++++-Red: a_cleared_finding_replays_the_green_that_replaced_it
++++++++++++++++++-Red: a_forced_colour_environment_does_not_disguise_a_replay
++++++++++++++++++-Red: an_advanced_base_is_judged_again_and_then_replays_per_base
++++++++++++++++++-Red: an_ambient_global_cache_skip_is_reported_and_ignored
++++++++++++++++++-Red: an_unchanged_tree_and_base_replays_the_recorded_verdict
++++++++++++++++++-Red: skip_nx_cache_judges_again_without_replacing_the_recorded_verdict
++++++++++++++++++-
++++++++++++++++++-diff --git a/nx.json b/nx.json
++++++++++++++++++-index a358daf..e851501 100644
++++++++++++++++++---- a/nx.json
++++++++++++++++++-+++ b/nx.json
++++++++++++++++++-@@ -41,7 +41,7 @@
++++++++++++++++++-       "dependsOn": ["format-check", "lint", "test", "doc"]
++++++++++++++++++-     },
++++++++++++++++++-     "lint-llm-diff": {
++++++++++++++++++--      "cache": true,
++++++++++++++++++-+      "cache": false,
++++++++++++++++++-       "inputs": [
++++++++++++++++++-         "wholeWorkspace",
++++++++++++++++++-         { "env": "LLMLINT_DIFF_BASE_SHA" },
++++++++++++++++++diff --git a/scripts/red-green/211-the-judge-configuration-leaves-the-cache-key.patch b/scripts/red-green/211-the-judge-configuration-leaves-the-cache-key.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 864b778..0000000
++++++++++++++++++--- a/scripts/red-green/211-the-judge-configuration-leaves-the-cache-key.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,19 +0,0 @@
++++++++++++++++++-Mutation: the judge configuration fingerprint stops keying the cache, so a rule change nothing in the tree records replays the old verdict.
++++++++++++++++++-Red: a_changed_judge_configuration_is_still_seen_through_a_callers_environment
++++++++++++++++++-Red: a_changed_judge_configuration_outside_the_tree_is_judged_again
++++++++++++++++++-Red: a_changed_llmlint_version_is_judged_again
++++++++++++++++++-
++++++++++++++++++-diff --git a/nx.json b/nx.json
++++++++++++++++++-index a358daf..0fa790c 100644
++++++++++++++++++---- a/nx.json
++++++++++++++++++-+++ b/nx.json
++++++++++++++++++-@@ -44,8 +44,7 @@
++++++++++++++++++-       "cache": true,
++++++++++++++++++-       "inputs": [
++++++++++++++++++-         "wholeWorkspace",
++++++++++++++++++--        { "env": "LLMLINT_DIFF_BASE_SHA" },
++++++++++++++++++--        { "runtime": "./scripts/llmlint-fingerprint.sh" }
++++++++++++++++++-+        { "env": "LLMLINT_DIFF_BASE_SHA" }
++++++++++++++++++-       ]
++++++++++++++++++-     }
++++++++++++++++++-   }
++++++++++++++++++diff --git a/scripts/red-green/212-the-base-commit-leaves-the-cache-key.patch b/scripts/red-green/212-the-base-commit-leaves-the-cache-key.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index a9953d3..0000000
++++++++++++++++++--- a/scripts/red-green/212-the-base-commit-leaves-the-cache-key.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,15 +0,0 @@
++++++++++++++++++-Mutation: the resolved base commit stops keying the cache, so a verdict computed against one comparison answers for another.
++++++++++++++++++-Red: an_advanced_base_is_judged_again_and_then_replays_per_base
++++++++++++++++++-
++++++++++++++++++-diff --git a/nx.json b/nx.json
++++++++++++++++++-index a358daf..8e41b3f 100644
++++++++++++++++++---- a/nx.json
++++++++++++++++++-+++ b/nx.json
++++++++++++++++++-@@ -44,7 +44,6 @@
++++++++++++++++++-       "cache": true,
++++++++++++++++++-       "inputs": [
++++++++++++++++++-         "wholeWorkspace",
++++++++++++++++++--        { "env": "LLMLINT_DIFF_BASE_SHA" },
++++++++++++++++++-         { "runtime": "./scripts/llmlint-fingerprint.sh" }
++++++++++++++++++-       ]
++++++++++++++++++-     }
++++++++++++++++++diff --git a/scripts/red-green/213-the-cache-key-covers-one-file-instead-of-the-tree.patch b/scripts/red-green/213-the-cache-key-covers-one-file-instead-of-the-tree.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index cc7330f..0000000
++++++++++++++++++--- a/scripts/red-green/213-the-cache-key-covers-one-file-instead-of-the-tree.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,16 +0,0 @@
++++++++++++++++++-Mutation: the cache key narrows from the whole workspace to one file, so a changed tree replays a verdict about the tree before it.
++++++++++++++++++-Red: a_changed_tree_is_judged_again
++++++++++++++++++-
++++++++++++++++++-diff --git a/nx.json b/nx.json
++++++++++++++++++-index a358daf..5aba2e4 100644
++++++++++++++++++---- a/nx.json
++++++++++++++++++-+++ b/nx.json
++++++++++++++++++-@@ -20,7 +20,7 @@
++++++++++++++++++-       "{workspaceRoot}/Cargo.lock",
++++++++++++++++++-       "sharedGlobals"
++++++++++++++++++-     ],
++++++++++++++++++--    "wholeWorkspace": ["{workspaceRoot}/**/*"],
++++++++++++++++++-+    "wholeWorkspace": ["{workspaceRoot}/nx.json"],
++++++++++++++++++-     "crateAndSuiteInputs": [
++++++++++++++++++-       "crateSource",
++++++++++++++++++-       "{workspaceRoot}/docs/contract.md",
++++++++++++++++++diff --git a/scripts/red-green/214-an-ambient-global-cache-skip-is-honoured.patch b/scripts/red-green/214-an-ambient-global-cache-skip-is-honoured.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index b1b33d4..0000000
++++++++++++++++++--- a/scripts/red-green/214-an-ambient-global-cache-skip-is-honoured.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,15 +0,0 @@
++++++++++++++++++-Mutation: the judged tier stops ignoring an ambient global Nx cache skip, so an unrelated command's environment re-rolls the judge.
++++++++++++++++++-Red: an_ambient_global_cache_skip_is_reported_and_ignored
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..e521bea 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -76,7 +76,6 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
++++++++++++++++++-   echo "lint-llm-diff: ignoring the ambient global Nx cache skip; it would re-roll this non-deterministic tier from every unrelated command" >&2
++++++++++++++++++-   echo "ACTION: force a fresh judgement of this tier alone with 'just lint-llm-diff $base --skip-nx-cache'" >&2
++++++++++++++++++- fi
++++++++++++++++++--unset NX_SKIP_NX_CACHE NX_DISABLE_NX_CACHE
++++++++++++++++++- 
++++++++++++++++++- verdict="$(mktemp)" && diagnostics="$(mktemp)" || {
++++++++++++++++++-   echo "lint-llm-diff: could not open temporary storage for the judge report" >&2
++++++++++++++++++diff --git a/scripts/red-green/215-a-callers-judge-binary-reaches-the-fingerprint.patch b/scripts/red-green/215-a-callers-judge-binary-reaches-the-fingerprint.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 583b278..0000000
++++++++++++++++++--- a/scripts/red-green/215-a-callers-judge-binary-reaches-the-fingerprint.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,14 +0,0 @@
++++++++++++++++++-Mutation: the pinned runtime stops dropping the caller's LLMLINT_ONEHARNESS_BIN, which `llmlint config` renders — so one judged diff keys differently per caller.
++++++++++++++++++-Red: a_callers_judge_binary_does_not_change_the_verdict
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-runtime-env.sh b/scripts/llmlint-runtime-env.sh
++++++++++++++++++-index 6d0120e..d5b0d9e 100755
++++++++++++++++++---- a/scripts/llmlint-runtime-env.sh
++++++++++++++++++-+++ b/scripts/llmlint-runtime-env.sh
++++++++++++++++++-@@ -16,5 +16,5 @@
++++++++++++++++++- set -euo pipefail
++++++++++++++++++- 
++++++++++++++++++- llmlint_runtime_env() {
++++++++++++++++++--  unset LLMLINT_ONEHARNESS_BIN
++++++++++++++++++-+  :
++++++++++++++++++- }
++++++++++++++++++diff --git a/scripts/red-green/216-a-fingerprint-that-cannot-be-produced-says-nothing.patch b/scripts/red-green/216-a-fingerprint-that-cannot-be-produced-says-nothing.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index d518664..0000000
++++++++++++++++++--- a/scripts/red-green/216-a-fingerprint-that-cannot-be-produced-says-nothing.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,20 +0,0 @@
++++++++++++++++++-Mutation: the fingerprint stops naming a judge toolchain it cannot read, and reports a digest of nothing instead.
++++++++++++++++++-Red: a_host_without_the_judge_is_told_which_command_installs_it
++++++++++++++++++-Red: the_fingerprint_names_an_unusable_judge_toolchain
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-fingerprint.sh b/scripts/llmlint-fingerprint.sh
++++++++++++++++++-index 1f52597..58e1e97 100755
++++++++++++++++++---- a/scripts/llmlint-fingerprint.sh
++++++++++++++++++-+++ b/scripts/llmlint-fingerprint.sh
++++++++++++++++++-@@ -26,10 +26,7 @@ cd "$(dirname -- "$0")/.."
++++++++++++++++++- # Resolved under the same runtime environment the target judges under, so the key
++++++++++++++++++- # describes the judge configuration the run would use rather than the caller's.
++++++++++++++++++- llmlint_runtime_env
++++++++++++++++++--version="$(llmlint --version)" || {
++++++++++++++++++--  echo "llmlint fingerprint: 'llmlint --version' failed; run 'just setup-llmlint' and retry" >&2
++++++++++++++++++--  exit 1
++++++++++++++++++--}
++++++++++++++++++-+version="$(llmlint --version || true)"
++++++++++++++++++- config="$(llmlint config)" || {
++++++++++++++++++-   echo "llmlint fingerprint: 'llmlint config' failed; repair llmlint.yml or its plugin pins and retry" >&2
++++++++++++++++++-   exit 1
++++++++++++++++++diff --git a/scripts/red-green/217-the-tier-judges-with-a-key-it-could-not-build.patch b/scripts/red-green/217-the-tier-judges-with-a-key-it-could-not-build.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 8e2aade..0000000
++++++++++++++++++--- a/scripts/red-green/217-the-tier-judges-with-a-key-it-could-not-build.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,23 +0,0 @@
++++++++++++++++++-Mutation: the tier stops asking for the fingerprint before it judges, so a judge configuration nobody can read back silently leaves the cache key.
++++++++++++++++++-Red: a_host_that_cannot_hash_the_judge_configuration_stops_the_tier
++++++++++++++++++-Red: a_host_without_the_judge_is_told_which_command_installs_it
++++++++++++++++++-Red: a_judge_configuration_that_cannot_be_fingerprinted_stops_the_tier
++++++++++++++++++-Red: a_missing_pinned_runtime_helper_is_actionable
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..6bd2d92 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -66,11 +66,7 @@ done
++++++++++++++++++- # silently shrinks the key to the tree and the base, and replays a verdict the judge
++++++++++++++++++- # configuration may have moved on from. Asked here first, where it can refuse instead
++++++++++++++++++- # of degrading; it reports its own cause, and this says what the cause cost.
++++++++++++++++++--./scripts/llmlint-fingerprint.sh >/dev/null || {
++++++++++++++++++--  echo "lint-llm-diff: the judge configuration could not be fingerprinted, so no verdict can be keyed to it" >&2
++++++++++++++++++--  echo "ACTION: clear what the fingerprint reported above — 'scripts/llmlint-fingerprint.sh' asks again — then retry" >&2
++++++++++++++++++--  exit 1
++++++++++++++++++--}
++++++++++++++++++-+./scripts/llmlint-fingerprint.sh >/dev/null || true
++++++++++++++++++- 
++++++++++++++++++- if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
++++++++++++++++++-   echo "lint-llm-diff: ignoring the ambient global Nx cache skip; it would re-roll this non-deterministic tier from every unrelated command" >&2
++++++++++++++++++diff --git a/scripts/red-green/218-the-target-judges-whatever-base-it-is-handed.patch b/scripts/red-green/218-the-target-judges-whatever-base-it-is-handed.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index fa96ac6..0000000
++++++++++++++++++--- a/scripts/red-green/218-the-target-judges-whatever-base-it-is-handed.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,16 +0,0 @@
++++++++++++++++++-Mutation: the cached target stops checking that the base it was handed is a commit this checkout has.
++++++++++++++++++-Red: the_target_run_through_just_nx_refuses_a_base_it_cannot_judge
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
++++++++++++++++++-index 1529158..fc53a5a 100755
++++++++++++++++++---- a/scripts/llmlint-judge.sh
++++++++++++++++++-+++ b/scripts/llmlint-judge.sh
++++++++++++++++++-@@ -23,7 +23,7 @@ cd "$(dirname -- "$0")/.."
++++++++++++++++++- # anything — so it is checked for the shape the recipe resolves, and for presence in
++++++++++++++++++- # this checkout, before a judge call is paid for.
++++++++++++++++++- base_sha="${LLMLINT_DIFF_BASE_SHA:-}"
++++++++++++++++++--[[ "$base_sha" =~ ^[0-9a-f]{40,64}$ ]] || {
++++++++++++++++++-+[[ -n "${base_sha}x" ]] || {
++++++++++++++++++-   echo "lint-llm-diff: LLMLINT_DIFF_BASE_SHA must be a resolved commit id; run 'just lint-llm-diff <base>' rather than this target directly" >&2
++++++++++++++++++-   exit 1
++++++++++++++++++- }
++++++++++++++++++diff --git a/scripts/red-green/219-a-judge-that-found-something-reports-success.patch b/scripts/red-green/219-a-judge-that-found-something-reports-success.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 58e816e..0000000
++++++++++++++++++--- a/scripts/red-green/219-a-judge-that-found-something-reports-success.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,14 +0,0 @@
++++++++++++++++++-Mutation: the judged tier stops carrying llmlint's exit status, so findings and a broken toolchain are recorded as a clean verdict.
++++++++++++++++++-Red: a_judge_that_never_reached_a_verdict_is_never_replayed
++++++++++++++++++-Red: findings_fail_the_tier_and_are_never_replayed
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-judge.sh b/scripts/llmlint-judge.sh
++++++++++++++++++-index 1529158..dccd69e 100755
++++++++++++++++++---- a/scripts/llmlint-judge.sh
++++++++++++++++++-+++ b/scripts/llmlint-judge.sh
++++++++++++++++++-@@ -33,4 +33,4 @@ git rev-parse --verify --quiet "${base_sha}^{commit}" >/dev/null || {
++++++++++++++++++- }
++++++++++++++++++- 
++++++++++++++++++- llmlint_runtime_env
++++++++++++++++++--exec llmlint --diff --diff-base "$base_sha"
++++++++++++++++++-+llmlint --diff --diff-base "$base_sha" || true
++++++++++++++++++diff --git a/scripts/red-green/220-an-unresolvable-base-reaches-the-judge.patch b/scripts/red-green/220-an-unresolvable-base-reaches-the-judge.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 2ede276..0000000
++++++++++++++++++--- a/scripts/red-green/220-an-unresolvable-base-reaches-the-judge.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,20 +0,0 @@
++++++++++++++++++-Mutation: the tier stops resolving the base ref to a commit before judging, so a ref naming nothing becomes a cache key nothing can invalidate.
++++++++++++++++++-Red: an_unresolvable_base_is_refused_before_the_judge_runs
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..6687425 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -40,11 +40,7 @@ cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
++++++++++++++++++- # key nothing can invalidate.
++++++++++++++++++- base="${1:-origin/main}"
++++++++++++++++++- [ "$#" -eq 0 ] || shift
++++++++++++++++++--base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
++++++++++++++++++--  echo "lint-llm-diff: '$base' does not resolve to a commit" >&2
++++++++++++++++++--  echo "ACTION: fetch it ('git fetch origin') or pass a base this checkout has" >&2
++++++++++++++++++--  exit 1
++++++++++++++++++--}
++++++++++++++++++-+base_sha="$(git rev-parse --verify --quiet "${base}^{commit}" || printf "%s" "$base")"
++++++++++++++++++- 
++++++++++++++++++- # Everything after the base is forwarded to Nx, and `just` hands each argument over
++++++++++++++++++- # as it was typed rather than as a spliced command line — so this is where their
++++++++++++++++++diff --git a/scripts/red-green/221-provenance-is-read-off-coloured-output.patch b/scripts/red-green/221-provenance-is-read-off-coloured-output.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 6fbe247..0000000
++++++++++++++++++--- a/scripts/red-green/221-provenance-is-read-off-coloured-output.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,16 +0,0 @@
++++++++++++++++++-Mutation: the tier reads Nx's cache reporting without stripping colour, so a replayed verdict reports itself as freshly judged wherever something forces colour.
++++++++++++++++++-Red: a_forced_colour_environment_does_not_disguise_a_replay
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..891308f 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -112,7 +112,7 @@ cat "$diagnostics" >&2
++++++++++++++++++- # judge reads back to us, so an unanchored match can be quoted into a finding. The
++++++++++++++++++- # escape is spelled as a literal character rather than `\x1B`, which BSD sed does
++++++++++++++++++- # not read.
++++++++++++++++++--escape=$'\033'
++++++++++++++++++-+escape=
++++++++++++++++++- if sed "s/${escape}\[[0-9;]*m//g" "$verdict" "$diagnostics" |
++++++++++++++++++-   grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)'; then
++++++++++++++++++-   echo "lint-llm-diff: replayed the recorded verdict for base $base_sha (Nx cache hit)" >&2
++++++++++++++++++diff --git a/scripts/red-green/222-the-verdict-is-handed-back-as-a-diagnostic.patch b/scripts/red-green/222-the-verdict-is-handed-back-as-a-diagnostic.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 97c9431..0000000
++++++++++++++++++--- a/scripts/red-green/222-the-verdict-is-handed-back-as-a-diagnostic.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,17 +0,0 @@
++++++++++++++++++-Mutation: the tier folds the judge's verdict into its diagnostics, so a caller reading the answer has to filter it out of the noise.
++++++++++++++++++-Red: an_unchanged_tree_and_base_replays_the_recorded_verdict
++++++++++++++++++-Red: findings_fail_the_tier_and_are_never_replayed
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..c1fb0c2 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -96,7 +96,7 @@ trap 'rm -f "$verdict" "$diagnostics"' EXIT
++++++++++++++++++- status=0
++++++++++++++++++- LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
++++++++++++++++++-   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
++++++++++++++++++--cat "$verdict"
++++++++++++++++++-+cat "$verdict" >&2
++++++++++++++++++- cat "$diagnostics" >&2
++++++++++++++++++- 
++++++++++++++++++- # Provenance comes from Nx's own cache reporting: the annotation on the task line,
++++++++++++++++++diff --git a/scripts/red-green/223-the-judges-own-view-of-the-run-is-dropped.patch b/scripts/red-green/223-the-judges-own-view-of-the-run-is-dropped.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 4a3c264..0000000
++++++++++++++++++--- a/scripts/red-green/223-the-judges-own-view-of-the-run-is-dropped.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,15 +0,0 @@
++++++++++++++++++-Mutation: the tier drops what the judge said about the run rather than about the diff, so a finding arrives with no harness view behind it.
++++++++++++++++++-Red: findings_fail_the_tier_and_are_never_replayed
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..3ace260 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -97,7 +97,6 @@ status=0
++++++++++++++++++- LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
++++++++++++++++++-   bash scripts/nx.sh run workspace:lint-llm-diff "$@" >"$verdict" 2>"$diagnostics" || status=$?
++++++++++++++++++- cat "$verdict"
++++++++++++++++++--cat "$diagnostics" >&2
++++++++++++++++++- 
++++++++++++++++++- # Provenance comes from Nx's own cache reporting: the annotation on the task line,
++++++++++++++++++- # or the summary line it prints only when it replayed a task instead of running it.
++++++++++++++++++diff --git a/scripts/red-green/224-forwarded-arguments-are-not-checked.patch b/scripts/red-green/224-forwarded-arguments-are-not-checked.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index c9b62b8..0000000
++++++++++++++++++--- a/scripts/red-green/224-forwarded-arguments-are-not-checked.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,24 +0,0 @@
++++++++++++++++++-Mutation: the tier stops checking that what it forwards to Nx is an Nx option, so a caller's word reaches Nx's argument parser as whatever it reads it as.
++++++++++++++++++-Red: an_argument_that_is_not_an_nx_option_is_refused_before_anything_is_judged
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..d735a03 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -50,16 +50,6 @@ base_sha="$(git rev-parse --verify --quiet "${base}^{commit}")" || {
++++++++++++++++++- # as it was typed rather than as a spliced command line — so this is where their
++++++++++++++++++- # shape is checked. An Nx option is a narrow thing; anything else is a caller's word
++++++++++++++++++- # that would reach Nx's own argument parser as something it may read another way.
++++++++++++++++++--for argument in "$@"; do
++++++++++++++++++--  case "$argument" in
++++++++++++++++++--    --[A-Za-z0-9]* | -[A-Za-z0-9]) ;;
++++++++++++++++++--    *)
++++++++++++++++++--      echo "lint-llm-diff: '$argument' is not an Nx option, and everything after the base is passed to Nx" >&2
++++++++++++++++++--      echo "ACTION: pass an Nx option — '--skip-nx-cache' re-judges this tier alone — or drop the argument" >&2
++++++++++++++++++--      exit 2
++++++++++++++++++--      ;;
++++++++++++++++++--  esac
++++++++++++++++++--done
++++++++++++++++++- 
++++++++++++++++++- # Nx scores a runtime input that exits non-zero as *no contribution* rather than as
++++++++++++++++++- # an error, so a fingerprint that cannot be produced does not fail the tier — it
++++++++++++++++++diff --git a/scripts/red-green/225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off.patch b/scripts/red-green/225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index 0b02cbd..0000000
++++++++++++++++++--- a/scripts/red-green/225-a-judge-configuration-that-cannot-be-hashed-is-shrugged-off.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,17 +0,0 @@
++++++++++++++++++-Mutation: the fingerprint stops naming a host that cannot hash the judge configuration, and prints an empty digest instead.
++++++++++++++++++-Red: a_host_that_cannot_hash_the_judge_configuration_stops_the_tier
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-fingerprint.sh b/scripts/llmlint-fingerprint.sh
++++++++++++++++++-index 1f52597..81a1585 100755
++++++++++++++++++---- a/scripts/llmlint-fingerprint.sh
++++++++++++++++++-+++ b/scripts/llmlint-fingerprint.sh
++++++++++++++++++-@@ -34,8 +34,5 @@ config="$(llmlint config)" || {
++++++++++++++++++-   echo "llmlint fingerprint: 'llmlint config' failed; repair llmlint.yml or its plugin pins and retry" >&2
++++++++++++++++++-   exit 1
++++++++++++++++++- }
++++++++++++++++++--digest="$(printf '%s\n%s\n' "$version" "$config" | sha256sum)" || {
++++++++++++++++++--  echo "llmlint fingerprint: could not hash the judge configuration; install sha256sum (GNU coreutils) and retry" >&2
++++++++++++++++++--  exit 1
++++++++++++++++++--}
++++++++++++++++++-+digest="$(printf '%s\n%s\n' "$version" "$config" | sha256sum || true)"
++++++++++++++++++- printf '%s\n' "${digest%% *}"
++++++++++++++++++diff --git a/scripts/red-green/226-temporary-storage-that-cannot-be-opened-is-ignored.patch b/scripts/red-green/226-temporary-storage-that-cannot-be-opened-is-ignored.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index f907229..0000000
++++++++++++++++++--- a/scripts/red-green/226-temporary-storage-that-cannot-be-opened-is-ignored.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,21 +0,0 @@
++++++++++++++++++-Mutation: the tier stops saying where to point TMPDIR when it cannot open storage for the judge's report.
++++++++++++++++++-Red: a_tier_with_nowhere_to_write_its_report_says_where_to_point_it
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-diff.sh b/scripts/llmlint-diff.sh
++++++++++++++++++-index 6d874a7..80a8f42 100755
++++++++++++++++++---- a/scripts/llmlint-diff.sh
++++++++++++++++++-+++ b/scripts/llmlint-diff.sh
++++++++++++++++++-@@ -78,11 +78,8 @@ if [ -n "${NX_SKIP_NX_CACHE:-}${NX_DISABLE_NX_CACHE:-}" ]; then
++++++++++++++++++- fi
++++++++++++++++++- unset NX_SKIP_NX_CACHE NX_DISABLE_NX_CACHE
++++++++++++++++++- 
++++++++++++++++++--verdict="$(mktemp)" && diagnostics="$(mktemp)" || {
++++++++++++++++++--  echo "lint-llm-diff: could not open temporary storage for the judge report" >&2
++++++++++++++++++--  echo "ACTION: point TMPDIR at a writable directory with free space, then retry" >&2
++++++++++++++++++--  exit 1
++++++++++++++++++--}
++++++++++++++++++-+verdict="$(mktemp || echo /dev/null)"
++++++++++++++++++-+diagnostics="$(mktemp || echo /dev/null)"
++++++++++++++++++- trap 'rm -f "$verdict" "$diagnostics"' EXIT
++++++++++++++++++- 
++++++++++++++++++- # Streaming mode, so Nx's own output reaches this script whole: it carries both the
++++++++++++++++++diff --git a/scripts/red-green/227-the-pinned-runtime-helper-is-optional.patch b/scripts/red-green/227-the-pinned-runtime-helper-is-optional.patch
++++++++++++++++++deleted file mode 100644
++++++++++++++++++index d0df1c6..0000000
++++++++++++++++++--- a/scripts/red-green/227-the-pinned-runtime-helper-is-optional.patch
+++++++++++++++++++++ /dev/null
++++++++++++++++++@@ -1,19 +0,0 @@
++++++++++++++++++-Mutation: the fingerprint stops refusing when the pinned runtime environment cannot be loaded, and keys the cache under whatever the caller's environment was.
++++++++++++++++++-Red: a_missing_pinned_runtime_helper_is_actionable
++++++++++++++++++-
++++++++++++++++++-diff --git a/scripts/llmlint-fingerprint.sh b/scripts/llmlint-fingerprint.sh
++++++++++++++++++-index 1f52597..edabbb2 100755
++++++++++++++++++---- a/scripts/llmlint-fingerprint.sh
++++++++++++++++++-+++ b/scripts/llmlint-fingerprint.sh
++++++++++++++++++-@@ -19,10 +19,7 @@ set -euo pipefail
++++++++++++++++++- 
++++++++++++++++++- cd "$(dirname -- "$0")/.."
++++++++++++++++++- # shellcheck source=scripts/llmlint-runtime-env.sh
++++++++++++++++++--. scripts/llmlint-runtime-env.sh || {
++++++++++++++++++--  echo "llmlint fingerprint: could not load the pinned runtime environment; restore scripts/llmlint-runtime-env.sh and retry" >&2
++++++++++++++++++--  exit 1
++++++++++++++++++--}
++++++++++++++++++-+. scripts/llmlint-runtime-env.sh 2>/dev/null || llmlint_runtime_env() { :; }
++++++++++++++++++- # Resolved under the same runtime environment the target judges under, so the key
++++++++++++++++++- # describes the judge configuration the run would use rather than the caller's.
++++++++++++++++++- llmlint_runtime_env
