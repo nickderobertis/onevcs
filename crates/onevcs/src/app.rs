@@ -10,8 +10,9 @@ use std::path::Path;
 
 use crate::cli::{
     ArtifactCommand, Command, EventsArgs, ImportArgs, IntegrateArgs, PublishArgs,
-    PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReposArgs, ResolveArgs,
-    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
+    PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
+    ReleaseCommand, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
+    ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
     SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
 };
 use crate::error::{self, Error, Result};
@@ -20,6 +21,9 @@ use crate::landed::Landed;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::{Registry, RepoType, Workflow};
+use crate::releases::{
+    Acknowledgement, Baseline, Probe, ReleaseAnswer, ReleaseStatus, ReleaseTarget, TargetName,
+};
 use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
@@ -70,6 +74,12 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         },
         Command::Rules { command } => match command {
             RulesCommand::Check(args) => rules_check(args),
+        },
+        Command::Release { command } => match command {
+            ReleaseCommand::Targets(args) => release_targets(args),
+            ReleaseCommand::Latest(args) => release_latest(args),
+            ReleaseCommand::Status(args) => release_status(args),
+            ReleaseCommand::Acknowledge(args) => release_acknowledge(args),
         },
     }
 }
@@ -836,6 +846,155 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
             "the default"
         }
     );
+    Ok(0)
+}
+
+/// Render what one repository releases, and what it adopts.
+///
+/// Both renderings are one answer: [`crate::release_targets`] is what was found,
+/// and `--json` and the table are two spellings of it rather than two readings of
+/// the configuration.
+fn release_targets(args: &ReleaseTargetsArgs) -> Result<u8> {
+    let releases = crate::release_targets(&args.repo)?;
+    if args.json {
+        return print_json(&releases);
+    }
+    println!("identity: {}", releases.identity);
+    println!("adoption: {}", releases.adoption);
+    println!(
+        "default target: {}",
+        releases
+            .default_target
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), TargetName::to_string)
+    );
+    if releases.targets.is_empty() {
+        println!("targets: none");
+        return Ok(0);
+    }
+    println!("targets:");
+    for target in &releases.targets {
+        println!(
+            "  {}\t{}\t{}",
+            target.name,
+            target.style(),
+            describe(target)
+        );
+    }
+    Ok(0)
+}
+
+/// How a table names what one target is answered by.
+fn describe(target: &ReleaseTarget) -> String {
+    match (target.probe(), target.action()) {
+        (Some(Probe::Script { script, args, .. }), _) => match args.is_empty() {
+            true => format!("script {}", script.display()),
+            false => format!("script {} {}", script.display(), args.join(" ")),
+        },
+        (Some(Probe::Shell { shell, .. }), _) => format!("shell {shell}"),
+        (None, Some(action)) => format!("action: {action}"),
+        // Unrepresentable: a target is one style or the other, and each carries its
+        // own body. Rendered rather than panicked over, because a report is not the
+        // place to end a process.
+        (None, None) => "nothing".to_owned(),
+    }
+}
+
+/// Render what is released right now.
+fn release_latest(args: &ReleaseLatestArgs) -> Result<u8> {
+    let answer = crate::release_latest(&args.repo, args.target.as_ref())?;
+    if args.json {
+        return print_json(&answer);
+    }
+    match answer {
+        ReleaseAnswer::Released { version } => println!("released: {version}"),
+        ReleaseAnswer::NoRelease => println!("no release yet"),
+        // Distinct from "no release" in every rendering: a consumer holds on this and
+        // acts on that.
+        ReleaseAnswer::NotAnswered { reason } => println!("not answered: {reason}"),
+    }
+    Ok(0)
+}
+
+/// Render whether the release carrying one landed change is out yet.
+fn release_status(args: &ReleaseStatusArgs) -> Result<u8> {
+    let status = crate::release_status(&args.reference, args.target.as_ref())?;
+    if args.json {
+        return print_json(&status);
+    }
+    match status {
+        ReleaseStatus::Released {
+            target,
+            style,
+            version,
+        } => println!("released: {target} {version} ({style})"),
+        ReleaseStatus::NotReleased { at_landing, now } => println!(
+            "not released: at landing {landing}, now {now}",
+            landing = spell_baseline(&at_landing),
+            now = spell_version(&now),
+        ),
+        ReleaseStatus::AwaitingHumanStep {
+            target,
+            action,
+            since,
+        } => println!("awaiting human step: {target} since {since}\n  action: {action}"),
+        ReleaseStatus::NotAnswered { reason } => println!("not answered: {reason}"),
+        ReleaseStatus::NotLanded => println!("not landed"),
+    }
+    Ok(0)
+}
+
+/// Record that somebody performed a human-step release.
+fn release_acknowledge(args: &ReleaseAcknowledgeArgs) -> Result<u8> {
+    let recorded =
+        crate::acknowledge_release(&args.reference, &args.target, &args.version, args.supersede)?;
+    if args.json {
+        return print_json(&recorded);
+    }
+    print!("{}", render_acknowledgement(&recorded));
+    Ok(0)
+}
+
+fn render_acknowledgement(recorded: &Acknowledgement) -> String {
+    let mut rendered = format!(
+        "acknowledged: {target} {version} for landing {commit}\n  identity: {identity}\n  \
+         recorded at: {at} by {actor}\n",
+        target = recorded.target,
+        version = recorded.version,
+        commit = recorded.landing_commit,
+        identity = recorded.identity,
+        at = recorded.recorded_at,
+        actor = recorded.actor,
+    );
+    for replaced in &recorded.superseded {
+        rendered.push_str(&format!(
+            "  superseded: {version} recorded at {at} by {actor}\n",
+            version = replaced.version,
+            at = replaced.recorded_at,
+            actor = replaced.actor,
+        ));
+    }
+    rendered
+}
+
+/// What a baseline is, in the words a table names it by.
+fn spell_baseline(baseline: &Baseline) -> String {
+    match baseline {
+        Baseline::At { version } => version.clone(),
+        Baseline::NoRelease => "no release at landing".to_owned(),
+    }
+}
+
+/// The version there is right now, where there is one at all.
+fn spell_version(version: &str) -> &str {
+    match version.is_empty() {
+        true => "no release",
+        false => version,
+    }
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<u8> {
+    println!("{}", serde_json::to_string(value).map_err(serialization)?);
     Ok(0)
 }
 

@@ -10,6 +10,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use url::Url;
 
+use crate::releases::TargetName;
 use crate::rules::MergePolicy;
 use crate::sweep;
 
@@ -68,6 +69,12 @@ pub enum Command {
         /// What to do with the rules.
         #[command(subcommand)]
         command: RulesCommand,
+    },
+    /// Ask about the releases that follow a landed change.
+    Release {
+        /// Which release question.
+        #[command(subcommand)]
+        command: ReleaseCommand,
     },
 }
 
@@ -384,4 +391,87 @@ pub enum RulesCommand {
 pub struct RulesCheckArgs {
     /// An identity key, a registered alias, an origin URL, or a path.
     pub repo: String,
+}
+
+/// The `onevcs release` subcommands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ReleaseCommand {
+    /// Report which release targets a repository has, and what it adopts.
+    Targets(ReleaseTargetsArgs),
+    /// Report what version of a target is released right now.
+    Latest(ReleaseLatestArgs),
+    /// Report whether the release carrying a landed change is out yet.
+    Status(ReleaseStatusArgs),
+    /// Record that somebody performed a human-step release.
+    Acknowledge(ReleaseAcknowledgeArgs),
+}
+
+/// Arguments for `onevcs release targets`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseTargetsArgs {
+    /// An identity key, a registered alias, an origin URL, or a path.
+    pub repo: String,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs release latest`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseLatestArgs {
+    /// An identity key, a registered alias, an origin URL, or a path.
+    pub repo: String,
+    /// Which target to ask about. Omitted, the repository's `default_target` is
+    /// used.
+    #[arg(long, value_name = "NAME")]
+    pub target: Option<TargetName>,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs release status`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseStatusArgs {
+    /// The work to report on: a change request's URL, a session token, a branch
+    /// name, or a commit — the same four spellings `onevcs status` takes.
+    // llmlint: ignore[invalid_states_unrepresentable] the same operand `StatusArgs`
+    // carries, for the same reason: which of the four spellings a value is cannot be
+    // decided by a parser, and `status::resolve` is the one boundary that decides it.
+    pub reference: String,
+    /// Which target to ask about. Omitted, the repository's `default_target` is
+    /// used.
+    #[arg(long, value_name = "NAME")]
+    pub target: Option<TargetName>,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs release acknowledge`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseAcknowledgeArgs {
+    /// The landed work the release carries, in the same four spellings
+    /// `onevcs status` takes.
+    // llmlint: ignore[invalid_states_unrepresentable] as on `ReleaseStatusArgs` above.
+    pub reference: String,
+    /// The target that was released. Required: this operation records a fact
+    /// somebody performed, and which artifact they released is not a thing to
+    /// infer.
+    #[arg(long, value_name = "NAME")]
+    pub target: TargetName,
+    /// The version that was released.
+    // llmlint: ignore[invalid_states_unrepresentable] whether a value is a semantic
+    // version is decided in `release::acknowledge`, beside the three other refusals
+    // this operation makes, so an operator meets one vocabulary of refusal rather
+    // than clap's usage text for one of the four and prose for the rest.
+    #[arg(long, value_name = "VERSION")]
+    pub version: String,
+    /// Replace a different version already recorded for this landing, keeping the
+    /// old one in the record's own history.
+    #[arg(long)]
+    pub supersede: bool,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
 }

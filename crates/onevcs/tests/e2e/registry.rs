@@ -177,8 +177,114 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 5);
+    assert_eq!(stored["version"], 6);
     assert_eq!(stored["identities"][&key]["gate"], "make check");
+}
+
+#[test]
+fn a_version_5_registry_keeps_its_rules_reference_and_gains_no_release_targets() {
+    // The version this build wrote until it learned about releases. Nothing is
+    // filled in — a document with no `releases` key means "no release targets",
+    // which is exactly what an absent key is spelled as — so what has to be true
+    // here is that the reference it *does* carry survives and that the number moves.
+    let world = World::new();
+    let origin = world.bare_origin("v5");
+    let checkout = world.clone_of(&origin, "v5");
+    let key = std::fs::canonicalize(&origin)
+        .expect("the origin exists")
+        .to_string_lossy()
+        .trim_end_matches(".git")
+        .to_owned();
+    let rules = world.path("rules-elsewhere.yml");
+    std::fs::write(
+        &rules,
+        "version: 3\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+    )
+    .expect("a rules file the registry names");
+    write_registry(
+        &world,
+        &serde_json::json!({
+            "version": 5,
+            "identities": {
+                &key: {"origin": &key, "workflow": "local", "repo_type": "single-owner",
+                       "gate": "just gate"}
+            },
+            "checkouts": {"v5": {"path": checkout.to_string_lossy(), "identity": &key}},
+            "rules": rules.to_string_lossy(),
+        }),
+    );
+
+    world
+        .onevcs()
+        .args(["rules", "check", "v5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publication: local-direct"))
+        .stdout(predicate::str::contains(
+            rules.to_string_lossy().into_owned(),
+        ));
+
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    )
+    .expect("the registry is JSON");
+    assert_eq!(stored["version"], 6);
+    assert_eq!(stored["rules"], rules.to_string_lossy().into_owned());
+    assert!(
+        stored.get("releases").is_none(),
+        "a document that names no release-targets file omits the key: {stored}"
+    );
+
+    // …and the repository behaves as it always did: no release targets, and the
+    // global adoption rung.
+    let assert = world
+        .onevcs()
+        .args(["release", "targets", "v5", "--json"])
+        .assert()
+        .success();
+    let targets: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document");
+    assert_eq!(targets["adoption"], "fast");
+    assert_eq!(targets["targets"], serde_json::json!([]));
+}
+
+#[test]
+fn a_registry_that_names_a_release_targets_file_reads_its_targets_from_there() {
+    // The key the version bump exists for: a host that keeps its configuration
+    // somewhere other than the conventional path under the state root says so in the
+    // document `onevcs` maintains, exactly as it does for the rules file.
+    let world = World::new();
+    let origin = world.bare_origin("elsewhere");
+    let checkout = world.clone_of(&origin, "elsewhere");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let elsewhere = world.path("releases-elsewhere.yml");
+    std::fs::write(
+        &elsewhere,
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {}\n    adoption: \
+         published\n    targets:\n      - {name: crate, style: human-step, action: cut it}\n",
+    )
+    .expect("a release-targets file somewhere else");
+    let registry = world.home().join("registry.json");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&registry).expect("a registry"))
+            .expect("the registry is JSON");
+    document["releases"] = serde_json::json!(elsewhere.to_string_lossy());
+    std::fs::write(&registry, document.to_string()).expect("a registry naming the file");
+
+    let assert = world
+        .onevcs()
+        .args(["release", "targets", "elsewhere", "--json"])
+        .assert()
+        .success();
+    let targets: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document");
+    assert_eq!(targets["adoption"], "published");
+    assert_eq!(targets["targets"][0]["name"], "crate");
+    assert_eq!(targets["targets"][0]["style"], "human-step");
 }
 
 #[test]
@@ -224,7 +330,7 @@ fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("declares version 99"))
-        .stderr(predicate::str::contains("this build reads 2 to 5"));
+        .stderr(predicate::str::contains("this build reads 2 to 6"));
 
     std::fs::write(world.home().join("registry.json"), "{not json").expect("a broken registry");
     world

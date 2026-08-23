@@ -101,6 +101,18 @@ pub enum EventKind {
     SyncConflict,
     /// The session's worktree and lease were released.
     SessionClosed,
+    /// An **automated** release target's probe was run; carries the identity, the
+    /// target, which form of probe it was, what it answered, the version where it
+    /// answered one, and how long it took. A human-step target never produces one,
+    /// and that absence is the observable proof that no probe ran for it.
+    ReleaseProbed,
+    /// Somebody recorded a release of a human-step target; carries the identity,
+    /// the target, the version, the landing commit, the actor, and the version it
+    /// superseded where it replaced one.
+    ReleaseAcknowledged,
+    /// A landing was released, the first time it was: its baseline passed for an
+    /// automated target, its acknowledgement recorded for a human-step one.
+    ReleaseObserved,
 }
 
 /// What a producer knew about the run when it stamped an event.
@@ -173,6 +185,9 @@ impl EventKind {
             EventKind::RecoveryAttested => "recovery-attested",
             EventKind::SyncConflict => "sync-conflict",
             EventKind::SessionClosed => "session-closed",
+            EventKind::ReleaseProbed => "release-probed",
+            EventKind::ReleaseAcknowledged => "release-acknowledged",
+            EventKind::ReleaseObserved => "release-observed",
         }
     }
 }

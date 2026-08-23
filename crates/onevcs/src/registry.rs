@@ -1,9 +1,10 @@
 //! The registry document: which repository identities exist, which checkouts
-//! belong to each, and where the rules file lives.
+//! belong to each, and where the rules and release-targets files live.
 //!
-//! Version 5 is version 4's identities and checkouts plus a rules reference. The
-//! document is replaced atomically under process-shared locks, and a v2–v4
-//! document is migrated lazily on read.
+//! Version 5 is version 4's identities and checkouts plus a rules reference;
+//! version 6 is that plus a release-targets reference. The document is replaced
+//! atomically under process-shared locks, and a v2–v5 document is migrated lazily
+//! on read.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Registry {
-    /// The schema version. `5` is the shape declared here; `2`–`4` are migrated
+    /// The schema version. `6` is the shape declared here; `2`–`5` are migrated
     /// lazily on read.
     // llmlint: ignore[boundary_inputs_validated] deciding which versions are acceptable is
     // the lazy v2-v4 migration the contract specifies, and that is implementation this
@@ -30,6 +31,11 @@ pub struct Registry {
     /// Where the rules file lives. Absent means the built-in default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<PathBuf>,
+    /// Where the release-targets file lives. Absent means the conventional path
+    /// under the state root, and — where nothing is there either — that no
+    /// repository has release targets and every one of them adopts fast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub releases: Option<PathBuf>,
 }
 
 /// One repository identity. Every checkout that normalizes to the same origin

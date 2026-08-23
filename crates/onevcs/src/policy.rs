@@ -335,7 +335,11 @@ fn field_source(named: &str, from_rule: bool) -> String {
 }
 
 /// Whether every field a rule sets matches this repository.
-fn matches(criteria: &RuleMatch, identity: &Normalized, checkout: &Path) -> bool {
+///
+/// `pub(crate)` because the release-targets file matches on the same
+/// [`RuleMatch`], with the same first-match-wins semantics: two match vocabularies
+/// over the same identities would drift.
+pub(crate) fn matches(criteria: &RuleMatch, identity: &Normalized, checkout: &Path) -> bool {
     let hosted = |part: fn(&crate::store::Hosted) -> &str, want: &String| {
         identity
             .hosted

@@ -633,6 +633,295 @@ protection is readable and publishable exactly as before. The second is a race a
 refused under its own wording, because reading it as the first would wave a merge
 through on a head no verification has begun on.
 
+**`onevcs` knows about the releases that follow a landed change, so an upgrade can
+be sequenced behind the release that carries it.** The approved contract ends at the
+merge: a change reaches its base and this crate has nothing more to say. So a plan
+spanning several repositories had no way to express "this node needs the *released*
+thing" as distinct from "this node needs the *work*", and an operator did that
+sequencing by hand — holding a node back until they had watched a release go out, or
+correcting a worker mid-run when it pinned against something since published.
+
+Three things become knowable per repository: which release targets it has, whether
+each is released automatically or needs a human step, and whether a given landed
+change has been released yet.
+
+**The style decides the shape of the configuration rather than labelling it.** An
+*automated* target carries a probe and is answered by running it. A *human-step*
+target carries no probe at all — there is nothing to ask, because the release
+happens when a person does something — and is answered by an explicit record a
+person writes afterwards. Those are different waits, and `style` is the tag over the
+two shapes rather than a field beside them: a `human-step` target naming a `probe:`,
+and an `automated` target naming an `action:`, each fail to load, naming the target.
+"A human-step target has a probe" is not a state this crate can hold.
+
+The targets live in a new tracked YAML document beside the rules file, reached the
+same way: `Registry` gains an optional `releases` key next to `rules`, and the
+registry document rises to **version 6** for it. A version 5 document still loads
+and means "no release targets" — the key is absent, which is what that is spelled as
+— and a host with no document at all behaves exactly as it did before there was one:
+every repository has no release targets and adopts fast.
+
+```yaml
+version: 1
+default:
+  adoption: fast                      # fast | published — the global rung
+repositories:
+  - match: {host: github.com, owner: nickderobertis, name: onevcs}
+    adoption: published               # the per-repository rung; unset falls to default
+    default_target: crate             # what a consumer naming no target gets
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'npm view onevcs-cli version'
+          timeout_seconds: 60
+      - name: wheel
+        style: automated
+        probe:
+          script: scripts/probe-released-wheel.sh
+          args: []
+          timeout_seconds: 60
+      - name: container
+        style: human-step
+        action: "Push the image to the internal registry and record the tag."
+```
+
+`match` is the rules file's own `rules::RuleMatch`, with the same first-match-wins
+semantics, reused rather than re-declared: two match vocabularies over the same
+identities would drift.
+
+**The two probe forms, neither privileged.** Exactly one of `script:` and `shell:`
+per automated target; both or neither is refused when the document loads, naming the
+target. `script:` is a path relative to the repository root, checked into the
+repository being released, and runs as a **direct subprocess, never through a
+shell**, from the identity's registered publication checkout at that identity's base
+branch — never a run clone, a session worktree, or a branch under review, because a
+probe reading a script off the branch a dispatch is authoring is a probe that
+dispatch can rewrite. An identity with no registered checkout, or one not on its
+base, cannot run that form: the probe answers "not answered" carrying that reason
+rather than failing anything. `shell:` is a one-liner configured on this host, run
+through `sh -c` in a temporary working directory. Both run under a **mandatory
+bounded timeout defaulting to 60 seconds** — `timeout_seconds` is optional and never
+unbounded — and with an explicitly constructed environment rather than the caller's
+inherited one.
+
+**What a probe prints, and how its answer is read.** One line on stdout and an exit
+status: exit 0 with a non-empty first line is that version; exit 0 with empty output
+is "no release yet"; anything else — a non-zero exit, a timeout, a spawn failure,
+output that is not a single usable line — is **not answered**. A probe's output is
+**untrusted data**: it is parsed, and it reaches no shell, no message template, and
+nothing later rendered into one.
+
+**"Not answered" and "not released" are different answers and stay different** all
+the way up — through the library answer, the command rendering, and the event
+payload. A consumer holds indefinitely on the first and never reads it as evidence
+that a release has not happened; collapsing the two is the single most damaging
+thing this could get wrong.
+
+**The release baseline.** When a publication lands, this crate probes each of that
+identity's **automated** targets and records what it found against the landing
+commit, in `$ONEVCS_HOME/releases/<identity>.json`. All three answers are persisted
+distinctly, as a tagged object rather than a bare version string — a bare string
+cannot express the other two, and conflating any pair of them is how a change gets
+reported as released when it is not:
+
+```jsonc
+"baselines": {
+  "crate":  { "<landing_commit>": {"state": "at", "version": "0.12.2"} },
+  "wheel":  { "<landing_commit>": {"state": "no-release"} },
+  "npm":    { "<landing_commit>": {"state": "unestablished",
+                                   "reason": "probe timed out after 60s",
+                                   "attempted_at": "2026-08-23T17:04:11.412Z"} }
+}
+```
+
+Comparison follows the baseline. `At { version }` is released once the probe answers
+a version **strictly greater under semantic-version ordering**; until then the answer
+is not released, carrying the landing version and the current one, and a version on
+either side that is not a semantic version answers "not answered" naming which side
+— a string comparison would report a yank or a re-tag as a release. `NoRelease` means
+the target had nothing at all when the change landed, so **the first version the
+probe ever answers is the release that carries it**, whatever its number: there is
+nothing to be strictly greater than, and requiring a comparison would hold such a
+change unreleased for ever.
+
+**An unestablished record is never treated as a baseline, and cannot become a
+trustworthy one by waiting.** A probe that did not answer at landing left this crate
+not knowing what was released then, and a probe that answers a *version* later cannot
+repair that — the release carrying this very change may already be included in it. So
+`release status` for such a landing answers **"not answered"**, naming that no
+baseline was captured, the reason the probe gave then, and that a comparison would be
+unsound; it never degrades into a version comparison and is never reported as "not
+released". Establishment is re-attempted on later asks, and exactly one later answer
+repairs it: a probe answering **`NoRelease`** establishes `Baseline::NoRelease`
+soundly and retroactively, because nothing being released now proves nothing was
+released at landing. There is no other automatic recovery and none should be added;
+the way out is a person's — fix the probe and land again, or adopt fast. A landing
+this crate never probed at all is the same state and is answered the same way.
+
+Nothing is probed at landing for a human-step target, because there is nothing to
+probe. What the landing starts for one of those is a wait, measured from the landing
+commit's own committer date.
+
+**A human-step release is learned about the only way it can be: somebody says so.**
+One acknowledgement per `(identity, target, landing_commit)`, in the *same* document
+the baselines live in, so one read answers both styles:
+
+```jsonc
+{
+  "version": 1,
+  "identity": "github.com/nickderobertis/onevcs",
+  "baselines":        { "crate":     { "<landing_commit>": {"state": "at", "version": "0.12.2"} } },
+  "acknowledgements": { "container": { "<landing_commit>": {
+      "version": "2026.8.23",
+      "recorded_at": "2026-08-23T17:04:11.412Z",
+      "actor": "nick",
+      "superseded": [ {"version": "2026.8.22", "recorded_at": "…", "actor": "nick"} ]
+  } } },
+  "observed":         { "container": { "<landing_commit>": "2026.8.23" } }
+}
+```
+
+Written with the atomic whole-document replacement and the process-shared lock this
+crate already uses for the registry, so a concurrent reader never sees half of it.
+`observed` is what makes `release-observed` fire the *first* time a landing is
+released and not on every later ask. The actor is `ONEVCS_ACTOR`, otherwise `USER`
+or `LOGNAME`, otherwise `unknown`: this operation reaches no `RemoteHost`, by the
+rule that keeps `session_holders` off one, so there is nobody to ask.
+
+It refuses, each naming what to do instead: a target whose style is `automated` —
+its version comes from its probe, and a hand-written second answer is exactly the
+disagreement this design avoids — a reference that has not landed, a version that is
+not a semantic version, and a target the repository does not declare. Recording the
+same version again succeeds and changes nothing, re-reporting the existing record
+with its **original** timestamp and actor, because a retried command and a second
+operator doing the same thing both have to be safe. Recording a *different* version
+is **refused**, naming the version already recorded and the invocation that would
+replace it — a consumer may already have read the first answer and started work on
+it. `--supersede` is that explicit replacement, and it keeps the previous version in
+the record's own `superseded` history.
+
+```rust
+pub struct ReleasesFile { pub version: u32, pub repositories: Vec<ReleaseRule>,
+                          pub default: ReleaseDefault }
+pub struct ReleaseDefault { pub adoption: Adoption }
+pub struct ReleaseRule { pub r#match: rules::RuleMatch, pub adoption: Option<Adoption>,
+                         pub default_target: Option<TargetName>,
+                         pub targets: Vec<ReleaseTarget> }
+pub struct ReleaseTarget { pub name: TargetName, pub release: ReleaseMethod }
+pub struct TargetName(String);                        // TryFrom<String>, validated
+pub enum Adoption { Fast, Published }                 // fast | published
+
+/// How this target is released, and therefore how a release of it is learned about.
+/// The probe lives on the automated variant, so a human-step target has none to run.
+#[serde(tag = "style", rename_all = "kebab-case")]
+pub enum ReleaseMethod {
+    Automated { probe: Probe },
+    HumanStep { action: String },       // what a person has to do, rendered in the wait
+}
+
+impl ReleaseTarget {
+    pub fn style(&self) -> ReleaseStyle;    // the label, for reporting
+    pub fn probe(&self) -> Option<&Probe>;  // always None for a human-step target
+    pub fn action(&self) -> Option<&str>;   // …and always Some for one
+}
+pub enum ReleaseStyle { Automated, HumanStep }        // automated | human-step
+impl ReleaseStyle { pub fn as_str(&self) -> &'static str; }
+impl Adoption { pub fn as_str(&self) -> &'static str; }
+
+pub enum Probe {
+    Script { script: PathBuf, args: Vec<String>, timeout_seconds: u64 },
+    Shell  { shell: String, timeout_seconds: u64 },
+}
+impl Probe { pub fn form(&self) -> &'static str; }    // `script` | `shell`, as the event spells it
+pub enum ReleaseAnswer {
+    Released { version: String },
+    NoRelease,
+    NotAnswered { reason: String },
+}
+pub enum Baseline { At { version: String }, NoRelease }
+pub enum BaselineRecord { Established(Baseline),
+                          Unestablished { reason: String, attempted_at: String } }
+pub enum ReleaseStatus {
+    Released { target: TargetName, style: ReleaseStyle, version: String },
+    /// Automated only: a probe answered, and the baseline has not been passed.
+    NotReleased { at_landing: Baseline, now: String },
+    /// Human step only: it landed, and nobody has acknowledged a release yet.
+    /// Neither `NotReleased` (no probe answered) nor `NotAnswered` (no probe failed).
+    AwaitingHumanStep { target: TargetName, action: String, since: String },
+    NotAnswered { reason: String },
+    NotLanded,
+}
+pub struct Acknowledgement { pub identity: String, pub target: TargetName,
+                             pub landing_commit: String, pub version: String,
+                             pub recorded_at: String, pub actor: String,
+                             pub superseded: Vec<SupersededRelease> }
+pub struct SupersededRelease { pub version: String, pub recorded_at: String,
+                               pub actor: String }
+pub struct RepositoryReleases { pub identity: String, pub adoption: Adoption,
+                                pub default_target: Option<TargetName>,
+                                pub targets: Vec<ReleaseTarget> }
+impl RepositoryReleases {
+    /// The target a name selects, or the reason no target answers to it: a caller
+    /// naming none gets `default_target`, and a repository declaring none says what
+    /// it does declare rather than guessing which artifact is depended on.
+    pub fn select(&self, named: Option<&TargetName>) -> Result<&ReleaseTarget>;
+}
+
+pub fn release_targets(repo: &str) -> Result<RepositoryReleases>;
+pub fn release_latest(repo: &str, target: Option<&TargetName>) -> Result<ReleaseAnswer>;
+pub fn release_status(reference: &str, target: Option<&TargetName>) -> Result<ReleaseStatus>;
+pub fn acknowledge_release(reference: &str, target: &TargetName, version: &str,
+                           supersede: bool) -> Result<Acknowledgement>;
+pub fn adoption_for(repo: &str) -> Result<Adoption>;
+```
+
+`ReleaseStatus::NotReleased` carries the *baseline* rather than a bare string, so
+"no release at landing" is a state it can express, and `now` is empty where there is
+no release right now at all — which is what a target answers before its first release
+and after a yank. `release_latest` on a human-step target executes nothing: it
+answers from the newest acknowledgement across that target's landings, or `NoRelease`
+where none has been recorded, and the probe-failure reasons cannot arise for it
+because no probe ran. `adoption_for` answers the repository rung when a rule sets one
+and the global rung otherwise; it never answers the node rung and never defaults to
+`fast` itself, because those two rungs belong to the consumer and a crate that
+answered all four would make the chain unreadable from either side. None of the five
+takes `Providers`, for the reason `session_holders` does not: what a repository
+releases is this host's own configuration and its own record, and there is nothing
+there for an implementation of either interface to answer.
+
+The command surface is written down in `docs/inferred-surface.md` beside the other
+verbs the approved usage block does not spell.
+
+Event kinds added: `release-probed`, `release-acknowledged`, `release-observed`.
+
+- `release-probed` — `{identity, target, form, outcome, version, elapsed_ms}`, where
+  `form` is `script` or `shell` and `outcome` is `released`, `no-release`, or
+  `not-answered`; `version` is present only where a version was answered. **Emitted
+  for automated targets only.** A human-step target never produces one, and that
+  absence is the observable proof that no probe ran for it. A probe run while a
+  publication is capturing its baselines is recorded on that session's own stream;
+  every other one is recorded on the identity's release stream.
+- `release-acknowledged` — `{identity, target, version, landing_commit, actor,
+  superseded}`, emitted when the acknowledge operation records a release.
+  `superseded` is the version it replaced, and is absent on a first record.
+- `release-observed` — `{identity, target, style, version, landing_commit}`, emitted
+  the first time a landing is released — its baseline passed for an automated target,
+  its acknowledgement recorded for a human-step one. One kind for both, because a
+  consumer renders it as "the release that carried this work" either way, and `style`
+  is what says which kind of release that was. `landing_commit` is the only thing
+  that correlates it: this event fires long after the dispatch that produced the work
+  has ended, outside any session, so nothing downstream can stamp it with a node. It
+  is therefore never absent and never abbreviated.
+
+**A probe is not a gate.** Version 0.11.0 removed the `gate:` concept deliberately —
+a verifier beside the real one that threw its answer away — and nothing here
+reintroduces one. A probe answers what version is out there; it never rules on a
+change, never refuses a publication, and never sits between a branch and its merge
+path.
+
+Nothing about publication, recovery, integration, or the rules file changes.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

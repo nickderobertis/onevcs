@@ -83,6 +83,22 @@ impl Stream {
         })
     }
 
+    /// Open (or create) the stream one repository's release activity is recorded
+    /// on.
+    ///
+    /// Releases happen long after the dispatch that produced the work has ended,
+    /// outside any session, so there is no session stream for them to go on. The
+    /// stream is per **identity** rather than per invocation, so everything this
+    /// host has ever learned about one repository's releases is one file in the
+    /// order it was learned. It is labelled with the identity for the same reason a
+    /// session's is labelled with its token: what a reader correlates it by.
+    pub fn releases(identity: &str) -> Result<Self> {
+        let mut stream = Self::open(&format!("releases-{}", ids::short_digest(identity)))?;
+        stream.labels.extra.remove("session");
+        stream.label("identity", identity);
+        Ok(stream)
+    }
+
     /// Stamp a label every later event of this stream carries.
     pub fn label(&mut self, key: &str, value: &str) {
         self.labels

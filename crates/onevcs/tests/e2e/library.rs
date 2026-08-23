@@ -1697,3 +1697,155 @@ fn a_branch_the_calling_process_still_holds_is_reported_as_held_rather_than_read
         "…and the row offers the verb its provenance earns: {row:#?}"
     );
 }
+
+#[test]
+fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_through_them() {
+    // The release surface answers a *consumer* rather than a process: a plan that
+    // sequences an upgrade behind the release carrying it branches on which of these
+    // values it got, and neither an exit code nor the line printed beside it carries
+    // that. None of the five takes `Providers`, for the reason `session_holders` does
+    // not — what a repository releases is this host's own configuration and its own
+    // record, and there is nothing there for an implementation to answer.
+    let world = World::new();
+    inhabit(&world);
+    let origin = world.bare_origin("released");
+    let checkout = world.clone_of(&origin, "released");
+    assert_eq!(
+        run(
+            &["onevcs", "register", &checkout.to_string_lossy()],
+            Providers::real()
+        ),
+        0,
+        "the repository registers"
+    );
+    configure_rules(&world, format!("version: 1\nrules: []\ndefault: {LOCAL}\n"));
+    std::fs::write(world.path("answers"), "1.0.0\n").expect("what the probe answers");
+    std::fs::write(
+        world.home().join("releases.yml"),
+        [
+            "version: 1".to_owned(),
+            "default:".to_owned(),
+            "  adoption: fast".to_owned(),
+            "repositories:".to_owned(),
+            format!("  - match: {{path: {:?}}}", checkout.to_string_lossy()),
+            "    adoption: published".to_owned(),
+            "    default_target: crate".to_owned(),
+            "    targets:".to_owned(),
+            "      - name: crate".to_owned(),
+            "        style: automated".to_owned(),
+            "        probe:".to_owned(),
+            r#"          shell: 'cat "$HOME/answers"'"#.to_owned(),
+            "          timeout_seconds: 20".to_owned(),
+            "      - name: container".to_owned(),
+            "        style: human-step".to_owned(),
+            "        action: push the image".to_owned(),
+            String::new(),
+        ]
+        .join("\n"),
+    )
+    .expect("a release-targets file");
+
+    let releases = onevcs::release_targets("released").expect("the repository releases things");
+    assert_eq!(releases.adoption, onevcs::Adoption::Published);
+    assert_eq!(releases.default_target.as_deref(), Some("crate"));
+    let styles: Vec<onevcs::ReleaseStyle> = releases
+        .targets
+        .iter()
+        .map(|target| target.style())
+        .collect();
+    assert_eq!(
+        styles,
+        vec![
+            onevcs::ReleaseStyle::Automated,
+            onevcs::ReleaseStyle::HumanStep
+        ]
+    );
+    assert!(
+        releases.targets[1].probe().is_none(),
+        "a human-step target has no probe to run"
+    );
+
+    // The two rungs this crate owns, and only those two: a rule that sets one is the
+    // answer, and a repository no rule names falls to the global one.
+    assert_eq!(
+        onevcs::adoption_for("released").expect("the chain resolves"),
+        onevcs::Adoption::Published
+    );
+
+    assert_eq!(
+        onevcs::release_latest("released", None).expect("the probe answers"),
+        onevcs::ReleaseAnswer::Released {
+            version: "1.0.0".to_owned()
+        }
+    );
+    let container = onevcs::TargetName::try_from("container".to_owned()).expect("a target name");
+    assert_eq!(
+        onevcs::release_latest("released", Some(&container)).expect("nobody has released it"),
+        onevcs::ReleaseAnswer::NoRelease,
+        "a human-step target is answered from its acknowledgements, and no probe ran"
+    );
+
+    let session = Git
+        .open_session(SessionRequest {
+            repo: "released".to_owned(),
+            branch: Some("feature/one".to_owned()),
+            base: None,
+            execution_checkout: None,
+        })
+        .expect("a session opens");
+    world.commit_file(&session.worktree, "thing.txt", "work\n", "feat: work");
+    let publication = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let landing = match publication.outcome {
+        PublishOutcome::Merged(sha) => sha,
+        other => panic!("a local-direct publication merges: {other:?}"),
+    };
+
+    // The baseline the landing captured is what makes the next question answerable.
+    assert_eq!(
+        onevcs::release_status("feature/one", None).expect("the landing is compared"),
+        onevcs::ReleaseStatus::NotReleased {
+            at_landing: onevcs::Baseline::At {
+                version: "1.0.0".to_owned()
+            },
+            now: "1.0.0".to_owned(),
+        }
+    );
+    std::fs::write(world.path("answers"), "1.0.1\n").expect("a release goes out");
+    assert_eq!(
+        onevcs::release_status("feature/one", None).expect("the landing is compared again"),
+        onevcs::ReleaseStatus::Released {
+            target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
+            style: onevcs::ReleaseStyle::Automated,
+            version: "1.0.1".to_owned(),
+        }
+    );
+
+    // The human-step half: a wait a person ends, and the record that ends it.
+    match onevcs::release_status("feature/one", Some(&container)).expect("the wait is reported") {
+        onevcs::ReleaseStatus::AwaitingHumanStep { target, action, .. } => {
+            assert_eq!(target, container);
+            assert_eq!(action, "push the image");
+        }
+        other => panic!("a human-step landing waits on a person: {other:?}"),
+    }
+    let recorded = onevcs::acknowledge_release("feature/one", &container, "2026.8.23", false)
+        .expect("somebody performed it and said so");
+    assert_eq!(recorded.landing_commit, landing.0);
+    assert_eq!(recorded.version, "2026.8.23");
+    assert!(recorded.superseded.is_empty());
+    assert_eq!(
+        onevcs::acknowledge_release("feature/one", &container, "2026.8.23", false)
+            .expect("recording it again is safe"),
+        recorded,
+        "a retried command re-reports the record it already made"
+    );
+    assert!(
+        onevcs::acknowledge_release("feature/one", &container, "2026.8.24", false).is_err(),
+        "a different version is refused rather than silently replacing one somebody read"
+    );
+}

@@ -25,6 +25,7 @@ token=$(onevcs session open widgets --branch feature/thing | jq -r .token)
 # …work in the worktree the session printed…
 onevcs publish "$token"                            # verify, then land it
 onevcs events "$token"                             # everything it did, as NDJSON
+onevcs release status "$token"                     # …and whether a release carries it
 ```
 
 A branch that outlived the session that cut it is landed by name instead, under
@@ -45,6 +46,30 @@ reads as landed rather than as unpublished however far the base has moved since,
 and one that history cannot decide reads as `unknown` rather than as work nobody
 published. A host that cannot be reached leaves its section unavailable instead of
 failing the command.
+
+`onevcs release` answers what happens **after** a change lands, so an upgrade can
+be sequenced behind the release that carries it rather than behind the merge.
+`onevcs release targets REPO` lists what a repository releases and whether it
+adopts `fast` (the work is enough) or `published` (the release is what is depended
+on); `onevcs release latest REPO [--target NAME]` says what is out right now; and
+`onevcs release status REF [--target NAME]` says whether the release carrying one
+landed change has happened yet, asked by the same four names `onevcs status` takes.
+
+A target's **style decides its shape**. An *automated* target carries a probe — a
+script the repository carries, or a one-liner run through `sh` — and is answered by
+running it under a bounded timeout; a *human-step* target carries no probe at all,
+because the release happens when a person does something, and is answered by
+`onevcs release acknowledge REF --target NAME --version VERSION` after they have
+done it. Recording the same version again is a no-op; a different one is refused
+until `--supersede` replaces it, which keeps the version it replaced.
+
+Two answers stay apart everywhere, and a consumer routes on the difference: **"not
+released" is a probe that answered**, and **"not answered" is a probe that did
+not** — a timeout, a non-zero exit, or output that is not one usable version. A
+landing whose probe never answered is "not answered" for ever rather than being
+compared against a reading taken later, because the release carrying that very
+change may already be in it. Configure targets in `$ONEVCS_HOME/releases.yml`; a
+host with none behaves exactly as it did before there was one.
 
 `onevcs import BRANCH --repo PATH [--from SOURCE] [--as NAME]` makes a branch
 reachable from an identity's registered checkouts, so a later run's clone can see

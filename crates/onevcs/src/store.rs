@@ -6,7 +6,7 @@
 //! concurrent registrations are both retained rather than one overwriting the
 //! other.
 //!
-//! A document older than version 5 is migrated **lazily**, on the first read that
+//! A document older than version 6 is migrated **lazily**, on the first read that
 //! needs it: an operator never runs a migration command, and an interrupted one
 //! cannot leave half a document behind.
 
@@ -20,7 +20,7 @@ use crate::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use crate::{git, home, lock};
 
 /// The version this build writes.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 /// What an identity's gate is recorded as when nothing could be detected.
 pub const NOOP_GATE: &str = "<no-op>";
 
@@ -168,6 +168,7 @@ fn empty() -> Registry {
         identities: BTreeMap::new(),
         checkouts: BTreeMap::new(),
         rules: None,
+        releases: None,
     }
 }
 
@@ -193,11 +194,23 @@ fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
             ),
         })?;
     match version {
-        VERSION_5 => {
+        VERSION_6 => {
             let registry: Registry = serde_json::from_value(value.clone())
                 .map_err(error::at("read the registry at", path))?;
             coherent(path, &registry)?;
             Ok((registry, false))
+        }
+        // Version 6 added one optional key, so a version 5 document already *is* the
+        // shape declared here — `releases` is absent, which is what "this host has no
+        // release targets" is spelled as. Nothing is filled in; only the number moves,
+        // and it moves so that a document this build has written cannot be read by an
+        // older one as a document that never had the key.
+        VERSION_5 => {
+            let mut registry: Registry = serde_json::from_value(value.clone())
+                .map_err(error::at("read the registry at", path))?;
+            registry.version = VERSION;
+            coherent(path, &registry)?;
+            Ok((registry, true))
         }
         2..=4 => {
             let migrated = legacy(path, object, version as u32)?;
@@ -213,7 +226,8 @@ fn migrate(path: &Path, value: Value) -> Result<(Registry, bool)> {
     }
 }
 
-const VERSION_5: u64 = VERSION as u64;
+const VERSION_6: u64 = VERSION as u64;
+const VERSION_5: u64 = VERSION_6 - 1;
 
 /// Reject a document whose records disagree with each other.
 ///
@@ -250,7 +264,7 @@ fn coherent(path: &Path, registry: &Registry) -> Result<()> {
     Ok(())
 }
 
-/// Read a version 2, 3, or 4 document into the version 5 shape.
+/// Read a version 2, 3, or 4 document into the version 6 shape.
 ///
 /// Each older version omits one field, and each omission has one answer that is
 /// evidence rather than a guess:
@@ -361,6 +375,7 @@ fn legacy(path: &Path, object: &Map<String, Value>, version: u32) -> Result<Regi
         identities,
         checkouts,
         rules: None,
+        releases: None,
     })
 }
 

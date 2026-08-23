@@ -72,6 +72,11 @@ mod publish_branch;
 mod refusing_fs;
 #[cfg(unix)]
 mod registry;
+// Unix only: its probes are real POSIX shell scripts and real `sh -c` one-liners,
+// and its landings are real local-direct publications. Its own header carries the
+// reason in full.
+#[cfg(unix)]
+mod releases;
 // `seam` proves each command reaches the implementation it was *handed*, which cannot
 // be shown without handing it one. Everything else in it is real: real bare origins,
 // real clones, a real `git push`, real session records.

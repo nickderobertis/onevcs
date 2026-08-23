@@ -77,6 +77,19 @@ pub fn artifacts_dir() -> Result<PathBuf> {
     Ok(root()?.join("artifacts"))
 }
 
+/// The directory each identity's release record lives in.
+pub fn releases_dir() -> Result<PathBuf> {
+    Ok(root()?.join("releases"))
+}
+
+/// The directory a shell release probe is given a working directory under.
+///
+/// A probe's own run directory goes when the probe does; this parent is left
+/// behind, so a host where no probe has ever run has no such directory at all.
+pub fn probes_dir() -> Result<PathBuf> {
+    Ok(root()?.join("probes"))
+}
+
 /// Expand a leading `~` against this user's home directory.
 ///
 /// Only a leading `~/`, and only where a home directory is known — anything else

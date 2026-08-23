@@ -401,6 +401,35 @@ script written beside them that answered to what they asked.
   without its log rather than failing, because the log is evidence and `conclusion`
   is what decided the merge.
 
+## Releases are what follows a landing, and two distinctions carry the whole thing
+
+`releases.rs` is the document, `probe.rs` runs a probe, and `release.rs` is
+everything else. Four things are easy to undo by accident.
+
+- **The style is the shape, not a label.** A probe lives on `ReleaseMethod::Automated`
+  and nowhere else, so `ReleaseTarget::probe()` answers `None` for a human-step target
+  by construction. `release::ask` takes the `&Probe` its caller already found rather
+  than reading one off the target, so there is no spelling of that call that could
+  start a subprocess for a target with nothing to run — and the absence of a
+  `release-probed` event is what a journey checks that by.
+- **"Not answered" is not "not released".** A timeout, a non-zero exit, a spawn
+  failure, and output that is not one usable line all answer the first. A consumer
+  holds indefinitely on it and acts on the second, so nothing may collapse them —
+  not the library answer, not the rendering, not the event payload.
+- **An unestablished baseline is not a baseline, and waiting cannot make it one.**
+  A probe that did not answer at a landing left this crate not knowing what was out
+  *then*; a probe answering a version later cannot repair that, because the release
+  carrying this very change may already be in it. Exactly one later answer does:
+  `NoRelease`. A landing this crate never probed at all — a target declared after it
+  — is the same state and is answered the same way.
+- **A probe's output is untrusted data.** It is parsed, quoted into a message with
+  `{:?}`, and carried as a JSON string; it reaches no shell and no template. The one
+  place a probe *command* is a command is the `sh -c` line an operator configured.
+
+Baselines are captured by the publication, on its own stream, and best effort like
+the landing record beside them: the change has already merged, and failing it over
+a footnote would send somebody to land work that is landed.
+
 ## The disk is a resource, and one retention rule frees it
 
 Every branch-keyed landing cuts a run root, and `sweep.rs` holds the only rule that
