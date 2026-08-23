@@ -5,7 +5,7 @@ about before it passed. Regenerate with `just red-green`, which re-applies
 each mutation under `scripts/red-green/`, records the assertion the test
 failed on, reverts it, and then runs the same tests green.
 
-Patches: 226. Tests observed red and then green: 264.
+Patches: 228. Tests observed red and then green: 264.
 
 ### `01-the-verb-has-no-implementation`
 
@@ -176,7 +176,7 @@ a seeded row held by a session nobody opened stops being refused, so a provider 
 the refusal stops naming the commit each copy stands on, so nothing says where the two forked apart.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpSLK6wW-project-d1884433a1fc/runs/<token>/clone stands on its own parent 07fb167dd60870cd9aba2a
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpK9gAoe-project-bf9297c0d68f/runs/<token>/clone stands on its own parent 2ce87ec344177f476e7a7e
 
 ### `114-when-a-copy-was-committed-is-left-out-of-the-refusal`
 
@@ -190,7 +190,7 @@ the refusal stops naming when each copy was committed, so nothing says which of 
 each copy's facts are stated against the other copy's checkout, so every value is there and every one of them is attributed to the wrong tree.
 
 - RED `a_copy_amended_in_one_checkout_is_refused_naming_both_trees_and_how_they_differ` — every fact about a copy is named against the checkout it came out of; this one is not:
-- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpOkraIx-project-dcb58e1ea303/runs/<token>/clone stands on its own parent 2287c12ee927b30f8d8bb1
+- RED `copies_of_one_branch_that_have_diverged_refuse_the_landing_and_name_each_one` — the copy in <tmp>/.onevcs/workspaces/-tmp-.tmpuHMxAh-project-f2f66aaf9b43/runs/<token>/clone stands on its own parent f1e6770deb7db18398ff11
 
 ### `116-a-branch-only-origin-carries-is-not-looked-for`
 
@@ -381,7 +381,7 @@ the signal that ends a process which would not stop is the one it has already ig
 
 a run root stops being asked whether its clone holds work no origin has, so a publication that failed is reaped as if it had landed.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-314fc8-18ce49685896bf00-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-older-22e48e-18ce4dedbf277632-0 is one of the three newest workspaces holding unlanded work:
 - RED `a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work_it_never_landed` — a workspace holding work no origin has is kept:
 
 ### `144-the-failure-history-a-workspace-holds-is-never-bounded`
@@ -395,7 +395,7 @@ the bound on workspaces holding work no origin has stops being applied, so a scr
 
 the bound keeps the workspaces written longest ago rather than the most recent, so the failure somebody is asking about is the one that was reaped.
 
-- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-317c6a-18ce496add39e487-0 is one of the three newest workspaces holding unlanded work:
+- RED `the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_it_goes` — <tmp>/.onevcs/workspaces/publications/feature-newest-232bf0-18ce4df13ab51d05-0 is one of the three newest workspaces holding unlanded work:
 
 ### `146-the-processes-this-one-descends-from-are-signalled-too`
 
@@ -753,9 +753,9 @@ the harness stops checking a mutation patch header before it runs the round.
 
 the judged tier stops being cached, so every invocation is a fresh roll of a non-deterministic judge.
 
-- RED `a_callers_judge_binary_does_not_change_the_verdict` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+- RED `a_callers_judge_binary_does_not_change_the_verdict` — expected "replayed the recorded verdict for base" on stdout in exit status: 0
 - RED `a_cleared_finding_replays_the_green_that_replaced_it` — expected "replayed the recorded verdict for base" in exit status: 0
-- RED `a_forced_colour_environment_does_not_disguise_a_replay` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+- RED `a_forced_colour_environment_does_not_disguise_a_replay` — expected "replayed the recorded verdict for base" on stdout in exit status: 0
 - RED `an_advanced_base_is_judged_again_and_then_replays_per_base` — expected "replayed the recorded verdict for base" in exit status: 0
 - RED `an_ambient_global_cache_skip_is_reported_and_ignored` — assertion `left == right` failed
 - RED `an_unchanged_tree_and_base_replays_the_recorded_verdict` — assertion `left == right` failed: the judge was rolled twice
@@ -765,7 +765,7 @@ the judged tier stops being cached, so every invocation is a fresh roll of a non
 
 the judge configuration fingerprint stops keying the cache, so a rule change nothing in the tree records replays the old verdict.
 
-- RED `a_changed_judge_configuration_is_still_seen_through_a_callers_environment` — expected "judged this diff against base" on stderr in exit status: 0
+- RED `a_changed_judge_configuration_is_still_seen_through_a_callers_environment` — expected "judged this diff against base" on stdout in exit status: 0
 - RED `a_changed_judge_configuration_outside_the_tree_is_judged_again` — expected "judged this diff against base" in exit status: 0
 - RED `a_changed_llmlint_version_is_judged_again` — expected "judged this diff against base" in exit status: 0
 
@@ -791,7 +791,7 @@ the judged tier stops ignoring an ambient global Nx cache skip, so an unrelated 
 
 the pinned runtime stops dropping the caller's LLMLINT_ONEHARNESS_BIN, which `llmlint config` renders — so one judged diff keys differently per caller.
 
-- RED `a_callers_judge_binary_does_not_change_the_verdict` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+- RED `a_callers_judge_binary_does_not_change_the_verdict` — expected "replayed the recorded verdict for base" on stdout in exit status: 0
 
 ### `216-a-fingerprint-that-cannot-be-produced-says-nothing`
 
@@ -838,20 +838,19 @@ the tier stops resolving the base ref to a commit before judging, so a ref namin
 
 the tier reads Nx's cache reporting without stripping colour, so a replayed verdict reports itself as freshly judged wherever something forces colour.
 
-- RED `a_forced_colour_environment_does_not_disguise_a_replay` — expected "replayed the recorded verdict for base" on stderr in exit status: 0
+- RED `a_forced_colour_environment_does_not_disguise_a_replay` — expected "replayed the recorded verdict for base" on stdout in exit status: 0
 
 ### `222-the-verdict-is-handed-back-as-a-diagnostic`
 
 the tier folds the judge's verdict into its diagnostics, so a caller reading the answer has to filter it out of the noise.
 
-- RED `an_unchanged_tree_and_base_replays_the_recorded_verdict` — expected "fake-judge: 31 rules checked" on stdout in exit status: 0
-- RED `findings_fail_the_tier_and_are_never_replayed` — expected "fake-judge finding: tool_output_is_signal in scripts/llmlint-diff.sh" on stdout in exit status: 1
+- RED `an_unchanged_tree_and_base_replays_the_recorded_verdict` — expected "31 rules: 31 passed, 0 failed" on stdout in exit status: 0
 
 ### `223-the-judges-own-view-of-the-run-is-dropped`
 
 the tier drops what the judge said about the run rather than about the diff, so a finding arrives with no harness view behind it.
 
-- RED `findings_fail_the_tier_and_are_never_replayed` — expected "fake-judge: asked the harness for 31 verdicts" in exit status: 1
+- RED `findings_fail_the_tier_and_are_never_replayed` — expected "fake-judge finding: tool_output_is_signal in scripts/llmlint-diff.sh" in exit status: 1
 
 ### `224-forwarded-arguments-are-not-checked`
 
@@ -876,6 +875,19 @@ the tier stops saying where to point TMPDIR when it cannot open storage for the 
 the fingerprint stops refusing when the pinned runtime environment cannot be loaded, and keys the cache under whatever the caller's environment was.
 
 - RED `a_missing_pinned_runtime_helper_is_actionable` — expected "llmlint fingerprint: could not load the pinned runtime environment" on stderr in exit status: 1
+
+### `228-the-verdict-is-never-recorded`
+
+the judged verdict stops being recorded as a file, so a clean run has no count to report and a replay has nothing to restore.
+
+- RED `a_cleared_finding_replays_the_green_that_replaced_it` — expected "31 rules: 31 passed, 0 failed" in exit status: 0
+- RED `an_unchanged_tree_and_base_replays_the_recorded_verdict` — expected "31 rules: 31 passed, 0 failed" on stdout in exit status: 0
+
+### `229-a-clean-run-prints-the-whole-run-instead-of-one-line`
+
+a clean run stops being quiet, printing everything Nx and the judge said instead of the one line that carries the verdict.
+
+- RED `an_unchanged_tree_and_base_replays_the_recorded_verdict` — assertion `left == right` failed: a clean run says one line: exit status: 0
 
 ### `22-a-dirty-tree-is-mutated-anyway`
 
@@ -1272,7 +1284,7 @@ status reports a host it could not reach as a host that answered there is nothin
 
 two sessions holding one name, and whichever is found first is taken.
 
-- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: neither of the two is chosen…
+- RED `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing` — assertion `left != right` failed: …nor the other
 
 ### `79-a-pin-resumes-a-session-nobody-asked-for`
 
