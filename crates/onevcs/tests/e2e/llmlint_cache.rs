@@ -799,3 +799,24 @@ fn the_driver_refuses_to_judge_without_a_base() {
     );
     assert_eq!(workspace.judge_runs(), 0);
 }
+
+#[test]
+fn a_forced_colour_environment_does_not_disguise_a_replay() {
+    // Nx dims its cache lines when anything in the environment forces colour — a
+    // test runner, a CI provider — and provenance read off the coloured text
+    // reported a replayed verdict as a freshly judged one, which is the one thing
+    // this line exists to tell apart.
+    let workspace = Workspace::new();
+    let base = workspace.head();
+
+    let first = workspace.lint(&base, &[], &[("FORCE_COLOR", "1")]);
+    let second = workspace.lint(&base, &[], &[("FORCE_COLOR", "1")]);
+    let third = workspace.lint(&base, &[], &[("FORCE_COLOR", "1")]);
+
+    first.succeeded().says_on_stderr(CACHE_MISS);
+    // Twice, because Nx annotates a replay two different ways: the summary line on
+    // the first hit, and `[existing outputs match the cache]` on the next.
+    second.succeeded().says_on_stderr(CACHE_HIT);
+    third.succeeded().says_on_stderr(CACHE_HIT);
+    assert_eq!(workspace.judge_runs(), 1);
+}

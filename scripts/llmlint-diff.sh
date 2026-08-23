@@ -95,7 +95,18 @@ cat "$diagnostics" >&2
 # or the summary line it prints only when it replayed a task instead of running it.
 # Both are matched because only the first is safe at any size — Nx replays a hit as
 # one burst, so a large replay can arrive with its summary line truncated.
-if grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)' "$verdict" "$diagnostics"; then
+#
+# Read off a decoloured copy, and still anchored to the start of the line. Nx dims
+# both of those lines whenever something in the environment forces colour — a test
+# runner, a CI provider — and a colour code before the first character defeats an
+# anchored match, which reported a replayed verdict as a fresh judgement. Dropping
+# the anchors instead would be worse: this script's own text is part of what the
+# judge reads back to us, so an unanchored match can be quoted into a finding. The
+# escape is spelled as a literal character rather than `\x1B`, which BSD sed does
+# not read.
+escape=$'\033'
+if sed "s/${escape}\[[0-9;]*m//g" "$verdict" "$diagnostics" |
+  grep -qE '^Nx read the output from the cache instead of running the command|^> nx run workspace:lint-llm-diff +\[(local cache|remote cache|existing outputs match the cache)'; then
   echo "lint-llm-diff: replayed the recorded verdict for base $base_sha (Nx cache hit)" >&2
 else
   echo "lint-llm-diff: judged this diff against base $base_sha (Nx cache miss)" >&2
