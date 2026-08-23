@@ -1,10 +1,15 @@
 //! The registry document: which repository identities exist, which checkouts
-//! belong to each, and where the rules and release-targets files live.
+//! belong to each, and where the rules file lives.
 //!
-//! Version 5 is version 4's identities and checkouts plus a rules reference, and
-//! since then an **optional** release-targets reference beside it. The document is
-//! replaced atomically under process-shared locks, and a v2–v4 document is migrated
-//! lazily on read.
+//! Version 5 is version 4's identities and checkouts plus a rules reference. The
+//! document is replaced atomically under process-shared locks, and a v2–v4 document
+//! is migrated lazily on read.
+//!
+//! **Release targets are deliberately not reachable from here.** The release-targets
+//! document is found at its conventional path under the state root and nowhere else,
+//! so this document is byte for byte the same whether or not a host configures any —
+//! see `docs/inferred-surface.md` for why a key here was withdrawn rather than
+//! defended.
 //!
 //! Nothing here declares `deny_unknown_fields`, and that is deliberate: a document a
 //! *newer* build wrote must still load here, carrying whatever keys that build
@@ -37,21 +42,6 @@ pub struct Registry {
     /// Where the rules file lives. Absent means the built-in default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<PathBuf>,
-    /// Where the release-targets file lives. Absent means the conventional path
-    /// under the state root, and — where nothing is there either — that no
-    /// repository has release targets and every one of them adopts fast.
-    ///
-    /// Optional at version 5 rather than the reason for a version 6, because the
-    /// registry is shared host state: a document a build writes is the document
-    /// every other `onevcs` on that machine then reads. Absent, it is omitted, so a
-    /// host that configures no release targets has a document byte for byte the one
-    /// a build that never heard of this key already reads. An already-installed
-    /// build that meets one which *is* configured refuses it by name — those builds
-    /// still declare `deny_unknown_fields` — and refusing a reference it cannot
-    /// honour is the degraded answer, where a version it cannot read would have
-    /// stopped every verb on the host.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub releases: Option<PathBuf>,
 }
 
 /// One repository identity. Every checkout that normalizes to the same origin

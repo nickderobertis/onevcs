@@ -1102,9 +1102,18 @@ fn the_adoption_chain_answers_the_repository_rung_and_then_the_global_one() {
 fn a_release_targets_file_this_build_cannot_honour_is_refused_where_it_is_read() {
     let releasing = Releasing::with(&answering("crate"));
     for (document, expected) in [
+        // A version *below* the oldest this build reads: there is no shape here that
+        // ever read one. A version *above* it is the other direction entirely and is
+        // read — `a_release_document_a_later_build_wrote_is_read_rather_than_refused`.
         (
-            "version: 2\ndefault:\n  adoption: fast\nrepositories: []\n",
+            "version: 0\ndefault:\n  adoption: fast\nrepositories: []\n",
             "this build reads version 1",
+        ),
+        // A field this build genuinely requires, missing. Leniency covers keys and
+        // versions it has no opinion on; a document it cannot act on is named.
+        (
+            "version: 1\nrepositories: []\n",
+            "missing field `default`",
         ),
         (
             "version: 1\ndefault:\n  adoption: eventually\nrepositories: []\n",
@@ -1229,25 +1238,139 @@ fn a_target_named_by_nobody_falls_to_the_default_and_a_repository_without_one_sa
 }
 
 #[test]
-fn a_release_targets_file_the_registry_names_and_this_host_does_not_have_is_refused() {
-    let releasing = Releasing::with(&answering("crate"));
-    // The registry's own reference wins over the conventional path, so a reference
-    // to a file nobody wrote is a configuration error rather than "no targets": the
-    // operator said where the file is.
+fn no_release_verb_reads_or_writes_the_registry_for_release_targets() {
+    // The registry is shared host state — one document per machine, and every
+    // `onevcs` already in the field refuses a key it does not know. So release
+    // targets are reachable from it in no state at all: not read from it, not written
+    // into it, and not touched by the landing that captures a baseline. The document
+    // an older build is handed is the same one whether or not this host configures a
+    // single target.
+    let releasing = Releasing::with(&format!("{}{CONTAINER}", answering("crate")));
+    releasing.answers("crate", "1.0.0\n");
     let registry = releasing.fixture.world.home().join("registry.json");
-    let mut document: Value =
-        serde_json::from_str(&std::fs::read_to_string(&registry).expect("a registry"))
-            .expect("the registry is JSON");
-    let missing = releasing.fixture.world.path("nowhere/releases.yml");
-    document["releases"] = serde_json::json!(missing.to_string_lossy());
-    std::fs::write(&registry, document.to_string()).expect("a registry naming a missing file");
-
-    let refused = releasing.release(&["targets", "project"]).failure().code(2);
-    let said = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    let before = std::fs::read_to_string(&registry).expect("a registry");
     assert!(
-        said.contains("cannot read the release-targets file at")
-            && said.contains(&missing.to_string_lossy().into_owned()),
-        "the refusal names the file it was told to read: {said}"
+        !before.contains("releases"),
+        "a host with release targets configured has a registry that says nothing about \
+         them: {before}"
+    );
+
+    // A landing, which is what captures a baseline…
+    let commit = releasing.land("feature/one");
+    // …and every one of the four verbs, including the one that writes a record.
+    releasing.release(&["targets", "project"]).success();
+    releasing.release(&["latest", "project"]).success();
+    releasing
+        .release(&["status", &commit, "--target", "crate"])
+        .success();
+    releasing
+        .release(&[
+            "acknowledge",
+            &commit,
+            "--target",
+            "container",
+            "--version",
+            "1.0.0",
+        ])
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(&registry).expect("a registry"),
+        before,
+        "the registry is byte for byte the document the release surface found"
+    );
+    // …and what was recorded went where it belongs, so this is not a journey that
+    // passed by recording nothing at all.
+    assert!(
+        releasing
+            .fixture
+            .world
+            .home()
+            .join("releases")
+            .read_dir()
+            .expect("a releases directory")
+            .next()
+            .is_some(),
+        "the baselines and the acknowledgement are in the per-identity record"
+    );
+}
+
+#[test]
+fn a_release_document_a_later_build_wrote_is_read_rather_than_refused() {
+    // Both documents this feature owns, in the direction that matters: a version
+    // above the newest this build knows, carrying keys it has never heard of. An
+    // older `onevcs` that refused either would stop every release verb on a host a
+    // newer one had configured, where one that reads what it understands is merely
+    // degraded.
+    let releasing = Releasing::with(&answering("crate"));
+    releasing.answers("crate", "1.0.0\n");
+    let path = releasing.fixture.checkout.to_string_lossy().into_owned();
+    std::fs::write(
+        releasing.fixture.world.home().join("releases.yml"),
+        format!(
+            "version: 99\nsigning: {{required: true}}\ndefault:\n  adoption: published\n  \
+             quorum: 2\nrepositories:\n  - match: {{path: {path:?}}}\n    default_target: \
+             crate\n    cadence: nightly\n    targets:\n{}",
+            answering("crate")
+        ),
+    )
+    .expect("a release-targets file from a later build");
+    assert_eq!(
+        releasing.json(&["targets", "project"])["adoption"],
+        "published",
+        "what this build understands still decides what it answers"
+    );
+    assert_eq!(
+        releasing.json(&["latest", "project"]),
+        serde_json::json!({"state": "released", "version": "1.0.0"})
+    );
+
+    // The per-identity record is the document this build *writes*, so it owes the
+    // stronger property: every key it did not understand comes back, and the version
+    // it arrived under is never lowered.
+    let token = releasing.land("feature/one");
+    let commit = releasing
+        .fixture
+        .world
+        .git(&releasing.fixture.checkout, &["rev-parse", "main"]);
+    let record = std::fs::read_dir(releasing.fixture.world.home().join("releases"))
+        .expect("a releases directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .next()
+        .expect("one record");
+    let mut document: Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("a record"))
+            .expect("the record is JSON");
+    document["version"] = serde_json::json!(99);
+    document["attestations"] = serde_json::json!({"crate": "signed"});
+    document["baselines"]["crate"][&commit]["provenance"] = serde_json::json!("a later build's");
+    std::fs::write(&record, document.to_string()).expect("a record from a later build");
+
+    // A verb that rewrites the whole document: the acknowledgement is written under
+    // the same lock, over the same file.
+    releasing.answers("crate", "2.0.0\n");
+    releasing
+        .release(&["status", &token, "--target", "crate"])
+        .success();
+
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(&record).expect("a record"))
+        .expect("the record is JSON");
+    assert_eq!(
+        written["version"], 99,
+        "a write never lowers a version this build did not set"
+    );
+    assert_eq!(
+        written["attestations"]["crate"], "signed",
+        "a top-level key this build has no opinion on survives the round trip"
+    );
+    assert_eq!(
+        written["baselines"]["crate"][&commit]["provenance"], "a later build's",
+        "and so does one inside a record it understood"
+    );
+    assert!(
+        written["observed"]["crate"].get(&commit).is_some(),
+        "…and what the verb was asked to do still happened"
     );
 }
 
@@ -1592,8 +1715,8 @@ fn a_release_record_this_build_cannot_read_is_refused_rather_than_answered_aroun
     for (contents, expected) in [
         ("{not json".to_owned(), "is not one this build reads"),
         (
-            serde_json::json!({"version": 99, "identity": "x"}).to_string(),
-            "declares version 99",
+            serde_json::json!({"version": 0, "identity": "x"}).to_string(),
+            "declares version 0",
         ),
         (
             serde_json::json!({"version": 1, "identity": "somebody-else"}).to_string(),

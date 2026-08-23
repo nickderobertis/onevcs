@@ -60,8 +60,14 @@ pub const UNKNOWN_ACTOR: &str = "unknown";
 /// never lowered.
 pub const RECORD_VERSION: u32 = 1;
 
-/// Where a host configures its release targets without editing the registry
-/// document `onevcs` maintains for itself.
+/// Where a host configures its release targets: one conventional path under the
+/// state root, and nowhere else.
+///
+/// Deliberately **not** reachable through a key in the registry. That document is
+/// shared host state, and every `onevcs` already in the field refuses a key it does
+/// not know — so the first host to configure a release target would stop every older
+/// build on it, for every verb. `ONEVCS_HOME` already relocates the whole state root,
+/// which is every case a per-file override would have served.
 pub fn default_path() -> Result<PathBuf> {
     Ok(home::root()?.join("releases.yml"))
 }
@@ -77,16 +83,13 @@ fn nothing() -> ReleasesFile {
     }
 }
 
-/// Load the release targets a registry points at, or the empty document.
+/// Load this host's release targets, or the empty document.
 ///
 /// A host with no such file behaves exactly as it did before there was one: every
 /// repository has no release targets and adopts fast.
-pub fn load(registry: &Registry) -> Result<ReleasesFile> {
-    let path = match registry.releases.as_ref() {
-        Some(reference) => home::expand_tilde(&reference.to_string_lossy()),
-        None => default_path()?,
-    };
-    if registry.releases.is_none() && !path.is_file() {
+pub fn load() -> Result<ReleasesFile> {
+    let path = default_path()?;
+    if !path.is_file() {
         return Ok(nothing());
     }
     let raw = std::fs::read_to_string(&path).map_err(|failure| {
@@ -178,7 +181,7 @@ pub struct Located {
 /// that reason, not an error that fails a command.
 pub fn for_repository(registry: &Registry, repo: &str) -> Result<Located> {
     let (key, publication) = locate(registry, repo)?;
-    let file = load(registry)?;
+    let file = load()?;
     let normalized = store::normalize(&key);
     let matched = publication
         .as_deref()

@@ -28,15 +28,15 @@ use crate::{git, home, lock};
 
 /// The version this build writes.
 ///
-/// It did **not** move when the release-targets reference was added, and that is a
-/// decision rather than an oversight. The registry is *shared host state*: every
-/// `onevcs` on this machine reads the one document, and `load` rewrites it in place
-/// the moment it migrates. So a version this build writes and an already-released
-/// build cannot read does not degrade that build — it stops it, for every verb, on
-/// a host whose operator opted into nothing. Adding an optional key that older
-/// builds never see is the change that costs them nothing: a build that never heard
-/// of it refuses a registry that *does* name one, by name, and reads every registry
-/// that does not exactly as it always has.
+/// It did **not** move for the release-targets work, and neither did the shape: the
+/// releases document is found at its conventional path under the state root, so
+/// nothing about release targets is reachable from here. That is a decision rather
+/// than an oversight. The registry is *shared host state* — every `onevcs` on this
+/// machine reads the one document, and `load` rewrites it in place the moment it
+/// migrates — so a version, or a key, that an already-released build cannot read
+/// does not degrade that build: it stops it, for every verb, on a host whose
+/// operator opted into nothing. Those builds declare `deny_unknown_fields` and
+/// always will, which is why the key was withdrawn rather than made optional.
 pub const VERSION: u32 = 5;
 
 /// The oldest document this build still migrates.
@@ -192,7 +192,6 @@ fn empty() -> Registry {
         identities: BTreeMap::new(),
         checkouts: BTreeMap::new(),
         rules: None,
-        releases: None,
     }
 }
 
@@ -422,7 +421,6 @@ fn legacy(path: &Path, object: &Map<String, Value>, version: u32) -> Result<Regi
         identities,
         checkouts,
         rules: None,
-        releases: None,
     })
 }
 

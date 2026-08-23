@@ -18,7 +18,7 @@
 //! inputs — every path the release archive and the npm launcher name has to be a
 //! path this repository has.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use clap::CommandFactory;
@@ -555,17 +555,24 @@ fn the_version_3_fixture_round_trips_and_is_the_approved_one_without_its_gate() 
 }
 
 #[test]
-fn a_rules_file_that_still_names_a_gate_is_not_a_shape_this_type_reads() {
-    // Which is why a spent key comes out before the shape is enforced rather than
-    // being tolerated by it: `deny_unknown_fields` gets no say in which version it is
-    // reading. A version 3 file naming a gate is refused by the type, and a version 1
-    // or 2 one is readable only because the key was taken out first.
-    let refusal = serde_yaml_ng::from_str::<RulesFile>(&block("yaml"))
-        .expect_err("the approved fixture names a gate, and this type has no such field")
-        .to_string();
-    assert!(
-        refusal.contains("gate"),
-        "the refusal names the key it did not know: {refusal}"
+fn a_rules_file_that_still_names_a_gate_is_no_shape_this_type_holds() {
+    // The shape has no such field, and — since it tolerates a key a *later* build
+    // named — reading one drops it rather than refusing it. Which is why the spent
+    // key is version 3's to refuse and not this type's: `serde` gets no say in which
+    // version it is reading, and only the loader knows whether the file that arrived
+    // is one that still declared a gate. Both halves are proved where each lives:
+    // that a version 3 file naming one is refused **by name** is
+    // `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three`
+    // in tests/e2e/registry.rs, over the real binary.
+    let read: RulesFile = serde_yaml_ng::from_str(&block("yaml"))
+        .expect("the approved fixture names a gate, and a key this type has no opinion on is not \
+                 a reason to refuse a whole document");
+    let round_tripped =
+        serde_yaml_ng::to_value(&read).expect("a rules file serializes back to YAML");
+    assert_eq!(
+        round_tripped,
+        without_gate(&block("yaml")),
+        "the gate is dropped rather than carried into the shape this build acts on"
     );
 }
 
@@ -578,13 +585,21 @@ fn a_malformed_rules_file_is_rejected_at_the_boundary() {
         "version: 3\nrules: []\ndefault: {publication: change-open, approvals: whenever}\n",
         // No default policy at all.
         "version: 3\nrules: []\n",
-        // A key nobody declared, which is usually a typo for one that matters.
-        "version: 3\nrules: []\npublication: change-open\ndefault: {publication: change-open, approvals: required}\n",
-        // The key version 3 took away, which at this version is one of those.
-        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
-        // A misspelled match key.
-        "version: 3\nrules: [{match: {hostname: github.com}}]\ndefault: {publication: change-open, approvals: required}\n",
     ];
+    // A key nobody declared is deliberately **not** in that list any more. The shape
+    // tolerates one, so that a file a later build wrote still decides a policy here
+    // rather than stopping every verb on the host; what that trades away is a typo
+    // being caught, and the trade is the amendment's. The keys this build still
+    // refuses it refuses by name at the version that removed them, which is the
+    // loader's question — see
+    // `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three`.
+    for tolerated in [
+        "version: 3\nrules: []\npublication: change-open\ndefault: {publication: change-open, approvals: required}\n",
+        "version: 3\nrules: [{match: {hostname: github.com}}]\ndefault: {publication: change-open, approvals: required}\n",
+    ] {
+        serde_yaml_ng::from_str::<RulesFile>(tolerated)
+            .expect("a key this build has no opinion on is read past, not refused");
+    }
     for case in cases {
         assert!(
             serde_yaml_ng::from_str::<RulesFile>(case).is_err(),
@@ -1119,38 +1134,39 @@ fn a_registry_without_a_rules_reference_omits_the_field() {
 }
 
 #[test]
-fn the_release_targets_reference_is_an_optional_key_that_moves_no_version() {
-    // The registry is shared host state, so what a build *writes* is what every
-    // other `onevcs` on that machine then reads. Both spellings are here because
-    // both have to keep working, and the second is the one that matters: a document
-    // that names no release-targets file is byte for byte the one a build that never
-    // heard of the key already reads, and the version does not move for a key such a
-    // build will never meet.
-    let document = json!({
-        "version": 5,
-        "identities": {},
-        "checkouts": {},
-        "rules": "/home/agent/.config/onevcs/rules.yaml",
-        "releases": "/home/agent/.config/onevcs/releases.yaml",
-    });
+fn the_registry_names_no_release_targets_reference_at_any_version() {
+    // The release-targets document is found at its conventional path under the state
+    // root and nowhere else, so this document is the same whether or not a host
+    // configures one. An optional key here would have been safe only until somebody
+    // used it: every `onevcs` already in the field declares `deny_unknown_fields`, so
+    // the first host to configure a target would stop every older build on it, for
+    // every verb. Withdrawing the key is what makes that failure stop existing rather
+    // than be postponed — and the version does not move either, for the same reason.
+    let written = json!({"version": 5, "identities": {}, "checkouts": {}});
     let registry: Registry =
-        serde_json::from_value(document.clone()).expect("a document naming both must deserialize");
-    assert_eq!(
-        registry.releases,
-        Some(PathBuf::from("/home/agent/.config/onevcs/releases.yaml"))
-    );
+        serde_json::from_value(written.clone()).expect("a registry without a rules key loads");
     assert_eq!(
         serde_json::to_value(&registry).expect("a registry serializes"),
-        document
+        written,
+        "a registry this build writes carries nothing about release targets"
     );
 
-    let without = json!({"version": 5, "identities": {}, "checkouts": {}});
-    let registry: Registry = serde_json::from_value(without.clone()).expect("releases is optional");
-    assert_eq!(registry.releases, None);
+    let fields = serde_json::to_value(Registry {
+        version: 5,
+        identities: BTreeMap::new(),
+        checkouts: BTreeMap::new(),
+        rules: Some(PathBuf::from("/home/agent/.config/onevcs/rules.yaml")),
+    })
+    .expect("a registry serializes");
+    let keys: Vec<&String> = fields
+        .as_object()
+        .expect("the registry is a JSON object")
+        .keys()
+        .collect();
     assert_eq!(
-        serde_json::to_value(&registry).expect("a registry serializes"),
-        without,
-        "a registry that names no release-targets file omits the key entirely"
+        keys,
+        ["version", "identities", "checkouts", "rules"],
+        "the registry declares no release-targets key"
     );
 }
 
@@ -1165,8 +1181,6 @@ fn a_malformed_registry_is_rejected_at_the_boundary() {
         json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "remote", "repo_type": "team"}}, "checkouts": {}}),
         // A checkout pointing nowhere.
         json!({"version": 5, "identities": {}, "checkouts": {"a": {"path": "/tmp/x"}}}),
-        // A stray top-level key, usually a typo for one that matters.
-        json!({"version": 5, "identities": {}, "checkouts": {}, "identites": {}}),
     ];
     for case in cases {
         assert!(
