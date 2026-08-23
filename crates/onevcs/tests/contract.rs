@@ -836,6 +836,12 @@ fn every_error_says_what_failed_and_which_exit_code_it_is() {
             },
             "push rejected: [remote rejected] (pre-receive hook declined)",
         ),
+        (
+            Error::PushedUnverified {
+                reason: "\"feature/x\" is on origin at 0f1e2d3".to_owned(),
+            },
+            "pushed, merge path unverified: \"feature/x\" is on origin at 0f1e2d3",
+        ),
     ];
     for (error, expected) in cases {
         assert!(
@@ -1971,6 +1977,7 @@ fn all_failure_kinds() -> Vec<(&'static str, u8)> {
         FailureKind::ChecksFailed,
         FailureKind::ChecksUnsettled,
         FailureKind::PushRejected,
+        FailureKind::PushedUnverified,
     ]
     .into_iter()
     .map(|kind| {
@@ -1982,6 +1989,7 @@ fn all_failure_kinds() -> Vec<(&'static str, u8)> {
             FailureKind::ChecksFailed => "ChecksFailed",
             FailureKind::ChecksUnsettled => "ChecksUnsettled",
             FailureKind::PushRejected => "PushRejected",
+            FailureKind::PushedUnverified => "PushedUnverified",
         };
         (named, kind.exit_code())
     })
@@ -1993,10 +2001,10 @@ fn the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_
     // The amendment is where a consumer reads the failure vocabulary first, and a
     // downstream router branches on exactly these names — so the enum and the text
     // are held together here rather than being two lists that drift. The exit codes
-    // matter as much as the names: three of the seven are new and every one of them
+    // matter as much as the names: four of the eight are new and every one of them
     // keeps the code the contract already fixes for a verification failure, so a
     // process that only reads the code sees nothing change.
-    let declared = amendment_declaring("ChecksFailed, ChecksUnsettled, PushRejected }");
+    let declared = amendment_declaring("PushedUnverified }");
     let kinds = all_failure_kinds();
     for (named, _) in &kinds {
         assert!(

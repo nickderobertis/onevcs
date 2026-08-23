@@ -92,6 +92,34 @@ pub enum Error {
         /// git's own per-ref refusal, which is what an operator acts on.
         reason: String,
     },
+
+    /// The publishing push **reached the remote**, and the merge path could not
+    /// then be read. The CLI reports this as exit code 1.
+    ///
+    /// A kind of its own rather than a reason clause on the three above, and that
+    /// is the decision this variant records. The failure vocabulary is fixed across
+    /// the libraries that route on it and a router branches on the *kind*: a
+    /// sentence added to [`Error::ChecksFailed`] still routes as "the checks said
+    /// no", and one added to [`Error::PushRejected`] says the push was refused when
+    /// it landed. Twice in one session a publication whose work was on the remote
+    /// settled as a publication that failed, and the two obvious reactions to that
+    /// — re-running finished work, or reading a chain as still blocked — are both
+    /// wrong and both expensive. Only a new kind changes what a router does, so the
+    /// vocabulary is widened, as `docs/contract.md`'s amendment records; the exit
+    /// code stays `1`, so a process that only reads `$?` sees nothing change.
+    ///
+    /// It **narrows** rather than absorbs. A verdict the merge path actually
+    /// reached is still that verdict — [`Error::ChecksFailed`] for a required check
+    /// that concluded red, [`Error::ChecksUnsettled`] for the bound elapsing — and a
+    /// push the merge path *refused* is still [`Error::PushRejected`]. What this
+    /// covers is the answer nobody got: a host that would not say, a credential it
+    /// turned down, or checks that have not registered yet on a head pushed seconds
+    /// ago.
+    #[error("pushed, merge path unverified: {reason}")]
+    PushedUnverified {
+        /// Where the push landed, and what stopped the merge path being read.
+        reason: String,
+    },
 }
 
 /// The result type every fallible entry point in this crate returns.

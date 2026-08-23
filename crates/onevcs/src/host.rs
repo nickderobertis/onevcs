@@ -28,6 +28,16 @@ fn usable(answer: &gh::Answer) -> bool {
     matches!(answer.code, Some(0) | Some(CHECKS_PENDING))
 }
 
+/// How `gh pr checks` opens its stderr when the head it was asked about carries no
+/// check **at all** — which is every head for the first seconds after it is pushed,
+/// before CI has registered anything on it. The rest of that line names the branch,
+/// so only the prefix is fixed.
+///
+/// Deliberately neither a prefix of [`NO_REQUIRED_CHECKS`] nor prefixed by it: the
+/// two sentences are `gh`'s own, they are one word apart, and they say opposite
+/// things.
+const NO_CHECKS_YET: &str = "no checks reported on the ";
+
 /// Whether a failing `gh pr checks --required` failed by *answering* "none".
 ///
 /// The whole shape, not a substring anywhere in the output: `gh` exits `1`, writes
@@ -41,6 +51,22 @@ fn no_required_checks(answer: &gh::Answer) -> bool {
     answer.code == Some(1)
         && answer.stdout.trim().is_empty()
         && answer.stderr.trim_start().starts_with(NO_REQUIRED_CHECKS)
+}
+
+/// Whether a failing `gh pr checks` failed by reporting **no check at all** on the
+/// head, which is not an answer about what blocks the merge.
+///
+/// Held to the same three facts as [`no_required_checks`] and told apart from it by
+/// one word of `gh`'s own wording, because the two readings are opposite: "no
+/// *required* checks" is a repository that declares none and genuinely has nothing
+/// blocking a merge, while "no checks" is a head nothing has reported on yet — the
+/// shape a change request wears for the first seconds after a push, and the shape a
+/// publication reading its checks immediately walks straight into. Reading the second
+/// as the first would wave a merge through on a head no verification has begun on.
+fn no_checks_yet(answer: &gh::Answer) -> bool {
+    answer.code == Some(1)
+        && answer.stdout.trim().is_empty()
+        && answer.stderr.trim_start().starts_with(NO_CHECKS_YET)
 }
 
 /// Which of the host's check sources a call may consult.
@@ -417,6 +443,15 @@ impl GitHub {
             // path already knows how to act on.
             if no_required_checks(&answer) {
                 return Ok(BTreeSet::new());
+            }
+            // And a host reporting no check at all on the head is the opposite of
+            // that: nothing has been reported *yet*, so what blocks the merge is not
+            // knowable rather than known to be nothing. Refused under its own
+            // wording, because "the host would not say which of its checks block" is
+            // about an answer that came back unreadable and this is about an answer
+            // that has not been produced.
+            if no_checks_yet(&answer) {
+                return Err(unregistered(&cr.url, answer.stderr.trim()));
             }
             return Err(unsaid(&cr.url, &answer.detail()));
         }
@@ -1079,6 +1114,22 @@ fn unsaid(url: &Url, detail: &str) -> Error {
     invalid(format!(
         "gh pr checks --required answered about {url} with {detail}, so a check it reported does \
          not say whether it blocks the merge"
+    ))
+}
+
+/// The refusal for a host that has no check on the head to report yet.
+///
+/// Separate from [`unsaid`] because the two are different facts with different next
+/// moves, and one of them is a clock: a head pushed seconds ago has nothing on it
+/// until CI registers a run, and reading that as "this repository requires no check"
+/// is the one inference that turns an ungated merge into one that looks gated. This
+/// refusal says which of the two it is, so whoever reads it waits rather than
+/// re-runs.
+fn unregistered(url: &Url, said: &str) -> Error {
+    invalid(format!(
+        "the host reports no check at all yet on the head of {url} ({said}), which is not the \
+         same as a repository that declares none required — it is what a head pushed moments ago \
+         looks like — so whether anything blocks the merge cannot be read from it"
     ))
 }
 
