@@ -1,0 +1,28 @@
+Mutation: a count git refused is read as none again, whatever the reference — so a clone whose objects went with the checkout answers "nothing here" and the worktree is reaped over the only copy of the work.
+Red: a_close_whose_execution_checkout_is_gone_keeps_the_work_rather_than_assuming_it_is_safe
+
+diff --git a/crates/onevcs/src/git.rs b/crates/onevcs/src/git.rs
+index d54672c..cba6694 100644
+--- a/crates/onevcs/src/git.rs
++++ b/crates/onevcs/src/git.rs
+@@ -1047,19 +1047,7 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
+     args.extend_from_slice(&held);
+     let counted = run(&args, Some(cwd))?;
+     if !counted.ok() {
+-        // llmlint: ignore[changed_behavior_has_e2e] the reference going away between a
+-        // listing and this count is a race with another process, which no journey can
+-        // stage without a second writer in the clone; the refusal it falls through to is
+-        // driven end to end by the close whose execution checkout is gone.
+-        if tip(cwd, reference).is_none() {
+-            return Ok(0);
+-        }
+-        return Err(error::invalid(format!(
+-            "git could not count what {reference:?} holds in {}, and a count nobody got is \
+-             not a count of none: {}",
+-            cwd.display(),
+-            counted.stderr.trim(),
+-        )));
++        return Ok(0);
+     }
+     let answer = counted.trimmed();
+     // llmlint: ignore[changed_behavior_has_e2e] driving this would mean a program that is
