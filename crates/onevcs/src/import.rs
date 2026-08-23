@@ -37,6 +37,28 @@ fn preserved(name: &str) -> String {
     format!("preserved/{}", policy::branch_slug(name))
 }
 
+/// The invocation both refusals below are answered by: this same import under a
+/// second name.
+///
+/// It carries the `--from` it was given rather than rebuilding the command from the
+/// destination alone. Dropping it would send the operator back to the search over
+/// every copy of the branch this identity holds — and both refusals here are reached
+/// with a second copy of that name already in the destination, which is the pair that
+/// search declines to choose between. So a command without it answers the refusal
+/// that printed it with a different refusal, which is the dead end an offered verb
+/// exists not to be.
+fn under_another_name(repo: &Path, branch: &str, from: Option<&str>, name: &str) -> String {
+    let mut argv = vec!["onevcs", "import", branch, "--repo"];
+    let repo = repo.to_string_lossy();
+    argv.push(&repo);
+    if let Some(from) = from {
+        argv.extend_from_slice(&["--from", from]);
+    }
+    let second = preserved(name);
+    argv.extend_from_slice(&["--as", &second]);
+    guidance::command(argv)
+}
+
 /// Where an import read the branch from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -145,9 +167,15 @@ pub fn run(
         })?,
         None => asked.clone(),
     };
+    let source = source_of(registry, &resolution, repo, &destination, &asked, from)?;
     // Refused before anything is fetched: the whole promise of this verb is that no
     // working tree moves, and pointing a checked-out branch somewhere else leaves
     // git holding an index and a tree that describe a commit the ref no longer names.
+    //
+    // After the source is resolved rather than before, though nothing between the two
+    // fetches: the command this refusal prints carries the `--from` it was given, and a
+    // `--from` nobody has decided the meaning of is a value to refuse rather than to
+    // hand back to an operator to paste.
     let current = git::current_branch(&destination)?;
     if current == *name {
         return Err(Error::Invalid {
@@ -156,20 +184,11 @@ pub fn run(
                  moving that one would leave its working tree describing a commit the branch no \
                  longer names. Import it under another name with `{command}`",
                 destination = destination.display(),
-                command = guidance::command([
-                    "onevcs",
-                    "import",
-                    branch,
-                    "--repo",
-                    &repo.to_string_lossy(),
-                    "--as",
-                    &preserved(&name),
-                ]),
+                command = under_another_name(repo, branch, from, &name),
             ),
         });
     }
 
-    let source = source_of(registry, &resolution, repo, &destination, &asked, from)?;
     let scratch = format!("refs/onevcs/import/{}", ids::unique());
     let fetched = git::fetch_into_ref(
         &destination,
@@ -199,7 +218,7 @@ pub fn run(
         let wrote = match &held {
             Some(held) if *held == tip => Wrote::Unchanged,
             Some(_) => {
-                refuse_a_rewrite(&destination, &name, &scratch, repo, &asked)?;
+                refuse_a_rewrite(&destination, &name, &scratch, repo, &asked, from)?;
                 Wrote::FastForwarded
             }
             None => Wrote::Created,
@@ -232,6 +251,7 @@ fn refuse_a_rewrite(
     scratch: &str,
     repo: &Path,
     branch: &Ref,
+    from: Option<&str>,
 ) -> Result<()> {
     if git::is_ancestor(destination, name, scratch)? {
         return Ok(());
@@ -253,15 +273,7 @@ fn refuse_a_rewrite(
             destination = destination.display(),
             count = named.len(),
             lost = named.join("; "),
-            command = guidance::command([
-                "onevcs",
-                "import",
-                branch,
-                "--repo",
-                &repo.to_string_lossy(),
-                "--as",
-                &preserved(name),
-            ]),
+            command = under_another_name(repo, branch, from, name),
         ),
     })
 }

@@ -1191,17 +1191,56 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
     Ok((record, stream, preserved))
 }
 
+/// What `git rev-parse --abbrev-ref HEAD` answers in a worktree that is on no branch.
+const DETACHED_HEAD: &str = "HEAD";
+
+/// How much of a commit a minted branch name carries, which is enough for an
+/// operator to recognise it in `git log` and short enough to read.
+const NAMED_SHA: usize = 12;
+
+/// Work a session's clone holds that its own branch does not carry.
+struct Stray {
+    /// The local branch it is reachable from — minted here where a detached head
+    /// had no name of its own.
+    branch: Ref,
+    /// How many commits neither the session's branch nor any `origin` ref has.
+    commits: u64,
+    /// Whether the execution checkout took the copy offered to it.
+    // llmlint: ignore[invalid_states_unrepresentable] the question is total and binary —
+    // the checkout took the copy or it did not — so a `bool` has no third state for a
+    // type to rule out, and an enum here would spell the same two answers twice. What a
+    // domain type does earn is the field above, whose valid values are git's rather than
+    // the language's.
+    preserved: bool,
+}
+
 /// Release a session's worktree and its lease, keeping the branch.
 ///
 /// Tearing the worktree down copies the branch into the execution checkout first:
 /// the clone is disposable, and the branch is the only record of what was done.
+///
+/// What that branch is not, is the only record of what was *committed*. A worker
+/// that cut a branch of its own inside the worktree — `git checkout -b fix/…` is
+/// one line — or that committed onto a detached head leaves commits the session's
+/// branch does not carry, and removing the worktree and reclaiming the run root
+/// afterwards is what makes them unreachable. So they are looked for before
+/// anything is torn down, copied where the execution checkout will take them, and
+/// then **refused over**: a close that reported nothing while work it was about to
+/// delete existed is a report an operator has no way to disbelieve.
 pub fn close(token: &str) -> Result<Record> {
     let mut record = load(token)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
     })?;
+    let mut closed = json!({"token": record.token, "branch": record.branch});
     if record.clone.is_dir() {
-        let _ = git::copy_branch(&record.clone, &record.execution_checkout, &record.branch);
+        if !hand_back(&record) {
+            closed["retained"] = json!(record.clone.to_string_lossy());
+        }
+        let stray = stray_work(&record)?;
+        if !stray.is_empty() {
+            return Err(stranding(&record, &stray));
+        }
         if record.worktree.is_dir() {
             git::worktree_remove(&record.clone, &record.worktree)?;
         }
@@ -1210,14 +1249,183 @@ pub fn close(token: &str) -> Result<Record> {
     // queries state before its final drain; reversing these writes lets it observe
     // closure and drain the stream before the closing event exists.
     let mut stream = Stream::open(token)?;
-    stream.emit(
-        EventKind::SessionClosed,
-        object(json!({"token": record.token, "branch": record.branch})),
-    );
+    stream.emit(EventKind::SessionClosed, object(closed));
     record.state = Lifecycle::Closed;
     save(&record)?;
     drop(lease);
     Ok(record)
+}
+
+/// Hand the session's own branch back to the execution checkout, saying whether it
+/// went.
+///
+/// Reported rather than refused over, which is the one thing the `let _ =` this
+/// replaced got right. A fetch the checkout turns down means it already holds that
+/// name, and the branch is then the diverged pair `branch::locate` refuses by naming
+/// both copies rather than choosing between one — a state an operator reaches
+/// deliberately, by resolving the divergence in their own checkout. Failing the
+/// close over it would leave that operator with a session they cannot release.
+///
+/// What makes reporting enough here, and not enough for [`stray_work`], is that this
+/// branch is the one a caller reads to find out what the session did. It is named in
+/// the record, listed by `onevcs recoverable` — [`checkouts_of`] puts every run clone
+/// of the identity on the list that report and every locating verb read — and its run
+/// root is one [`reclaim`] retains while it holds unpublished work. So the answer to
+/// "what became of this session" still names it. Work on any *other* ref is in none
+/// of that, which is why a close refuses over that instead of reporting it.
+fn hand_back(record: &Record) -> bool {
+    git::copy_branch(&record.clone, &record.execution_checkout, &record.branch).unwrap_or(false)
+}
+
+/// Everything in a session's clone that removing its worktree would strand.
+///
+/// Two places a worker's commits end up that are not the session's branch: a branch
+/// it cut itself, whose name nothing outside the run root ever reads, and a
+/// detached head, whose commits belong to no name at all. Both are looked for, and
+/// each is copied into the execution checkout before any of it is reported —
+/// preserving the work where it can be preserved is worth more than refusing to
+/// touch it, and the copy is what gives the refusal a way forward.
+fn stray_work(record: &Record) -> Result<Vec<Stray>> {
+    let mut found: Vec<(Ref, u64)> = Vec::new();
+    // The detached head first, because it is the case with no name: one is minted
+    // for it here, so a copy has something to fetch and `onevcs recoverable` has
+    // something to offer a verb for.
+    if record.worktree.is_dir() && git::current_branch(&record.worktree)? == DETACHED_HEAD {
+        let head = git::head_sha(&record.worktree)?;
+        if let Some(commits) = stranded(record, &head)? {
+            let branch = detached_name(&record.branch, &head);
+            // Named after the write rather than before it: this is the one name here
+            // git did not produce, and a ref git has just written is a name git took.
+            git::update_ref(&record.clone, &format!("refs/heads/{branch}"), &head)?;
+            found.push((Ref::from_git(branch), commits));
+        }
+    }
+    for branch in git::branches(&record.clone)? {
+        let branch = Ref::from_git(branch);
+        if *branch == *record.branch || found.iter().any(|(held, _)| **held == *branch) {
+            continue;
+        }
+        if let Some(commits) = stranded(record, &branch)? {
+            found.push((branch, commits));
+        }
+    }
+    Ok(found
+        .into_iter()
+        .map(|(branch, commits)| Stray {
+            preserved: git::copy_branch(&record.clone, &record.execution_checkout, &branch)
+                .unwrap_or(false),
+            branch,
+            commits,
+        })
+        .collect())
+}
+
+/// How many commits a ref in the session's clone would take with the worktree, or
+/// `None` where letting the clone go costs nothing.
+// llmlint: ignore[invalid_states_unrepresentable] a branch and a detached head are one
+// question here — what this revision holds — and git answers it for either, so an enum
+// would name a distinction neither this function nor `git rev-list` makes.
+fn stranded(record: &Record, reference: &str) -> Result<Option<u64>> {
+    let commits = git::unpublished_ahead(&record.clone, reference, &[&*record.branch])?;
+    if commits == 0 {
+        return Ok(None);
+    }
+    // Work the execution checkout already reaches is not stranded, whatever this
+    // clone calls it. Two things follow, and both are the point. An execution
+    // checkout whose own base is ahead of origin — every clone carries a copy of
+    // that base — is not reported as stray work. And a close refused once has a way
+    // forward that is not a dead end: the copy `stray_work` makes is exactly what
+    // turns this answer into `None`, so running `onevcs session close` again
+    // releases the worktree rather than refusing a second time.
+    let held = git::tip(&record.clone, reference)
+        .is_some_and(|tip| git::refs_reach(&record.execution_checkout, &tip));
+    Ok((!held).then_some(commits))
+}
+
+/// The name a detached head is written under before it is copied out.
+///
+/// Derived from the session's own branch and the commit, so it says which session
+/// left it and two detached heads of one session cannot collide. A suffix rather
+/// than a path segment: git refuses a branch `a/b` beside a branch `a`, so
+/// `onevcs/s-…/detached` is a name that could not be created at all.
+// llmlint: ignore[invalid_states_unrepresentable] `git::head_sha` produced this and the
+// name is text either way; the crate's `Sha` is the contract's wrapper and validates
+// nothing, so spelling it here would make no state unrepresentable.
+fn detached_name(branch: &Ref, head: &str) -> String {
+    let short: String = head.chars().take(NAMED_SHA).collect();
+    format!("{branch}-detached-{short}")
+}
+
+/// Why a close that would have stranded work refused, and what to run instead.
+///
+/// Every branch named here has just been offered to the execution checkout, so the
+/// message says which of them it took: an operator reading it needs to know whether
+/// the work is already somewhere durable before deciding what to do with it.
+fn stranding(record: &Record, stray: &[Stray]) -> Error {
+    let names: Vec<&str> = stray.iter().map(|found| &*found.branch).collect();
+    let refused: Vec<&str> = stray
+        .iter()
+        .filter(|found| !found.preserved)
+        .map(|found| &*found.branch)
+        .collect();
+    let total = stray.iter().map(|found| found.commits).sum();
+    let checkout = record.execution_checkout.display();
+    let mut reason = format!(
+        "session {:?} was not closed: its worktree {} holds work its branch {:?} does not \
+         carry — {} on {} — and removing the worktree is what would have made it unreachable.",
+        &*record.token,
+        record.worktree.display(),
+        record.branch,
+        counted(total),
+        guidance::listed(&names),
+    );
+    if refused.is_empty() {
+        reason.push_str(&format!(" All of it has been copied into {checkout}."));
+    } else {
+        reason.push_str(&format!(
+            " {checkout} would not take {}, which is still only in {}; put it there under a \
+             name that checkout will accept with `{}`.",
+            guidance::listed(&refused),
+            record.clone.display(),
+            import_command(record, refused[0]),
+        ));
+    }
+    reason.push_str(&format!(
+        " See what is preserved and the verb that lands each branch with `{}`, then re-run \
+         `{}`, which releases the worktree once the work is reachable outside it",
+        guidance::command(["onevcs", "recoverable"]),
+        guidance::command(["onevcs", "session", "close", &record.token]),
+    ));
+    error::invalid(reason)
+}
+
+/// The invocation that puts one of this session's branches into its execution
+/// checkout, which is the verb that owns ref plumbing over an identity's checkouts.
+///
+/// `onevcs import` rather than raw `git fetch`, and `--from` names the clone rather
+/// than being left off: this is only ever offered for a branch the execution checkout
+/// has already refused, so the name has two copies on this host and a search over
+/// every place the identity keeps work would meet the diverged pair rather than the
+/// one copy the operator is being told to rescue.
+fn import_command(record: &Record, branch: &str) -> String {
+    guidance::command([
+        "onevcs",
+        "import",
+        branch,
+        "--repo",
+        &record.execution_checkout.to_string_lossy(),
+        "--from",
+        &record.clone.to_string_lossy(),
+    ])
+}
+
+/// A count and the noun it counts, so a refusal reads as English at one as well as
+/// at three.
+fn counted(commits: u64) -> String {
+    match commits {
+        1 => "1 commit".to_owned(),
+        many => format!("{many} commits"),
+    }
 }
 
 /// Reap abandoned run roots, keeping the newest few that still hold work.

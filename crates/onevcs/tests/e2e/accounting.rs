@@ -837,6 +837,50 @@ fn a_branch_only_a_run_clone_has_is_imported_without_touching_any_working_tree()
         .assert()
         .code(2)
         .stderr(predicate::str::contains("is in none of the checkouts"));
+
+    // The refusal over a checked-out name offers a second name, and it offers it as a
+    // whole invocation — including the `--from` it was given. Asked with one and run as
+    // printed, because an operator who had to name a source is the operator this
+    // refusal is written for: dropping it would send them to a search over every copy
+    // of the branch instead of the clone they already named.
+    let refused = fixture
+        .world
+        .onevcs()
+        .args([
+            "import",
+            "feature/stranded",
+            "--repo",
+            &repo,
+            "--from",
+            &clone.to_string_lossy(),
+            "--as",
+            "main",
+        ])
+        .assert()
+        .code(2);
+    let said = String::from_utf8(refused.get_output().stderr.clone()).expect("text");
+    let second = said
+        .split('`')
+        .find(|span| span.starts_with("onevcs import "))
+        .expect("the refusal names the import that lands it")
+        .to_owned();
+    assert!(
+        second.contains(&format!("--from {}", clone.display())),
+        "the second name is offered with the source it was given:\n{said}"
+    );
+    fixture
+        .world
+        .shell(&second)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&stranded));
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "preserved/main"]),
+        stranded,
+        "and the command it printed is the one that landed the work"
+    );
 }
 
 #[test]

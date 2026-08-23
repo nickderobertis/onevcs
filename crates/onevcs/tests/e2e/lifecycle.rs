@@ -528,6 +528,478 @@ fn a_session_that_pins_no_branch_is_cut_fresh_every_time() {
 }
 
 #[test]
+fn closing_a_session_whose_worker_committed_to_a_branch_it_invented_keeps_the_work() {
+    // The failure this guards: a worker ran `git checkout -b … origin/main` inside the
+    // worktree and committed there, so the session's own branch stayed empty. The close
+    // copied that empty branch out, removed the worktree, and the run root was reclaimed
+    // later — taking the only copy of the commit with it, under a report of "no changes".
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture.world.git(
+        &worktree,
+        &["checkout", "-q", "-b", "fix/invented", "origin/main"],
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "work.txt",
+        "work\n",
+        "fix: the thing the worker did",
+    );
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    // …and then again on a second one, because a worker that cut one name cuts two, and a
+    // refusal naming only the branch it happened to meet first is a report an operator
+    // would act on and still lose work to.
+    fixture.world.git(
+        &worktree,
+        &["checkout", "-q", "-b", "chore/also-invented", "origin/main"],
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "more.txt",
+        "more\n",
+        "chore: the other thing the worker did",
+    );
+    let also = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+
+    // The close refuses rather than reaping, and says what it found and where it put it —
+    // every branch of it, and what they hold between them.
+    let refusal = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("fix/invented"))
+        .stderr(predicate::str::contains("chore/also-invented"))
+        .stderr(predicate::str::contains("2 commits"))
+        .stderr(predicate::str::contains("onevcs recoverable"))
+        .stderr(predicate::str::contains(format!(
+            "onevcs session close {token}"
+        )));
+    let said = String::from_utf8(refusal.get_output().stderr.clone()).expect("text");
+    assert!(
+        said.contains(&fixture.checkout.to_string_lossy().into_owned()),
+        "the refusal says where the work was put:\n{said}"
+    );
+
+    // Nothing was deleted: the worktree is still there, and the commit is now in the
+    // execution checkout, which is the durable side of a disposable clone.
+    assert!(worktree.is_dir(), "a refused close reaps nothing");
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "fix/invented"]),
+        stranded,
+        "the invented branch reached the execution checkout"
+    );
+
+    // …and it is offered by the report an operator reaches for, with a verb on it.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fix/invented"));
+
+    // The refusal is not a dead end: the second close is the verb the first one named,
+    // and it releases the worktree because the work is now reachable outside it.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(!worktree.is_dir(), "the second close releases the worktree");
+    for (branch, tip) in [("fix/invented", &stranded), ("chore/also-invented", &also)] {
+        assert_eq!(
+            &fixture.world.git(&fixture.checkout, &["rev-parse", branch]),
+            tip,
+            "and every branch's work outlives the run root"
+        );
+    }
+    assert_eq!(fixture.world.events_of(&token, "session-closed").len(), 1);
+}
+
+#[test]
+fn closing_a_session_whose_worker_committed_onto_a_detached_head_names_the_work_and_keeps_it() {
+    // The uncovered half of the same mistake: commits on no branch at all, which
+    // `git worktree remove` makes unreachable in the moment rather than eventually.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture
+        .world
+        .git(&worktree, &["checkout", "-q", "--detach"]);
+    fixture.world.commit_file(
+        &worktree,
+        "work.txt",
+        "work\n",
+        "fix: committed onto nothing",
+    );
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+
+    let short: String = stranded.chars().take(12).collect();
+    let named = format!("feature/session-detached-{short}");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains(named.clone()));
+
+    // A head with no name is given one, so the commit is referenced rather than
+    // garbage — and so a verb has something to be run against.
+    assert_eq!(
+        fixture.world.git(&fixture.checkout, &["rev-parse", &named]),
+        stranded,
+        "the detached head reached the execution checkout under a name"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert_eq!(
+        fixture.world.git(&fixture.checkout, &["rev-parse", &named]),
+        stranded
+    );
+}
+
+#[test]
+fn a_branch_the_execution_checkout_would_not_take_is_recorded_rather_than_discarded() {
+    // The other half of the same silence: `close` threw away the result of the one copy
+    // that makes a session's work outlive its clone. The close still completes — a name
+    // the checkout has spent is a divergence an operator resolved on purpose, and a
+    // session they cannot release is its own dead end — but what happened is on the
+    // record instead of nowhere.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/spent"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+    let tip = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    // Meanwhile the execution checkout spends that name on something else, so the copy
+    // out is no fast-forward and git turns it down.
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "other.txt",
+        "other\n",
+        "chore: something else",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["branch", "feature/spent", "main"]);
+    let clone = worktree.parent().expect("a run root").join("clone");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    let closed = fixture.world.events_of(&token, "session-closed");
+    assert_eq!(
+        closed[0]["payload"]["retained"],
+        serde_json::Value::from(clone.to_string_lossy().into_owned()),
+        "the close records where the branch stayed: {:?}",
+        closed[0]["payload"]
+    );
+    assert_eq!(
+        fixture.world.git(&clone, &["rev-parse", "feature/spent"]),
+        tip,
+        "the work is still in the clone"
+    );
+    assert_ne!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "feature/spent"]),
+        tip,
+        "and the name the checkout spent is untouched"
+    );
+
+    // The clone is one of the places this identity keeps work, so the report an
+    // operator reaches for still finds it — and `import --as` gives it a second name.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature/spent"));
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "import",
+            "feature/spent",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+            "--from",
+            &clone.to_string_lossy(),
+            "--as",
+            "preserved/feature-spent",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "preserved/feature-spent"]),
+        tip
+    );
+}
+
+#[test]
+fn a_stray_branch_the_execution_checkout_would_not_take_names_the_verb_that_lands_it() {
+    // Both halves of the failure at once: the worker committed to a branch it cut
+    // itself, and the execution checkout has since spent that name on something else —
+    // so the copy that makes the journeys above safe is the one git turns down, and the
+    // work is reachable from nowhere but the clone this close was about to reap. The
+    // refusal has to carry the operator all the way to a durable copy anyway.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture.world.git(
+        &worktree,
+        &["checkout", "-q", "-b", "fix/invented", "origin/main"],
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "work.txt",
+        "work\n",
+        "fix: the thing the worker did",
+    );
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "other.txt",
+        "other\n",
+        "chore: something else",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["branch", "fix/invented", "main"]);
+    let clone = worktree.parent().expect("a run root").join("clone");
+
+    let refusal = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("fix/invented"));
+    let said = String::from_utf8(refusal.get_output().stderr.clone()).expect("text");
+    assert!(
+        said.contains("would not take"),
+        "the refusal says the copy was turned down:\n{said}"
+    );
+    assert!(
+        said.contains(&clone.to_string_lossy().into_owned()),
+        "…and names the only place the work still is:\n{said}"
+    );
+    assert!(worktree.is_dir(), "a refused close reaps nothing");
+
+    // Run as printed, because printing it is a claim that pasting it is the next move.
+    // It refuses too — the name is spent — and that refusal is the one that names the
+    // second name, which is what an operator actually needs here.
+    let import = said
+        .split('`')
+        .find(|span| span.starts_with("onevcs import "))
+        .expect("the refusal names the import that lands it")
+        .to_owned();
+    let spent = fixture.world.shell(&import).assert().code(2);
+    let over = String::from_utf8(spent.get_output().stderr.clone()).expect("text");
+    assert!(
+        over.contains("not a fast-forward"),
+        "the import says why the name would not take it:\n{over}"
+    );
+    let under_another_name = over
+        .split('`')
+        .find(|span| span.starts_with("onevcs import "))
+        .expect("the import names the second name that lands it")
+        .to_owned();
+    assert!(
+        under_another_name.contains("--as"),
+        "…which is a second name:\n{over}"
+    );
+    fixture
+        .world
+        .shell(&under_another_name)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(stranded.clone()));
+
+    // The work is durable now, so the close the first refusal named releases the
+    // worktree rather than refusing a second time.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(!worktree.is_dir(), "the second close releases the worktree");
+    // The question the incident was diagnosed with, asked of the checkout that outlives
+    // the run root: the object is there, and a branch carries it.
+    fixture
+        .world
+        .git(&fixture.checkout, &["cat-file", "-e", &stranded]);
+    let carrying = fixture
+        .world
+        .git(&fixture.checkout, &["branch", "--contains", &stranded]);
+    assert!(
+        carrying.contains("fix-invented"),
+        "a branch in the execution checkout carries the work: {carrying:?}"
+    );
+}
+
+#[test]
+fn closing_a_session_whose_worker_renamed_the_branch_out_from_under_it_keeps_the_work() {
+    // The third way a worker's commits end up on a name the session did not cut, and the
+    // one the guard could not see: the branch was not invented beside the session's, it
+    // *was* the session's and was renamed. Nothing answers to the name in the record any
+    // more, so what the rename holds was counted against a ref that is not there — git
+    // refuses the whole walk over one unknown name, and that refusal read as "none".
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture.world.git(
+        &worktree,
+        &["branch", "-m", "feature/session", "fix/renamed"],
+    );
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "fix: the first thing");
+    fixture
+        .world
+        .commit_file(&worktree, "two.txt", "two\n", "fix: the second thing");
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("fix/renamed"))
+        .stderr(predicate::str::contains("2 commits"))
+        .stderr(predicate::str::contains("onevcs recoverable"));
+
+    assert!(worktree.is_dir(), "a refused close reaps nothing");
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "fix/renamed"]),
+        stranded,
+        "the renamed branch reached the execution checkout"
+    );
+
+    // And the way out is the ordinary one: the work is durable now, so the same close
+    // releases the worktree the second time.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(!worktree.is_dir(), "the second close releases the worktree");
+    fixture
+        .world
+        .git(&fixture.checkout, &["cat-file", "-e", &stranded]);
+}
+
+#[test]
+fn a_close_whose_execution_checkout_is_gone_keeps_the_work_rather_than_assuming_it_is_safe() {
+    // Every question this guard asks is asked of git, and a session's clone borrows its
+    // objects from the execution checkout — so a checkout an operator moved or deleted is
+    // a clone git cannot answer about at all. "No answer" must not read as "nothing here":
+    // that is the same reap under a different cause, and this is the case where it would
+    // take the work with it for good, because the objects were in the checkout too.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/session"]);
+    fixture.world.git(
+        &worktree,
+        &["checkout", "-q", "-b", "fix/invented", "origin/main"],
+    );
+    fixture
+        .world
+        .commit_file(&worktree, "work.txt", "work\n", "fix: the thing");
+    let stranded = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+    let clone = worktree.parent().expect("a run root").join("clone");
+    std::fs::remove_dir_all(&fixture.checkout).expect("the operator's checkout is gone");
+
+    // It refuses in git's own words rather than in this crate's: what an operator has to
+    // act on here is the checkout that is not there, and no verb of this tool puts it back.
+    let refusal = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "a count nobody got is not a count of none",
+        ))
+        .stderr(predicate::str::contains("fix/invented"));
+    let said = String::from_utf8(refusal.get_output().stderr.clone()).expect("text");
+    assert!(
+        said.contains(&clone.to_string_lossy().into_owned()),
+        "the refusal names the clone it could not read:\n{said}"
+    );
+
+    assert!(worktree.is_dir(), "a refused close reaps nothing");
+    assert_eq!(
+        fixture.world.git(&clone, &["rev-parse", "fix/invented"]),
+        stranded,
+        "and the branch is still where the work was left"
+    );
+}
+
+#[test]
+fn a_session_holding_nothing_but_its_own_branch_closes_exactly_as_it_did_before() {
+    let fixture = Fixture::local(&local_direct());
+    // The execution checkout's own base is ahead of origin — unpushed local commits are
+    // ordinary, and every run clone carries a copy of that base. Work the checkout
+    // already reaches is not work a close can strand, so the guard must not see it.
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "local.txt",
+        "local\n",
+        "chore: not pushed",
+    );
+    let (token, worktree) = fixture.open(&["--branch", "feature/ordinary"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+    let tip = fixture.world.git(&worktree, &["rev-parse", "HEAD"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("{token} closed")));
+
+    assert!(!worktree.is_dir(), "the worktree is released");
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["rev-parse", "feature/ordinary"]),
+        tip,
+        "the execution checkout receives exactly the session's branch"
+    );
+    let closed = fixture.world.events_of(&token, "session-closed");
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0]["payload"]["branch"], "feature/ordinary");
+}
+
+#[test]
 fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_checkout() {
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/adds"]);

@@ -1,0 +1,38 @@
+Mutation: a close that could not copy a stray branch out says it copied everything anyway, so the one branch still held nowhere but the clone is the one the refusal does not name.
+Red: a_stray_branch_the_execution_checkout_would_not_take_names_the_verb_that_lands_it
+
+diff --git a/crates/onevcs/src/workspace.rs b/crates/onevcs/src/workspace.rs
+index b904d94..57019b2 100644
+--- a/crates/onevcs/src/workspace.rs
++++ b/crates/onevcs/src/workspace.rs
+@@ -1357,11 +1357,6 @@ fn detached_name(branch: &Ref, head: &str) -> String {
+ /// the work is already somewhere durable before deciding what to do with it.
+ fn stranding(record: &Record, stray: &[Stray]) -> Error {
+     let names: Vec<&str> = stray.iter().map(|found| &*found.branch).collect();
+-    let refused: Vec<&str> = stray
+-        .iter()
+-        .filter(|found| !found.preserved)
+-        .map(|found| &*found.branch)
+-        .collect();
+     let total = stray.iter().map(|found| found.commits).sum();
+     let checkout = record.execution_checkout.display();
+     let mut reason = format!(
+@@ -1373,17 +1368,7 @@ fn stranding(record: &Record, stray: &[Stray]) -> Error {
+         counted(total),
+         guidance::listed(&names),
+     );
+-    if refused.is_empty() {
+-        reason.push_str(&format!(" All of it has been copied into {checkout}."));
+-    } else {
+-        reason.push_str(&format!(
+-            " {checkout} would not take {}, which is still only in {}; put it there under a \
+-             name that checkout will accept with `{}`.",
+-            guidance::listed(&refused),
+-            record.clone.display(),
+-            import_command(record, refused[0]),
+-        ));
+-    }
++    reason.push_str(&format!(" All of it has been copied into {checkout}."));
+     reason.push_str(&format!(
+         " See what is preserved and the verb that lands each branch with `{}`, then re-run \
+          `{}`, which releases the worktree once the work is reachable outside it",

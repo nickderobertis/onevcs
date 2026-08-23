@@ -430,6 +430,34 @@ pub fn has_commit(cwd: &Path, sha: &Sha) -> bool {
     .unwrap_or(false)
 }
 
+/// Whether some ref of this repository already reaches `commit`, with the whole
+/// history behind it.
+///
+/// The question [`has_commit`] does not answer: an object can be in a store and be
+/// reachable from nothing, which is an object gc may drop — so a caller deciding
+/// whether a *copy* of some work elsewhere may be let go has to ask this one.
+/// `--not --all` negates every ref at once, so a count of zero says every commit
+/// behind this one is already held down by something here.
+///
+/// A repository git could not be asked answers `false`: the caller acts on this to
+/// decide whether work is safe elsewhere, and "no answer" must never read as "safe".
+// llmlint: ignore[changed_behavior_has_e2e] that answer cannot be staged on its own: a
+// clone borrows its objects from the checkout this asks about, so a checkout git cannot
+// read is a clone it cannot read either, and the close refuses at the count before this
+// is reached — which is the journey `a_close_whose_execution_checkout_is_gone_…` drives.
+// llmlint: ignore[invalid_states_unrepresentable] a revision is whatever git's parser
+// accepts, and this crate's `Sha` validates nothing, so a wrapper would rule out no
+// state — the value comes out of git and goes straight back to it.
+pub fn refs_reach(cwd: &Path, commit: &str) -> bool {
+    run(
+        &["rev-list", "--count", commit, "--not", "--all"],
+        Some(cwd),
+    )
+    .ok()
+    .filter(Output::ok)
+    .is_some_and(|out| out.trimmed() == "0")
+}
+
 /// A ref's commit SHA, or `None` when the repository does not have it.
 pub fn tip(cwd: &Path, reference: &str) -> Option<String> {
     run(
@@ -966,15 +994,82 @@ pub fn branches(cwd: &Path) -> Result<Vec<String>> {
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
     let mut unpublished = Vec::new();
     for branch in branches(cwd)? {
-        let counted = run(
-            &["rev-list", "--count", &branch, "--not", "--remotes=origin"],
-            Some(cwd),
-        )?;
-        if counted.ok() && counted.trimmed().parse::<u64>().unwrap_or(0) > 0 {
+        if unpublished_ahead(cwd, &branch, &[])? > 0 {
             unpublished.push(branch);
         }
     }
     Ok(unpublished)
+}
+
+/// How many commits `reference` holds that no `origin` remote-tracking ref has and
+/// none of `carried` reaches.
+///
+/// One `rev-list` rather than one per exclusion, because everything after `--not`
+/// is negated together — so "ahead of origin and of the branch this session was
+/// for" is the single question git answers, not two answers a caller subtracts.
+///
+/// `0` is the answer that tells [`workspace::close`] a clone can be let go of, so
+/// every way this could reach it without having counted is one way to delete work.
+/// Three of them are handled here rather than by the callers reading the number.
+///
+/// A `carried` name that does not resolve is dropped instead of being passed on. Git
+/// refuses the whole walk over one unknown name, and the refusal used to read as `0`
+/// — which is how a session whose worker *renamed* its branch was reaped: the work
+/// was on a name nothing outside the run root knew, and the name it was measured
+/// against no longer existed. A ref that is not there carries nothing, and saying so
+/// is not the same as failing to ask.
+///
+/// A count git still declines is `0` only where `reference` itself has gone, which is
+/// what the branch listing above has always assumed with one: the names come from
+/// git's own listing, so a refusal means the ref went away between the two commands.
+/// Anything else is git failing at a question it could answer, and that is refused.
+///
+/// A count that succeeded and is not a number is refused too, because output this
+/// build does not understand is not output saying none.
+///
+/// [`workspace::close`]: crate::workspace::close
+// llmlint: ignore[invalid_states_unrepresentable] the same as `refs_reach` above: these
+// are revisions git named and git resolves, and every other function in this module
+// spells one the same way.
+pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
+    let held: Vec<&str> = carried
+        .iter()
+        .copied()
+        .filter(|name| tip(cwd, name).is_some())
+        .collect();
+    let mut args = vec![
+        "rev-list",
+        "--count",
+        reference,
+        "--not",
+        "--remotes=origin",
+    ];
+    args.extend_from_slice(&held);
+    let counted = run(&args, Some(cwd))?;
+    if !counted.ok() {
+        // llmlint: ignore[changed_behavior_has_e2e] the reference going away between a
+        // listing and this count is a race with another process, which no journey can
+        // stage without a second writer in the clone; the refusal it falls through to is
+        // driven end to end by the close whose execution checkout is gone.
+        if tip(cwd, reference).is_none() {
+            return Ok(0);
+        }
+        return Err(error::invalid(format!(
+            "git could not count what {reference:?} holds in {}, and a count nobody got is \
+             not a count of none: {}",
+            cwd.display(),
+            counted.stderr.trim(),
+        )));
+    }
+    let answer = counted.trimmed();
+    // llmlint: ignore[changed_behavior_has_e2e] driving this would mean a program that is
+    // not git on the path, which this suite's e2e tier does not put there.
+    answer.parse::<u64>().map_err(|_| {
+        error::invalid(format!(
+            "git counted the commits {reference:?} holds and answered {answer:?}, which is not \
+             a number of commits"
+        ))
+    })
 }
 
 /// Whether a branch name is one git will accept.
