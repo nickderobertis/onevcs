@@ -569,7 +569,6 @@ fn preserved_row(
     ))
 }
 
-/// The token of an open session holding this branch, for reading its stream.
 /// Whether this copy of a branch belongs to a session something superseded.
 fn superseded_copy(
     sessions: &[workspace::Record],
@@ -594,6 +593,7 @@ fn unfollowable_chain(sessions: &[workspace::Record], identity: &str, branch: &s
         .any(|record| workspace::newest(record).is_err())
 }
 
+/// The token of an open session holding this branch, for reading its stream.
 fn session_holding<'a>(
     sessions: &'a [workspace::Record],
     identity: &str,

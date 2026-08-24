@@ -21,6 +21,7 @@ use crate::error::{self, Result};
 use crate::event::{
     ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Phase, Source,
 };
+use crate::git::ObjectId;
 use crate::landed::Landed;
 use crate::rules::MergePolicy;
 use crate::session::SessionToken;
@@ -478,9 +479,12 @@ impl Correlated {
             {
                 continue;
             }
-            candidates.push(envelope);
+            candidates.push((index + 1, envelope));
         }
-        let weighing: BTreeSet<u64> = candidates.iter().map(|envelope| envelope.seq).collect();
+        let weighing: BTreeSet<u64> = candidates
+            .iter()
+            .map(|(_, envelope)| envelope.seq)
+            .collect();
         // Nothing to correlate, or nothing new to correlate: this stream has not
         // moved since the last read weighed it, and history is not asked again for
         // an answer it has already been asked for.
@@ -504,13 +508,26 @@ impl Correlated {
             },
         };
         let mut fresh = Vec::new();
-        for envelope in candidates {
-            if envelope
+        for (line_number, envelope) in candidates {
+            // The one field that makes an event of this stream some *landing's*, and
+            // therefore the only thing a correlation can be wrong about. It arrives
+            // from a file whichever process wrote it, so an event that names no
+            // commit is refused where it is read rather than read as "not this
+            // session's" — that reading is indistinguishable from a release of
+            // another landing, and it is what a consumer would then wait on for ever.
+            let named = envelope
                 .payload
                 .get("landing_commit")
                 .and_then(Value::as_str)
-                != Some(landing.as_str())
-            {
+                .and_then(ObjectId::parse)
+                .ok_or_else(|| {
+                    self.refusal(
+                        line_number,
+                        "records a release that names no landing commit, so nothing can be said \
+                         about which work it released",
+                    )
+                })?;
+            if named.as_str() != landing {
                 continue;
             }
             self.handed.insert(envelope.seq);
@@ -528,18 +545,25 @@ impl Correlated {
     /// stream's name is not something a consumer of a *session* has, so naming it in
     /// a refusal would hand over the one address this join exists to keep private.
     fn attributed(&self, line: &str, line_number: usize) -> Result<Envelope> {
-        let refuse = |what: &str| {
-            error::invalid(format!(
-                "line {line_number} of the release record for {identity} {what}",
-                identity = self.identity,
-            ))
-        };
-        let envelope: Envelope = serde_json::from_str(line)
-            .map_err(|failure| refuse(&format!("is not an event envelope: {failure}")))?;
+        let envelope: Envelope = serde_json::from_str(line).map_err(|failure| {
+            self.refusal(line_number, &format!("is not an event envelope: {failure}"))
+        })?;
         if envelope.stream != self.token {
-            return Err(refuse("carries an event of another stream"));
+            return Err(self.refusal(line_number, "carries an event of another stream"));
         }
         Ok(envelope)
+    }
+
+    /// One refusal about this stream, in the identity's own terms.
+    ///
+    /// This stream's name is not something a consumer of a *session* has, so naming
+    /// it in a refusal would hand over the one address this join exists to keep
+    /// private.
+    fn refusal(&self, line_number: usize, what: &str) -> crate::Error {
+        error::invalid(format!(
+            "line {line_number} of the release record for {identity} {what}",
+            identity = self.identity,
+        ))
     }
 }
 

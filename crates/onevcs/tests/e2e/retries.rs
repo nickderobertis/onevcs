@@ -18,6 +18,14 @@
 
 #![cfg(unix)]
 
+// llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — whether a
+// change request exists and whether it merged — is the one boundary an offline,
+// credential-free gate cannot drive, and a landing that leaves a *recorded* landing is
+// what these journeys are about. `world.rs` installs a program that answers as `gh` and
+// substitutes nothing else: the origins are real bare repositories, the checkouts real
+// clones, the sessions real run clones with real branches in them, and the two copies of
+// the branch that disagree are two real git repositories.
+
 use std::path::PathBuf;
 
 use predicates::prelude::*;
@@ -134,12 +142,12 @@ impl Retried {
     }
 
     /// Rewrite one session record's retry link to something nothing can follow.
-    ///
-    /// llmlint: ignore[tests_mirror_real_usage] the *file* is the input under test.
-    /// Every link this crate writes goes through the boundary that refuses these
-    /// three, so no public interface of it can produce one — which is exactly why a
-    /// reader has to answer for finding one anyway: a record is hand-editable, and a
-    /// newer `onevcs` sharing this state root writes it too.
+    // llmlint: ignore-block[tests_mirror_real_usage] the *file* is the input under test.
+    // Every link this crate writes goes through the boundary that refuses these three, so
+    // no public interface of it can produce one — which is exactly why a reader has to
+    // answer for finding one anyway: a record is hand-editable, and a newer `onevcs`
+    // sharing this state root writes it too. The same posture the malformed registry and
+    // corrupted-stream journeys already take.
     fn damage(&self, token: &str, link: Value) {
         let mut record = self.record(token);
         record["retried_by"] = link;
@@ -149,6 +157,7 @@ impl Retried {
         )
         .expect("a damaged session record");
     }
+    // llmlint: ignore-end[tests_mirror_real_usage]
 }
 
 #[test]
@@ -230,6 +239,19 @@ fn a_branch_two_sessions_worked_on_answers_from_the_session_that_landed_it() {
 #[test]
 fn a_chain_of_retries_is_followed_to_the_session_that_actually_landed() {
     let hosted = Hosted::new(DIRECT);
+    // A repository that releases something, so the landing this chain reaches can be
+    // asked about by the verb that reads one: `release status` takes the same four
+    // reference spellings, through the same reader, so a chain it stopped short on
+    // would report "not landed" for work that had merged.
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {host: \
+         github.com, owner: acme-corp, name: hosted}\n    adoption: published\n    \
+         default_target: image\n    targets:\n      - name: image\n        style: \
+         human-step\n        action: \"Push the image and record the tag.\"\n",
+    )
+    .expect("a release-targets file");
+
     let first = hosted.change(BRANCH, "feat: the first attempt");
     hosted
         .world
@@ -238,8 +260,9 @@ fn a_chain_of_retries_is_followed_to_the_session_that_actually_landed() {
         .assert()
         .success();
 
-    // Two more sessions over the same branch, each continuing the last: the chain is
-    // followed hop by hop rather than one link deep.
+    // Two more sessions over the same branch, each continuing the last, and the
+    // third is the one that lands: the chain is followed hop by hop rather than one
+    // link deep, and what it is followed *for* is that session's landing evidence.
     let mut tokens = vec![first.clone()];
     for round in 0..2 {
         let assert = hosted
@@ -266,6 +289,18 @@ fn a_chain_of_retries_is_followed_to_the_session_that_actually_landed() {
         tokens.push(token);
     }
     let newest = tokens.last().expect("three sessions").clone();
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            BRANCH,
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+
     // Each older record names the next, and only the newest names nobody.
     for pair in tokens.windows(2) {
         let record: Value = serde_json::from_str(
@@ -282,8 +317,9 @@ fn a_chain_of_retries_is_followed_to_the_session_that_actually_landed() {
         assert_eq!(record["retried_by"], Value::String(pair[1].clone()));
     }
 
-    // Asking about the *first* of the three reaches the third, two hops away.
-    for reference in [first.as_str(), BRANCH] {
+    // Asking about the *first* of the three reaches the third, two hops away, and
+    // the landing the third's publication made.
+    for reference in [first.as_str(), tokens[1].as_str(), BRANCH] {
         let assert = hosted
             .world
             .onevcs()
@@ -296,6 +332,26 @@ fn a_chain_of_retries_is_followed_to_the_session_that_actually_landed() {
             report["session"]["token"], newest,
             "{reference} stopped short of the newest session: {report}"
         );
+        assert_eq!(
+            report["publication"]["landed"]["state"], "yes",
+            "{reference} does not reach the landing: {report}"
+        );
+
+        // …and the verb that sequences an upgrade behind a release reads the same
+        // landing, rather than reporting that there is nothing to release yet.
+        let assert = hosted
+            .world
+            .onevcs()
+            .args(["release", "status", reference, "--json"])
+            .assert()
+            .success();
+        let release: Value =
+            serde_json::from_slice(&assert.get_output().stdout).expect("a report is JSON");
+        assert_eq!(
+            release["state"], "awaiting-human-step",
+            "{reference} reads as unlanded to `release status`: {release}"
+        );
+        assert_eq!(release["target"], "image", "{release}");
     }
 }
 
