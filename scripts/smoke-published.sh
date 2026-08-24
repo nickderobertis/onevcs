@@ -12,8 +12,10 @@
 # What it asserts: the binary reports the version the registry says it serves,
 # prints its whole command surface for `--help`, reads its own state root, refuses
 # an unregistered repository with exit 2, and rejects a malformed invocation with
-# clap's usage error (also 2). Deliberately read-only — an installed binary is
-# smoke-tested, not handed a repository to publish.
+# clap's usage error (also 2). It publishes nothing — an installed binary is
+# smoke-tested, not handed a repository to publish — but the verbs it runs read the
+# state root and write back what they migrated there, which is why it works over a
+# scratch one rather than over whichever the caller has.
 #
 # Deliberately toolchain-free: bash and the installed binary. The scheduled sweep
 # runs this every week on every OS, for both registries, and anything it had to

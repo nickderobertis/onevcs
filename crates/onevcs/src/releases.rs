@@ -28,8 +28,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::rules::RuleMatch;
 
-/// The version of the release-targets file this build writes, and the newest it
+/// The version of the release-targets file this build writes, and the oldest it
 /// reads.
+///
+/// The oldest rather than the newest: a document declaring a *later* version is read
+/// as this shape, with whatever it names beyond it ignored, because refusing it would
+/// stop every release verb on a host a newer `onevcs` had configured.
 pub const VERSION: u32 = 1;
 
 /// The bound a probe runs under when the document names none.

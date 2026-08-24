@@ -948,7 +948,7 @@ fn read_at(path: &Path, identity: &str) -> Result<Record> {
 ///
 /// A *baseline's* own version is deliberately not held to either rule: it is
 /// whatever a probe answered, and a version neither side can parse is precisely what
-/// [`compare`] answers "not answered" about — refusing it here would turn that
+/// [`carries`] answers "not answered" about — refusing it here would turn that
 /// designed answer into a dead record. One line is all it owes, because it is
 /// printed.
 fn usable(path: &Path, record: &Record) -> Result<()> {
