@@ -207,6 +207,9 @@ fn slug(branch: &str) -> String {
     branch.replace('/', "-")
 }
 
+/// A probe script this journey carries, executable by its owner and nobody else —
+/// which is every process that runs one here, since the probe is spawned by the same
+/// user this test binary runs as.
 fn write_script(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(
@@ -214,7 +217,7 @@ fn write_script(path: &Path, body: &str) {
         format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
     )
     .expect("a script");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .expect("an executable script");
 }
 
@@ -1246,7 +1249,13 @@ fn a_release_targets_file_this_build_cannot_honour_is_refused_where_it_is_read()
             "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
              targets:\n      - {name: crate, style: automated, probe: {script: probe.sh, args: \
              [\"--tag\\nreleased\"]}}\n",
-            "control character",
+            "probe argument carrying a control character",
+        ),
+        (
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+             targets:\n      - {name: crate, style: automated, probe: {shell: \"npm view x \
+             version\\nrm -rf /\"}}\n",
+            "shell probe carrying a control character",
         ),
         (
             &format!(
@@ -1854,10 +1863,11 @@ fn a_release_record_this_build_cannot_read_is_refused_rather_than_answered_aroun
             acknowledged("1.0.0", "yesterday afternoon", "nick"),
             "not a timestamp this build can order by",
         ),
-        // Printed, carried on an event, and handed back through the library.
+        // Held to the same rule the write applies, so the check where a version is
+        // recorded is not a formality a hand-edited record walks past.
         (
-            acknowledged("1.0.0\nand 2.0.0", recorded, "nick"),
-            "not one printable line",
+            acknowledged("nightly", recorded, "nick"),
+            "not a semantic version",
         ),
         (
             acknowledged("1.0.0", recorded, ""),

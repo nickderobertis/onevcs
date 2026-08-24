@@ -118,8 +118,10 @@ for command in register repos resolve session publish publish-branch recover rec
   esac
 done
 
-# A command that reads the host's own state must actually run. `repos` is the
-# read-only one: it creates nothing and reports whatever this machine has.
+# A command that reads the host's own state must actually run. `repos` registers
+# nothing and reports whatever this machine has — but like every verb it reads the
+# state root and writes back what it migrated there, which is why this script points
+# it at a scratch one above.
 onevcs repos >/dev/null || fail "'onevcs repos' failed on a working installation" \
   "check that ONEVCS_HOME (otherwise ~/.onevcs) exists and this user may read and write it, then install again and re-run — $reinstall"
 
@@ -135,10 +137,12 @@ case "$message" in
        "the refusal must name the problem and the command that fixes it" ;;
 esac
 
-# The boundary still rejects nonsense: a usage error is exit 2, not a refusal.
+# The boundary still rejects nonsense: a usage error is exit 2, not a refusal. Its
+# stderr is kept rather than discarded — an unexpected status is reported with the
+# exact thing the binary said, which is the only line that says what went wrong.
 status=0
-onevcs definitely-not-a-command >/dev/null 2>&1 || status=$?
-[ "$status" -eq 2 ] || fail "an unknown command exited $status, not 2" \
+usage="$(onevcs definitely-not-a-command 2>&1 >/dev/null | strip_cr)" || status=$?
+[ "$status" -eq 2 ] || fail "an unknown command exited $status, not 2: '$usage'" \
   "argument validation must fail with clap's usage error before anything else runs"
 
 echo "$label: smoke test passed"

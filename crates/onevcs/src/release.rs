@@ -935,18 +935,22 @@ fn read_at(path: &Path, identity: &str) -> Result<Record> {
 ///
 /// Serde proves the *shape* and stops there. What is under it arrived on disk, which
 /// is a boundary like any other: this file is hand-editable, and a newer `onevcs`
-/// sharing this state root writes it too. Three things are read out of it and each
-/// needs its own answer.
+/// sharing this state root writes it too. Each field is held to what it is read for.
 ///
-/// A `recorded_at` orders acknowledgements — [`newest_acknowledgement`] compares two
-/// as strings — and that is sound only for the fixed-width UTC form
-/// [`ids::timestamp`] writes, so one of another shape is refused rather than sorted
-/// wrongly. An `actor` and a version are printed, put in a JSON payload, and handed
-/// back through the library, so each has to be the one line it renders as. A
-/// baseline's own version is deliberately *not* required to be a semantic version:
-/// it is whatever a probe answered, and a version neither side can parse is what
+/// An acknowledged version is held to being a **semantic version**, which is the
+/// same rule [`acknowledge`] applies where one is recorded — a read that accepted
+/// what the write refuses would make the check a formality. A `recorded_at` orders
+/// acknowledgements ([`newest_acknowledgement`] compares two as strings), and that
+/// is sound only for the fixed-width UTC form [`ids::timestamp`] writes, so one of
+/// another shape is refused rather than sorted wrongly. An `actor` and an
+/// unestablished baseline's reason are printed, put in a JSON payload, and handed
+/// back through the library, so each has to be the one line it renders as.
+///
+/// A *baseline's* own version is deliberately not held to either rule: it is
+/// whatever a probe answered, and a version neither side can parse is precisely what
 /// [`compare`] answers "not answered" about — refusing it here would turn that
-/// designed answer into a dead record.
+/// designed answer into a dead record. One line is all it owes, because it is
+/// printed.
 fn usable(path: &Path, record: &Record) -> Result<()> {
     let refuse = |what: String| {
         Err(error::invalid(format!(
@@ -957,31 +961,32 @@ fn usable(path: &Path, record: &Record) -> Result<()> {
     for (target, landings) in &record.acknowledgements {
         for (commit, stored) in landings {
             let named = format!("has, for {target:?} at {commit:?},");
-            for release in std::iter::once((&stored.version, &stored.recorded_at, &stored.actor))
+            let releases = std::iter::once(&stored.version)
+                .zip(std::iter::once(&stored.recorded_at))
+                .zip(std::iter::once(&stored.actor))
                 .chain(
                     stored
                         .superseded
                         .iter()
-                        .map(|it| (&it.version, &it.recorded_at, &it.actor)),
-                )
-            {
-                let (version, recorded_at, actor) = release;
-                if version.trim().is_empty() || !one_line(version) {
+                        .map(|it| ((&it.version, &it.recorded_at), &it.actor)),
+                );
+            for ((version, recorded_at), actor) in releases {
+                if semver::Version::parse(version).is_err() {
                     return refuse(format!(
-                        "{named} an acknowledged version that is not one \
-                                           printable line ({version:?})"
+                        "{named} an acknowledged version that is not a semantic version \
+                         ({version:?})"
                     ));
                 }
                 if !ids::is_timestamp(recorded_at) {
                     return refuse(format!(
-                        "{named} a recorded_at that is not a timestamp this \
-                                           build can order by ({recorded_at:?})"
+                        "{named} a recorded_at that is not a timestamp this build can order by \
+                         ({recorded_at:?})"
                     ));
                 }
                 if !usable_actor(actor) {
                     return refuse(format!(
-                        "{named} an actor that cannot name whoever performed \
-                                           the release ({actor:?})"
+                        "{named} an actor that cannot name whoever performed the release \
+                         ({actor:?})"
                     ));
                 }
             }
@@ -994,8 +999,8 @@ fn usable(path: &Path, record: &Record) -> Result<()> {
                 BaselineRecord::Established(Baseline::At { version }) => {
                     if version.trim().is_empty() || !one_line(version) {
                         return refuse(format!(
-                            "{named} a baseline version that is not one \
-                                               printable line ({version:?})"
+                            "{named} a baseline version that is not one printable line \
+                             ({version:?})"
                         ));
                     }
                 }
@@ -1006,14 +1011,14 @@ fn usable(path: &Path, record: &Record) -> Result<()> {
                 } => {
                     if reason.trim().is_empty() || !one_line(reason) {
                         return refuse(format!(
-                            "{named} an unestablished baseline whose reason is \
-                                               not one printable line ({reason:?})"
+                            "{named} an unestablished baseline whose reason is not one printable \
+                             line ({reason:?})"
                         ));
                     }
                     if !ids::is_timestamp(attempted_at) {
                         return refuse(format!(
-                            "{named} an unestablished baseline whose \
-                                               attempted_at is not a timestamp ({attempted_at:?})"
+                            "{named} an unestablished baseline whose attempted_at is not a \
+                             timestamp ({attempted_at:?})"
                         ));
                     }
                 }

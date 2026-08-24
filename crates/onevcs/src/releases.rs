@@ -814,6 +814,14 @@ impl StoredProbe {
                          there to run"
                     ));
                 }
+                if !renders_on_one_line(&shell) {
+                    return Err(format!(
+                        "the release target {name:?} names a shell probe carrying a control \
+                         character; this form is the one line `sh` reads, and it is printed \
+                         wherever the probe is named. Put a script the repository carries behind \
+                         a `script:` instead"
+                    ));
+                }
                 Ok(Probe::Shell {
                     shell,
                     timeout_seconds,
