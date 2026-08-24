@@ -182,6 +182,139 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
 }
 
 #[test]
+fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() {
+    // The registry is **shared host state**: every `onevcs` on a machine reads the
+    // one document, and a read that migrates rewrites it in place. So what this
+    // holds is not only that an older document still loads — it is that this build
+    // does not *touch* it. A version an already-released build cannot read, written
+    // into a host whose operator configured no release targets, stops every verb on
+    // that host; this suite put one into `~/.onevcs` once and every `onevcs` command
+    // there refused until it was restored by hand.
+    let world = World::new();
+    let origin = world.bare_origin("v5");
+    let checkout = world.clone_of(&origin, "v5");
+    let key = std::fs::canonicalize(&origin)
+        .expect("the origin exists")
+        .to_string_lossy()
+        .trim_end_matches(".git")
+        .to_owned();
+    let rules = world.path("rules-elsewhere.yml");
+    std::fs::write(
+        &rules,
+        "version: 3\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+    )
+    .expect("a rules file the registry names");
+    let document = serde_json::json!({
+        "version": 5,
+        "identities": {
+            &key: {"origin": &key, "workflow": "local", "repo_type": "single-owner",
+                   "gate": "just gate"}
+        },
+        "checkouts": {"v5": {"path": checkout.to_string_lossy(), "identity": &key}},
+        "rules": rules.to_string_lossy(),
+    });
+    write_registry(&world, &document);
+    let before = std::fs::read_to_string(world.home().join("registry.json")).expect("a registry");
+
+    world
+        .onevcs()
+        .args(["rules", "check", "v5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publication: local-direct"))
+        .stdout(predicate::str::contains(
+            rules.to_string_lossy().into_owned(),
+        ));
+
+    assert_eq!(
+        std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+        before,
+        "a build that learned about release targets leaves a document that names none \
+         byte for byte as it found it"
+    );
+
+    // …and the repository behaves as it always did: no release targets, and the
+    // global adoption rung.
+    let assert = world
+        .onevcs()
+        .args(["release", "targets", "v5", "--json"])
+        .assert()
+        .success();
+    let targets: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document");
+    assert_eq!(targets["adoption"], "fast");
+    assert_eq!(targets["targets"], serde_json::json!([]));
+}
+
+#[test]
+fn a_releases_key_in_the_registry_is_a_stray_key_and_never_a_reference() {
+    // The release-targets document is found at its conventional path under the state
+    // root and nowhere else. An optional key here was considered and withdrawn: every
+    // `onevcs` already in the field declares `deny_unknown_fields`, so the first host
+    // to configure a target would stop every older build on it — the host-wide outage
+    // this design exists to avoid, merely postponed to the day somebody opts in.
+    // `ONEVCS_HOME` already relocates the whole state root, which is every case a
+    // per-file override would have served.
+    let world = World::new();
+    let origin = world.bare_origin("elsewhere");
+    let checkout = world.clone_of(&origin, "elsewhere");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let elsewhere = world.path("releases-elsewhere.yml");
+    std::fs::write(
+        &elsewhere,
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {}\n    adoption: \
+         published\n    targets:\n      - {name: elsewhere, style: human-step, action: cut it}\n",
+    )
+    .expect("a release-targets file somewhere else");
+    std::fs::write(
+        world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {}\n    targets:\n \
+         \x20    - {name: conventional, style: human-step, action: cut it}\n",
+    )
+    .expect("the conventional release-targets file");
+    let registry = world.home().join("registry.json");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&registry).expect("a registry"))
+            .expect("the registry is JSON");
+    document["releases"] = serde_json::json!(elsewhere.to_string_lossy());
+    std::fs::write(&registry, document.to_string()).expect("a registry naming a file");
+
+    let assert = world
+        .onevcs()
+        .args(["release", "targets", "elsewhere", "--json"])
+        .assert()
+        .success();
+    let targets: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document");
+    assert_eq!(
+        targets["targets"][0]["name"], "conventional",
+        "the conventional path decides, and a `releases` key decides nothing"
+    );
+    assert_eq!(targets["adoption"], "fast");
+
+    // It is a key like any other this build has no opinion on: read past, and handed
+    // back untouched by a verb that rewrites the document.
+    let second = world.bare_origin("alongside");
+    let alongside = world.clone_of(&second, "alongside");
+    world
+        .onevcs()
+        .args(["register", &alongside.to_string_lossy()])
+        .assert()
+        .success();
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&registry).expect("a registry"))
+            .expect("the registry is JSON");
+    assert_eq!(
+        written["releases"],
+        elsewhere.to_string_lossy().into_owned()
+    );
+}
+
+#[test]
 fn a_version_2_registry_infers_the_type_its_workflow_is_evidence_for() {
     let world = World::new();
     let origin = world.bare_origin("v2");
@@ -213,18 +346,25 @@ fn a_version_2_registry_infers_the_type_its_workflow_is_evidence_for() {
 
 #[test]
 fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
+    // A version *below* the oldest one this build migrates: there is no shape here to
+    // read it into, so it is refused by number rather than by whichever of its keys
+    // happened to look wrong. A version above the newest is the other direction
+    // entirely and is read — see
+    // `a_registry_a_later_build_wrote_is_read_rather_than_refusing_every_verb`.
     let world = World::new();
     write_registry(
         &world,
-        &serde_json::json!({"version": 99, "identities": {}, "checkouts": {}}),
+        &serde_json::json!({"version": 1, "identities": {}, "checkouts": {}}),
     );
     world
         .onevcs()
         .arg("repos")
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("declares version 99"))
-        .stderr(predicate::str::contains("this build reads 2 to 5"));
+        .stderr(predicate::str::contains("declares version 1"))
+        .stderr(predicate::str::contains(
+            "this build reads version 2 and newer",
+        ));
 
     std::fs::write(world.home().join("registry.json"), "{not json").expect("a broken registry");
     world
@@ -233,6 +373,165 @@ fn a_registry_this_build_cannot_read_is_a_usage_error_and_not_a_crash() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("is not JSON"));
+}
+
+#[test]
+fn a_registry_missing_a_field_this_build_requires_is_refused_and_names_it() {
+    // Leniency is about keys and versions this build has **no opinion on**. A field
+    // it genuinely needs is a different thing entirely: without it there is no
+    // identity to answer about, so the refusal names the field rather than reporting
+    // a repository it made up half of.
+    let world = World::new();
+    write_registry(&world, &serde_json::json!({"version": 5, "checkouts": {}}));
+    world
+        .onevcs()
+        .arg("repos")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("missing field `identities`"));
+
+    // …and one nested inside a record it does understand, which is where a document
+    // that reads as well-formed goes wrong most quietly.
+    write_registry(
+        &world,
+        &serde_json::json!({
+            "version": 5,
+            "identities": {"github.com/acme/widgets": {
+                "origin": "github.com/acme/widgets", "workflow": "remote", "gate": "just gate"
+            }},
+            "checkouts": {},
+        }),
+    );
+    world
+        .onevcs()
+        .arg("repos")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("missing field `repo_type`"));
+
+    // A document with no version at all cannot even be asked which shape it is, and
+    // says so naming the versions that are readable.
+    write_registry(
+        &world,
+        &serde_json::json!({"identities": {}, "checkouts": {}}),
+    );
+    world
+        .onevcs()
+        .arg("repos")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("declares no version"));
+}
+
+/// A registry a build from the future left on this host: a version this one has
+/// never heard of, a key beside the ones it knows, and a key inside a record it
+/// does know.
+fn from_a_later_build(key: &str, checkout: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "version": 99,
+        "identities": {key: {
+            "origin": key,
+            "workflow": "local",
+            "repo_type": "single-owner",
+            "gate": "just gate",
+            "release_channel": "nightly",
+        }},
+        "checkouts": {"future": {"path": checkout.to_string_lossy(), "identity": key}},
+        "policies": {"stacking": "always"},
+    })
+}
+
+#[test]
+fn a_registry_a_later_build_wrote_is_read_rather_than_refusing_every_verb() {
+    // The registry is one document per machine, so an older `onevcs` that refuses
+    // what a newer one wrote does not degrade — it stops every verb on the host. This
+    // build therefore takes the fields it understands, ignores the keys it has no
+    // opinion on, and answers.
+    let world = World::new();
+    let origin = world.bare_origin("future");
+    let checkout = world.clone_of(&origin, "future");
+    let key = std::fs::canonicalize(&origin)
+        .expect("the origin exists")
+        .to_string_lossy()
+        .trim_end_matches(".git")
+        .to_owned();
+    write_registry(&world, &from_a_later_build(&key, &checkout));
+
+    let assert = world
+        .onevcs()
+        .args(["resolve", "future"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
+    assert_eq!(value["identity"], key);
+    assert_eq!(value["workflow"], "local");
+
+    world
+        .onevcs()
+        .arg("repos")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("future"));
+
+    configure_rules(
+        &world,
+        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required}\n",
+    );
+    world
+        .onevcs()
+        .args(["rules", "check", "future"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publication: change-open"));
+}
+
+#[test]
+fn a_verb_that_rewrites_the_registry_keeps_what_it_did_not_understand() {
+    // The other half, and the one an older build gets wrong most expensively: having
+    // read a document it only partly understood, it must hand back every key it
+    // ignored and the version it arrived under. Anything else is an older build
+    // silently destroying a newer one's state — a loss no schema version can warn
+    // about, because the older build is the one doing the writing.
+    let world = World::new();
+    let origin = world.bare_origin("future");
+    let checkout = world.clone_of(&origin, "future");
+    let key = std::fs::canonicalize(&origin)
+        .expect("the origin exists")
+        .to_string_lossy()
+        .trim_end_matches(".git")
+        .to_owned();
+    write_registry(&world, &from_a_later_build(&key, &checkout));
+
+    // `register` is a verb that rewrites the whole document.
+    let second = world.bare_origin("alongside");
+    let alongside = world.clone_of(&second, "alongside");
+    world
+        .onevcs()
+        .args(["register", &alongside.to_string_lossy()])
+        .assert()
+        .success();
+
+    let written: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    )
+    .expect("the registry is JSON");
+    assert_eq!(
+        written["version"], 99,
+        "a write never lowers a version this build did not set"
+    );
+    assert_eq!(
+        written["policies"]["stacking"], "always",
+        "a top-level key this build has no opinion on survives the round trip"
+    );
+    assert_eq!(
+        written["identities"][&key]["release_channel"], "nightly",
+        "a key inside a record this build understood survives it too"
+    );
+    assert!(
+        written["checkouts"].get("alongside").is_some(),
+        "…and what the verb was actually asked to do still happened"
+    );
 }
 
 #[test]
@@ -558,7 +857,7 @@ fn a_rules_file_written_before_the_trailer_prefix_existed_still_reads_and_means_
 }
 
 #[test]
-fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
+fn a_rules_file_from_a_later_schema_decides_the_policy_it_still_spells() {
     let world = World::new();
     let origin = world.bare_origin("future");
     let checkout = world.clone_of(&origin, "future");
@@ -567,21 +866,53 @@ fn a_rules_file_from_a_later_schema_is_refused_at_its_boundary() {
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
+    // A version this build has never heard of, with a key beside the ones it knows
+    // and one inside a rule. The rules file is an operator's own document on their
+    // own host, and refusing it stops every verb — so what this build understands
+    // still decides the policy and the rest is read past.
     configure_rules(
         &world,
-        "version: 7\nrules: []\ndefault: {publication: change-open, approvals: required, \
-         gate: {kind: checks}}\n",
+        "version: 7\nsigning: {required: true}\n\
+         rules:\n  - match: {}\n    publication: change-open\n    \
+         approvals: required\n    stacking: always\n\
+         default: {publication: change-auto, approvals: none}\n",
     );
+    world
+        .onevcs()
+        .args(["rules", "check", "future"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "publication: change-open (from rule 1)",
+        ))
+        .stdout(predicate::str::contains(
+            "approvals: required (from rule 1)",
+        ));
 
+    // A version *below* the oldest this build reads is the other direction, and is
+    // refused by number: there is no shape here that ever read one.
+    configure_rules(
+        &world,
+        "version: 0\nrules: []\ndefault: {publication: change-open, approvals: required}\n",
+    );
     world
         .onevcs()
         .args(["rules", "check", "future"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("declares version 7"))
-        // Naming the range rather than one version, because more than one is
-        // readable now and an operator downgrading a file needs to know which.
-        .stderr(predicate::str::contains("reads versions 1 to 3"));
+        .stderr(predicate::str::contains("declares version 0"))
+        .stderr(predicate::str::contains("reads version 1 and newer"));
+
+    // …and a field this build genuinely requires is named when it is missing, which
+    // is what separates "a key I have no opinion on" from "a document I cannot act
+    // on".
+    configure_rules(&world, "version: 7\nrules: []\n");
+    world
+        .onevcs()
+        .args(["rules", "check", "future"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("missing field `default`"));
 }
 
 #[test]

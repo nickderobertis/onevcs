@@ -52,6 +52,7 @@ mod landed;
 mod lock;
 mod merge_path;
 mod policy;
+mod probe;
 mod processes;
 pub mod provenance;
 mod providers;
@@ -60,6 +61,9 @@ mod publish_branch;
 mod queue;
 mod recover;
 pub mod registry;
+mod release;
+pub mod releases;
+mod remainder;
 pub mod rules;
 mod session;
 mod status;
@@ -81,6 +85,11 @@ pub use landed::{Landed, LandingEvidence};
 pub use providers::Providers;
 pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject};
 pub use registry::Identity;
+pub use releases::{
+    Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
+    ReleaseMethod, ReleaseRule, ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile,
+    RepositoryReleases, SupersededRelease, TargetName,
+};
 pub use rules::MergePolicy;
 pub use session::{
     HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
@@ -162,4 +171,70 @@ pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// carries an incomplete-step marker.
 pub fn session(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionRecord> {
     providers.vcs.session(token)
+}
+
+/// What one repository releases, and what it adopts.
+///
+/// The library form of `onevcs release targets`. `repo` is the identity key, a
+/// registered alias, an origin URL, or a path, exactly as every other command takes
+/// one. A repository the release-targets file names no rule for has no targets and
+/// the global adoption rung, which is what a host with no such file answers for
+/// every repository it knows.
+///
+/// It takes no [`Providers`] for the reason [`session_holders`] does not: what a
+/// repository releases is this host's own configuration and its own record, and
+/// there is nothing here for an implementation of either interface to answer.
+pub fn release_targets(repo: &str) -> Result<RepositoryReleases> {
+    release::targets(&store::load()?, repo)
+}
+
+/// What version of one target is released right now.
+///
+/// The library form of `onevcs release latest`. An **automated** target is answered
+/// by running its probe; a **human-step** target executes nothing at all and is
+/// answered from the newest acknowledgement across its landings, or
+/// [`ReleaseAnswer::NoRelease`] where nobody has recorded one.
+///
+/// [`ReleaseAnswer::NotAnswered`] is never [`ReleaseAnswer::NoRelease`]: a consumer
+/// holds on the first and acts on the second.
+pub fn release_latest(repo: &str, target: Option<&TargetName>) -> Result<ReleaseAnswer> {
+    release::latest(&store::load()?, repo, target)
+}
+
+/// Whether the release that carries one landed change has happened yet.
+///
+/// The library form of `onevcs release status`. `reference` is the four-spelling
+/// reference `onevcs status` takes: a change request's URL, a session token, a
+/// branch name, or a commit.
+pub fn release_status(reference: &str, target: Option<&TargetName>) -> Result<ReleaseStatus> {
+    release::status(&store::load()?, reference, target)
+}
+
+/// Record that somebody performed a human-step release, and what they released.
+///
+/// The library form of `onevcs release acknowledge`. It refuses an automated target
+/// — its version comes from its probe — a reference that has not landed, a version
+/// that is not a semantic version, and a target the repository does not declare.
+///
+/// Recording the same version for the same landing again succeeds and changes
+/// nothing, re-reporting the existing record with its original timestamp and actor.
+/// Recording a *different* version is refused unless `supersede` is set, which
+/// writes the new version and keeps the previous one in the record's own history.
+pub fn acknowledge_release(
+    reference: &str,
+    target: &TargetName,
+    version: &str,
+    supersede: bool,
+) -> Result<Acknowledgement> {
+    release::acknowledge(&store::load()?, reference, target, version, supersede)
+}
+
+/// Which rung of the adoption chain one repository resolves to.
+///
+/// The repository rung where a rule sets one and the global rung otherwise. It
+/// never answers the node rung and never defaults to [`Adoption::Fast`] itself:
+/// those two rungs belong to the consumer, and a crate that answered all four would
+/// make the chain unreadable from either side.
+pub fn adoption_for(repo: &str) -> Result<Adoption> {
+    release::adoption(&store::load()?, repo)
 }

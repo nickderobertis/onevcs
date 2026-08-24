@@ -4,11 +4,38 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::cargo::CommandCargoExt;
 
-/// The compiled `onevcs` binary, spawned the way a user runs it.
+/// The compiled `onevcs` binary, spawned the way a user runs it — over a state
+/// root that belongs to this test binary and to nothing else.
+///
+/// The state root is **not** an argument, and it is not left to each journey to
+/// remember: any verb that resolves a repository reads the registry, migrates what
+/// it finds, and writes it back, so a journey that inherited the operator's
+/// `ONEVCS_HOME` would be a test mutating the host it runs on. This suite did
+/// exactly that until a build wrote a registry version the running `onevcs` could
+/// not read into `~/.onevcs`, and every `onevcs` command on that host refused until
+/// it was restored by hand. A journey that wants a *particular* root still sets one
+/// with `.env`, which overrides this.
 pub fn onevcs() -> assert_cmd::Command {
-    let command = std::process::Command::cargo_bin("onevcs")
+    let mut command = std::process::Command::cargo_bin("onevcs")
         .expect("the `onevcs` binary must be built before the e2e suite runs");
+    command.env(ONEVCS_HOME, scratch_home());
     assert_cmd::Command::from_std(command)
+}
+
+/// The variable that relocates the whole state root, spelled as this crate spells
+/// it.
+const ONEVCS_HOME: &str = "ONEVCS_HOME";
+
+/// One scratch state root per test binary, kept for its whole life.
+///
+/// Kept rather than per-call because the directory has to outlive the process that
+/// is pointed at it, and shared because nothing that reaches it is asserting on
+/// what is in it — a journey that asserts on state builds a `World` of its own.
+fn scratch_home() -> PathBuf {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| tempfile::tempdir().expect("a scratch state root"))
+        .path()
+        .to_path_buf()
 }
 
 /// The directory the compiled binary lives in, for putting it on a `PATH`.
@@ -128,6 +155,57 @@ pub fn documented_report_version() -> u32 {
         .expect("the version is written in backticks")
         .parse()
         .expect("the documented version is a number")
+}
+
+/// The longest an actor may be, read out of the amendment that promises it.
+///
+/// The number is stated in prose an operator reads and decided by a constant this
+/// crate keeps private, which makes the document a second statement of it. Reading
+/// it here is what stops the two from moving apart: the journey beside this drives
+/// a name of exactly this length and one character past it.
+#[cfg(unix)]
+pub fn documented_actor_limit() -> usize {
+    const OPENS: &str = "one line, not blank, at most ";
+    let contract = contract();
+    let at = contract
+        .find(OPENS)
+        .expect("the amendment states the length an actor is held to");
+    contract[at + OPENS.len()..]
+        .split_whitespace()
+        .next()
+        .and_then(|number| number.parse().ok())
+        .expect("the documented length is a number")
+}
+
+/// The variables a probe is given, read out of the record that documents them.
+///
+/// Same reason: the list is stated for an operator wondering what their probe can
+/// see, and decided by a private constant. The journey beside this runs a real probe
+/// and compares what it was handed against exactly this.
+#[cfg(unix)]
+pub fn documented_probe_environment() -> Vec<String> {
+    const OPENS: &str = "| a probe's environment |";
+    let record = inferred_surface();
+    let row = record
+        .lines()
+        .find(|line| line.starts_with(OPENS))
+        .expect("the record documents what a probe is given");
+    let cell = row[OPENS.len()..]
+        .split('|')
+        .next()
+        .expect("the row has a shape column");
+    let mut names: Vec<String> = cell
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+    names.sort_unstable();
+    assert!(
+        !names.is_empty(),
+        "the record names the variables in backticks"
+    );
+    names
 }
 
 /// Every command a user is promised, read out of `docs/contract.md`'s usage block.

@@ -18,12 +18,17 @@
 //! inputs — every path the release archive and the npm launcher name has to be a
 //! path this repository has.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use clap::CommandFactory;
 use onevcs::cli::Cli;
 use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
+use onevcs::releases::{
+    Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
+    ReleaseMethod, ReleaseRule, ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile,
+    RepositoryReleases, SupersededRelease, TargetName,
+};
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
@@ -199,6 +204,9 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::RecoveryAttested,
         EventKind::SyncConflict,
         EventKind::SessionClosed,
+        EventKind::ReleaseProbed,
+        EventKind::ReleaseAcknowledged,
+        EventKind::ReleaseObserved,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -216,7 +224,10 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::MergeCompleted
             | EventKind::RecoveryAttested
             | EventKind::SyncConflict
-            | EventKind::SessionClosed => {}
+            | EventKind::SessionClosed
+            | EventKind::ReleaseProbed
+            | EventKind::ReleaseAcknowledged
+            | EventKind::ReleaseObserved => {}
         }
     }
     kinds
@@ -357,7 +368,21 @@ fn the_contract_and_the_code_name_the_same_event_kinds() {
         !retired.is_empty() && retired.is_subset(&approved),
         "an amendment retires a kind the approved text never named: {retired:?}"
     );
-    let documented: BTreeSet<String> = approved.difference(&retired).cloned().collect();
+    // …and an amendment may add one, as the release amendment does. Added kinds are
+    // held to being new: a kind the approved text already names, listed as an
+    // addition, is an amendment that has lost track of what it changed.
+    let added: BTreeSet<String> = backticked_on_line("Event kinds added:")
+        .into_iter()
+        .collect();
+    assert!(
+        !added.is_empty() && added.is_disjoint(&approved),
+        "an amendment adds a kind the approved text already names: {added:?}"
+    );
+    let documented: BTreeSet<String> = approved
+        .difference(&retired)
+        .cloned()
+        .chain(added)
+        .collect();
     let implemented: BTreeSet<String> = all_event_kinds().into_iter().map(kind_name).collect();
     assert_eq!(
         documented, implemented,
@@ -530,17 +555,25 @@ fn the_version_3_fixture_round_trips_and_is_the_approved_one_without_its_gate() 
 }
 
 #[test]
-fn a_rules_file_that_still_names_a_gate_is_not_a_shape_this_type_reads() {
-    // Which is why a spent key comes out before the shape is enforced rather than
-    // being tolerated by it: `deny_unknown_fields` gets no say in which version it is
-    // reading. A version 3 file naming a gate is refused by the type, and a version 1
-    // or 2 one is readable only because the key was taken out first.
-    let refusal = serde_yaml_ng::from_str::<RulesFile>(&block("yaml"))
-        .expect_err("the approved fixture names a gate, and this type has no such field")
-        .to_string();
-    assert!(
-        refusal.contains("gate"),
-        "the refusal names the key it did not know: {refusal}"
+fn a_rules_file_that_still_names_a_gate_is_no_shape_this_type_holds() {
+    // The shape has no such field, and — since it tolerates a key a *later* build
+    // named — reading one drops it rather than refusing it. Which is why the spent
+    // key is version 3's to refuse and not this type's: `serde` gets no say in which
+    // version it is reading, and only the loader knows whether the file that arrived
+    // is one that still declared a gate. Both halves are proved where each lives:
+    // that a version 3 file naming one is refused **by name** is
+    // `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three`
+    // in tests/e2e/registry.rs, over the real binary.
+    let read: RulesFile = serde_yaml_ng::from_str(&block("yaml")).expect(
+        "the approved fixture names a gate, and a key this type has no opinion on is not \
+                 a reason to refuse a whole document",
+    );
+    let round_tripped =
+        serde_yaml_ng::to_value(&read).expect("a rules file serializes back to YAML");
+    assert_eq!(
+        round_tripped,
+        without_gate(&block("yaml")),
+        "the gate is dropped rather than carried into the shape this build acts on"
     );
 }
 
@@ -553,13 +586,21 @@ fn a_malformed_rules_file_is_rejected_at_the_boundary() {
         "version: 3\nrules: []\ndefault: {publication: change-open, approvals: whenever}\n",
         // No default policy at all.
         "version: 3\nrules: []\n",
-        // A key nobody declared, which is usually a typo for one that matters.
-        "version: 3\nrules: []\npublication: change-open\ndefault: {publication: change-open, approvals: required}\n",
-        // The key version 3 took away, which at this version is one of those.
-        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required, gate: {kind: checks}}\n",
-        // A misspelled match key.
-        "version: 3\nrules: [{match: {hostname: github.com}}]\ndefault: {publication: change-open, approvals: required}\n",
     ];
+    // A key nobody declared is deliberately **not** in that list any more. The shape
+    // tolerates one, so that a file a later build wrote still decides a policy here
+    // rather than stopping every verb on the host; what that trades away is a typo
+    // being caught, and the trade is the amendment's. The keys this build still
+    // refuses it refuses by name at the version that removed them, which is the
+    // loader's question — see
+    // `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three`.
+    for tolerated in [
+        "version: 3\nrules: []\npublication: change-open\ndefault: {publication: change-open, approvals: required}\n",
+        "version: 3\nrules: [{match: {hostname: github.com}}]\ndefault: {publication: change-open, approvals: required}\n",
+    ] {
+        serde_yaml_ng::from_str::<RulesFile>(tolerated)
+            .expect("a key this build has no opinion on is read past, not refused");
+    }
     for case in cases {
         assert!(
             serde_yaml_ng::from_str::<RulesFile>(case).is_err(),
@@ -587,6 +628,443 @@ fn the_policy_flag_and_the_rules_file_spell_the_policies_the_same_way() {
             on_the_command_line, in_the_rules_file,
             "`--policy {on_the_command_line}` and the rules file disagree"
         );
+    }
+}
+
+/// The release-targets fixture the amendment spells, as a document.
+fn documented_releases() -> String {
+    amendment_yaml_spelling("adoption: fast")
+}
+
+#[test]
+fn the_release_targets_fixture_round_trips_and_keeps_the_style_that_shapes_it() {
+    // Extracted from the amendment rather than copied here, like every other
+    // fixture: the document an operator is shown and the type that reads it cannot
+    // drift, because editing one without the other fails this.
+    let fixture = documented_releases();
+    let file: ReleasesFile =
+        serde_yaml_ng::from_str(&fixture).expect("the documented fixture must deserialize");
+    assert_eq!(file.version, 1);
+    assert_eq!(file.default.adoption, Adoption::Fast);
+    let rule = &file.repositories[0];
+    assert_eq!(rule.adoption, Some(Adoption::Published));
+    assert_eq!(
+        rule.r#match,
+        RuleMatch {
+            host: Some("github.com".to_owned()),
+            owner: Some("nickderobertis".to_owned()),
+            name: Some("onevcs".to_owned()),
+            path: None,
+        }
+    );
+    assert_eq!(
+        rule.default_target.as_deref(),
+        Some("crate"),
+        "the fixture names what a consumer naming no target gets"
+    );
+
+    // The style decides the shape: the automated targets carry a probe and no
+    // action, and the human-step one carries an action and — the whole point — no
+    // probe at all.
+    let styles: Vec<(String, ReleaseStyle, bool)> = rule
+        .targets
+        .iter()
+        .map(|target| {
+            (
+                target.name.to_string(),
+                target.style(),
+                target.probe().is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        styles,
+        vec![
+            ("crate".to_owned(), ReleaseStyle::Automated, true),
+            ("wheel".to_owned(), ReleaseStyle::Automated, true),
+            ("container".to_owned(), ReleaseStyle::HumanStep, false),
+        ]
+    );
+    assert_eq!(
+        rule.targets[0].probe(),
+        Some(&Probe::Shell {
+            shell: "npm view onevcs-cli version".to_owned(),
+            timeout_seconds: 60,
+        })
+    );
+    assert_eq!(
+        rule.targets[1].probe(),
+        Some(&Probe::Script {
+            script: PathBuf::from("scripts/probe-released-wheel.sh"),
+            args: Vec::new(),
+            timeout_seconds: 60,
+        })
+    );
+    assert_eq!(
+        rule.targets[2].action(),
+        Some("Push the image to the internal registry and record the tag.")
+    );
+
+    // And it round-trips: what this build writes is the document it read.
+    let written = serde_yaml_ng::to_string(&file).expect("a releases file serializes");
+    let reread: ReleasesFile = serde_yaml_ng::from_str(&written).expect("what it writes it reads");
+    assert_eq!(reread, file);
+}
+
+#[test]
+fn a_probe_bound_the_document_leaves_out_is_the_documented_default() {
+    // The 60 seconds is the amendment's, read out of it rather than repeated here:
+    // it is the bound every probe on a host that configures none runs under, and a
+    // suite that took it from the code under test would agree with it however wrong
+    // both were.
+    let documented: u64 = contract()
+        .lines()
+        .find(|line| line.contains("bounded timeout defaulting to"))
+        .expect("the amendment states the default probe bound")
+        .split_whitespace()
+        .skip_while(|word| !word.starts_with("defaulting"))
+        .nth(2)
+        .expect("the sentence names the number")
+        .parse()
+        .expect("the documented default is a number");
+    let file: ReleasesFile = serde_yaml_ng::from_str(
+        "version: 1\ndefault: {adoption: fast}\nrepositories:\n  - match: {name: onevcs}\n    \
+         targets:\n      - {name: crate, style: automated, probe: {shell: 'echo 1'}}\n",
+    )
+    .expect("a probe may leave its bound out");
+    assert_eq!(
+        file.repositories[0].targets[0].probe(),
+        Some(&Probe::Shell {
+            shell: "echo 1".to_owned(),
+            timeout_seconds: documented,
+        }),
+        "a probe that names no bound runs under the documented one"
+    );
+}
+
+#[test]
+fn a_target_whose_style_and_body_disagree_does_not_deserialize_and_the_refusal_names_it() {
+    // The core of the amendment: `style` is the tag over two shapes, not a label
+    // beside them. Each of these is a document somebody could write, and each is a
+    // state this crate must not be able to hold.
+    let cases = [
+        // A human-step target with a probe: there is nothing to ask, because the
+        // release happens when a person does something.
+        (
+            "- {name: container, style: human-step, action: push it, probe: {shell: 'echo 1'}}",
+            "human-step",
+        ),
+        // An automated target with an action: a machine releases it and its probe
+        // says what is out.
+        (
+            "- {name: crate, style: automated, probe: {shell: 'echo 1'}, action: push it}",
+            "automated",
+        ),
+        // Both probe forms, and neither.
+        (
+            "- {name: crate, style: automated, probe: {shell: 'echo 1', script: p.sh}}",
+            "both",
+        ),
+        ("- {name: crate, style: automated, probe: {}}", "neither"),
+        // A body its style requires and does not have.
+        ("- {name: crate, style: automated}", "no probe"),
+        ("- {name: container, style: human-step}", "no action"),
+        // A script probe that leaves the repository being released.
+        (
+            "- {name: wheel, style: automated, probe: {script: ../elsewhere.sh}}",
+            "escaping",
+        ),
+        // A bound that has already fired is not a bound.
+        (
+            "- {name: crate, style: automated, probe: {shell: 'echo 1', timeout_seconds: 0}}",
+            "zero bound",
+        ),
+    ];
+    for (target, what) in cases {
+        let document = [
+            "version: 1",
+            "default: {adoption: fast}",
+            "repositories:",
+            "  - match: {name: onevcs}",
+            "    targets:",
+            &format!("      {target}"),
+            "",
+        ]
+        .join("\n");
+        let failure = serde_yaml_ng::from_str::<ReleasesFile>(&document)
+            .err()
+            .unwrap_or_else(|| panic!("{what} must not deserialize: {document}"))
+            .to_string();
+        let named = target
+            .split("name: ")
+            .nth(1)
+            .and_then(|rest| rest.split(&[',', '}'][..]).next())
+            .expect("each case names its target");
+        assert!(
+            failure.contains(named),
+            "the refusal for {what} must name the target {named:?}: {failure}"
+        );
+    }
+}
+
+#[test]
+fn a_target_name_that_could_not_be_a_key_a_file_or_an_operand_is_refused_where_it_is_read() {
+    for spelling in ["", "-crate", "cr ate", "../escape", &"x".repeat(65)] {
+        assert!(
+            TargetName::try_from(spelling.to_owned()).is_err(),
+            "{spelling:?} must not be a target name"
+        );
+    }
+    assert_eq!(
+        TargetName::try_from("crate-2.0_x".to_owned())
+            .expect("a plain name is one")
+            .to_string(),
+        "crate-2.0_x"
+    );
+}
+
+#[test]
+fn the_amendment_declares_the_release_surface_it_added() {
+    // Reconciled the way every other amendment is: each type is built from outside
+    // the crate with every field named — which is the half a compiler checks — and
+    // the amendment is held to declaring it, which is what keeps the text from
+    // drifting from what was built.
+    let targets = RepositoryReleases {
+        identity: "github.com/nickderobertis/onevcs".to_owned(),
+        adoption: Adoption::Published,
+        default_target: Some(TargetName::try_from("crate".to_owned()).expect("a name")),
+        targets: vec![ReleaseTarget {
+            name: TargetName::try_from("crate".to_owned()).expect("a name"),
+            release: ReleaseMethod::Automated {
+                probe: Probe::Shell {
+                    shell: "npm view onevcs-cli version".to_owned(),
+                    timeout_seconds: 60,
+                },
+            },
+        }],
+    };
+    let rule = ReleaseRule {
+        r#match: RuleMatch::default(),
+        adoption: Some(Adoption::Fast),
+        default_target: None,
+        targets: Vec::new(),
+    };
+    let file = ReleasesFile {
+        version: 1,
+        repositories: vec![rule],
+        default: ReleaseDefault {
+            adoption: Adoption::Fast,
+        },
+    };
+    assert_eq!(file.repositories[0].adoption, Some(Adoption::Fast));
+    let acknowledgement = Acknowledgement {
+        identity: targets.identity.clone(),
+        target: TargetName::try_from("container".to_owned()).expect("a name"),
+        landing_commit: "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6".to_owned(),
+        version: "2026.8.23".to_owned(),
+        recorded_at: "2026-08-23T17:04:11.412Z".to_owned(),
+        actor: "nick".to_owned(),
+        superseded: vec![SupersededRelease {
+            version: "2026.8.22".to_owned(),
+            recorded_at: "2026-08-22T09:00:00.000Z".to_owned(),
+            actor: "nick".to_owned(),
+        }],
+    };
+    let human_step = ReleaseTarget {
+        name: acknowledgement.target.clone(),
+        release: ReleaseMethod::HumanStep {
+            action: "Push the image to the internal registry and record the tag.".to_owned(),
+        },
+    };
+    assert_eq!(
+        human_step.probe(),
+        None,
+        "a human-step target has no probe to run, by construction"
+    );
+    assert_eq!(human_step.style(), ReleaseStyle::HumanStep);
+    assert_eq!(
+        targets.targets[0].probe().map(Probe::form),
+        Some("shell"),
+        "the event's `form` is the probe's own"
+    );
+
+    let declarations = amendment_declaring("pub struct ReleasesFile");
+    for declared in [
+        "pub struct ReleasesFile { pub version: u32, pub repositories: Vec<ReleaseRule>,",
+        "pub default: ReleaseDefault }",
+        "pub struct ReleaseDefault { pub adoption: Adoption }",
+        "pub struct ReleaseRule { pub r#match: rules::RuleMatch, pub adoption: Option<Adoption>,",
+        "pub default_target: Option<TargetName>,",
+        "pub targets: Vec<ReleaseTarget> }",
+        "pub struct ReleaseTarget { pub name: TargetName, pub release: ReleaseMethod }",
+        "pub struct TargetName(String);",
+        "pub enum Adoption { Fast, Published }",
+        "pub enum ReleaseMethod {",
+        "Automated { probe: Probe },",
+        "HumanStep { action: String },",
+        "pub fn style(&self) -> ReleaseStyle;",
+        "pub fn probe(&self) -> Option<&Probe>;",
+        "pub fn action(&self) -> Option<&str>;",
+        "impl ReleaseStyle { pub fn as_str(&self) -> &'static str; }",
+        "impl Adoption { pub fn as_str(&self) -> &'static str; }",
+        "impl Probe { pub fn form(&self) -> &'static str; }",
+        "pub fn select(&self, named: Option<&TargetName>) -> Result<&ReleaseTarget>;",
+        "pub enum ReleaseStyle { Automated, HumanStep }",
+        "Script { script: PathBuf, args: Vec<String>, timeout_seconds: u64 },",
+        "Shell  { shell: String, timeout_seconds: u64 },",
+        "pub enum Baseline { At { version: String }, NoRelease }",
+        "pub enum BaselineRecord { Established(Baseline),",
+        "Unestablished { reason: String, attempted_at: String } }",
+        "NotReleased { at_landing: Baseline, now: String },",
+        "AwaitingHumanStep { target: TargetName, action: String, since: String },",
+        "NotAnswered { reason: String },",
+        "NotLanded,",
+        "pub struct SupersededRelease { pub version: String, pub recorded_at: String,",
+        "pub struct RepositoryReleases { pub identity: String, pub adoption: Adoption,",
+        "pub fn release_targets(repo: &str) -> Result<RepositoryReleases>;",
+        "pub fn release_latest(repo: &str, target: Option<&TargetName>) -> Result<ReleaseAnswer>;",
+        "pub fn release_status(reference: &str, target: Option<&TargetName>) \
+         -> Result<ReleaseStatus>;",
+        "pub fn acknowledge_release(reference: &str, target: &TargetName, version: &str,",
+        "supersede: bool) -> Result<Acknowledgement>;",
+        "pub fn adoption_for(repo: &str) -> Result<Adoption>;",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+
+    // The values a consumer reads out of JSON are spelled as the amendment writes
+    // them: a rename that only touched Rust would break every reader of `--json`
+    // while still compiling.
+    for (spelled, value) in [
+        ("fast", serde_json::to_value(Adoption::Fast)),
+        ("published", serde_json::to_value(Adoption::Published)),
+        ("automated", serde_json::to_value(ReleaseStyle::Automated)),
+        ("human-step", serde_json::to_value(ReleaseStyle::HumanStep)),
+    ] {
+        assert_eq!(value.expect("it serializes"), json!(spelled));
+        assert!(
+            declarations.contains(spelled) || contract().contains(spelled),
+            "the amendment does not spell {spelled}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(&acknowledgement).expect("an acknowledgement serializes"),
+        json!({
+            "identity": "github.com/nickderobertis/onevcs",
+            "target": "container",
+            "landing_commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6",
+            "version": "2026.8.23",
+            "recorded_at": "2026-08-23T17:04:11.412Z",
+            "actor": "nick",
+            "superseded": [{
+                "version": "2026.8.22",
+                "recorded_at": "2026-08-22T09:00:00.000Z",
+                "actor": "nick",
+            }],
+        })
+    );
+}
+
+#[test]
+fn not_answered_and_not_released_are_distinct_values_wherever_they_travel() {
+    // The single most damaging thing this could get wrong, held as a shape rather
+    // than as prose: neither the probe's answer nor the status can render one as the
+    // other, because they are different tags in the JSON a consumer routes on.
+    assert_eq!(
+        serde_json::to_value(ReleaseAnswer::NoRelease).expect("it serializes"),
+        json!({"state": "no-release"})
+    );
+    assert_eq!(
+        serde_json::to_value(ReleaseAnswer::NotAnswered {
+            reason: "the shell probe timed out after 60s".to_owned(),
+        })
+        .expect("it serializes"),
+        json!({"state": "not-answered", "reason": "the shell probe timed out after 60s"})
+    );
+    assert_eq!(
+        serde_json::to_value(ReleaseStatus::NotReleased {
+            at_landing: Baseline::At {
+                version: "0.12.2".to_owned(),
+            },
+            now: "0.12.2".to_owned(),
+        })
+        .expect("it serializes"),
+        json!({"state": "not-released", "at_landing": {"state": "at", "version": "0.12.2"},
+               "now": "0.12.2"})
+    );
+    assert_eq!(
+        serde_json::to_value(ReleaseStatus::NotReleased {
+            at_landing: Baseline::NoRelease,
+            now: String::new(),
+        })
+        .expect("it serializes"),
+        json!({"state": "not-released", "at_landing": {"state": "no-release"}, "now": ""}),
+        "no release at landing is a state the answer can express, and an empty `now` \
+         is no release right now"
+    );
+    assert_eq!(
+        serde_json::to_value(ReleaseStatus::NotAnswered {
+            reason: "no baseline was captured".to_owned(),
+        })
+        .expect("it serializes"),
+        json!({"state": "not-answered", "reason": "no baseline was captured"})
+    );
+    assert_eq!(
+        serde_json::to_value(ReleaseStatus::NotLanded).expect("it serializes"),
+        json!({"state": "not-landed"})
+    );
+}
+
+#[test]
+fn a_baseline_is_persisted_as_one_of_three_states_rather_than_a_bare_version() {
+    // The three the amendment's own `baselines` fixture spells, read back out of it:
+    // a bare string could express only the first, and conflating any pair of them is
+    // how a change gets reported as released when it is not.
+    let fixture = amendment_block_declaring("jsonc", "unestablished");
+    let baselines: Value = serde_json::from_str(&format!("{{{fixture}}}"))
+        .or_else(|_| serde_json::from_str(&fixture))
+        .expect("the baselines fixture is JSON");
+    let baselines = &baselines["baselines"];
+    let read = |target: &str| -> BaselineRecord {
+        let landing = baselines[target]
+            .as_object()
+            .expect("one landing per target")
+            .values()
+            .next()
+            .expect("the fixture names a landing")
+            .clone();
+        serde_json::from_value(landing).expect("a baseline record reads back")
+    };
+    assert_eq!(
+        read("crate"),
+        BaselineRecord::Established(Baseline::At {
+            version: "0.12.2".to_owned(),
+        })
+    );
+    assert_eq!(
+        read("wheel"),
+        BaselineRecord::Established(Baseline::NoRelease)
+    );
+    assert_eq!(
+        read("npm"),
+        BaselineRecord::Unestablished {
+            reason: "probe timed out after 60s".to_owned(),
+            attempted_at: "2026-08-23T17:04:11.412Z".to_owned(),
+        }
+    );
+    // …and each writes back exactly what it read.
+    for target in ["crate", "wheel", "npm"] {
+        let written = serde_json::to_value(read(target)).expect("a record serializes");
+        let expected = baselines[target]
+            .as_object()
+            .expect("one landing per target")
+            .values()
+            .next()
+            .expect("the fixture names a landing");
+        assert_eq!(&written, expected);
     }
 }
 
@@ -657,6 +1135,43 @@ fn a_registry_without_a_rules_reference_omits_the_field() {
 }
 
 #[test]
+fn the_registry_names_no_release_targets_reference_at_any_version() {
+    // The release-targets document is found at its conventional path under the state
+    // root and nowhere else, so this document is the same whether or not a host
+    // configures one. An optional key here would have been safe only until somebody
+    // used it: every `onevcs` already in the field declares `deny_unknown_fields`, so
+    // the first host to configure a target would stop every older build on it, for
+    // every verb. Withdrawing the key is what makes that failure stop existing rather
+    // than be postponed — and the version does not move either, for the same reason.
+    let written = json!({"version": 5, "identities": {}, "checkouts": {}});
+    let registry: Registry =
+        serde_json::from_value(written.clone()).expect("a registry without a rules key loads");
+    assert_eq!(
+        serde_json::to_value(&registry).expect("a registry serializes"),
+        written,
+        "a registry this build writes carries nothing about release targets"
+    );
+
+    let fields = serde_json::to_value(Registry {
+        version: 5,
+        identities: BTreeMap::new(),
+        checkouts: BTreeMap::new(),
+        rules: Some(PathBuf::from("/home/agent/.config/onevcs/rules.yaml")),
+    })
+    .expect("a registry serializes");
+    let keys: Vec<&String> = fields
+        .as_object()
+        .expect("the registry is a JSON object")
+        .keys()
+        .collect();
+    assert_eq!(
+        keys,
+        ["version", "identities", "checkouts", "rules"],
+        "the registry declares no release-targets key"
+    );
+}
+
+#[test]
 fn a_malformed_registry_is_rejected_at_the_boundary() {
     let cases = [
         // A repository type nobody declared.
@@ -667,8 +1182,6 @@ fn a_malformed_registry_is_rejected_at_the_boundary() {
         json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "remote", "repo_type": "team"}}, "checkouts": {}}),
         // A checkout pointing nowhere.
         json!({"version": 5, "identities": {}, "checkouts": {"a": {"path": "/tmp/x"}}}),
-        // A stray top-level key, usually a typo for one that matters.
-        json!({"version": 5, "identities": {}, "checkouts": {}, "identites": {}}),
     ];
     for case in cases {
         assert!(
@@ -1176,6 +1689,47 @@ fn the_sweep_age_floor_defaults_to_the_number_the_record_states() {
         "docs/inferred-surface.md states an age floor of {documented:?} and the parser \
          defaults to {defaults:?}; the number is shared with `oneagentgraph sweep`, so \
          moving it in one place alone is how the two come to answer differently"
+    );
+}
+
+/// The two lengths this crate holds a name to, and the documents that state them.
+///
+/// Both are restated in prose an operator reads — a `TargetName`'s in
+/// `docs/inferred-surface.md`, an actor's in the approved amendment — so both are a
+/// second statement of a number the code decides. Neither constant is public, and
+/// neither should be: what the limit *is* is nobody's business outside this crate,
+/// and what a caller meets is the conversion. So the gate is driven through the
+/// conversion instead, at exactly the length the document promises and one character
+/// past it, which is the pair a number that moved cannot satisfy.
+#[test]
+fn a_name_is_held_to_the_length_the_documents_state() {
+    let documented = |record: &str, opens: &str| -> usize {
+        let text = repo_file(record);
+        let at = text
+            .find(opens)
+            .unwrap_or_else(|| panic!("{record} states {opens:?}"));
+        text[at + opens.len()..]
+            .split_whitespace()
+            .next()
+            .and_then(|number| number.parse().ok())
+            .unwrap_or_else(|| panic!("{record} writes a number after {opens:?}"))
+    };
+
+    let longest = documented(
+        "docs/inferred-surface.md",
+        "`TargetName` | non-empty, at most ",
+    );
+    TargetName::try_from("c".repeat(longest)).expect("a name of the documented length is one");
+    TargetName::try_from("c".repeat(longest + 1))
+        .expect_err("a name one character past the documented length is not");
+
+    // An actor's limit is reached through no type — it is read out of the
+    // environment where a release is acknowledged — so `tests/e2e/releases.rs` drives
+    // this half over the real binary. What is asserted here is that the number is
+    // stated where that journey reads it.
+    assert!(
+        documented("docs/contract.md", "one line, not blank, at most ") > 0,
+        "the amendment states the length an actor is held to"
     );
 }
 

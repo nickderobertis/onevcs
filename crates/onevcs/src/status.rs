@@ -464,6 +464,140 @@ struct Work {
     branch: Ref,
 }
 
+/// What this host's own streams recorded about one piece of work.
+///
+/// Latest-first by the envelope's own timestamp rather than by the order the
+/// streams happened to be listed in: a branch published twice has two records of
+/// itself, and the newer one is the one somebody is asking about.
+///
+/// One reader rather than one per caller, because what these records *decide* is a
+/// landing: `status` renders it and `release status` compares a release against it,
+/// and two readings of the same streams would be two answers about one branch.
+struct Told {
+    change_url: Option<String>,
+    asked_the_host_to_land: bool,
+    merge_path: Option<MergePathReport>,
+    recorded: landed::Recorded,
+}
+
+fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Told {
+    let relevant = relevant_streams(streams, &work.identity, &work.branch, session);
+    let change_url = latest(
+        relevant
+            .iter()
+            .filter_map(|record| record.change_url.clone()),
+    );
+    Told {
+        asked_the_host_to_land: relevant.iter().any(|record| record.asked_the_host_to_land),
+        merge_path: latest(
+            relevant
+                .iter()
+                .filter_map(|record| record.merge_path.clone()),
+        ),
+        recorded: landed::Recorded {
+            landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
+            // Parsed rather than passed through, for the same reason: the report
+            // prints this URL and the decision *compares* it, and a value that is no
+            // URL names no change request to look for.
+            change: change_url.as_deref().and_then(|url| Url::parse(url).ok()),
+        },
+        change_url,
+    }
+}
+
+/// The session that holds or held one piece of work, preferring an open one.
+fn session_of(work: &Work) -> Result<Option<workspace::Record>> {
+    Ok(workspace::all()?
+        .into_iter()
+        .filter(|record| record.identity == work.identity && record.branch == work.branch)
+        .max_by_key(|record| record.state == Lifecycle::Open))
+}
+
+/// Ask every copy of the branch this host holds whether the work landed.
+fn judge(
+    holders: &[Holder],
+    resolution: &Resolution,
+    base: &Ref,
+    work: &Work,
+    recorded: &landed::Recorded,
+    trailers: &provenance::Trailers,
+) -> Result<Vec<(PathBuf, String, Landed)>> {
+    let current = vcs::base_commit(&resolution.publication, base);
+    let mut judged = Vec::new();
+    for holder in holders {
+        let compared = vcs::judged_against(&holder.path, base, current.as_ref());
+        let verdict = landed::decide(&holder.path, &compared, &work.branch, recorded, trailers)?;
+        judged.push((holder.path.clone(), compared, verdict));
+    }
+    Ok(judged)
+}
+
+/// Which copy of a branch answers the landing question, and what it answered.
+///
+/// The one a landing accounts for least. A branch does not stop when it lands — a
+/// session continuing a name that already means something commits onto the same
+/// branch — so where two copies disagree, the copy still holding work is the one
+/// whose answer is true of the *work*. Each tier already guards its own answer that
+/// way: a copy reads anything but `yes` exactly when it carries something no record
+/// covers. Ranking the three and taking the least certain is what carries that guard
+/// across copies, so a spent run clone's landing cannot answer for a checkout holding
+/// commits nobody published — the one direction this must never fail in. Ties go to
+/// the first holder.
+fn carrier_of(judged: &[(PathBuf, String, Landed)]) -> Option<&(PathBuf, String, Landed)> {
+    judged.iter().min_by_key(|(_, _, verdict)| match verdict {
+        Landed::No => 0,
+        Landed::Unknown => 1,
+        Landed::Yes { .. } => 2,
+    })
+}
+
+/// Where a reference's work stands in history, for a caller that needs the landing
+/// and nothing else.
+///
+/// The same decision `run` reports, reached through the same helpers and the same
+/// tiers, and asked of history alone — no host is consulted, because the landing
+/// tiers never were and because the caller that asks this has no `Hosting` to hand.
+pub(crate) struct LandingOf {
+    /// The identity the work belongs to.
+    pub identity: String,
+    /// The branch that carries it.
+    pub branch: Ref,
+    /// Whether it reached the base, and what says so.
+    pub landed: Landed,
+    /// The copy that answered, which is where the landing commit can be read.
+    pub carrier: Option<PathBuf>,
+}
+
+pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<LandingOf> {
+    let mut notes = Vec::new();
+    let streams = recorded_streams(&mut notes)?;
+    let (work, _) = resolve(registry, reference, &streams)?;
+    let resolution = store::resolve(registry, &work.identity)?;
+    let (file, _) = policy::load(registry)?;
+    let trailers = provenance::from_rules(&file);
+    let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
+    let holders = holders_of(registry, &resolution, &work.branch)?;
+    let held_by = session_of(&work)?.map(|record| record.token.to_string());
+    let told = from_streams(&streams, &work, held_by.as_deref());
+    let judged = judge(
+        &holders,
+        &resolution,
+        &base,
+        &work,
+        &told.recorded,
+        &trailers,
+    )?;
+    let carrier = carrier_of(&judged);
+    Ok(LandingOf {
+        identity: work.identity.clone(),
+        branch: work.branch.clone(),
+        landed: carrier
+            .map(|(_, _, verdict)| verdict.clone())
+            .unwrap_or(Landed::Unknown),
+        carrier: carrier.map(|(repo, _, _)| repo.clone()),
+    })
+}
+
 pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
@@ -479,65 +613,30 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
 
     let holders = holders_of(registry, &resolution, &work.branch)?;
-    let sessions = workspace::all()?;
-    let session = sessions
-        .iter()
-        .filter(|record| record.identity == work.identity && record.branch == work.branch)
-        .max_by_key(|record| record.state == Lifecycle::Open)
-        .map(|record| SessionReport {
-            token: record.token.clone(),
-            state: record.state,
-            liveness: SessionHolder::from(record.clone()).liveness,
-            base: record.base.clone(),
-            clone: record.clone.clone(),
-            worktree: record.worktree.clone(),
-        });
-
-    // Latest-first by the envelope's own timestamp rather than by the order the
-    // streams happened to be listed in: a branch published twice has two records of
-    // itself, and the newer one is the one somebody is asking about.
-    let held_by = session.as_ref().map(|session| session.token.to_string());
-    let relevant = relevant_streams(&streams, &work.identity, &work.branch, held_by.as_deref());
-    let change_url = latest(
-        relevant
-            .iter()
-            .filter_map(|record| record.change_url.clone()),
-    );
-    let asked_the_host_to_land = relevant.iter().any(|record| record.asked_the_host_to_land);
-    let merge_path = latest(
-        relevant
-            .iter()
-            .filter_map(|record| record.merge_path.clone()),
-    );
-    let recorded = landed::Recorded {
-        landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
-        // Parsed rather than passed through, for the same reason: the report prints
-        // this URL and the decision *compares* it, and a value that is no URL names
-        // no change request to look for.
-        change: change_url.as_deref().and_then(|url| Url::parse(url).ok()),
-    };
-
-    let current = vcs::base_commit(&resolution.publication, &base);
-    let mut judged: Vec<(PathBuf, String, Landed)> = Vec::new();
-    for holder in &holders {
-        let compared = vcs::judged_against(&holder.path, &base, current.as_ref());
-        let verdict = landed::decide(&holder.path, &compared, &work.branch, &recorded, &trailers)?;
-        judged.push((holder.path.clone(), compared, verdict));
-    }
-    // Which copy answers, and it is the one a landing accounts for least. A branch
-    // does not stop when it lands — a session continuing a name that already means
-    // something commits onto the same branch — so where two copies disagree, the copy
-    // still holding work is the one whose answer is true of the *work*. Each tier
-    // already guards its own answer that way: a copy reads anything but `yes` exactly
-    // when it carries something no record covers. Ranking the three and taking the
-    // least certain is what carries that guard across copies, so a spent run clone's
-    // landing cannot answer for a checkout holding commits nobody published — the one
-    // direction this must never fail in. Ties go to the first holder.
-    let carrier = judged.iter().min_by_key(|(_, _, verdict)| match verdict {
-        Landed::No => 0,
-        Landed::Unknown => 1,
-        Landed::Yes { .. } => 2,
+    let session = session_of(&work)?.map(|record| SessionReport {
+        token: record.token.clone(),
+        state: record.state,
+        liveness: SessionHolder::from(record.clone()).liveness,
+        base: record.base.clone(),
+        clone: record.clone.clone(),
+        worktree: record.worktree.clone(),
     });
+
+    let held_by = session.as_ref().map(|session| session.token.to_string());
+    let told = from_streams(&streams, &work, held_by.as_deref());
+    let change_url = told.change_url.clone();
+    let asked_the_host_to_land = told.asked_the_host_to_land;
+    let merge_path = told.merge_path.clone();
+
+    let judged = judge(
+        &holders,
+        &resolution,
+        &base,
+        &work,
+        &told.recorded,
+        &trailers,
+    )?;
+    let carrier = carrier_of(&judged);
 
     let mut ahead = None;
     let mut branch_provenance = None;

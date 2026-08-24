@@ -479,6 +479,86 @@ CLI gains is the verb and its two options.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] the shared-surface
 record ends here. -->
 
+## The releases that follow a landing, and the four verbs that ask about them
+
+The release surface is an **approved amendment** in `docs/contract.md`: the types,
+the document, the baseline, the acknowledgement, and the three event kinds are
+declared there, and `the_amendment_declares_the_release_surface_it_added` in
+`tests/contract.rs` holds the text to the code. What is recorded here is the
+command surface, which the approved usage block does not spell, and the handful of
+shapes the amendment left to inference.
+
+```
+onevcs release targets REPO [--json]
+onevcs release latest REPO [--target NAME] [--json]
+onevcs release status REF [--target NAME] [--json]
+onevcs release acknowledge REF --target NAME --version VERSION [--supersede] [--json]
+```
+
+`REPO` is the identity key, registered alias, origin URL, or path every other
+command takes; `REF` is the four-spelling reference `onevcs status` takes. The block
+is read beside the contract's own by `tests/contract.rs` and `tests/e2e/support.rs`,
+exactly as the four verbs above it are.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| the release-targets document's location | `$ONEVCS_HOME/releases.yml`, with **no** registry key and **no** version bump | See the argument below, which is the whole of why there is no `releases` key to find. |
+| the release record's path | `$ONEVCS_HOME/releases/<identity>.json`, with `/` flattened to `-` and a digest where the identity cannot spell a filename | The amendment names the path with the identity in it, and an identity key is not a filename. The document carries the identity it is about, and a read that finds another one's refuses — so two identities that flatten to one name are caught rather than answered about wrongly. |
+| `observed` in that record | `{target: {landing_commit: version}}` | The amendment says `release-observed` fires **the first time** a landing is released, and "the first time" is not decidable without remembering. It is the smallest thing that decides it, and nothing reads it but that decision. |
+| `AwaitingHumanStep.since` | the landing commit's own committer date, read from the copy that answered the landing question | A wait has to be measured from something, and the landing is the only event a human-step target has. The committer date rather than the author date, because a squash lands a commit authored days earlier. Where no repository this host holds can read the commit, the answer is "not answered" naming that — never a wait measured from a moment nobody knows. |
+| a landing with **no** baseline record at all | the same answer an `unestablished` one gets | A target added to the document after a change landed, and a landing whose probe failed, leave this crate in one state: it does not know what was released then. Comparing against a probe now would be unsound for the same reason in both, and the same later `NoRelease` answer repairs both. |
+| the actor | `ONEVCS_ACTOR`, otherwise `USER` or `LOGNAME`, otherwise `unknown` | `acknowledge_release` takes no `Providers` and so has no `RemoteHost` to ask who is authenticated. The environment is what is left, and a host that says nothing records `unknown` rather than having somebody invented for it. |
+| `TargetName` | non-empty, at most 64 characters, starting with a letter or a digit, then letters, digits, `-`, `_`, and `.` | It names a key in the persisted record, a file-safe token, and a `--target` operand, so what may spell one is decided in the conversion rather than by whichever of the three met it first. |
+| a script probe's path | relative, and with no component that leaves the repository root | The form exists to run what the repository being released **carries**, so a path that leaves it is refused where the document is read rather than resolved at the moment it would be executed. |
+| a probe's environment | `PATH`, `HOME`, and — where this host has them — `SYSTEMROOT` and `USERPROFILE` | The amendment says "an explicitly constructed environment"; these four are what a probe needs to be found and to read its own configuration. Everything else the caller was holding, a credential for something unrelated among it, is not a probe's business. |
+
+### Why the registry has no release-targets key, and must not grow one
+
+This is written down because it is the obvious next thing to reach for, and it was
+reached for twice before it was decided.
+
+The plan asked for an optional `releases: Option<PathBuf>` beside the registry's
+`rules` key, and for the registry's version to rise by one. The version bump went
+first: the registry is *shared host state* — one document per machine, rewritten in
+place by whichever `onevcs` migrates it first — so a version an already-released
+build cannot read does not degrade that build, it stops every verb on the host,
+including on a host whose operator configured nothing. This repository has watched
+exactly that happen: a suite run wrote a bumped registry into `~/.onevcs`, and every
+`onevcs` command on the machine refused until an operator restored the file by hand,
+twice in one day.
+
+The optional key looked like the safe form of the same idea, and it is not. Every
+`onevcs` already in the field declares `#[serde(deny_unknown_fields)]` on `Registry`
+and always will — no amount of leniency added *here* can change what those builds
+do. So an optional key is harmless only while nobody uses it. The first host to
+configure a release target writes `releases: <path>`, and from that moment every
+older `onevcs` on that host refuses the registry: the same host-wide outage, merely
+postponed to the day somebody opts in, and arriving then as a mystery rather than as
+a release note.
+
+So the key is not defended, it is **not added**. The releases document is found at
+`$ONEVCS_HOME/releases.yml` and nowhere else; the registry is not read for it, not
+written for it, and not touched by the release surface in any state. The document an
+older build is handed is byte for byte unchanged whether or not this host configures
+release targets. The failure mode stops existing rather than being mitigated.
+
+Relocating the file buys nothing that would pay for that risk. `ONEVCS_HOME` already
+moves the whole state root — which is how this repository's own journeys point at a
+scratch one — so every case a `rules`-style override would serve is already served.
+
+The lenient reader stays, and is the more important half of that work: reading a
+document a later build wrote, carrying its unknown keys back through a rewriting
+verb, and never lowering a declared version are what make the *next* schema change
+safe — including adding this key later, once the builds in the field are lenient.
+What this release does is stop short of exercising it on the registry.
+
+**A calendar version has to be written without leading zeroes.** The amendment's own
+example writes a human-step version as `2026.8.23`, and `2026.08.23` is refused:
+leading zeroes in a numeric identifier are not a semantic version, and the whole
+point of the check is that two releases are compared by semantic-version ordering.
+It is stated here because it is the one place an operator meets the rule as a
+surprise.
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.

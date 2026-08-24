@@ -1025,6 +1025,7 @@ fn publish_locally(
                 EventKind::MergeCompleted,
                 object(json!({"identity": identity, "sha": sha, "base": context.target.base()})),
             );
+            record_baselines(context, &sha, stream);
             Ok(PublishOutcome::Merged(Sha(sha)))
         })();
         git::worktree_remove(&context.repo, &scratch)?;
@@ -1355,6 +1356,7 @@ fn land_as_change(
             object(json!({"identity": identity, "sha": sha.0})),
         );
         record_landing(context, &sha);
+        record_baselines(context, &sha.0, stream);
         fast_forward_publication(&context.resolution.publication, context.target.base())?;
         Ok(PublishOutcome::Merged(sha))
     })();
@@ -1386,6 +1388,36 @@ fn record_landing(context: &Context<'_>, sha: &Sha) {
             branch = context.branch,
             merged = sha.0,
         );
+    }
+}
+
+/// Record what each of this identity's **automated** release targets had at the
+/// moment this change landed.
+///
+/// A baseline is what makes "has this change been released" answerable later: a
+/// probe answering a strictly greater version afterwards is the release that
+/// carries this work. It is captured here, at the landing, because a reading taken
+/// any later cannot tell a release that carries this change from one that predates
+/// it.
+///
+/// Nothing is probed for a human-step target, because there is nothing to probe —
+/// what a landing starts for one of those is a wait a person ends. And nothing at
+/// all happens for an identity with no release targets, which is every identity on
+/// a host with no release-targets file.
+///
+/// Best effort, exactly as [`record_landing`] above is and for the same reason: the
+/// change has already merged, and reporting the publication as failed because its
+/// own baseline could not be captured would be a worse lie than the missing record.
+fn record_baselines(context: &Context<'_>, sha: &str, stream: &mut Stream) {
+    match crate::store::load() {
+        Ok(registry) => {
+            crate::release::record_baselines(&registry, &context.resolution.key, sha, stream)
+        }
+        Err(failure) => eprintln!(
+            "onevcs: warning: the release baselines for {identity} at landing {sha} were not \
+             captured: {failure}",
+            identity = context.resolution.key,
+        ),
     }
 }
 

@@ -80,3 +80,22 @@ pub fn timestamp() -> String {
         .format(description)
         .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_owned())
 }
+
+/// Whether a stored value is a timestamp of the shape [`timestamp`] writes.
+///
+/// The **shape**, not a calendar date, and that is the point: this form is
+/// fixed-width and UTC, so comparing two of them as strings orders them in time, and
+/// a reader that sorts by one is relying on exactly this. Checked beside the writer
+/// rather than beside a reader, so the two cannot come to disagree about what a
+/// stored timestamp looks like.
+pub fn is_timestamp(value: &str) -> bool {
+    let shape = "0000-00-00T00:00:00.000Z";
+    value.len() == shape.len()
+        && value
+            .chars()
+            .zip(shape.chars())
+            .all(|(had, want)| match want {
+                '0' => had.is_ascii_digit(),
+                other => had == other,
+            })
+}

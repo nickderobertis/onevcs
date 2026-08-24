@@ -58,6 +58,12 @@ filetime = "0.2"
 # A lock file is named by a digest of the identity it guards, because that identity
 # is a filesystem path and a path is not a filename.
 sha2 = "0.10"
+# Whether one release carries a change is decided by comparing two versions, and
+# "greater" there is semantic-version ordering rather than string ordering — a
+# string comparison reports a yank or a re-tag as a release. The definition of a
+# semantic version is not a thing to keep a second copy of in the crate whose
+# release decisions rest on it.
+semver = "1"
 # The envelope's `ts` is RFC3339 with millisecond precision in UTC. Civil-calendar
 # arithmetic is not a thing to hand-roll into an event stream's ordering key.
 time = { version = "0.3", features = ["formatting", "macros"] }

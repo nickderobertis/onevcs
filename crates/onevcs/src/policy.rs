@@ -18,11 +18,14 @@ use crate::rules::{Approvals, MergePolicy, Policy, RuleMatch, RulesFile};
 use crate::store::Normalized;
 use crate::{home, ids};
 
-/// The version of the rules file this build writes, and the newest it reads.
+/// The version of the rules file this build writes, and the newest it has an
+/// opinion about.
 ///
 /// `2` added `trailer_prefix`. `3` removed `gate:`. Nothing else about the shape
 /// moved, so a file that declares an older version is read as it always was rather
 /// than migrated: there is no field to fill in, only ones that are absent or spent.
+/// A file declaring a *later* version is read too, as this shape, since a version
+/// this build has no opinion on is not a reason to stop every verb on the host.
 pub const VERSION: u32 = 3;
 
 /// The oldest version this build still reads.
@@ -40,10 +43,11 @@ const TRAILER_PREFIX_VERSION: u32 = 2;
 /// The version at which the rules file stopped naming what verifies a change.
 ///
 /// `1` and `2` accept a `gate:` and drop it, saying once which file it was read out
-/// of; `3` declares a shape that never had one, so `deny_unknown_fields` refuses it
-/// there. Versioned rather than taken outright because a rules file is an operator's
-/// document on their own host, and refusing every command before they can re-apply
-/// it is worse than reading a key this build has nothing to do with.
+/// of; `3` and later declare a shape that never had one, so it is refused there —
+/// **by name**, here, rather than by a shape that tolerates every other key it does
+/// not know. Versioned rather than taken outright because a rules file is an
+/// operator's document on their own host, and refusing every command before they
+/// can re-apply it is worse than reading a key this build has nothing to do with.
 const GATE_REMOVED_VERSION: u32 = 3;
 
 /// How much review a publication policy leaves in the path.
@@ -171,17 +175,19 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
     // version this build does not read has to be answered as that rather than as
     // whichever of its keys this build happened not to recognize.
     if let Some(declared) = declared_version(&document) {
-        if !(u64::from(OLDEST_VERSION)..=u64::from(VERSION)).contains(&declared) {
+        if declared < u64::from(OLDEST_VERSION) {
             return Err(Error::Invalid {
                 reason: format!(
-                    "the rules file at {} declares version {declared}; this build reads versions \
-                     {OLDEST_VERSION} to {VERSION}",
+                    "the rules file at {} declares version {declared}; this build reads version \
+                     {OLDEST_VERSION} and newer",
                     path.display(),
                 ),
             });
         }
         if declared < u64::from(GATE_REMOVED_VERSION) {
             report_spent_gate(&path, drop_gate(&mut document));
+        } else {
+            refuse_removed_gate(&path, &document)?;
         }
     }
     let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
@@ -213,6 +219,44 @@ fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
         }
     }
     dropped
+}
+
+/// Refuse, by name, a `gate:` at a version that no longer has one.
+///
+/// The shape tolerates a key it does not know, so that a file a later build wrote
+/// still loads here — but this key is not one this build has no opinion on. It named
+/// a second verifier beside the repository's own merge path and threw its answer
+/// away, and a file still carrying one is asking for something version
+/// `GATE_REMOVED_VERSION` took away. It is looked for exactly where the schema used
+/// to put one, which is where `drop_gate` takes it from at the versions that still
+/// had it; a `gate:` anywhere else is a key like any other.
+fn refuse_removed_gate(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
+    let named = |value: Option<&serde_yaml_ng::Value>, where_: String| match value {
+        Some(serde_yaml_ng::Value::Mapping(fields)) if fields.contains_key("gate") => Some(where_),
+        _ => None,
+    };
+    let found = named(document.get("default"), "default".to_owned()).or_else(|| {
+        match document.get("rules") {
+            Some(serde_yaml_ng::Value::Sequence(rules)) => rules
+                .iter()
+                .enumerate()
+                .find_map(|(index, rule)| named(Some(rule), format!("rule {}", index + 1))),
+            _ => None,
+        }
+    });
+    match found {
+        None => Ok(()),
+        Some(where_) => Err(Error::Invalid {
+            reason: format!(
+                "the rules file at {} is malformed: unknown field `gate` in {where_}, which \
+                 version {GATE_REMOVED_VERSION} removed. What verifies a change is the \
+                 repository's own merge path — the host's required checks, or its pre-push \
+                 hook — and `onevcs repos --audit-gates` reports which of those each identity \
+                 has. Delete the gate keys",
+                path.display()
+            ),
+        }),
+    }
 }
 
 /// Say, naming the file, that a rules file still names what no longer verifies.
@@ -335,7 +379,11 @@ fn field_source(named: &str, from_rule: bool) -> String {
 }
 
 /// Whether every field a rule sets matches this repository.
-fn matches(criteria: &RuleMatch, identity: &Normalized, checkout: &Path) -> bool {
+///
+/// `pub(crate)` because the release-targets file matches on the same
+/// [`RuleMatch`], with the same first-match-wins semantics: two match vocabularies
+/// over the same identities would drift.
+pub(crate) fn matches(criteria: &RuleMatch, identity: &Normalized, checkout: &Path) -> bool {
     let hosted = |part: fn(&crate::store::Hosted) -> &str, want: &String| {
         identity
             .hosted

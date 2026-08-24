@@ -72,6 +72,11 @@ mod publish_branch;
 mod refusing_fs;
 #[cfg(unix)]
 mod registry;
+// Unix only: its probes are real POSIX shell scripts and real `sh -c` one-liners,
+// and its landings are real local-direct publications. Its own header carries the
+// reason in full.
+#[cfg(unix)]
+mod releases;
 // `seam` proves each command reaches the implementation it was *handed*, which cannot
 // be shown without handing it one. Everything else in it is real: real bare origins,
 // real clones, a real `git push`, real session records.
@@ -83,6 +88,11 @@ mod seam;
 mod scripts;
 #[cfg(unix)]
 mod smoke;
+// The guard that keeps every other module here off the operator's own state root.
+// It reads this repository's sources rather than driving the binary, which is the
+// only way to see a spawn that does *not* exist — the thing that went wrong was a
+// second one nobody remembered.
+mod state_root;
 // Unix only: the `commit-msg` hooks these install are POSIX shell.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.

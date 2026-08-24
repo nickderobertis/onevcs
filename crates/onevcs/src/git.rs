@@ -518,8 +518,13 @@ fn wait_for_exit(
     }
 }
 
+/// Put a spawned command in a process group of its own.
+///
+/// `pub(crate)` because a release probe is bounded the same way a git command is,
+/// and a second spelling of the group teardown would be a second answer to "what
+/// does a fired bound take down".
 #[cfg(unix)]
-fn detach_process_group(command: &mut Command) {
+pub(crate) fn detach_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     // A group of its own, so the bound has one handle covering every process git
     // starts however late. Its transport is one git restarts whenever the
@@ -528,10 +533,12 @@ fn detach_process_group(command: &mut Command) {
 }
 
 #[cfg(not(unix))]
-fn detach_process_group(_command: &mut Command) {}
+pub(crate) fn detach_process_group(_command: &mut Command) {}
 
+/// End every process in a bounded command's own group. See
+/// [`detach_process_group`].
 #[cfg(unix)]
-fn terminate_group(child: &Child) {
+pub(crate) fn terminate_group(child: &Child) {
     // SAFETY: `kill` with a negative pid signals the process group. The group is
     // this child's own, created by `process_group(0)` above, so nothing outside the
     // command being bounded is reachable from here.
@@ -541,7 +548,7 @@ fn terminate_group(child: &Child) {
 }
 
 #[cfg(not(unix))]
-fn terminate_group(child: &Child) {
+pub(crate) fn terminate_group(child: &Child) {
     // No portable group teardown: the bound still fires and the child is killed
     // below, but a hook's own orphaned children survive it.
     let _ = child;
@@ -975,6 +982,28 @@ pub fn detach_head(cwd: &Path) -> Result<()> {
 /// The checked-out branch, or `HEAD` when the worktree is detached.
 pub fn current_branch(cwd: &Path) -> Result<String> {
     Ok(checked(&["rev-parse", "--abbrev-ref", "HEAD"], Some(cwd))?.trimmed())
+}
+
+/// When a commit was committed, as this repository records it, or `None` where it
+/// does not hold the commit.
+///
+/// The committer date rather than the author date: what a wait on a human step is
+/// measured from is when the work reached the base, and a squash lands a commit
+/// authored days earlier.
+pub fn committer_date(cwd: &Path, commit: &str) -> Option<String> {
+    run(
+        &[
+            "show",
+            "-s",
+            "--format=%cI",
+            &format!("{commit}^{{commit}}"),
+        ],
+        Some(cwd),
+    )
+    .ok()
+    .filter(Output::ok)
+    .map(|output| output.trimmed())
+    .filter(|date| !date.is_empty())
 }
 
 /// Local branch names, in git's deterministic ref order.

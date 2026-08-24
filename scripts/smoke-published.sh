@@ -12,8 +12,10 @@
 # What it asserts: the binary reports the version the registry says it serves,
 # prints its whole command surface for `--help`, reads its own state root, refuses
 # an unregistered repository with exit 2, and rejects a malformed invocation with
-# clap's usage error (also 2). Deliberately read-only — an installed binary is
-# smoke-tested, not handed a repository to publish.
+# clap's usage error (also 2). It publishes nothing — an installed binary is
+# smoke-tested, not handed a repository to publish — but the verbs it runs read the
+# state root and write back what they migrated there, which is why it works over a
+# scratch one rather than over whichever the caller has.
 #
 # Deliberately toolchain-free: bash and the installed binary. The scheduled sweep
 # runs this every week on every OS, for both registries, and anything it had to
@@ -68,6 +70,23 @@ if ! command -v onevcs >/dev/null 2>&1; then
     "install it first — 'pip install onevcs-cli', 'npm install -g onevcs-cli', or 'cargo install onevcs'"
 fi
 
+# This script runs verbs that *read the state root and write it back*, so it never
+# runs against whichever one the caller happened to have. A caller that named one
+# is honoured — `tests/e2e/smoke.rs` points every journey at its own — and one that
+# named none gets a scratch root of this run's own, removed on the way out. The
+# incident this prevents is on the record: this file ran `onevcs resolve` under a
+# developer's real HOME from their own test suite, the build under test wrote a
+# registry version the installed `onevcs` could not read into `~/.onevcs`, and every
+# `onevcs` command on that host refused until an operator restored the file by hand.
+if [ -z "${ONEVCS_HOME:-}" ]; then
+  ONEVCS_HOME="$(mktemp -d)" || fail "cannot make a scratch state root with 'mktemp -d'" \
+    "check that TMPDIR (otherwise /tmp) exists, has space, and this user may write it — or set ONEVCS_HOME to a directory and re-run"
+  export ONEVCS_HOME
+  # shellcheck disable=SC2064 # the path is expanded now on purpose: the variable
+  # may be gone or reassigned by the time the trap fires.
+  trap "rm -rf '$ONEVCS_HOME'" EXIT
+fi
+
 # Windows ships the same bytes with CRLF once anything touches them, so strip CR
 # everywhere rather than let a line ending decide the verdict.
 strip_cr() { tr -d '\r'; }
@@ -93,7 +112,7 @@ help="$(onevcs --help | strip_cr)" || fail "'onevcs --help' exited non-zero" \
 # repository beside it. It cannot drift from the parser:
 # tests/contract.rs::the_release_smoke_script_asserts_the_whole_command_surface
 # reconciles the two, and tests/contract.rs holds the parser to docs/contract.md.
-for command in register repos resolve session publish publish-branch recover recoverable status import integrate sync sweep events artifact rules; do
+for command in register repos resolve session publish publish-branch recover recoverable status import integrate sync sweep events artifact rules release; do
   case "$help" in
     *"$command"*) ;;
     *) fail "--help does not list the '$command' command" \
@@ -101,8 +120,10 @@ for command in register repos resolve session publish publish-branch recover rec
   esac
 done
 
-# A command that reads the host's own state must actually run. `repos` is the
-# read-only one: it creates nothing and reports whatever this machine has.
+# A command that reads the host's own state must actually run. `repos` registers
+# nothing and reports whatever this machine has — but like every verb it reads the
+# state root and writes back what it migrated there, which is why this script points
+# it at a scratch one above.
 onevcs repos >/dev/null || fail "'onevcs repos' failed on a working installation" \
   "check that ONEVCS_HOME (otherwise ~/.onevcs) exists and this user may read and write it, then install again and re-run — $reinstall"
 
@@ -118,10 +139,12 @@ case "$message" in
        "the refusal must name the problem and the command that fixes it" ;;
 esac
 
-# The boundary still rejects nonsense: a usage error is exit 2, not a refusal.
+# The boundary still rejects nonsense: a usage error is exit 2, not a refusal. Its
+# stderr is kept rather than discarded — an unexpected status is reported with the
+# exact thing the binary said, which is the only line that says what went wrong.
 status=0
-onevcs definitely-not-a-command >/dev/null 2>&1 || status=$?
-[ "$status" -eq 2 ] || fail "an unknown command exited $status, not 2" \
+usage="$(onevcs definitely-not-a-command 2>&1 >/dev/null | strip_cr)" || status=$?
+[ "$status" -eq 2 ] || fail "an unknown command exited $status, not 2: '$usage'" \
   "argument validation must fail with clap's usage error before anything else runs"
 
 echo "$label: smoke test passed"
