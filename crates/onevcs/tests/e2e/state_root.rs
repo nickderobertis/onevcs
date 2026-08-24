@@ -18,6 +18,8 @@
 //! the thing that went wrong was not a helper missing an `.env` call — it was a
 //! second spawn nobody remembered was there.
 
+// llmlint: ignore-file[e2e_not_mocked] nothing here is substituted for a real
+// boundary: this module drives no artifact at all, for the reason immediately below.
 // llmlint: ignore-file[tests_mirror_real_usage] what this module asserts is the
 // *absence* of a spawn, and no amount of driving the CLI can show that a second one
 // does not exist — running every journey proves only that the ones written today

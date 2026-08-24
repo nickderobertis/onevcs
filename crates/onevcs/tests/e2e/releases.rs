@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use predicates::prelude::*;
 use serde_json::Value;
 
+use crate::host::{Hosted, DIRECT};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::world::World;
 
@@ -598,6 +599,65 @@ fn a_script_probe_with_nowhere_to_run_from_answers_not_answered_rather_than_fail
 /// point: a consumer can only tell the two waits apart if there are two.
 const CONTAINER: &str = "      - name: container\n        style: human-step\n        action: \
                          \"Push the image to the internal registry and record the tag.\"\n";
+
+#[test]
+fn a_change_the_host_merges_captures_its_baselines_like_a_local_landing_does() {
+    // Every other journey here lands `local-direct`, where this crate performs the
+    // merge itself. A hosted publication is the other path — GitHub lands the change
+    // and this crate learns the commit back from it — and a baseline captured on one
+    // and not the other would leave every repository that publishes through a host
+    // unable to answer the question this whole surface exists for.
+    let hosted = Hosted::new(DIRECT);
+    let answers = hosted.world.path("answers");
+    std::fs::create_dir_all(&answers).expect("an answers directory");
+    std::fs::write(answers.join("crate"), "1.0.0\n").expect("what is released now");
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{host: \
+             github.com, owner: acme-corp, name: hosted}}\n    adoption: published\n    \
+             default_target: crate\n    targets:\n{}",
+            answering("crate")
+        ),
+    )
+    .expect("a release-targets file");
+
+    let token = hosted.change("feature/released", "feat: the thing a release carries");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    // The baseline was taken at the landing, so what was out *then* is what a later
+    // release is compared against.
+    let asking = |world: &World, args: &[&str]| -> Value {
+        let assert = world
+            .onevcs()
+            .arg("release")
+            .args(args)
+            .arg("--json")
+            .assert()
+            .success();
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document")
+    };
+    let waiting = asking(&hosted.world, &["status", &token, "--target", "crate"]);
+    assert_eq!(waiting["state"], "not-released");
+    assert_eq!(
+        waiting["at_landing"],
+        serde_json::json!({"state": "at", "version": "1.0.0"}),
+        "the baseline is what the probe found at the landing, not a bare string"
+    );
+    assert_eq!(waiting["now"], "1.0.0");
+
+    // …and a strictly greater version afterwards is the release that carried it.
+    std::fs::write(answers.join("crate"), "1.1.0\n").expect("a release goes out");
+    let released = asking(&hosted.world, &["status", &token, "--target", "crate"]);
+    assert_eq!(released["state"], "released");
+    assert_eq!(released["version"], "1.1.0");
+    assert_eq!(released["style"], "automated");
+}
 
 #[test]
 fn what_a_human_step_target_has_released_is_the_newest_thing_anybody_recorded() {
