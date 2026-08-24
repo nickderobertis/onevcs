@@ -75,7 +75,7 @@ mod workspace;
 
 pub use error::{Error, Result};
 pub use event::{
-    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Source,
+    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Phase, Source,
 };
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, GitHub, Hosting,

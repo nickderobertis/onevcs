@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::{Error, Result};
-use crate::event::EventKind;
+use crate::event::{EventKind, Phase};
 use url::Url;
 
 use crate::host::{ChangeRequest, ChangeSpec, Check, Hosting, MergeOutcome, RemoteHost, Sha};
@@ -1016,7 +1016,16 @@ fn publish_locally(
                 "origin",
                 environment,
             )?;
-            record_push(stream, &context.branch, &pushed, Some(&context.run_root))?;
+            // The squash goes onto the base rather than onto the branch it landed,
+            // so this push is the work being integrated whatever branch the payload
+            // names.
+            record_push(
+                stream,
+                &context.branch,
+                &pushed,
+                Some(&context.run_root),
+                Phase::Integrate,
+            )?;
             if !pushed.accepted() {
                 return Err(rejected(context, &pushed));
             }
@@ -1143,7 +1152,14 @@ fn publish_as_change(
         replacing,
         environment,
     )?;
-    record_push(stream, &context.branch, &pushed, Some(&context.run_root))?;
+    // The session's own branch, on its way to being proposed: the work being made.
+    record_push(
+        stream,
+        &context.branch,
+        &pushed,
+        Some(&context.run_root),
+        Phase::Development,
+    )?;
     if !pushed.accepted() {
         // Which refusal this is depends on what git declined, and that is decided
         // from what git and the host *report* rather than from the sentence either
@@ -1677,11 +1693,19 @@ fn unsettled(
 /// outlives the tree the push was built in, and is `None` for a caller whose scratch
 /// workspace is removed when it returns — there the stored artifact is what persists,
 /// and a copy under a directory about to go would only look like evidence.
+///
+/// `phase` is which branch this push updated, which is the one thing about a push
+/// that its own payload cannot say: `branch` here names the work being published,
+/// and a `local-direct` squash and a merge train both push that work onto the *base*
+/// under it. So the caller that made the push says whether it was the session's own
+/// branch — the work being made, [`Phase::Development`] — or another, which is that
+/// work being integrated.
 pub(crate) fn record_push(
     stream: &mut Stream,
     branch: &Ref,
     pushed: &git::Pushed,
     preserve_under: Option<&Path>,
+    phase: Phase,
 ) -> Result<()> {
     let output = pushed.output();
     let stored = stream::store_artifact("log", output);
@@ -1710,7 +1734,7 @@ pub(crate) fn record_push(
             json!(preserved.display().to_string()),
         );
     }
-    stream.emit_with(EventKind::Push, payload, artifact.into_iter().collect());
+    stream.emit_push(phase, payload, artifact.into_iter().collect());
     Ok(())
 }
 

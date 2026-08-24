@@ -26,7 +26,7 @@ use serde_json::{Map, Value};
 use time::macros::format_description;
 use time::OffsetDateTime;
 
-use onevcs::{ArtifactId, Envelope, Error, EventKind, Labels, Result, Source};
+use onevcs::{ArtifactId, Envelope, Error, EventKind, Labels, Phase, Result, Source};
 
 /// The envelope schema version this crate emits, as `onevcs` emits it.
 const ENVELOPE_VERSION: u32 = 1;
@@ -130,6 +130,11 @@ fn append(emission: &Emission) -> Result<()> {
         seq,
         source: Source::Vcs,
         kind: emission.kind,
+        // Stamped from the kind, which decides it for every kind a provider here
+        // emits: the one kind whose phase its own target decides is `push`, and
+        // nothing in this crate performs one — the repository side of a publication
+        // is neither performed nor claimed.
+        phase: Phase::of(emission.kind).unwrap_or(Phase::Development),
         labels,
         payload: emission.payload.clone(),
         artifacts: Vec::new(),
