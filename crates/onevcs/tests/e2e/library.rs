@@ -2185,3 +2185,53 @@ fn the_session_record_names_the_session_that_continued_its_branch() {
         "the newest session of a chain names nobody"
     );
 }
+
+#[test]
+fn a_phase_a_session_no_longer_has_is_dropped_in_silence_and_refused_when_it_is_named() {
+    // The two halves of the same rule, on one session that really did write events
+    // in the phase: an operator who stops releasing a repository has not asked for
+    // anything, so the release events already on its stream stop arriving without a
+    // word — and a consumer that *names* the phase is told, because a filter
+    // answered with nothing and a session that did nothing look alike.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+
+    let session = landed(&world, "feature/probed", "one.txt");
+    let while_releasing = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("everything the session wrote");
+    assert_eq!(
+        phases_of(&while_releasing, onevcs::EventKind::ReleaseProbed),
+        vec![Phase::Release],
+        "the publication captured a baseline, which is a release-phase event"
+    );
+
+    // The operator stops releasing this repository. The events are still in the
+    // file, byte for byte; what changed is which phases this session has.
+    std::fs::remove_file(world.home().join("releases.yml")).expect("the targets file was there");
+    let after = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("what a repository that releases nothing reads");
+    assert!(
+        phases_of(&after, onevcs::EventKind::ReleaseProbed).is_empty(),
+        "a phase this session no longer has is dropped: {:?}",
+        after.iter().map(|e| (e.kind, e.phase)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        after.len(),
+        while_releasing.len()
+            - while_releasing
+                .iter()
+                .filter(|event| event.phase == Phase::Release)
+                .count(),
+        "…and nothing else was dropped with it"
+    );
+
+    let refused = EventStream::open_filtered(&session.token, phased(Phase::Release))
+        .expect_err("naming it is the case that is told");
+    assert!(refused.to_string().contains("release"), "{refused}");
+}

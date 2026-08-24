@@ -243,14 +243,6 @@ pub struct Record {
 /// cycle in it does not say.
 pub type Chain = std::result::Result<Record, String>;
 
-/// How far a chain of retries may be followed before it is one nothing wrote.
-///
-/// A cycle is already refused where a link is written and detected again here, so
-/// this is not the cycle bound: it is the bound on a chain long enough that
-/// following it is itself the problem. Far above any real one — a branch retried
-/// this many times is a workstream that stopped being retried a long time ago.
-const MAX_RETRIES: usize = 256;
-
 /// The newest record of the chain this one starts, or why it cannot be followed.
 ///
 /// Every hop is loaded through [`load`], so each is a record that passed the same
@@ -259,6 +251,9 @@ const MAX_RETRIES: usize = 256;
 /// another identity, and a cycle. Answering with the last record that did read
 /// would be answering from a session that something superseded, which is the exact
 /// shape of the wrong answer this link exists to prevent.
+///
+/// It terminates because every hop either revisits a token — which is the cycle —
+/// or reaches one it has not seen, and there are finitely many records on a host.
 pub fn newest(from: &Record) -> Chain {
     let mut seen = vec![from.token.to_string()];
     let mut record = from.clone();
@@ -267,13 +262,6 @@ pub fn newest(from: &Record) -> Chain {
             return Err(format!(
                 "the session {first} was retried by {next}, and following that reaches {first} \
                  again; a chain of retries that closes on itself names no newest session",
-                first = from.token,
-            ));
-        }
-        if seen.len() > MAX_RETRIES {
-            return Err(format!(
-                "the session {first} names a chain of retries longer than {MAX_RETRIES}; nothing \
-                 that opened a session wrote one",
                 first = from.token,
             ));
         }
@@ -575,6 +563,10 @@ pub fn save(record: &Record) -> Result<()> {
 
 /// Refuse a retry link that names no session, another repository's, or its own
 /// chain.
+///
+/// The cycle question is [`newest`]'s, asked of *this* record: a link that closes a
+/// chain of any length — including one straight back to itself — is a chain from
+/// here that never ends, which is precisely what that function answers.
 fn followable(record: &Record) -> Result<()> {
     let Some(next) = &record.retried_by else {
         return Ok(());
@@ -585,53 +577,21 @@ fn followable(record: &Record) -> Result<()> {
             token = record.token,
         )))
     };
-    if **next == *record.token {
-        return refuse("a session does not continue its own branch after itself".to_owned());
-    }
-    let followed = match load(next) {
-        Ok(followed) => followed,
+    match load(next) {
         Err(failure) => return refuse(format!("{failure}")),
-    };
-    if followed.identity != record.identity {
-        return refuse(format!(
-            "that session belongs to {there:?} and this one to {here:?}, and a session continues \
-             a branch of its own repository",
-            there = followed.identity,
-            here = record.identity,
-        ));
-    }
-    // Followed from the *target*, so a link closing a chain of any length is caught
-    // rather than only one that points straight back.
-    if let Err(broken) = newest(&followed) {
-        return refuse(broken);
-    }
-    if reaches(&followed, &record.token) {
-        return refuse(format!(
-            "that session's own chain of retries already reaches {token}, and a chain that \
-             closes on itself names no newest session",
-            token = record.token,
-        ));
-    }
-    Ok(())
-}
-
-/// Whether following one record's retries reaches a token.
-///
-/// Only ever asked of a chain [`newest`] has just followed to its end, so it
-/// terminates for the reason that one does.
-fn reaches(from: &Record, token: &Token) -> bool {
-    let mut record = from.clone();
-    loop {
-        if *record.token == **token {
-            return true;
+        Ok(followed) if followed.identity != record.identity => {
+            return refuse(format!(
+                "that session belongs to {there:?} and this one to {here:?}, and a session \
+                 continues a branch of its own repository",
+                there = followed.identity,
+                here = record.identity,
+            ))
         }
-        let Some(next) = record.retried_by.clone() else {
-            return false;
-        };
-        match load(&next) {
-            Ok(followed) => record = followed,
-            Err(_) => return false,
-        }
+        Ok(_) => {}
+    }
+    match newest(record) {
+        Ok(_) => Ok(()),
+        Err(broken) => refuse(broken),
     }
 }
 
