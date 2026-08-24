@@ -91,6 +91,18 @@ pub struct SessionRecord {
     /// dirty carries [`Provenance::IncompleteStep`], and must pass the merge-path
     /// merge path through `onevcs recover` before it may be published.
     pub provenance: Provenance,
+    /// The session that continued this one's branch, once one has.
+    ///
+    /// A branch a run left behind is picked up by the next session over the same
+    /// name, and this is the link between the two — written onto the *older*
+    /// record when the newer one opens. It is the answer to "which of these two
+    /// copies of one branch is the work", which nothing else on either record
+    /// gives, and everything that reports what became of a session or a branch
+    /// follows it to the newest record before it answers.
+    ///
+    /// Absent on every session nothing has superseded, which is most of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retried_by: Option<SessionToken>,
 }
 
 /// One session that holds a repository's workspace, as an enumeration reports it.

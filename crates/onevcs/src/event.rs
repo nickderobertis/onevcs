@@ -24,6 +24,7 @@ use crate::error::{self, Result};
 // enforced here (an unknown `kind` or `source`, a `seq` that is not a u64, a missing
 // field are all rejected by serde and asserted in tests/contract.rs), and the semantic
 // checks land with the parser seam that reads a stream.
+#[serde(from = "StoredEnvelope")]
 pub struct Envelope {
     /// Envelope schema version. `1` is the shape `docs/contract.md` declares.
     pub v: u32,
@@ -38,6 +39,14 @@ pub struct Envelope {
     pub source: Source,
     /// What happened.
     pub kind: EventKind,
+    /// Which part of a change's life the event belongs to, as the producer
+    /// classified it.
+    ///
+    /// Stamped by whoever emitted the event rather than derived by whoever reads
+    /// one, because one kind's phase is not a fact about the kind: a `push` of the
+    /// session's own branch is [`Phase::Development`] and a push of anything else is
+    /// [`Phase::Integrate`], and only the producer knows which branch it pushed.
+    pub phase: Phase,
     /// What the producer knew about the run when it stamped the event.
     pub labels: Labels,
     /// The event's own fields. Text fields truncate at 4096 bytes and set
@@ -113,6 +122,152 @@ pub enum EventKind {
     /// A landing was released, the first time it was: its baseline passed for an
     /// automated target, its acknowledgement recorded for a human-step one.
     ReleaseObserved,
+}
+
+/// One line of a stream as a build that predates a field on the envelope wrote it.
+///
+/// The envelope is versioned, and `v: 1` is the shape both this build and every
+/// released one call version 1 — so a *field* added inside that version has to be
+/// readable in its absence or an older stream stops being readable at all. Every
+/// key here is the envelope's own; the one that may be missing is
+/// [`phase`](Envelope::phase), and what stands in for it is the mapping below,
+/// which is exact for every kind whose target does not decide it.
+#[derive(Deserialize)]
+struct StoredEnvelope {
+    v: u32,
+    ts: String,
+    stream: String,
+    seq: u64,
+    source: Source,
+    kind: EventKind,
+    #[serde(default)]
+    phase: Option<Phase>,
+    labels: Labels,
+    payload: Map<String, Value>,
+    artifacts: Vec<ArtifactRef>,
+}
+
+impl From<StoredEnvelope> for Envelope {
+    fn from(stored: StoredEnvelope) -> Self {
+        Envelope {
+            v: stored.v,
+            ts: stored.ts,
+            stream: stored.stream,
+            seq: stored.seq,
+            source: stored.source,
+            kind: stored.kind,
+            // A `push` an older build wrote carries no phase and named no target, so
+            // there is nothing to recover the producer's classification from. It reads
+            // as the phase a push of the session's own branch is, which is what all but
+            // one of the three producers of one emits and the one a session's stream
+            // holds — and it is a reading of a record rather than a claim about the
+            // push, which is why the phase is stamped from here on.
+            phase: stored
+                .phase
+                .or_else(|| Phase::of(stored.kind))
+                .unwrap_or(Phase::Development),
+            labels: stored.labels,
+            payload: stored.payload,
+            artifacts: stored.artifacts,
+        }
+    }
+}
+
+/// Which part of a change's life an event belongs to.
+///
+/// Four phases over one change: the work is made ([`Development`](Phase::Development)),
+/// it is brought together with the base it is going onto
+/// ([`Integrate`](Phase::Integrate)), it is proposed and ruled on
+/// ([`Review`](Phase::Review)), and what carries it is released
+/// ([`Release`](Phase::Release)). A consumer reading a session under an attention
+/// budget names a phase rather than enumerating the kinds that happen to be in it —
+/// which is what makes a kind added later arrive in the read that already wanted it.
+///
+/// Spelled `Phase` rather than `Lifecycle`, because [`crate::Lifecycle`] is already
+/// where a *session* is in its life and the two are different questions: a session
+/// that has closed still has a change in review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Phase {
+    /// The work is being made: the session, its clone, its lock, its commits, the
+    /// repair of a branch that carried an incomplete step, and the push of the
+    /// session's own branch.
+    Development,
+    /// The work is being brought together with the base: the host's merge queue,
+    /// the merge it completed, a base that moved out from under the publication,
+    /// and a push of any branch but the session's own.
+    Integrate,
+    /// The change request is open and being ruled on: it was opened, its checks
+    /// moved, and it merged.
+    Review,
+    /// What carries the landed change is being released: a probe was run, a person
+    /// acknowledged a release, and a landing was observed as released.
+    Release,
+}
+
+impl Phase {
+    /// The word this phase is spelled with, in a filter and in a rendering.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Phase::Development => "development",
+            Phase::Integrate => "integrate",
+            Phase::Review => "review",
+            Phase::Release => "release",
+        }
+    }
+
+    /// Every phase, in the order a refusal lists them.
+    #[must_use]
+    pub fn every() -> [Phase; 4] {
+        [
+            Phase::Development,
+            Phase::Integrate,
+            Phase::Review,
+            Phase::Release,
+        ]
+    }
+
+    /// The phase an event of this kind belongs to, where the kind alone decides it.
+    ///
+    /// `None` for exactly one kind, and it is not an omission: a
+    /// [`Push`](EventKind::Push) of the session's own branch is
+    /// [`Development`](Phase::Development) and a push of anything else — the base a
+    /// `local-direct` squash lands on, the base a merge train advanced — is
+    /// [`Integrate`](Phase::Integrate). Which of the two it was is a fact about the
+    /// push rather than about the kind, so the producer stamps it and this answers
+    /// that it cannot.
+    #[must_use]
+    pub fn of(kind: EventKind) -> Option<Phase> {
+        Some(match kind {
+            EventKind::SessionOpened
+            | EventKind::Fetch
+            | EventKind::LockWait
+            | EventKind::LockAcquired
+            | EventKind::CommitPreserved
+            // The repair of a preserved branch, and therefore the work being made:
+            // it puts the branch back into a state its merge path can rule on, and
+            // it happens before that branch may enter one at all.
+            | EventKind::RecoveryAttested
+            | EventKind::SessionClosed => Phase::Development,
+            EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict => {
+                Phase::Integrate
+            }
+            EventKind::ChangeOpened | EventKind::ChangeCheck | EventKind::ChangeMerged => {
+                Phase::Review
+            }
+            EventKind::ReleaseProbed
+            | EventKind::ReleaseAcknowledged
+            | EventKind::ReleaseObserved => Phase::Release,
+            EventKind::Push => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// What a producer knew about the run when it stamped an event.
@@ -198,7 +353,7 @@ impl EventKind {
 /// in `tests/contract.rs` holds this list, [`EventMatcher`]'s own fields, and the
 /// fields the parser below accepts to being the one vocabulary — so a field added
 /// to the type cannot reach an operator unnamed, or be named and not taken.
-const MATCHER_FIELDS: &str = "source, kind, run_id, node, step, member, persona";
+const MATCHER_FIELDS: &str = "source, phase, kind, run_id, node, step, member, persona";
 
 /// Which events of a stream a consumer wants, in the grammar the three producing
 /// libraries share.
@@ -241,6 +396,16 @@ pub struct EventMatcher {
     /// The library that produced the event, by exact equality.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
+    /// The part of a change's life the event belongs to, by exact equality against
+    /// what its producer stamped.
+    ///
+    /// A phase rather than the kinds in it, so a consumer that wants the review of a
+    /// change keeps wanting it when a kind is added to that phase. Which phases a
+    /// session *has* is decided where the stream is opened: naming one the session
+    /// cannot produce is refused by name, and a read that named none takes the ones
+    /// it can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
     /// A glob over the kind's kebab-case wire string, where `*` matches any run of
     /// characters including none: `change-*` is every change-request kind.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -328,6 +493,7 @@ impl EventMatcher {
     fn matches(&self, envelope: &Envelope) -> bool {
         let labels = &envelope.labels;
         self.source.is_none_or(|want| want == envelope.source)
+            && self.phase.is_none_or(|want| want == envelope.phase)
             && self
                 .kind
                 .as_ref()
@@ -394,6 +560,15 @@ fn matcher(
                 matcher.source = Some(
                     serde_json::from_value(value.clone())
                         .map_err(|failure| format!("{named} names no source family: {failure}"))?,
+                );
+            }
+            // Named by serde's own refusal, for the reason `source` is: [`Phase`]'s
+            // derive already spells every phase there is, and a second list here is
+            // one a phase added to the enum leaves behind.
+            "phase" => {
+                matcher.phase = Some(
+                    serde_json::from_value(value.clone())
+                        .map_err(|failure| format!("{named} names no phase: {failure}"))?,
                 );
             }
             "kind" => matcher.kind = Some(text(value, &named, field)?),

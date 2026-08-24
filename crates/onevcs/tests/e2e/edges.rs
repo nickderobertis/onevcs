@@ -3419,6 +3419,45 @@ fn a_train_that_lands_without_pushing_says_so_in_both_answers() {
 }
 
 #[test]
+fn a_train_that_pushes_records_that_push_as_the_base_being_integrated() {
+    // The other target a `push` event can have, and the one no session's own branch
+    // ever is: what a train pushes is the *base* it advanced. The phase is stamped
+    // where the push is made, so this is the only place that classification can be
+    // held to what the train actually did.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    let checkout = fixture.checkout.clone();
+    fixture.world.git(
+        &checkout,
+        &["checkout", "-q", "-b", "claude/trained", "main"],
+    );
+    fixture
+        .world
+        .commit_file(&checkout, "one.txt", "one\n", "feat: land it on the train");
+    fixture.world.git(&checkout, &["checkout", "-q", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "claude/trained", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pushed: yes"));
+
+    let pushes = fixture
+        .world
+        .events_of("integrate-project", "push")
+        .into_iter()
+        .map(|event| (event["payload"]["branch"].clone(), event["phase"].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pushes,
+        vec![(serde_json::json!("main"), serde_json::json!("integrate"))],
+        "the train pushed the base, and said so as the integrate phase"
+    );
+}
+
+#[test]
 fn a_git_command_whose_working_directory_is_gone_names_that_directory() {
     // `spawn` raises `NotFound` for a missing program and for a missing working
     // directory alike, and only one of them is what a reader must be sent after.

@@ -34,7 +34,7 @@ use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
     Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy,
     Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness, MergeOutcome,
-    MergePolicy, NetNegative, PreservedBranch, Provenance, Publication, PublishOutcome,
+    MergePolicy, NetNegative, Phase, PreservedBranch, Provenance, Publication, PublishOutcome,
     PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session, SessionHolder,
     SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
 };
@@ -163,21 +163,52 @@ fn backticked_on_line(prefix: &str) -> Vec<String> {
 
 /// The envelope fixture with its `<placeholder>` values replaced by real ones,
 /// so the shape the contract declares can actually be parsed.
+///
+/// The amendment's copy, which is the approved one plus `phase` —
+/// `the_phase_the_amendment_adds_is_the_approved_envelope_and_one_more_key` below
+/// holds the two to being that and nothing more, so reading the wider fixture here
+/// cannot become a way to slip a second key past the approved shape.
 fn envelope_fixture(source: &str, kind: &str) -> Value {
-    let mut fixture: Value =
-        serde_json::from_str(&block("json")).expect("the envelope fixture must be JSON");
+    let mut fixture: Value = serde_json::from_str(&amendment_block_declaring("json", "\"phase\""))
+        .expect("the envelope fixture must be JSON");
     let object = fixture.as_object_mut().expect("the envelope is an object");
     object["ts"] = json!("2026-08-07T12:34:56.789Z");
     object["stream"] = json!("onevcs-7f3a9c2e");
     object["source"] = json!(source);
     object["kind"] = json!(kind);
+    object["phase"] = json!(phase_name(
+        Phase::of(serde_json::from_value(json!(kind)).expect("a kind the contract names"))
+            // `push` is the one kind whose phase its producer decides; the fixture
+            // has to carry some phase, and the fixture's own kind is a placeholder.
+            .unwrap_or(Phase::Development)
+    ));
     fixture
+}
+
+/// The `phase` alternatives the amendment's fixture lists as `a|b|c|d`.
+fn fixture_phases() -> Vec<String> {
+    let fixture: Value = serde_json::from_str(&amendment_block_declaring("json", "\"phase\""))
+        .expect("the envelope fixture must be JSON");
+    fixture["phase"]
+        .as_str()
+        .expect("phase is a string")
+        .split('|')
+        .map(str::to_owned)
+        .collect()
+}
+
+fn phase_name(phase: Phase) -> String {
+    serde_json::to_value(phase)
+        .expect("a phase serializes")
+        .as_str()
+        .expect("as a string")
+        .to_owned()
 }
 
 /// The `source` alternatives the fixture lists as `a|b|c`.
 fn fixture_sources() -> Vec<String> {
-    let fixture: Value =
-        serde_json::from_str(&block("json")).expect("the envelope fixture must be JSON");
+    let fixture: Value = serde_json::from_str(&amendment_block_declaring("json", "\"phase\""))
+        .expect("the envelope fixture must be JSON");
     fixture["source"]
         .as_str()
         .expect("source is a string")
@@ -334,6 +365,7 @@ fn labels_that_the_producer_did_not_know_are_omitted_rather_than_null() {
         seq: 0,
         source: Source::Vcs,
         kind: EventKind::SessionClosed,
+        phase: Phase::Development,
         labels: Labels::default(),
         payload: serde_json::Map::new(),
         artifacts: Vec::new(),
@@ -351,6 +383,139 @@ fn an_event_kind_the_contract_does_not_name_is_rejected() {
     let mut fixture = envelope_fixture("vcs", "session-opened");
     fixture["source"] = json!("somewhere-else");
     assert!(serde_json::from_value::<Envelope>(fixture).is_err());
+}
+
+/// The kind-to-phase table the amendment spells, as `(phase, kind, target)` rows.
+///
+/// `target` is the qualifier on the one kind whose phase its target decides —
+/// `push:own-branch` and `push:any-other-branch` — and `None` for every other row.
+fn documented_phases() -> Vec<(String, String, Option<String>)> {
+    amendment_block_declaring("text", "push:own-branch")
+        .lines()
+        .fold(
+            Vec::new(),
+            |mut rows: Vec<(String, String, Option<String>)>, line| {
+                let mut words = line.split_whitespace();
+                // A row's phase opens it and its kinds may wrap onto the next line, which
+                // is the shape the document is written in.
+                let phase = match line.starts_with(char::is_whitespace) {
+                    true => rows.last().expect("a wrapped row follows one").0.clone(),
+                    false => words.next().expect("a row names its phase").to_owned(),
+                };
+                for word in words {
+                    let (kind, target) = match word.split_once(':') {
+                        Some((kind, target)) => (kind.to_owned(), Some(target.to_owned())),
+                        None => (word.to_owned(), None),
+                    };
+                    rows.push((phase.clone(), kind, target));
+                }
+                rows
+            },
+        )
+}
+
+#[test]
+fn every_event_kind_belongs_to_exactly_one_phase_and_the_contract_names_which() {
+    let documented = documented_phases();
+    let phases: BTreeSet<&str> = documented
+        .iter()
+        .map(|(phase, _, _)| phase.as_str())
+        .collect();
+    assert_eq!(
+        phases,
+        Phase::every().iter().map(|phase| phase.as_str()).collect(),
+        "the amendment's table and Phase name different phases"
+    );
+    assert_eq!(
+        phases,
+        fixture_phases().iter().map(String::as_str).collect(),
+        "the envelope fixture's alternatives and the table name different phases"
+    );
+
+    // Every kind, exactly once — and `push` twice, once per target, because its
+    // phase is a fact about the branch it updated rather than about the kind.
+    for kind in all_event_kinds() {
+        let spelled = kind_name(kind);
+        let rows: Vec<&(String, String, Option<String>)> = documented
+            .iter()
+            .filter(|(_, named, _)| *named == spelled)
+            .collect();
+        match Phase::of(kind) {
+            Some(phase) => {
+                assert_eq!(
+                    rows.iter()
+                        .map(|(phase, _, target)| (phase.as_str(), target.as_deref()))
+                        .collect::<Vec<(&str, Option<&str>)>>(),
+                    vec![(phase.as_str(), None)],
+                    "the amendment and Phase::of disagree about {spelled}"
+                );
+            }
+            // The one kind the table names twice, and the one `Phase::of` answers
+            // `None` for: both halves of that have to hold, or a producer would be
+            // told to stamp a phase the document does not offer for it.
+            None => assert_eq!(
+                rows.iter()
+                    .map(|(phase, _, target)| (phase.as_str(), target.as_deref()))
+                    .collect::<Vec<(&str, Option<&str>)>>(),
+                vec![
+                    (Phase::Development.as_str(), Some("own-branch")),
+                    (Phase::Integrate.as_str(), Some("any-other-branch")),
+                ],
+                "the amendment does not name both targets of {spelled}"
+            ),
+        }
+    }
+    // …and nothing in the table names a kind this build does not have.
+    let named: BTreeSet<&str> = documented
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    let implemented: BTreeSet<String> = all_event_kinds().into_iter().map(kind_name).collect();
+    assert_eq!(
+        named,
+        implemented.iter().map(String::as_str).collect(),
+        "the amendment's table names a kind EventKind does not have"
+    );
+}
+
+#[test]
+fn the_phase_the_amendment_adds_is_the_approved_envelope_and_one_more_key() {
+    // The approved fixture is committed verbatim and the amendment spells its own
+    // copy, so nothing but this holds the second to being the first plus exactly the
+    // key the amendment says it adds. Every other assertion in this file reads the
+    // amendment's copy; without this, a key added there would be a change to the
+    // envelope that the approved text never saw.
+    let approved: Value =
+        serde_json::from_str(&block("json")).expect("the approved fixture is JSON");
+    let amended: Value = serde_json::from_str(&amendment_block_declaring("json", "\"phase\""))
+        .expect("the amendment's fixture is JSON");
+    let approved = approved.as_object().expect("an envelope is an object");
+    let amended = amended.as_object().expect("an envelope is an object");
+
+    let added: Vec<&String> = amended
+        .keys()
+        .filter(|key| !approved.contains_key(*key))
+        .collect();
+    assert_eq!(added, vec!["phase"], "the amendment adds more than `phase`");
+    for (key, value) in approved {
+        assert_eq!(
+            amended.get(key),
+            Some(value),
+            "the amendment's fixture changed the approved {key:?}"
+        );
+    }
+
+    // And the field is additive *inside* `v: 1`: an envelope written before there
+    // was one still reads, at the phase its kind decides.
+    let mut without = envelope_fixture("vcs", "change-opened");
+    without
+        .as_object_mut()
+        .expect("an envelope is an object")
+        .remove("phase");
+    let read: Envelope =
+        serde_json::from_value(without).expect("an envelope with no phase still reads");
+    assert_eq!(read.phase, Phase::Review);
+    assert_eq!(read.v, 1);
 }
 
 #[test]
@@ -1853,6 +2018,11 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         identity: "github.com/nickderobertis/onevcs".to_owned(),
         lifecycle: Lifecycle::Open,
         provenance: Provenance::Complete,
+        // The field a later amendment added, declared there rather than here — which
+        // is why the assertion below reads the older amendment's declaration
+        // unchanged and `the_amendment_declares_the_phase_surface_and_the_retry_link`
+        // reads the newer one's.
+        retried_by: None,
     };
     let request = PublishRequest {
         policy: Some(MergePolicy::ChangeOpen),
@@ -2150,6 +2320,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     let filter = EventFilter {
         include: vec![EventMatcher {
             source: Some(Source::Vcs),
+            phase: Some(Phase::Review),
             kind: Some("change-*".to_owned()),
             run_id: Some("R".to_owned()),
             node: Some("service".to_owned()),
@@ -2248,6 +2419,43 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
 }
 
 #[test]
+fn the_amendment_declares_the_phase_surface_and_the_retry_link() {
+    let declarations = amendment_declaring("pub enum Phase");
+    for declared in [
+        "pub enum Phase { Development, Integrate, Review, Release }",
+        "pub fn as_str(self) -> &'static str;",
+        "pub fn every() -> [Phase; 4];",
+        "pub fn of(kind: EventKind) -> Option<Phase>;",
+        "pub phase: Phase",
+        "pub phase: Option<Phase>",
+        "pub retried_by: Option<SessionToken>",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+    // The words the phases travel as, held to the amendment's own spelling of them
+    // rather than to a second list here: they are a wire vocabulary shared with two
+    // other repositories, and a rename would be one of them ceasing to share it.
+    for phase in Phase::every() {
+        assert_eq!(phase.as_str(), phase_name(phase));
+        assert!(
+            declarations.contains(phase.as_str()),
+            "the amendment does not spell {phase}"
+        );
+    }
+    assert_eq!(
+        serde_json::from_value::<Phase>(json!("review")).expect("a phase reads"),
+        Phase::Review
+    );
+    assert!(
+        serde_json::from_value::<Phase>(json!("shipping")).is_err(),
+        "a phase this contract does not name must be refused"
+    );
+}
+
+#[test]
 fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes() {
     // One vocabulary stated three times — the type's fields, the fields the parser
     // accepts, and the list a refusal offers whoever mistyped one — and nothing but
@@ -2259,6 +2467,7 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
     // compile here rather than passing a gate that never looked at it.
     let every_field = EventMatcher {
         source: Some(Source::Vcs),
+        phase: Some(Phase::Development),
         kind: Some("push".to_owned()),
         run_id: Some("R".to_owned()),
         node: Some("service".to_owned()),
@@ -2291,7 +2500,14 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
     // And every one of them is a field the parser takes, so what the refusal offers
     // is the accepted vocabulary rather than a list standing beside it.
     for field in has {
-        let value = if field == "source" { "vcs" } else { "anything" };
+        // Two fields are matched by exact equality against a closed vocabulary, and
+        // serde's own refusal is what names it — so each is given a value it has
+        // rather than the free-form text every other field takes.
+        let value = match field {
+            "source" => "vcs",
+            "phase" => "review",
+            _ => "anything",
+        };
         let spec = format!("include: [{{{field}: {value}}}]");
         EventFilter::parse(&spec)
             .unwrap_or_else(|refusal| panic!("the parser takes no {field}: {refusal}"));

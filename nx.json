@@ -24,6 +24,7 @@
     "crateAndSuiteInputs": [
       "crateSource",
       "{workspaceRoot}/docs/contract.md",
+      "{workspaceRoot}/compat/**/*",
       "{workspaceRoot}/scripts/**/*",
       "{workspaceRoot}/npm/**/*",
       "{workspaceRoot}/.github/workflows/*"

@@ -123,6 +123,10 @@ impl Vcs for Git {
             // dirty tree writes the marker, and a recovery clears it, so what the
             // branch carries now is the only answer that stays true.
             provenance: provenance::provenance_of(&record.clone, &base, &record.branch, &trailers)?,
+            retried_by: record
+                .retried_by
+                .as_ref()
+                .map(|token| SessionToken(token.to_string())),
         })
     }
 
@@ -338,6 +342,14 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                 if seen.contains(&key) {
                     continue;
                 }
+                // The clone of a session something superseded holds the work that was
+                // taken over rather than the work that went on, so it answers for this
+                // name no more here than it does in `onevcs status` — and a row from it
+                // is a paste-ready publication of commits a later session already
+                // replaced.
+                if superseded_copy(&sessions, &repo, identity, &branch) {
+                    continue;
+                }
                 // Unpublished by ref is not the same as unfinished: publication
                 // squashes, so a branch that landed is never an ancestor of the base
                 // afterwards. What answers the question is what the base's own history
@@ -355,7 +367,15 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                         .or_else(|| change_url_of(&repo, &compared, &branch, &trailers)),
                     ..recorded
                 };
-                let verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
+                let mut verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
+                // A chain of retries this host cannot follow leaves nothing decided
+                // about the branch — the same answer `onevcs status` gives, through
+                // the same reading of the same records, because a row that said `no`
+                // here and `unknown` there would be the disagreement this report
+                // exists to end.
+                if unfollowable_chain(&sessions, identity, &branch) {
+                    verdict = Landed::Unknown;
+                }
                 // Withheld unless every branch was asked for, and only where the
                 // work *reached the base*: that is the row whose command must not be
                 // pasted. A row nothing can decide about is the opposite case — it
@@ -547,6 +567,30 @@ fn preserved_row(
             net_negative: net_negative(repo, compared, branch)?,
         },
     ))
+}
+
+/// Whether this copy of a branch belongs to a session something superseded.
+fn superseded_copy(
+    sessions: &[workspace::Record],
+    repo: &Path,
+    identity: &str,
+    branch: &str,
+) -> bool {
+    sessions.iter().any(|record| {
+        record.retried_by.is_some()
+            && record.clone == repo
+            && record.identity == identity
+            && *record.branch == *branch
+    })
+}
+
+/// Whether any session of this branch names a chain of retries this host cannot
+/// follow to an end.
+fn unfollowable_chain(sessions: &[workspace::Record], identity: &str, branch: &str) -> bool {
+    sessions
+        .iter()
+        .filter(|record| record.identity == identity && *record.branch == *branch)
+        .any(|record| workspace::newest(record).is_err())
 }
 
 /// The token of an open session holding this branch, for reading its stream.

@@ -1,0 +1,31 @@
+# The compatibility check: a build of `onevcs` that actually shipped, reading what
+# this one writes.
+#
+# A **separate cargo project**, deliberately, and not a workspace member. Two
+# packages named `onevcs` in one resolve graph make `--package onevcs` ambiguous,
+# and that spelling is on the release path — `scripts/publish-crates.sh` runs
+# `cargo pkgid --package onevcs` and `cargo publish --package onevcs`, and
+# `release.yml` builds the binaries with it. A dev-dependency that broke a release
+# nobody re-runs would cost far more than this directory does.
+#
+# It is run by `just _crate-compat`, which `_crate-test` calls, and its lockfile is
+# committed and fetched by `just bootstrap` like the workspace's own.
+[package]
+name = "onevcs-envelope-compat"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+description = "Holds a released onevcs to reading the envelopes this build writes."
+
+# Its own workspace root, so cargo does not walk up and find the one next door.
+[workspace]
+
+[dev-dependencies]
+# The newest build that shipped. Pinned exactly: what this proves is a property of
+# *that* build, so a range that quietly moved would change what was proved.
+onevcs = "=0.13.0"
+# `preserve_order`, as the workspace's own copy declares, so a round trip through
+# the fixture compares field for field rather than reordering it.
+serde_json = { version = "1", features = ["preserve_order"] }

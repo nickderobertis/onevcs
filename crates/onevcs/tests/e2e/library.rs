@@ -27,7 +27,7 @@
 
 use onevcs::{
     ChangeId, Check, CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub,
-    Holding, Hosting, Identity, MergeOutcome, MergePolicy, Providers, PublishOutcome,
+    Holding, Hosting, Identity, MergeOutcome, MergePolicy, Phase, Providers, PublishOutcome,
     PublishRequest, RemoteHost, Retention, Scope, Session, SessionRequest, SessionToken, Source,
     Vcs,
 };
@@ -1847,5 +1847,582 @@ fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_throug
     assert!(
         onevcs::acknowledge_release("feature/one", &container, "2026.8.24", false).is_err(),
         "a different version is refused rather than silently replacing one somebody read"
+    );
+}
+
+/// A filter that admits one phase and says nothing else.
+fn phased(phase: Phase) -> EventFilter {
+    EventFilter {
+        include: vec![EventMatcher {
+            phase: Some(phase),
+            ..EventMatcher::default()
+        }],
+        exclude: Vec::new(),
+    }
+}
+
+/// The phase every event of one kind was stamped with, from a whole read.
+fn phases_of(events: &[onevcs::Envelope], kind: onevcs::EventKind) -> Vec<Phase> {
+    events
+        .iter()
+        .filter(|event| event.kind == kind)
+        .map(|event| event.phase)
+        .collect()
+}
+
+#[test]
+fn a_reviewed_publication_stamps_its_own_branch_push_as_development_and_reads_by_phase() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/phased");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the phased thing",
+    );
+
+    let mut whole = EventStream::open(&session.token).expect("the session's stream");
+    onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+
+    let events = whole.read().expect("everything the session wrote");
+    // The push that put this branch on the remote so a change request could be
+    // opened for it is the work being *made*: it updated the session's own branch.
+    assert_eq!(
+        phases_of(&events, onevcs::EventKind::Push),
+        vec![Phase::Development],
+        "a push of the session's own branch is the development phase"
+    );
+    assert_eq!(
+        phases_of(&events, onevcs::EventKind::ChangeOpened),
+        vec![Phase::Review]
+    );
+    assert_eq!(
+        phases_of(&events, onevcs::EventKind::SessionOpened),
+        vec![Phase::Development]
+    );
+    assert_eq!(
+        phases_of(&events, onevcs::EventKind::SessionClosed),
+        vec![Phase::Development]
+    );
+
+    // …and a consumer that wants the review of this change names the phase rather
+    // than the kinds in it, which is the whole point of there being one.
+    let reviewed: Vec<onevcs::EventKind> =
+        EventStream::open_filtered(&session.token, phased(Phase::Review))
+            .expect("the session's stream, by phase")
+            .read()
+            .expect("the review of this change")
+            .into_iter()
+            .map(|event| event.kind)
+            .collect();
+    assert_eq!(reviewed, vec![onevcs::EventKind::ChangeOpened]);
+
+    // This repository releases nothing, so the release phase is not one this session
+    // has — and a filter that named it would be answered with nothing for ever.
+    let refused = EventStream::open_filtered(&session.token, phased(Phase::Release))
+        .expect_err("a phase this session cannot produce is refused where it is named");
+    let reason = refused.to_string();
+    assert!(reason.contains("release"), "{reason}");
+    assert!(reason.contains(&session.token.0), "{reason}");
+    assert!(
+        reason.contains("development, integrate, review"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_local_direct_publication_stamps_its_base_push_as_integrate_and_has_no_review() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    let session = open(&Git, "feature/local-phased");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: land it locally",
+    );
+
+    onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+
+    let events = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("everything the session wrote");
+    // The other target a push can have: a `local-direct` publication squashes onto
+    // the *base*, so what this push updated is not the session's branch at all.
+    assert_eq!(
+        phases_of(&events, onevcs::EventKind::Push),
+        vec![Phase::Integrate],
+        "a push of the base a squash landed on is the integrate phase"
+    );
+    assert_eq!(
+        phases_of(&events, onevcs::EventKind::MergeCompleted),
+        vec![Phase::Integrate]
+    );
+    // An unfiltered read is still the whole stream: nothing this session produced is
+    // in a phase it does not have, so scoping takes nothing away.
+    assert!(
+        events
+            .iter()
+            .all(|event| event.phase == Phase::Development || event.phase == Phase::Integrate),
+        "a local-direct session produced something outside its own phases: {:?}",
+        events.iter().map(|e| (e.kind, e.phase)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        EventStream::open(&session.token)
+            .expect("the stream again")
+            .read()
+            .expect("the same read")
+            .len(),
+        events.len(),
+        "a repository that releases nothing reads exactly what it always read"
+    );
+
+    // `local-direct` opens no change request, so this session has no review to ask
+    // for — and asking is refused by name rather than answered with silence.
+    let refused = EventStream::open_filtered(&session.token, phased(Phase::Review))
+        .expect_err("a phase this session cannot produce is refused where it is named");
+    assert!(refused.to_string().contains("review"), "{refused}");
+}
+
+/// A release-targets file for the registered `hosted` identity: one target a probe
+/// answers for, and one a person has to do something for.
+///
+/// Written where this host reads it — `$ONEVCS_HOME/releases.yml` and nowhere else
+/// — because that is the only place release targets are configured.
+fn releasing(world: &World) {
+    std::fs::write(
+        world.home().join("releases.yml"),
+        r#"version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {host: github.com, owner: acme-corp, name: hosted}
+    adoption: published
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'echo 1.2.3'
+          timeout_seconds: 30
+      - name: container
+        style: human-step
+        action: "Push the image and record the tag."
+"#,
+    )
+    .expect("a release-targets file");
+}
+
+/// Land one branch's work locally and hand back the session that did it.
+fn landed(world: &World, branch: &str, file: &str) -> Session {
+    let session = open(&Git, branch);
+    world.commit_file(
+        &session.worktree,
+        file,
+        "one\n",
+        &format!("feat: add {file}"),
+    );
+    onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+    session
+}
+
+#[test]
+fn a_session_read_gains_the_releases_that_carried_its_own_landing_long_after_it_closed() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+
+    let session = landed(&world, "feature/released", "one.txt");
+    let mut reader = EventStream::open(&session.token).expect("the session's stream");
+    let opening = reader.read().expect("everything through the close");
+    let kinds: Vec<onevcs::EventKind> = opening.iter().map(|event| event.kind).collect();
+    assert!(
+        kinds.contains(&onevcs::EventKind::SessionClosed),
+        "the read reaches the close: {kinds:?}"
+    );
+    // The publication captured this landing's baseline by running the target's probe,
+    // and that ask is on the session's own stream — release phase, and admitted
+    // because this repository does configure targets.
+    assert_eq!(
+        phases_of(&opening, onevcs::EventKind::ReleaseProbed),
+        vec![Phase::Release]
+    );
+    assert!(
+        opening.iter().all(|event| event.stream == session.token.0),
+        "nothing of another stream is in the session's own read yet"
+    );
+
+    // Somebody asks what is released right now, which runs the probe again — on the
+    // *identity's* stream this time, outside every session.
+    onevcs::release_latest("hosted", Some(&"crate".parse().expect("a target name")))
+        .expect("the probe answers");
+    assert!(
+        reader.read().expect("nothing new").is_empty(),
+        "a probe is not a release, and the identity's ask is not this session's"
+    );
+
+    // A second session lands work of its own and its human step is released first,
+    // so the stream this read joins already holds a release of another landing.
+    let other = landed(&world, "feature/unrelated", "two.txt");
+    let container = "container".parse().expect("a target name");
+    onevcs::acknowledge_release(&other.token.0, &container, "9.9.9", false)
+        .expect("the other landing's release is recorded");
+    assert!(
+        reader.read().expect("nothing new").is_empty(),
+        "another landing's release is not this session's"
+    );
+
+    // …and then this landing's own is recorded. The read gains exactly the two
+    // events that say so, on the producer's own stream and at the producer's own
+    // sequence, long after this session closed.
+    let acknowledged = onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
+        .expect("this landing's release is recorded");
+    let fresh = reader.read().expect("what the release added");
+    assert_eq!(
+        fresh.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        vec![
+            onevcs::EventKind::ReleaseAcknowledged,
+            onevcs::EventKind::ReleaseObserved
+        ],
+        "the release that carried this work, and nothing else of that stream"
+    );
+    for event in &fresh {
+        assert_eq!(event.phase, Phase::Release);
+        assert_eq!(
+            event.payload["landing_commit"],
+            acknowledged.landing_commit.as_str(),
+            "every correlated event is this session's landing"
+        );
+        assert_ne!(
+            event.stream, session.token.0,
+            "a correlated event keeps the stream its producer wrote"
+        );
+        assert!(
+            !event.labels.extra.contains_key("session"),
+            "a release happens outside every session"
+        );
+    }
+    // Per-stream sequences, untouched: the correlated events carry the release
+    // stream's own numbering rather than being renumbered into this session's.
+    assert_eq!(
+        fresh.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![fresh[0].seq, fresh[0].seq + 1]
+    );
+    assert!(
+        fresh[0].seq > 1,
+        "the release stream numbered these behind the other landing's, not from one"
+    );
+    assert_eq!(
+        opening.last().expect("the session wrote events").seq as usize,
+        opening.len(),
+        "the session's own stream is whole, so a gap in it still means a lost event"
+    );
+    // Reading again adds nothing: a release that carried this work happens once.
+    assert!(reader.read().expect("nothing new").is_empty());
+}
+
+#[test]
+fn the_session_record_names_the_session_that_continued_its_branch() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    let providers = Providers::real();
+
+    let first = open(&Git, "feature/continued");
+    world.commit_file(
+        &first.worktree,
+        "one.txt",
+        "one\n",
+        "feat: the first attempt",
+    );
+    onevcs::close_session(&providers, &first.token).expect("the first session closes");
+    assert_eq!(
+        onevcs::session(&providers, &first.token)
+            .expect("the record")
+            .retried_by,
+        None,
+        "nothing has continued this branch yet"
+    );
+
+    // A second session over the same name continues the branch, and the record of
+    // the first says which one — which is the only link between two copies of one
+    // branch, and what a consumer asking "what became of this session" follows.
+    let second = open(&Git, "feature/continued");
+    assert_eq!(
+        onevcs::session(&providers, &first.token)
+            .expect("the record")
+            .retried_by,
+        Some(second.token.clone()),
+        "the older record names the session that continued its branch"
+    );
+    assert_eq!(
+        onevcs::session(&providers, &second.token)
+            .expect("the record")
+            .retried_by,
+        None,
+        "the newest session of a chain names nobody"
+    );
+}
+
+#[test]
+fn a_phase_a_session_no_longer_has_is_dropped_in_silence_and_refused_when_it_is_named() {
+    // The two halves of the same rule, on one session that really did write events
+    // in the phase: an operator who stops releasing a repository has not asked for
+    // anything, so the release events already on its stream stop arriving without a
+    // word — and a consumer that *names* the phase is told, because a filter
+    // answered with nothing and a session that did nothing look alike.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+
+    let session = landed(&world, "feature/probed", "one.txt");
+    let while_releasing = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("everything the session wrote");
+    assert_eq!(
+        phases_of(&while_releasing, onevcs::EventKind::ReleaseProbed),
+        vec![Phase::Release],
+        "the publication captured a baseline, which is a release-phase event"
+    );
+
+    // The operator stops releasing this repository. The events are still in the
+    // file, byte for byte; what changed is which phases this session has.
+    std::fs::remove_file(world.home().join("releases.yml")).expect("the targets file was there");
+    let after = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("what a repository that releases nothing reads");
+    assert!(
+        phases_of(&after, onevcs::EventKind::ReleaseProbed).is_empty(),
+        "a phase this session no longer has is dropped: {:?}",
+        after.iter().map(|e| (e.kind, e.phase)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        after.len(),
+        while_releasing.len()
+            - while_releasing
+                .iter()
+                .filter(|event| event.phase == Phase::Release)
+                .count(),
+        "…and nothing else was dropped with it"
+    );
+
+    let refused = EventStream::open_filtered(&session.token, phased(Phase::Release))
+        .expect_err("naming it is the case that is told");
+    assert!(refused.to_string().contains("release"), "{refused}");
+}
+
+/// The file this identity's releases are recorded on, found the only way a journey
+/// can: by looking under the state root. Nothing hands the name out, which is the
+/// point — a consumer of a *session* never has it.
+fn release_record_of(world: &World) -> std::path::PathBuf {
+    std::fs::read_dir(world.home().join("streams"))
+        .expect("a streams directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("releases-"))
+        })
+        .expect("the identity recorded its releases somewhere under the state root")
+}
+
+#[test]
+fn a_release_record_that_is_not_what_a_writer_left_is_refused_where_the_session_reads_it() {
+    // A correlated read is a reader of *values*, so it is held to what one is held
+    // to: a line it cannot parse, a line belonging to another stream, and a release
+    // that names no landing commit are each refused where they are read. The last is
+    // the one this join could most easily get wrong — reading it as "not this
+    // session's" is indistinguishable from a release of another landing, which is a
+    // consumer waiting for ever on one that already happened.
+    //
+    // Every refusal names the line and the repository it is about, and none of them
+    // names the stream those releases are recorded on: that address is not a
+    // consumer's, and a refusal is the easiest place for it to escape.
+    for (damage, expected) in [
+        (Damage::Unparseable, "is not an event envelope"),
+        (Damage::AnotherStream, "carries an event of another stream"),
+        (Damage::Nameless, "names no landing commit"),
+    ] {
+        let world = World::new();
+        inhabit(&world);
+        let (_origin, _identity) = hosted(&world, LOCAL);
+        releasing(&world);
+
+        let session = landed(&world, "feature/damaged", "one.txt");
+        let identity = onevcs::session(&Providers::real(), &session.token)
+            .expect("the session record")
+            .identity;
+        EventStream::open(&session.token)
+            .expect("the session's stream")
+            .read()
+            .expect("everything through the close");
+        let container = "container".parse().expect("a target name");
+        onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
+            .expect("this landing's release is recorded");
+
+        // llmlint: ignore-block[tests_mirror_real_usage] the *file* is the input under test.
+        // A writer appends whole envelopes of its own stream, and every release event this
+        // crate writes carries the commit — `acknowledge` refuses a reference that has not
+        // landed — so no public interface can produce any of these three. That is exactly
+        // why a reader has to answer for finding one: this is what a torn write, a damaged
+        // disk, or a newer `onevcs` sharing this state root leaves behind. The same posture
+        // the corrupted-session-stream journeys above take.
+        let record = release_record_of(&world);
+        let recorded = std::fs::read_to_string(&record).expect("the release record");
+        let damaged = match damage {
+            Damage::Unparseable => "{\"v\": 1}\n".to_owned(),
+            Damage::AnotherStream => std::fs::read_to_string(
+                world
+                    .home()
+                    .join("streams")
+                    .join(format!("{}.ndjson", session.token.0)),
+            )
+            .expect("the session's own stream"),
+            Damage::Nameless => recorded
+                .lines()
+                .map(|line| {
+                    let mut event: serde_json::Value =
+                        serde_json::from_str(line).expect("every line is an envelope");
+                    event["payload"]
+                        .as_object_mut()
+                        .expect("a payload is an object")
+                        .remove("landing_commit");
+                    format!("{event}\n")
+                })
+                .collect(),
+        };
+        std::fs::write(&record, damaged).expect("a release record no writer left");
+        // llmlint: ignore-end[tests_mirror_real_usage]
+
+        let refused = EventStream::open(&session.token)
+            .expect("the session's stream is still there")
+            .read()
+            .expect_err("a release record that is not what a writer left is refused");
+        let reason = refused.to_string();
+        assert!(reason.contains("line 1"), "{damage:?}: {reason}");
+        assert!(reason.contains(expected), "{damage:?}: {reason}");
+        assert!(reason.contains(&identity), "{damage:?}: {reason}");
+        assert!(
+            !reason.contains("releases-"),
+            "{damage:?} handed over the address this join keeps private: {reason}"
+        );
+    }
+}
+
+/// The three ways a release record stops being what a writer left.
+#[derive(Debug, Clone, Copy)]
+enum Damage {
+    /// A line that is not an envelope at all.
+    Unparseable,
+    /// An envelope of another stream, in this file.
+    AnotherStream,
+    /// A release that names no landing commit, so nothing can say which work it
+    /// released.
+    Nameless,
+}
+
+#[test]
+fn a_release_record_this_host_has_and_cannot_see_is_a_refusal_rather_than_no_releases() {
+    // The distinction the whole feature rests on, one level down: a repository that
+    // has recorded no release and a record this host cannot read are different
+    // facts, and answering the second as the first would have a consumer waiting on
+    // a release that is sitting right there.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+
+    let session = landed(&world, "feature/unreadable", "one.txt");
+    let identity = onevcs::session(&Providers::real(), &session.token)
+        .expect("the session record")
+        .identity;
+    let container = "container".parse().expect("a target name");
+    onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
+        .expect("this landing's release is recorded");
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the *filesystem* is the input under
+    // test. A record this host has and cannot see is what a permission change, a mount
+    // that went away, or a half-restored backup leaves; no interface of this crate can
+    // produce one, which is why the reader has to answer for meeting it.
+    let record = release_record_of(&world);
+    std::fs::remove_file(&record).expect("the record was there");
+    std::fs::create_dir(&record).expect("something in its place that is not a file");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    let refused = EventStream::open(&session.token)
+        .expect("the session's stream is still there")
+        .read()
+        .expect_err("a record this host has and cannot see is not `no releases`");
+    let reason = refused.to_string();
+    assert!(reason.contains("cannot be read"), "{reason}");
+    assert!(reason.contains(&identity), "{reason}");
+    assert!(
+        !reason.contains("releases-"),
+        "a refusal handed over the address this join keeps private: {reason}"
+    );
+}
+
+#[test]
+fn a_release_targets_document_this_build_cannot_read_rules_no_phase_out() {
+    // Every answer the phase derivation cannot reach widens the set rather than
+    // narrowing it, because a read that quietly left events out is indistinguishable
+    // from a session that never wrote them. A malformed release-targets file is one
+    // such answer: it is refused, by name, where a *release verb* meets it — and it
+    // is not this reader's business to decide from it that a repository releases
+    // nothing.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+    let session = landed(&world, "feature/misconfigured", "one.txt");
+
+    std::fs::write(
+        world.home().join("releases.yml"),
+        "version: 1\ndefault: [\n",
+    )
+    .expect("a release-targets file nothing can read");
+
+    // The verb that is about releases says so, naming the file.
+    let refused = onevcs::release_targets("hosted")
+        .expect_err("a malformed release-targets file is refused where it is read");
+    assert!(refused.to_string().contains("releases.yml"), "{refused}");
+
+    // The session's stream is still the session's stream, and naming the phase is
+    // still answered rather than refused.
+    let events = EventStream::open_filtered(&session.token, phased(Phase::Release))
+        .expect("a document this build cannot read rules no phase out")
+        .read()
+        .expect("the release phase of this session");
+    assert!(
+        events
+            .iter()
+            .all(|event| event.kind == onevcs::EventKind::ReleaseProbed),
+        "{:?}",
+        events.iter().map(|e| e.kind).collect::<Vec<_>>()
     );
 }

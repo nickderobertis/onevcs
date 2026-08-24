@@ -33,6 +33,7 @@ use serde_json::{json, Map, Value};
 use crate::error::{self, Error, Result};
 use crate::event::EventKind;
 use crate::registry::Registry;
+use crate::remainder::Remainder;
 use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
@@ -213,6 +214,88 @@ pub struct Record {
     /// later process that reuses its numeric pid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_started: Option<ProcessStart>,
+    /// The session that continued this one's branch, once one has.
+    ///
+    /// A branch a run left behind is picked up by the next session over the same
+    /// name, and this is the only link between the two. Without it, two run clones
+    /// of one branch are two copies with nothing to say which of them the work went
+    /// on in — and the copy that was superseded answers about the branch as readily
+    /// as the copy that landed, which is how a change that had merged came to report
+    /// that it had not.
+    ///
+    /// Absent on every session nothing has superseded, which is most of them, and
+    /// written onto the *older* record when the newer one opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retried_by: Option<Token>,
+    /// Whatever the document on disk carried beyond this shape, kept so a write
+    /// from this build does not destroy what a newer one recorded.
+    #[serde(skip)]
+    pub carried: Remainder,
+}
+
+/// Where a chain of retries ends: the session nothing has superseded.
+///
+/// The answer is a `Result` because the alternative is not "there is no newer
+/// session" — that is a chain of one, and it answers with the record it was given.
+/// It is a chain this host cannot follow, which is the one case nothing may be
+/// concluded from: what the caller wanted was *which* session's evidence answers
+/// for this branch, and a chain with a hop missing, an edge across identities, or a
+/// cycle in it does not say.
+pub type Chain = std::result::Result<Record, String>;
+
+/// The newest record of the chain this one starts, or why it cannot be followed.
+///
+/// Every hop is loaded through [`load`], so each is a record that passed the same
+/// checks a read by name gets. Three ways a chain is refused and each is *stopped*
+/// rather than worked around: a token naming no record on this host, an edge into
+/// another identity, and a cycle. Answering with the last record that did read
+/// would be answering from a session that something superseded, which is the exact
+/// shape of the wrong answer this link exists to prevent.
+///
+/// It terminates because every hop either revisits a token — which is the cycle —
+/// or reaches one it has not seen, and there are finitely many records on a host.
+pub fn newest(from: &Record) -> Chain {
+    let mut seen = vec![from.token.to_string()];
+    let mut record = from.clone();
+    while let Some(next) = record.retried_by.clone() {
+        if seen.iter().any(|token| *token == *next) {
+            return Err(format!(
+                "the session {first} was retried by {next}, and following that reaches {first} \
+                 again; a chain of retries that closes on itself names no newest session",
+                first = from.token,
+            ));
+        }
+        let followed = load(&next).map_err(|failure| {
+            format!(
+                "the session {token} was retried by {next}, and there is no such session on this \
+                 host: {failure}",
+                token = record.token,
+            )
+        })?;
+        if followed.identity != record.identity {
+            return Err(format!(
+                "the session {token} in {here:?} was retried by {next} in {there:?}; a session \
+                 continues a branch of its own repository, so nothing here answers for the other",
+                token = record.token,
+                here = record.identity,
+                there = followed.identity,
+            ));
+        }
+        seen.push(next.to_string());
+        record = followed;
+    }
+    Ok(record)
+}
+
+/// Record that one session's branch was continued by another.
+///
+/// Written onto the *older* record, because that is the one a later reader will
+/// otherwise take as the branch's answer. It goes through [`save`], which is where
+/// a link nothing could follow is refused.
+pub fn record_retry(older: &Token, newer: &Token) -> Result<()> {
+    let mut record = load(older)?;
+    record.retried_by = Some(newer.clone());
+    save(&record)
 }
 
 impl From<Record> for SessionHolder {
@@ -407,8 +490,17 @@ pub fn load(token: &str) -> Result<Record> {
     let raw = std::fs::read_to_string(&path).map_err(|_| Error::Invalid {
         reason: format!("no session {token:?} is open; `onevcs session open` prints a token"),
     })?;
-    let record: Record =
+    let document: Value =
         serde_json::from_str(&raw).map_err(error::at("read the session record at", &path))?;
+    let mut record: Record = serde_json::from_value(document.clone())
+        .map_err(error::at("read the session record at", &path))?;
+    // What this build had no opinion on, kept so that writing the record back — a
+    // retry link, a close, an adoption — does not destroy what a newer `onevcs`
+    // sharing this state root recorded about the same session.
+    record.carried = Remainder::between(
+        &document,
+        &serde_json::to_value(&record).map_err(error::at("read the session record at", &path))?,
+    );
     usable(&path, token, &record)?;
     Ok(record)
 }
@@ -454,10 +546,53 @@ fn usable(path: &Path, token: &str, record: &Record) -> Result<()> {
 }
 
 /// Write one session record.
+///
+/// The retry link is checked *here* rather than where it is composed, because this
+/// is the boundary every write crosses: a link is a claim about this host's own
+/// state, and one nothing can follow is worse than no link at all — it is a chain
+/// that stops a reader answering about the branch, silently, long after whoever
+/// wrote it has gone.
 pub fn save(record: &Record) -> Result<()> {
+    followable(record)?;
     let path = record_path(&record.token)?;
-    let json = serde_json::to_string_pretty(record).map_err(error::at("serialize", &path))?;
+    let mut document = serde_json::to_value(record).map_err(error::at("serialize", &path))?;
+    record.carried.restore(&mut document);
+    let json = serde_json::to_string_pretty(&document).map_err(error::at("serialize", &path))?;
     home::atomic_write(&path, &format!("{json}\n"))
+}
+
+/// Refuse a retry link that names no session, another repository's, or its own
+/// chain.
+///
+/// The cycle question is [`newest`]'s, asked of *this* record: a link that closes a
+/// chain of any length — including one straight back to itself — is a chain from
+/// here that never ends, which is precisely what that function answers.
+fn followable(record: &Record) -> Result<()> {
+    let Some(next) = &record.retried_by else {
+        return Ok(());
+    };
+    let refuse = |what: String| {
+        Err(error::invalid(format!(
+            "the session {token} cannot record that {next} continued its branch: {what}",
+            token = record.token,
+        )))
+    };
+    match load(next) {
+        Err(failure) => return refuse(format!("{failure}")),
+        Ok(followed) if followed.identity != record.identity => {
+            return refuse(format!(
+                "that session belongs to {there:?} and this one to {here:?}, and a session \
+                 continues a branch of its own repository",
+                there = followed.identity,
+                here = record.identity,
+            ))
+        }
+        Ok(_) => {}
+    }
+    match newest(record) {
+        Ok(_) => Ok(()),
+        Err(broken) => refuse(broken),
+    }
 }
 
 /// Every session record on this host.
@@ -670,15 +805,58 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         state: Lifecycle::Open,
         owner_pid: std::process::id(),
         owner_started: process_started(std::process::id()),
+        retried_by: None,
+        carried: Remainder::default(),
     };
     save(&record)?;
     let reuse = match continued {
         Some(_) => Reuse::Continued,
         None => Reuse::Cut,
     };
+    // Only a session that *continued* a branch supersedes anything: a name this
+    // token generated stands for nothing that came before it. Written after the new
+    // record is saved, because the link names it and a link to a session no record
+    // names is the one thing the write boundary refuses.
+    if continued.is_some() {
+        supersede(&record)?;
+    }
     stream.emit(EventKind::SessionOpened, opened(&record, reuse));
     drop(lease);
     Ok((record, stream))
+}
+
+/// Record, on every session this one continued the branch of, that it did.
+///
+/// The *tails* of the chains this branch already has, which is every record nothing
+/// has superseded yet — a session already superseded is answered for by whatever
+/// superseded it, and pointing a second edge at this token would fork a chain that
+/// has one end by construction.
+///
+/// Best effort in the same way the stream beside it is: the session is open and its
+/// worktree is cut by the time this runs, so a record that could not be written back
+/// is a warning rather than a session refused. What it costs is exactly what the
+/// link buys — a later reader that cannot tell the two copies of the branch apart —
+/// and refusing the session would cost the work.
+fn supersede(record: &Record) -> Result<()> {
+    for older in all()? {
+        if older.identity != record.identity
+            || older.branch != record.branch
+            || *older.token == *record.token
+            || older.retried_by.is_some()
+        {
+            continue;
+        }
+        if let Err(failure) = record_retry(&older.token, &record.token) {
+            eprintln!(
+                "onevcs: warning: the session {older} is not recorded as continued by {newer}, so \
+                 a report about {branch:?} cannot tell the two apart: {failure}",
+                older = older.token,
+                newer = record.token,
+                branch = record.branch,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Whether a session was cut for this request, continued a branch that already
@@ -1505,6 +1683,8 @@ mod process_tests {
             state: Lifecycle::Open,
             owner_pid: std::process::id(),
             owner_started,
+            retried_by: None,
+            carried: crate::remainder::Remainder::default(),
         })
     }
 

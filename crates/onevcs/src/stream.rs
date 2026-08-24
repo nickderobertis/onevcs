@@ -10,6 +10,7 @@
 //! because the thing being redacted arrives from outside it: a rejecting `pre-push`
 //! hook echoes whatever its own verification printed, credentials included.
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,9 +18,14 @@ use std::path::PathBuf;
 use serde_json::{Map, Value};
 
 use crate::error::{self, Result};
-use crate::event::{ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Source};
+use crate::event::{
+    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Phase, Source,
+};
+use crate::git::ObjectId;
+use crate::landed::Landed;
+use crate::rules::MergePolicy;
 use crate::session::SessionToken;
-use crate::{home, ids, lock};
+use crate::{home, ids, lock, policy, release, status, store, workspace};
 
 /// The envelope schema version this build emits.
 pub const ENVELOPE_VERSION: u32 = 1;
@@ -102,7 +108,7 @@ impl Stream {
     /// order it was learned. It is labelled with the identity for the same reason a
     /// session's is labelled with its token: what a reader correlates it by.
     pub fn releases(identity: &str) -> Result<Self> {
-        let mut stream = Self::open(&format!("releases-{}", ids::short_digest(identity)))?;
+        let mut stream = Self::open(&releases_token(identity))?;
         stream.labels.extra.remove("session");
         stream.label("identity", identity);
         // Several `onevcs release status` processes ask about one identity at once,
@@ -118,9 +124,25 @@ impl Stream {
             .insert(key.to_owned(), Value::String(value.to_owned()));
     }
 
-    /// Append one event.
+    /// Append one event, at the phase its kind decides.
     pub fn emit(&mut self, kind: EventKind, payload: Map<String, Value>) {
         self.emit_with(kind, payload, Vec::new());
+    }
+
+    /// Append the record of one push, at the phase the branch it updated decides.
+    ///
+    /// The one kind whose phase is not a fact about the kind: a push of the session's
+    /// own branch is the work being made, and a push of the base a squash landed on
+    /// or of the base a merge train advanced is that work being integrated. Which of
+    /// the two it was is known where the push is made and nowhere else, so it arrives
+    /// from there rather than being inferred from a payload afterwards.
+    pub fn emit_push(
+        &mut self,
+        phase: Phase,
+        payload: Map<String, Value>,
+        artifacts: Vec<ArtifactRef>,
+    ) {
+        self.append_stamped(EventKind::Push, phase, payload, artifacts);
     }
 
     /// Append one event carrying artifact references.
@@ -133,6 +155,24 @@ impl Stream {
     pub fn emit_with(
         &mut self,
         kind: EventKind,
+        payload: Map<String, Value>,
+        artifacts: Vec<ArtifactRef>,
+    ) {
+        let phase = match Phase::of(kind) {
+            Some(phase) => phase,
+            // The one kind whose phase its producer decides, and `emit_push` is
+            // where every push in this crate decides it. A push that arrived here
+            // instead is one this build has no target for, and the phase a session's
+            // own stream is in is the honest reading of it.
+            None => Phase::Development,
+        };
+        self.append_stamped(kind, phase, payload, artifacts);
+    }
+
+    fn append_stamped(
+        &mut self,
+        kind: EventKind,
+        phase: Phase,
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
     ) {
@@ -168,6 +208,7 @@ impl Stream {
             seq: self.seq,
             source: Source::Vcs,
             kind,
+            phase,
             labels: self.labels.clone(),
             payload: bound(payload),
             artifacts,
@@ -260,6 +301,57 @@ pub struct EventStream {
     session: SessionToken,
     reader: Reader,
     filter: EventFilter,
+    /// The phases this session can produce, which every event handed back is in.
+    ///
+    /// Derived at open from what this host knows about the session's repository
+    /// rather than named by the caller: a `local-direct` repository opens no change
+    /// request and a repository with no release targets releases nothing, and a
+    /// consumer should not have to know either to write a filter that is not
+    /// silently empty.
+    phases: BTreeSet<Phase>,
+    /// The identity's release stream, where the release phase is one this session
+    /// has. [`None`] otherwise, which is also every session this host keeps no
+    /// record of.
+    releases: Option<Correlated>,
+}
+
+/// The identity's release stream, joined to one session by its landing commit.
+///
+/// The releases that follow a landing are recorded on the repository's own stream,
+/// outside every session, and nothing on them names a session — the landing commit
+/// is the only thing that correlates one to a piece of work. Both halves are already
+/// here, so the join is made here: a consumer neither derives nor spells the address
+/// of that second stream.
+#[derive(Debug)]
+struct Correlated {
+    /// The repository whose releases these are, which is what a refusal names.
+    identity: String,
+    /// The stream those releases are recorded on. Private, and never rendered.
+    token: String,
+    /// The commit this session's work landed at, once history records one. Absent
+    /// until it does, which is why nothing is handed back before then rather than
+    /// being handed back unmatched.
+    ///
+    /// An [`ObjectId`], as the value it is compared against is: both sides of this
+    /// correlation come from outside the process — one off a stream, one out of a
+    /// repository — and a value that is not a commit id cannot be the commit either
+    /// of them claims.
+    landing: Option<ObjectId>,
+    /// The events of that stream this reader has already accounted for, by the
+    /// producer's own `seq`.
+    ///
+    /// A count of lines read would not do: the landing commit becomes knowable long
+    /// after some of those lines were written, so a cursor that had advanced past
+    /// them while there was nothing to match would lose them for good.
+    handed: BTreeSet<u64>,
+    /// The candidates the last read weighed, so a reader polled in a loop asks
+    /// history about its landing when the *stream* has moved rather than when it
+    /// has been asked.
+    ///
+    /// Deciding a landing opens repositories and runs git; a session that never
+    /// lands, in an identity that releases often, would otherwise pay for that on
+    /// every poll for ever.
+    weighed: BTreeSet<u64>,
 }
 
 impl EventStream {
@@ -280,11 +372,47 @@ impl EventStream {
     ///
     /// [`open`](EventStream::open) is this with [`EventFilter::default`], which
     /// admits everything: an unfiltered stream is the same stream it always was.
+    /// A phase this session cannot produce is refused where it is *named* and
+    /// dropped where it is not, which is the difference between a consumer having
+    /// asked for something and a consumer having asked for everything.
     pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self> {
+        // The stream first, so a session that has emitted nothing is still refused by
+        // name rather than by whatever its repository's rules turn out to say.
+        let reader = Reader::open(&session.0)?;
+        let (phases, identity) = supported(session);
+        for named in filter
+            .include
+            .iter()
+            .chain(&filter.exclude)
+            .filter_map(|matcher| matcher.phase)
+        {
+            if !phases.contains(&named) {
+                return Err(error::invalid(format!(
+                    "the event filter names the {named} phase, which the session {session} does \
+                     not have: it has {had}. A filter that named it would be answered with \
+                     nothing, and nothing is what a filter for the wrong phase and a session \
+                     that did nothing look alike as",
+                    session = session.0,
+                    had = listed(&phases),
+                )));
+            }
+        }
+        let releases = match (phases.contains(&Phase::Release), identity) {
+            (true, Some(identity)) => Some(Correlated {
+                token: releases_token(&identity),
+                identity,
+                landing: None,
+                handed: BTreeSet::new(),
+                weighed: BTreeSet::new(),
+            }),
+            _ => None,
+        };
         Ok(Self {
             session: session.clone(),
-            reader: Reader::open(&session.0)?,
+            reader,
             filter,
+            phases,
+            releases,
         })
     }
 
@@ -311,10 +439,226 @@ impl EventStream {
             if !self.filter.matches(&envelope) {
                 continue;
             }
+            // Dropped in silence, and only ever a phase this session cannot produce:
+            // one a filter *named* was refused when the stream was opened. Nothing was
+            // asked for and nothing was denied, so there is nothing to say.
+            if !self.phases.contains(&envelope.phase) {
+                continue;
+            }
             events.push(envelope);
+        }
+        if let Some(correlated) = &mut self.releases {
+            events.extend(correlated.fresh(&self.session, &self.filter)?);
         }
         Ok(events)
     }
+}
+
+impl Correlated {
+    /// The releases of this identity that carried this session's landing and have
+    /// not been handed back yet.
+    ///
+    /// The whole file each time rather than a cursor over it, for the reason
+    /// [`handed`](Correlated::handed) states: what makes an event of this stream this
+    /// session's is a landing commit history may not record until long after the
+    /// event was written.
+    fn fresh(&mut self, session: &SessionToken, filter: &EventFilter) -> Result<Vec<Envelope>> {
+        let path = path_for(&self.token)?;
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            // A repository nothing has recorded a release for yet has no such record,
+            // and that is an answer rather than a gap: the file is written by the
+            // first release verb that says anything about this identity.
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            // Every *other* way the read fails is a record this host has and cannot
+            // see, and answering "no releases" from one would be this reader deciding
+            // that some of what it was asked for is not worth reading — which is the
+            // one thing a reader of values must not do.
+            Err(failure) => {
+                return Err(error::invalid(format!(
+                    "the release record for {identity} cannot be read: {failure}",
+                    identity = self.identity,
+                )))
+            }
+        };
+        let mut candidates = Vec::new();
+        for (index, line) in raw.lines().enumerate() {
+            let envelope = self.attributed(line, index + 1)?;
+            // A probe is not a release. `release-probed` says what a target answered
+            // when it was asked, which a session's own stream already carries for the
+            // probes its publication ran — handing this stream's back too would
+            // report one ask as two.
+            if !matches!(
+                envelope.kind,
+                EventKind::ReleaseObserved | EventKind::ReleaseAcknowledged
+            ) || self.handed.contains(&envelope.seq)
+            {
+                continue;
+            }
+            candidates.push((index + 1, envelope));
+        }
+        let weighing: BTreeSet<u64> = candidates
+            .iter()
+            .map(|(_, envelope)| envelope.seq)
+            .collect();
+        // Nothing to correlate, or nothing new to correlate: this stream has not
+        // moved since the last read weighed it, and history is not asked again for
+        // an answer it has already been asked for.
+        if weighing.is_empty() || (self.landing.is_none() && weighing == self.weighed) {
+            return Ok(Vec::new());
+        }
+        self.weighed = weighing;
+        let landing = match &self.landing {
+            Some(landing) => landing.clone(),
+            None => match landed_at(session) {
+                // Nothing records that this session's work reached its base, so
+                // nothing here is this session's. Not handed back and not accounted
+                // for, so the same events are weighed again once something is
+                // appended beside them — or once history records a landing, which is
+                // what the next read this reader is asked for finds out.
+                None => return Ok(Vec::new()),
+                Some(landing) => {
+                    self.landing = Some(landing.clone());
+                    landing
+                }
+            },
+        };
+        let mut fresh = Vec::new();
+        for (line_number, envelope) in candidates {
+            // The one field that makes an event of this stream some *landing's*, and
+            // therefore the only thing a correlation can be wrong about. It arrives
+            // from a file whichever process wrote it, so an event that names no
+            // commit is refused where it is read rather than read as "not this
+            // session's" — that reading is indistinguishable from a release of
+            // another landing, and it is what a consumer would then wait on for ever.
+            let named = envelope
+                .payload
+                .get("landing_commit")
+                .and_then(Value::as_str)
+                .and_then(ObjectId::parse)
+                .ok_or_else(|| {
+                    self.refusal(
+                        line_number,
+                        "records a release that names no landing commit, so nothing can be said \
+                         about which work it released",
+                    )
+                })?;
+            if named != landing {
+                continue;
+            }
+            self.handed.insert(envelope.seq);
+            if filter.matches(&envelope) {
+                fresh.push(envelope);
+            }
+        }
+        Ok(fresh)
+    }
+
+    /// One line of the identity's release stream, refused if it is not an envelope
+    /// or belongs to another stream.
+    ///
+    /// The two refusals [`attributed`] gives, said in the identity's own terms: this
+    /// stream's name is not something a consumer of a *session* has, so naming it in
+    /// a refusal would hand over the one address this join exists to keep private.
+    fn attributed(&self, line: &str, line_number: usize) -> Result<Envelope> {
+        let envelope: Envelope = serde_json::from_str(line).map_err(|failure| {
+            self.refusal(line_number, &format!("is not an event envelope: {failure}"))
+        })?;
+        if envelope.stream != self.token {
+            return Err(self.refusal(line_number, "carries an event of another stream"));
+        }
+        Ok(envelope)
+    }
+
+    /// One refusal about this stream, in the identity's own terms.
+    ///
+    /// This stream's name is not something a consumer of a *session* has, so naming
+    /// it in a refusal would hand over the one address this join exists to keep
+    /// private.
+    fn refusal(&self, line_number: usize, what: &str) -> crate::Error {
+        error::invalid(format!(
+            "line {line_number} of the release record for {identity} {what}",
+            identity = self.identity,
+        ))
+    }
+}
+
+/// Which phases one session can produce, and the identity its releases belong to.
+///
+/// Best effort in one direction only. Every answer this can fail to reach widens the
+/// set rather than narrowing it, because a read that quietly left events out would
+/// be indistinguishable from a session that never wrote them — which is the failure
+/// the whole scoping exists to prevent. So a session this host keeps no record of
+/// takes every phase, and so does one whose repository this host can no longer
+/// resolve.
+///
+/// The record is read directly rather than through [`crate::Vcs`] for the reason the
+/// stream file beside it is: this is the state root's own bookkeeping about a stream
+/// that lives here, and a `Vcs` that keeps its sessions elsewhere is exactly the case
+/// the absent-record answer above is for.
+fn supported(session: &SessionToken) -> (BTreeSet<Phase>, Option<String>) {
+    let every = || (BTreeSet::from(Phase::every()), None);
+    let (Ok(record), Ok(registry)) = (workspace::load(&session.0), store::load()) else {
+        return every();
+    };
+    let identity = record.identity.clone();
+    let (Ok(resolution), Ok((rules, source))) = (
+        store::resolve(&registry, &identity),
+        policy::load(&registry),
+    ) else {
+        return every();
+    };
+    let mut phases = BTreeSet::from([Phase::Development, Phase::Integrate]);
+    let resolved = policy::resolve(
+        &rules,
+        &source,
+        &store::normalize(&resolution.identity.origin),
+        &resolution.publication,
+    );
+    // The one policy that opens no change request, so the one that leaves this
+    // session with nothing to review.
+    if resolved.policy.publication != MergePolicy::LocalDirect {
+        phases.insert(Phase::Review);
+    }
+    // A repository that releases nothing has no release to wait for, which is the
+    // state every host is in until it configures one — and it is the *only* answer
+    // that rules the phase out. A release-targets document this build cannot read
+    // rules nothing out, so it widens like every other answer this cannot reach; the
+    // release verbs are where such a document is refused by name.
+    let releases_nothing = release::for_repository(&registry, &identity)
+        .is_ok_and(|located| located.releases.targets.is_empty());
+    if !releases_nothing {
+        phases.insert(Phase::Release);
+    }
+    (phases, Some(identity))
+}
+
+/// The commit this session's work reached its base at, where history records one.
+///
+/// The same decision `onevcs status` reports and `onevcs release status` compares a
+/// release against, through the same reader — so what a session's releases are
+/// correlated by is the landing the rest of this crate would name, retries followed
+/// and all.
+///
+/// Read through the conversion that decides what an object id is, for the reason
+/// [`crate::landed`] reads its own records through it: the evidence travels as a
+/// `Sha`, which the contract fixes as an unvalidated string, and a value that is not
+/// a commit id is no landing to correlate against rather than one to compare.
+fn landed_at(session: &SessionToken) -> Option<ObjectId> {
+    let registry = store::load().ok()?;
+    match status::landing_of(&registry, &session.0).ok()?.landed {
+        Landed::Yes { evidence } => ObjectId::parse(evidence.commit()),
+        Landed::No | Landed::Unknown => None,
+    }
+}
+
+/// The phases a refusal lists as the ones a session does have.
+fn listed(phases: &BTreeSet<Phase>) -> String {
+    phases
+        .iter()
+        .map(|phase| phase.as_str())
+        .collect::<Vec<&str>>()
+        .join(", ")
 }
 
 /// One line of a stream as the envelope it has to be, refused if it is not one or
@@ -358,6 +702,16 @@ fn recorded(path: &PathBuf) -> u64 {
 /// The advisory-lock identity that orders appends to one shared stream.
 fn stream_identity(id: &str) -> String {
     format!("stream:{id}")
+}
+
+/// The stream one repository's release activity is recorded on.
+///
+/// Spelled once, because both ends of the correlation resolve it: the writer that
+/// appends a release event, and the session reader that hands one back. It is
+/// deliberately not a consumer's to derive — nothing hands it out and no refusal
+/// names it — so a second spelling of it would be the address escaping by accident.
+fn releases_token(identity: &str) -> String {
+    format!("releases-{}", ids::short_digest(identity))
 }
 
 /// The file one session's stream lives in.

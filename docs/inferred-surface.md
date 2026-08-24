@@ -112,7 +112,7 @@ for the same reason. -->
 
 | Type | Inferred shape | Why |
 | --- | --- | --- |
-| `SessionRecord` | `session`, `identity`, `lifecycle`, `provenance` | What every command that takes a token needed off the private record and could not derive from a `Session`: which repository it belongs to, whether it is still open, and whether its branch carries an incomplete-step marker. |
+| `SessionRecord` | `session`, `identity`, `lifecycle`, `provenance`, `retried_by` | What every command that takes a token needed off the private record and could not derive from a `Session`: which repository it belongs to, whether it is still open, and whether its branch carries an incomplete-step marker. `retried_by` is the fifth and arrived later: a branch outlives the run that cut it, so two records can hold one name, and this is the only thing that says which of them the work went on in. A `SessionToken` rather than a whole record, because that is what the rest of this surface takes. |
 | `PublishRequest` | `policy`, `title`, `body` | Exactly the options `onevcs publish` takes beyond the token. `title` is a `Subject` rather than a `String`: a publication commits and merges before it composes a message, so the check has to be in the conversion that builds the request rather than where the message is composed. `body` is a plain `String` for the opposite reason — a host places no shape on prose, so there is nothing for a conversion to check and an unusable body does not exist. |
 | `Publication` | `session`, `branch`, `policy`, `outcome` | What a caller journals about a publication: which session and branch, the policy it was actually taken under (after the rules file and any narrowing), and what happened. |
 | `PublishOutcome` | `merged` / `change-open` / `queued` / `nothing-to-publish` / `failed` | The four endings the CLI printed as prose, plus the failure it printed to stderr and reported as an exit code. `Retention` is on the failure because the branch is the only record of the work, and whether it survived is the first thing a caller asks. |
@@ -192,6 +192,8 @@ What is inferred here is only how this crate spells it:
 | `EventFilter::parse` | `&str` in, `Result<Self>` out | A consumer with a spec as text needs one entry point that refuses it the way the CLI does. It reads YAML, which is the language the grammar is written in and a superset of the JSON the CLI takes inline, so both forms are one parser rather than two that could disagree. |
 | `Deserialize for EventFilter` | routed through the same validation | Hand-written rather than derived, so a filter embedded in a consumer's own configuration is refused by the same rules, with the same message naming the same matcher. A derived one would name the field and not which matcher carried it. |
 | `--filter SPEC` | inline when it opens with `{`, a path otherwise | Decided by the text rather than by whether a file happens to exist, so what an invocation means does not change with the directory it runs in. The grammar's document is a mapping, so the two forms cannot collide. |
+| `Phase::of` | `EventKind` in, `Option<Phase>` out | The mapping the amendment's table states, answerable because a kind decides its own phase — except for `push`, whose phase is a fact about the branch it updated. `None` is that one kind saying so, rather than a total function that would have to invent an answer for it. Public because a consumer merging several sources reads envelopes an older producer wrote, which carry no `phase` at all. |
+| `Phase::as_str` and `Phase::every` | the wire word, and the four in order | Both already reachable through `Serialize`; they exist for the two places a phase is *rendered* rather than serialized — a refusal listing which phases a session has, and a consumer's own log line. `as_str` and the serialized spelling are held together in `tests/contract.rs`. |
 
 Deliberately *not* public: `EventKind::wire`, the kebab-case spelling a `kind` glob
 is matched against — it is `Serialize`'s answer, reachable that way already, and
@@ -199,6 +201,18 @@ is matched against — it is `Serialize`'s answer, reachable that way already, a
 together. Nor is there an `EventFilter` on `Stream`, the writing half: filtering
 what a producer *records* is a different decision from filtering what a consumer
 reads, and the stream is the record of what happened.
+
+**A retry link is followed, never fallen back from.** Which session answers for a
+branch is a question `status`, `release status`, and `recoverable` each ask, and
+they ask it through one reader so a row that said `no` in one and `unknown` in the
+other cannot exist. Three shapes are refused where a link is *written* — a target
+this host has no record of, one belonging to another identity, and one that closes
+a cycle — and a chain that is nevertheless unfollowable answers `unknown`:
+
+| Item | Shape | Why |
+| --- | --- | --- |
+| `workspace::newest` | a `Record`, or a sentence saying why not | Not a `Result<_, Error>`: an unfollowable chain is not a command that failed, it is a question with no answer, and the sentence is what a report puts in its notes. Answering with the last record that still read would be answering from a session something superseded — the exact wrong answer the link exists to prevent. |
+| a superseded copy | reported as holding the branch, excluded from deciding it | Where the branch *is* and what became of it are two questions. A run clone left where its run stopped is still a place the name exists; what it holds is the work that was taken over. |
 
 Deliberately *not* public: `workspace::Record` and `workspace::all`, which are the
 whole durable record — the run root, the per-session clone, the two checkouts, and a

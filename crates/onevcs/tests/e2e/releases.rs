@@ -1541,16 +1541,16 @@ fn a_release_document_a_later_build_wrote_is_read_rather_than_refused() {
     let releasing = Releasing::with(&answering("crate"));
     releasing.answers("crate", "1.0.0\n");
     let path = releasing.fixture.checkout.to_string_lossy().into_owned();
-    std::fs::write(
-        releasing.fixture.world.home().join("releases.yml"),
-        format!(
-            "version: 99\nsigning: {{required: true}}\ndefault:\n  adoption: published\n  \
-             quorum: 2\nrepositories:\n  - match: {{path: {path:?}}}\n    default_target: \
-             crate\n    cadence: nightly\n    targets:\n{}",
-            answering("crate")
-        ),
-    )
-    .expect("a release-targets file from a later build");
+    let targets = releasing.fixture.world.home().join("releases.yml");
+    let configured = format!(
+        "version: 99\nsigning: {{required: true}}\ndefault:\n  adoption: published\n  \
+         quorum: 2\nrepositories:\n  - match: {{path: {path:?}}}\n    default_target: \
+         crate\n    cadence: nightly\n    targets:\n{crate_target}      - name: \
+         container\n        style: human-step\n        action: \"Push the image.\"\n        \
+         attested_by: somebody\n",
+        crate_target = answering("crate")
+    );
+    std::fs::write(&targets, &configured).expect("a release-targets file from a later build");
     assert_eq!(
         releasing.json(&["targets", "project"])["adoption"],
         "published",
@@ -1578,10 +1578,16 @@ fn a_release_document_a_later_build_wrote_is_read_rather_than_refused() {
     let mut document: Value =
         serde_json::from_str(&std::fs::read_to_string(&record).expect("a record"))
             .expect("the record is JSON");
+    // llmlint: ignore-block[tests_mirror_real_usage] the *document* is the input under
+    // test. Its premise is a record a **newer** `onevcs` wrote — a version above this
+    // build's and keys it has never heard of — and no interface of this build can produce
+    // one, because this build does not have those keys. Writing it is the only way to
+    // hold this build to handing them back.
     document["version"] = serde_json::json!(99);
     document["attestations"] = serde_json::json!({"crate": "signed"});
     document["baselines"]["crate"][&commit]["provenance"] = serde_json::json!("a later build's");
     std::fs::write(&record, document.to_string()).expect("a record from a later build");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     // A verb that rewrites the whole document: the acknowledgement is written under
     // the same lock, over the same file.
@@ -1607,6 +1613,44 @@ fn a_release_document_a_later_build_wrote_is_read_rather_than_refused() {
     assert!(
         written["observed"]["crate"].get(&commit).is_some(),
         "…and what the verb was asked to do still happened"
+    );
+
+    // The other verb that rewrites the whole document, which writes a record of its
+    // own rather than one it read: a human step somebody performed and recorded.
+    releasing
+        .release(&[
+            "acknowledge",
+            &token,
+            "--target",
+            "container",
+            "--version",
+            "3.0.0",
+        ])
+        .success();
+    let after: Value = serde_json::from_str(&std::fs::read_to_string(&record).expect("a record"))
+        .expect("the record is JSON");
+    assert_eq!(after["version"], 99, "an acknowledgement lowers no version");
+    assert_eq!(
+        after["attestations"]["crate"], "signed",
+        "a top-level key this build has no opinion on survives an acknowledgement too"
+    );
+    assert_eq!(
+        after["baselines"]["crate"][&commit]["provenance"], "a later build's",
+        "and so does one nested under a record the acknowledgement did not touch"
+    );
+    assert_eq!(
+        after["acknowledgements"]["container"][&commit]["version"],
+        "3.0.0"
+    );
+    assert!(after["observed"]["container"].get(&commit).is_some());
+
+    // …and the *targets* file is untouched by either verb, byte for byte. It is the
+    // operator's own document and nothing here writes it, which is the strongest
+    // form of "what it carried comes back".
+    assert_eq!(
+        std::fs::read_to_string(&targets).expect("the targets file"),
+        configured,
+        "a release verb rewrote the release-targets file"
     );
 }
 

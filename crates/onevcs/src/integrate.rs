@@ -315,7 +315,15 @@ fn train(
         // the verdict and the only account of a refusal there will ever be. No run
         // root is handed over — the train's scratch workspace is removed a few lines
         // below, so the stored artifact is what outlives the run.
-        publish::record_push(stream, &Ref::from_git(base), &result, None)?;
+        // The base the train advanced, which is the work being integrated rather
+        // than any one branch being made.
+        publish::record_push(
+            stream,
+            &Ref::from_git(base),
+            &result,
+            None,
+            crate::event::Phase::Integrate,
+        )?;
         if !result.accepted() {
             return Err(Error::PushRejected {
                 reason: format!(

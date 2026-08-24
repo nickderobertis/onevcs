@@ -505,17 +505,81 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
     }
 }
 
-/// The session that holds or held one piece of work, preferring an open one.
-fn session_of(work: &Work) -> Result<Option<workspace::Record>> {
-    Ok(workspace::all()?
+/// Which of this branch's sessions answers for it, and which of them must not.
+///
+/// A branch outlives the run that cut it, so several sessions can hold a copy of one
+/// name — and until a retried session said which session continued it, nothing told
+/// the copy the work went on in from the copy it was taken over from. Both were
+/// asked, and the *least* certain answer won: a superseded clone holding commits
+/// nobody published reported "there is work here and nothing says it landed" for a
+/// change that had merged.
+struct Answering {
+    /// The newest session of the chain, whose evidence is the branch's.
+    session: Option<workspace::Record>,
+    /// The sessions something superseded, whose copies of the branch answer for
+    /// nothing.
+    superseded: BTreeSet<String>,
+    /// Why nothing may be concluded, where a chain of this branch's sessions is one
+    /// this host cannot follow to an end.
+    broken: Option<String>,
+}
+
+/// The session that holds or held one piece of work, followed to its newest retry.
+///
+/// Every session of the branch is followed, not just the one a preference picked:
+/// a chain is broken by a hop that is missing, crosses identities, or closes on
+/// itself, and which record a reader happened to start from must not decide whether
+/// it notices. An open session still wins where two chains end apart, which is the
+/// preference this always had.
+fn answering(work: &Work) -> Result<Answering> {
+    let held: Vec<workspace::Record> = workspace::all()?
         .into_iter()
         .filter(|record| record.identity == work.identity && record.branch == work.branch)
-        .max_by_key(|record| record.state == Lifecycle::Open))
+        .collect();
+    let mut broken = None;
+    let mut ends = Vec::new();
+    for record in &held {
+        match workspace::newest(record) {
+            Ok(end) => ends.push(end),
+            Err(why) => {
+                broken.get_or_insert(why);
+            }
+        }
+    }
+    Ok(Answering {
+        session: ends
+            .into_iter()
+            .max_by_key(|record| record.state == Lifecycle::Open),
+        superseded: held
+            .iter()
+            .filter(|record| record.retried_by.is_some())
+            .map(|record| record.token.to_string())
+            .collect(),
+        broken,
+    })
+}
+
+/// The copies of a branch whose answer about it is still that branch's.
+///
+/// A superseded session's clone is left exactly where the run stopped, and what it
+/// holds is the work that was taken over rather than the work that went on. It is
+/// still a place the branch is — the report says so — and it is no longer a place
+/// the branch is *decided* from.
+fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a Holder> {
+    holders
+        .iter()
+        .filter(|holder| {
+            holder
+                .session
+                .as_ref()
+                .is_none_or(|token| !superseded.contains(&token.to_string()))
+        })
+        .collect()
 }
 
 /// Ask every copy of the branch this host holds whether the work landed.
 fn judge(
-    holders: &[Holder],
+    holders: &[&Holder],
     resolution: &Resolution,
     base: &Ref,
     work: &Work,
@@ -577,10 +641,14 @@ pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<Landing
     let trailers = provenance::from_rules(&file);
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
     let holders = holders_of(registry, &resolution, &work.branch)?;
-    let held_by = session_of(&work)?.map(|record| record.token.to_string());
+    let answering = answering(&work)?;
+    let held_by = answering
+        .session
+        .as_ref()
+        .map(|record| record.token.to_string());
     let told = from_streams(&streams, &work, held_by.as_deref());
     let judged = judge(
-        &holders,
+        &carrying(&holders, &answering.superseded),
         &resolution,
         &base,
         &work,
@@ -591,9 +659,16 @@ pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<Landing
     Ok(LandingOf {
         identity: work.identity.clone(),
         branch: work.branch.clone(),
-        landed: carrier
-            .map(|(_, _, verdict)| verdict.clone())
-            .unwrap_or(Landed::Unknown),
+        // A chain this host cannot follow says nothing about the branch, and the
+        // caller that reads this compares a *release* against the landing it names —
+        // so an answer from whichever record still read would sequence an upgrade
+        // behind a release of work that may never have landed.
+        landed: match answering.broken.is_some() {
+            true => Landed::Unknown,
+            false => carrier
+                .map(|(_, _, verdict)| verdict.clone())
+                .unwrap_or(Landed::Unknown),
+        },
         carrier: carrier.map(|(repo, _, _)| repo.clone()),
     })
 }
@@ -613,7 +688,8 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
 
     let holders = holders_of(registry, &resolution, &work.branch)?;
-    let session = session_of(&work)?.map(|record| SessionReport {
+    let answering = answering(&work)?;
+    let session = answering.session.clone().map(|record| SessionReport {
         token: record.token.clone(),
         state: record.state,
         liveness: SessionHolder::from(record.clone()).liveness,
@@ -629,7 +705,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let merge_path = told.merge_path.clone();
 
     let judged = judge(
-        &holders,
+        &carrying(&holders, &answering.superseded),
         &resolution,
         &base,
         &work,
@@ -653,6 +729,18 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
             .and_then(|recorded| Ref::try_from(recorded).ok());
         verdict = Some(decided.clone());
+    }
+    // …and a chain of retries this host cannot follow overrides whatever a copy of
+    // the branch said. Undecidable rather than decided, in both directions: a `no`
+    // here is a paste-ready publication under work that may already have landed, and
+    // a `yes` is work nobody published being reported as finished. The note is what
+    // an operator repairs.
+    if let Some(why) = &answering.broken {
+        notes.push(format!(
+            "{why}. What became of {branch:?} is therefore not decided from any of them",
+            branch = work.branch,
+        ));
+        verdict = Some(Landed::Unknown);
     }
 
     let target = change_base.clone().unwrap_or_else(|| base.clone());

@@ -10,6 +10,10 @@
 /AGENTS.md             @nickderobertis
 /CLAUDE.md             @nickderobertis
 
+# The compatibility project, which is a released build of this crate rather than a
+# part of it: a change here is a change to what "already in the field" means.
+/compat/               @nickderobertis
+
 # The approved contract, and what it left to inference. A change here is a
 # change to two other repositories' expectations.
 /docs/                 @nickderobertis

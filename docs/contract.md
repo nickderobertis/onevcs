@@ -963,6 +963,153 @@ path.
 
 Nothing about publication, recovery, integration, or the rules file changes.
 
+**An event says which part of a change's life it belongs to, and a session read is
+scoped by that rather than by enumerating kinds.** The envelope names *what*
+happened and the filter grammar matches a kind glob, so a consumer that wanted "the
+review of this change" wrote `change-*` — a spelling that is right until a kind is
+added to that part of the life and every consumer's filter silently stops covering
+it. So the envelope carries a `phase`, and the filter matches it.
+
+Four phases over one change — the work is made, it is brought together with the
+base it is going onto, it is proposed and ruled on, and what carries it is released
+— and every event kind is in exactly one of them:
+
+```text
+development  session-opened fetch lock-wait lock-acquired commit-preserved
+             recovery-attested session-closed push:own-branch
+integrate    merge-queued merge-completed sync-conflict push:any-other-branch
+review       change-opened change-check change-merged
+release      release-probed release-acknowledged release-observed
+```
+
+Two entries there are judgement rather than bookkeeping. `recovery-attested` is
+`development` because it repairs the preserved branch *before* that branch may enter
+a merge path at all. And `push` is the one kind that appears twice: a push of the
+session's own branch is the work being made, and a push of anything else — the base
+a `local-direct` squash lands on, the base a merge train advanced — is that work
+being integrated.
+
+**The producer stamps it, and `push` is why.** Every other kind's phase is a fact
+about the kind; a push's is a fact about the branch it updated, which is known where
+the push is made and nowhere else. So `Phase::of` answers for sixteen kinds and
+answers `None` for `push`, and the producer supplies that one. The field is
+**additive inside `v: 1`**: a build that predates it reads an envelope carrying it
+exactly as it read one without — the envelope types declare no
+`deny_unknown_fields`, and never will — and a build that has it reads an envelope
+without one at the phase the kind decides. The fixture in full:
+
+```json
+{"v": 1, "ts": "<RFC3339, millisecond, UTC>", "stream": "<unique id per producing process>",
+ "seq": 42, "source": "agentgraph|vcs|pipeline", "kind": "<event kind>",
+ "phase": "development|integrate|review|release",
+ "labels": {"run_id": "R", "round": 2, "node": "service", "step": "implement",
+            "member": "worker", "persona": "engineer"},
+ "payload": {}, "artifacts": [{"id": "a-91", "kind": "log", "bytes": 21400}]}
+```
+
+**`phase` is a matcher field, which is the extension the grammar already names.**
+The grammar is fixed across `onevcs`, `oneagentgraph`, and `onepipeline` and carries
+no version, and the recorded way to extend it is "a new matcher field agreed in the
+same place, which an older build already refuses rather than misreads". This is one:
+exact equality, like `source`, unset asking nothing, and a spec naming a phase that
+is not one of the four refused where the spec is read.
+
+```yaml
+include:                              # everything the change request's review wrote
+  - {phase: review}
+```
+
+**Which phases a session *has* is derived here rather than configured.** A consumer
+should not have to know that a `local-direct` repository never opens a change
+request, or that a repository nothing releases never emits a release event, in order
+to write a filter that is not silently empty. So `EventStream` resolves the phases
+that session can produce, from what this host already knows:
+
+- `development` and `integrate` always. Every session makes work and integrates it.
+- `review` only where the resolved merge policy is not `local-direct` — the one
+  policy that opens no change request.
+- `release` only where `$ONEVCS_HOME/releases.yml` configures targets for that
+  session's identity. A repository with no targets releases nothing, so there is
+  nothing for the phase to admit.
+
+Naming an unsupported phase **explicitly** is a refusal that names that phase, for
+the reason every other unusable filter is refused where it is read: a filter that
+silently admits nothing is an answer a consumer acts on without being told it asked
+for something else. Naming none — the default read — takes the supported phases and
+drops the rest **in silence**, because nothing was asked for and nothing was denied.
+A repository that configures no release targets therefore reads exactly what it read
+before there were phases.
+
+This is the typed reader's, and `onevcs events` is deliberately the other rendering
+again — as it already is for the two refusals an unfiltered read does not make. The
+command is a reader of *one file's bytes*, printing what the producer wrote; the
+scoping above and the correlation below are a join across two streams and a question
+about a repository's rules, neither of which a byte-for-byte subset of one file can
+express. The command takes a `phase` matcher like any other, because the grammar is
+one grammar.
+
+**A session read includes the releases that followed its own landing.** The release
+events of a repository are recorded on that repository's own stream rather than on
+any session's — they fire long after the dispatch has ended — and the only thing
+that correlates one to a piece of work is its `landing_commit`. `onevcs` already
+holds both halves: the session record names the identity, and the landing evidence
+for that session's branch names the commit. So where `release` is a supported phase
+and the read selects it, `EventStream` **also** hands back that identity's
+`release-observed` and `release-acknowledged` envelopes whose `landing_commit` is
+that session's own landing commit, and nothing else of that stream:
+`release-probed` is not duplicated, and another landing's release is absent.
+
+Three things about that are load-bearing. The join is performed **inside `onevcs`**,
+so no consumer derives, spells, or is handed the address of the identity's release
+stream — which is private, and stays private. Every envelope keeps the `stream` and
+`seq` its producer wrote, so nothing is renumbered and per-stream gap detection is
+unchanged; the correlated events are a deliberate *subset* of that second stream,
+which is a consumer's one rule here — a gap in it is the correlation rather than
+loss, and gap detection remains meaningful on the session's own stream, which is
+whole. And the set **grows after `session-closed`**: a release happens when it
+happens, so a reader kept open, or one re-opened later, answers with whatever has
+been recorded since. That is the whole of the wait — which release a consumer waits
+*for* is already decided by `fast` versus `published` adoption, and nothing here adds
+a second way to configure it.
+
+**A retried session says which session superseded it.** A branch that a run left
+behind is continued by the next session over the same name, and until now the two
+records had nothing between them: two run clones of one branch, one holding the
+work that landed and one holding work that never did, and no way to tell which
+answered for the branch. Measured, on 2026-08-23: a change that had merged reported
+`landed: no, decided by: content comparison`, from the superseded clone, under the
+branch, under both session tokens, and under the change request's URL — an answer
+that reads as "there is work here, publish it" for work the base already carried.
+
+So the older record carries `retried_by`, naming the session that continued its
+branch, written when that session opens. Everything that answers what became of a
+session or a branch — `status` in each of its four reference spellings, `release
+status`, and the library forms of both — follows that chain to its newest record and
+takes *its* landing evidence.
+
+A link is a claim about this host's own state, so it is refused where it is written
+if the target is not a session record on this host, belongs to another identity, or
+would close a cycle. And a chain that is nevertheless unfollowable — a record
+removed underneath one, an edge across identities, a cycle — **stops and answers
+`unknown`**. Never the last valid record's answer, and never a decided `no`: the
+whole point is that a wrong `no` here is the answer somebody pastes a publication
+under.
+
+```rust
+pub enum Phase { Development, Integrate, Review, Release }
+impl Phase {
+    pub fn as_str(self) -> &'static str;         // development | integrate | review | release
+    pub fn every() -> [Phase; 4];
+    pub fn of(kind: EventKind) -> Option<Phase>; // None for `push` alone, whose target decides it
+}
+// Three declared types each gain one field, and nothing else about them moves:
+//   Envelope       pub phase: Phase                     // stamped by the producer
+//   EventMatcher   pub phase: Option<Phase>             // exact equality, as `source` is
+//   SessionRecord  pub retried_by: Option<SessionToken> // the session that superseded this one
+```
+
+Nothing about publication, recovery, or the rules file changes.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

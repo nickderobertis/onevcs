@@ -240,6 +240,87 @@ fn a_kind_glob_selects_the_whole_change_request_family() {
 }
 
 #[test]
+fn a_phase_selects_the_part_of_a_changes_life_rather_than_the_kinds_in_it() {
+    // What the glob above cannot do: name the part of the change's life without
+    // knowing which kinds are in it today. The same real stream, asked both ways —
+    // and the phase answer is the family answer plus whatever else that phase holds,
+    // which is the point of naming the phase.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/phased", "feat: add the phased thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let reviewed = reported(
+        &hosted.world,
+        &token,
+        &["--filter", r#"{"include": [{"phase": "review"}]}"#],
+    );
+    let reviewed_kinds = kinds(&reviewed);
+    for expected in ["change-opened", "change-check", "change-merged"] {
+        assert!(
+            reviewed_kinds.iter().any(|kind| kind == expected),
+            "{expected} is missing from {reviewed_kinds:?}"
+        );
+    }
+    assert!(
+        reviewed.iter().all(|event| event["phase"] == "review"),
+        "the phase admitted an event of another phase: {reviewed:?}"
+    );
+
+    // The push of this session's own branch is the work being *made*, and the merge
+    // the host completed is that work being integrated — neither is in the review,
+    // whatever their kinds happen to be spelled.
+    let development = reported(
+        &hosted.world,
+        &token,
+        &["--filter", r#"{"include": [{"phase": "development"}]}"#],
+    );
+    assert!(
+        kinds(&development).iter().any(|kind| kind == "push"),
+        "{:?}",
+        kinds(&development)
+    );
+    let integrate = reported(
+        &hosted.world,
+        &token,
+        &["--filter", r#"{"include": [{"phase": "integrate"}]}"#],
+    );
+    assert!(
+        kinds(&integrate)
+            .iter()
+            .any(|kind| kind == "merge-completed"),
+        "{:?}",
+        kinds(&integrate)
+    );
+
+    // A phase the grammar does not name is refused where the spec is read, by the
+    // same rule a field it does not name is.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "events",
+            &token,
+            "--filter",
+            r#"{"include": [{"phase": "shipping"}]}"#,
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("phase"));
+}
+
+#[test]
 fn a_label_this_producer_never_stamped_admits_nothing_rather_than_everything() {
     // The grammar's own rule, against a real stream: a matcher naming a label the
     // envelope does not carry does not match it. `onevcs` stamps no `node` and no
