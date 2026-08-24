@@ -58,6 +58,57 @@ event it is. And the command prints the producer's own line rather than a
 re-serialization of what it parsed, so a filtered read is a subset of an unfiltered
 one byte for byte.
 
+## An event names its phase, and a session read is scoped by it
+
+Every envelope carries the `phase` of a change's life its producer stamped it with,
+and the filter grammar matches it. Four things about that are easy to undo.
+
+- **The producer stamps it, and `push` is the reason there is a producer at all.**
+  `Phase::of` answers for sixteen kinds; a push's phase is a fact about the branch it
+  updated, so `record_push` takes one from its caller — `Phase::Development` for the
+  session's own branch, `Phase::Integrate` for the base a `local-direct` squash lands
+  on and the base a merge train advanced. `Stream::emit_push` is the only way to emit
+  one.
+- **The field is additive inside `v: 1`, and stays additive.** An envelope written
+  before it existed reads at the phase its kind decides (`StoredEnvelope` in
+  `event.rs`), and a build that predates it reads one carrying it — which `compat/`
+  proves against a released `onevcs` from the registry rather than against this
+  build's own reader.
+- **Which phases a session *has* is derived, never configured.** `stream::supported`
+  answers it from the session record, the resolved merge policy, and whether
+  `$ONEVCS_HOME/releases.yml` configures targets. Every way it can fail to reach an
+  answer **widens** the set, because a read that quietly left events out is
+  indistinguishable from a session that never wrote them. Naming an unsupported phase
+  is refused where it is named; naming none drops it in silence.
+- **The release correlation is a join `onevcs` makes so a consumer never has to.**
+  Where the release phase is supported, `EventStream` also hands back that identity's
+  `release-observed` and `release-acknowledged` events whose `landing_commit` is this
+  session's own landing, at the producer's own `stream` and `seq`. The address of
+  that stream is spelled once (`stream::releases_token`) and never rendered — a
+  refusal about one of its lines names the *identity*. `release-probed` is not
+  correlated: the session's own stream already carries the probes its publication
+  ran. The set grows after `session-closed`, so the reader re-reads that file rather
+  than advancing a cursor over it — a landing commit becomes knowable long after the
+  events were written.
+
+## A branch outlives its session, so a retried session says who continued it
+
+`workspace::Record::retried_by` names the session that continued this one's branch,
+written onto the *older* record when the newer one opens (`workspace::supersede`).
+Everything that answers what became of a session or a branch — `status` in each of
+its four spellings, `release status`, and `recoverable` — follows that chain to its
+newest record before it decides anything, and a superseded session's clone is
+reported as holding the branch and excluded from judging it.
+
+Three things are load-bearing. A link is refused where it is **written**
+(`workspace::followable`, called from `save`) if its target is missing, belongs to
+another identity, or closes a cycle. A chain that is nevertheless unfollowable
+answers `unknown` and says why — never the last record that still read, and never a
+decided `no`, because a wrong `no` here is a paste-ready publication of work the base
+already carries. And the record keeps the keys this build has no opinion on across
+that rewrite (`remainder.rs`), because recording a retry is a read-modify-write of a
+document a newer `onevcs` may have written.
+
 ## Three verbs land a branch, and provenance is what chooses between them
 
 `publish` takes a session token; `recover` and `publish-branch` take a branch name

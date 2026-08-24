@@ -1,4 +1,9 @@
 /target
+# The compatibility project's own build directory. It is a separate cargo project
+# (compat/Cargo.toml says why), so the rule above does not reach it; `just
+# _crate-compat` points cargo at `target/compat` and this covers a bare `cargo
+# test` run from inside the directory.
+/compat/target
 # The Nx orchestrator's own install and computation cache. `scripts/nx.sh`
 # re-creates node_modules from the committed lockfile whenever it is missing.
 /node_modules

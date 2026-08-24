@@ -44,6 +44,7 @@ _crate-bootstrap:
     @just _ensure-tool cargo-llvm-cov
     @just _ensure-fuse
     @cargo fetch --locked --quiet
+    @cargo fetch --locked --quiet --manifest-path compat/Cargo.toml
 
 # One sweep journey mounts a filesystem of its own through `fusermount3`; Linux is
 # where it is gated. Provisioned here rather than in the workflow, so a clean clone
@@ -125,14 +126,21 @@ doc:
 # Verify the crate's formatting without modifying files.
 _crate-fmt-check:
     @cargo fmt --all -- --check || { echo "formatting drift above — run 'just format'" >&2; exit 1; }
+    @cargo fmt --all --manifest-path compat/Cargo.toml -- --check \
+      || { echo "formatting drift above — run 'just format'" >&2; exit 1; }
 
 # Format the crate in place.
 _crate-format:
     @cargo fmt --all
+    @cargo fmt --all --manifest-path compat/Cargo.toml
 
 # Lint the crate with clippy; any warning is an error.
+# The compatibility project is held to the same bar: it is a source file in this
+# tree, and one nothing formatted or linted is one nobody reads.
 _crate-lint:
     @cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+    @cargo clippy --manifest-path compat/Cargo.toml --all-targets --locked --quiet \
+      --target-dir target/compat -- -D warnings
 
 # The offline tier: every binary but `smoke`, which needs a GitHub credential and
 # a scratch repository and is run by `just smoke-real` alone. Excluded by name
@@ -142,15 +150,26 @@ offline-tiers := "not binary(smoke)"
 # 95% line coverage is the gate; lower it only with a documented reason in
 # AGENTS.md.
 # The crate's offline test suite (contract + e2e) with coverage enforced.
-_crate-test:
+_crate-test: _crate-compat
     @cargo llvm-cov nextest --workspace --locked --fail-under-lines 95 \
       -E '{{offline-tiers}}' --status-level fail --final-status-level fail \
       || { echo "tests failed, or coverage fell below 95% — cover the lines the table above counts as missed" >&2; exit 1; }
 
+# A build of `onevcs` that actually shipped, reading what this one writes. It is a
+# separate cargo project, and `compat/Cargo.toml` says why: two packages named
+# `onevcs` in one resolve graph make `--package onevcs` ambiguous, and that spelling
+# is on the release path. Its target directory is under this one's, so the two share
+# a cache location and neither is a second thing to clean.
+# The compatibility check: a released `onevcs` reading this build's envelopes.
+_crate-compat:
+    @cargo nextest run --manifest-path compat/Cargo.toml --locked \
+      --target-dir target/compat --status-level fail \
+      || { echo "a released onevcs no longer reads what this build writes — see compat/tests" >&2; exit 1; }
+
 # Coverage instrumentation is measured on Linux only, so the cross-platform CI
 # legs run the same suite through this instead of `test`.
 # The offline suite without coverage instrumentation.
-test-quick:
+test-quick: _crate-compat
     @cargo nextest run --workspace --locked -E '{{offline-tiers}}' --status-level fail
 
 # Outside `check` and `gate` on purpose: those stay offline and credential-free.

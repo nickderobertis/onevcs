@@ -129,6 +129,20 @@ not tell you:
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.
+- **`compat/` is a second cargo project on purpose, and the reason is the release
+  path.** It holds a released `onevcs` from the registry — pinned exactly — and
+  proves that build still reads the envelopes this one writes, which is the one
+  claim the crate's own suite cannot make about itself. It is *not* a workspace
+  member because two packages named `onevcs` in one resolve graph make `--package
+  onevcs` ambiguous, and that spelling is on the release path:
+  `scripts/publish-crates.sh` runs `cargo pkgid --package onevcs` and `cargo publish
+  --package onevcs`, and `release.yml` builds the binaries with it — none of which
+  the suite would catch, because the publish journey stubs `cargo`. `just
+  _crate-compat` runs it (from `_crate-test` and `test-quick`), `_crate-fmt-check`
+  and `_crate-lint` hold it to the same bar, and `just bootstrap` fetches its
+  committed lockfile. What it is outside: `cargo deny` and `cargo machete`, which
+  are `--workspace`, so its one registry dependency is this crate's own published
+  build and nothing else may be added there without saying so here.
 
 ## Commits, releases, and merging
 
