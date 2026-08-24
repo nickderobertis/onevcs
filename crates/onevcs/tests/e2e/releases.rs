@@ -597,6 +597,72 @@ const CONTAINER: &str = "      - name: container\n        style: human-step\n   
                          \"Push the image to the internal registry and record the tag.\"\n";
 
 #[test]
+fn what_a_human_step_target_has_released_is_the_newest_thing_anybody_recorded() {
+    // Across landings, and newest by *when it was recorded* rather than by version
+    // ordering. A human-step target's versions are whatever the thing it releases is
+    // numbered by — a date, a build number, a channel — so "the latest release" is
+    // the one somebody most recently said they performed. The two orderings are made
+    // to disagree here: the second acknowledgement carries the *lower* version, and
+    // it is the one that answers.
+    let releasing = Releasing::with(CONTAINER);
+    releasing.land("feature/one");
+    releasing
+        .release(&[
+            "acknowledge",
+            "feature/one",
+            "--target",
+            "container",
+            "--version",
+            "9.0.0",
+        ])
+        .success();
+    assert_eq!(
+        releasing.json(&["latest", "project", "--target", "container"]),
+        serde_json::json!({"state": "released", "version": "9.0.0"}),
+        "one landing acknowledged is what is released"
+    );
+
+    releasing.land("feature/two");
+    // The second landing has its own wait until somebody acknowledges it, and the
+    // first landing's answer is not it.
+    assert_eq!(
+        releasing.json(&["status", "feature/two", "--target", "container"])["state"],
+        "awaiting-human-step",
+        "an acknowledgement is per landing, so a later one starts a wait of its own"
+    );
+    releasing
+        .release(&[
+            "acknowledge",
+            "feature/two",
+            "--target",
+            "container",
+            "--version",
+            "1.0.0",
+        ])
+        .success();
+
+    assert_eq!(
+        releasing.json(&["latest", "project", "--target", "container"]),
+        serde_json::json!({"state": "released", "version": "1.0.0"}),
+        "the newest acknowledgement answers, whatever its version is numbered by"
+    );
+    // …and each landing still answers with the release that carried *it*, which is
+    // the question `status` asks and `latest` does not.
+    assert_eq!(
+        releasing.json(&["status", "feature/one", "--target", "container"])["version"],
+        "9.0.0"
+    );
+    assert_eq!(
+        releasing.json(&["status", "feature/two", "--target", "container"])["version"],
+        "1.0.0"
+    );
+    assert!(
+        releasing.events_of("release-probed").is_empty(),
+        "no probe ran for any of it"
+    );
+}
+
+#[test]
 fn a_human_step_target_starts_a_wait_nobody_probes_and_an_acknowledgement_ends_it() {
     let releasing = Releasing::with(CONTAINER);
     releasing.land("feature/one");
@@ -1756,6 +1822,108 @@ fn a_release_record_this_build_cannot_read_is_refused_rather_than_answered_aroun
             "the refusal must say {expected:?}"
         );
     }
+
+    // What serde proves is the *shape*, and the fields under it arrived on disk like
+    // any other external input: this file is hand-editable, and a newer `onevcs`
+    // sharing this state root writes it too. Each of these is a value the crate then
+    // orders by, prints, or carries on an event, so it is checked where it is read
+    // and the refusal names the target and landing it is under.
+    let identity = releasing.json(&["targets", "project"])["identity"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
+    let landing = releasing
+        .fixture
+        .world
+        .git(&releasing.fixture.checkout, &["rev-parse", "main"]);
+    let acknowledged = |version: &str, recorded_at: &str, actor: &str| {
+        serde_json::json!({
+            "version": 1,
+            "identity": identity,
+            "acknowledgements": {"container": {&landing: {
+                "version": version, "recorded_at": recorded_at, "actor": actor
+            }}},
+        })
+        .to_string()
+    };
+    let recorded = "2026-08-23T17:04:11.412Z";
+    for (contents, expected) in [
+        // Compared as a string to order two acknowledgements in time, which is sound
+        // only for the fixed-width UTC form this build writes.
+        (
+            acknowledged("1.0.0", "yesterday afternoon", "nick"),
+            "not a timestamp this build can order by",
+        ),
+        // Printed, carried on an event, and handed back through the library.
+        (
+            acknowledged("1.0.0\nand 2.0.0", recorded, "nick"),
+            "not one printable line",
+        ),
+        (
+            acknowledged("1.0.0", recorded, ""),
+            "cannot name whoever performed the release",
+        ),
+        // The same three, one level down, in a version that was superseded.
+        (
+            serde_json::json!({
+                "version": 1,
+                "identity": identity,
+                "acknowledgements": {"container": {&landing: {
+                    "version": "2.0.0", "recorded_at": recorded, "actor": "nick",
+                    "superseded": [{"version": "1.0.0", "recorded_at": "ages ago",
+                                    "actor": "nick"}]
+                }}},
+            })
+            .to_string(),
+            "not a timestamp this build can order by",
+        ),
+        // An unestablished baseline is read out and rendered as the reason a
+        // comparison would be unsound, so it has to be readable as that.
+        (
+            serde_json::json!({
+                "version": 1,
+                "identity": identity,
+                "baselines": {"crate": {&landing: {
+                    "state": "unestablished", "reason": "   ",
+                    "attempted_at": recorded
+                }}},
+            })
+            .to_string(),
+            "reason is not one printable line",
+        ),
+    ] {
+        std::fs::write(&record, &contents).expect("a record this build cannot answer from");
+        let refused = releasing
+            .release(&["status", "feature/one", "--target", "container"])
+            .failure()
+            .code(2);
+        let said = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+        assert!(
+            said.contains(expected),
+            "the refusal must say {expected:?}: {said}"
+        );
+        assert!(
+            said.contains("container") || said.contains("crate"),
+            "the refusal names the target it was under: {said}"
+        );
+    }
+
+    // …and a baseline version is deliberately *not* held to being a semantic version:
+    // it is whatever a probe answered, and one neither side can parse is what a
+    // comparison answers "not answered" about.
+    std::fs::write(
+        &record,
+        serde_json::json!({
+            "version": 1,
+            "identity": identity,
+            "baselines": {"container": {&landing: {"state": "at", "version": "nightly"}}},
+        })
+        .to_string(),
+    )
+    .expect("a baseline a probe answered");
+    releasing
+        .release(&["status", "feature/one", "--target", "container"])
+        .success();
     // llmlint: ignore-end[tests_mirror_real_usage]
 }
 

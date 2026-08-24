@@ -927,7 +927,105 @@ fn read_at(path: &Path, identity: &str) -> Result<Record> {
             other = record.identity,
         )));
     }
+    usable(path, &record)?;
     Ok(record)
+}
+
+/// Reject a stored record whose fields cannot be used for what they are read for.
+///
+/// Serde proves the *shape* and stops there. What is under it arrived on disk, which
+/// is a boundary like any other: this file is hand-editable, and a newer `onevcs`
+/// sharing this state root writes it too. Three things are read out of it and each
+/// needs its own answer.
+///
+/// A `recorded_at` orders acknowledgements — [`newest_acknowledgement`] compares two
+/// as strings — and that is sound only for the fixed-width UTC form
+/// [`ids::timestamp`] writes, so one of another shape is refused rather than sorted
+/// wrongly. An `actor` and a version are printed, put in a JSON payload, and handed
+/// back through the library, so each has to be the one line it renders as. A
+/// baseline's own version is deliberately *not* required to be a semantic version:
+/// it is whatever a probe answered, and a version neither side can parse is what
+/// [`compare`] answers "not answered" about — refusing it here would turn that
+/// designed answer into a dead record.
+fn usable(path: &Path, record: &Record) -> Result<()> {
+    let refuse = |what: String| {
+        Err(error::invalid(format!(
+            "the release record at {} {what}; it is a record this build cannot answer from",
+            path.display()
+        )))
+    };
+    for (target, landings) in &record.acknowledgements {
+        for (commit, stored) in landings {
+            let named = format!("has, for {target:?} at {commit:?},");
+            for release in std::iter::once((&stored.version, &stored.recorded_at, &stored.actor))
+                .chain(
+                    stored
+                        .superseded
+                        .iter()
+                        .map(|it| (&it.version, &it.recorded_at, &it.actor)),
+                )
+            {
+                let (version, recorded_at, actor) = release;
+                if version.trim().is_empty() || !one_line(version) {
+                    return refuse(format!(
+                        "{named} an acknowledged version that is not one \
+                                           printable line ({version:?})"
+                    ));
+                }
+                if !ids::is_timestamp(recorded_at) {
+                    return refuse(format!(
+                        "{named} a recorded_at that is not a timestamp this \
+                                           build can order by ({recorded_at:?})"
+                    ));
+                }
+                if !usable_actor(actor) {
+                    return refuse(format!(
+                        "{named} an actor that cannot name whoever performed \
+                                           the release ({actor:?})"
+                    ));
+                }
+            }
+        }
+    }
+    for (target, landings) in &record.baselines {
+        for (commit, baseline) in landings {
+            let named = format!("has, for {target:?} at {commit:?},");
+            match baseline {
+                BaselineRecord::Established(Baseline::At { version }) => {
+                    if version.trim().is_empty() || !one_line(version) {
+                        return refuse(format!(
+                            "{named} a baseline version that is not one \
+                                               printable line ({version:?})"
+                        ));
+                    }
+                }
+                BaselineRecord::Established(Baseline::NoRelease) => {}
+                BaselineRecord::Unestablished {
+                    reason,
+                    attempted_at,
+                } => {
+                    if reason.trim().is_empty() || !one_line(reason) {
+                        return refuse(format!(
+                            "{named} an unestablished baseline whose reason is \
+                                               not one printable line ({reason:?})"
+                        ));
+                    }
+                    if !ids::is_timestamp(attempted_at) {
+                        return refuse(format!(
+                            "{named} an unestablished baseline whose \
+                                               attempted_at is not a timestamp ({attempted_at:?})"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a stored value renders as the one line it is printed on.
+fn one_line(value: &str) -> bool {
+    !value.chars().any(char::is_control)
 }
 
 /// Apply a change to one identity's record under its lock, then replace the whole

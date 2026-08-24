@@ -77,7 +77,8 @@ fi
 # registry version the installed `onevcs` could not read into `~/.onevcs`, and every
 # `onevcs` command on that host refused until an operator restored the file by hand.
 if [ -z "${ONEVCS_HOME:-}" ]; then
-  ONEVCS_HOME="$(mktemp -d)"
+  ONEVCS_HOME="$(mktemp -d)" || fail "cannot make a scratch state root with 'mktemp -d'" \
+    "check that TMPDIR (otherwise /tmp) exists, has space, and this user may write it — or set ONEVCS_HOME to a directory and re-run"
   export ONEVCS_HOME
   # shellcheck disable=SC2064 # the path is expanded now on purpose: the variable
   # may be gone or reassigned by the time the trap fires.
