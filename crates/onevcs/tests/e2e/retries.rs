@@ -47,6 +47,21 @@ struct Retried {
 /// The branch both sessions work on.
 const BRANCH: &str = "feature/retried";
 
+/// What the registered `hosted` identity releases: one target a person performs,
+/// so `release status` answers from the landing and nothing runs a subprocess.
+const RELEASES: &str = "version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {host: github.com, owner: acme-corp, name: hosted}
+    adoption: published
+    default_target: image
+    targets:
+      - name: image
+        style: human-step
+        action: \"Push the image and record the tag.\"
+";
+
 impl Retried {
     /// A first attempt that stopped, and a retry that replaced its work and landed.
     ///
@@ -56,6 +71,10 @@ impl Retried {
     /// attempt left in its own clone.
     fn new() -> Self {
         let hosted = Hosted::new(DIRECT);
+        // A repository that releases something, so the landing this chain reaches can
+        // also be asked about by the verb that sequences an upgrade behind a release.
+        std::fs::write(hosted.world.home().join("releases.yml"), RELEASES)
+            .expect("a release-targets file");
         // The first attempt: one commit, then the run stops. Closing hands the branch
         // back to the checkout and leaves the work in this session's run clone.
         let first = hosted.change(BRANCH, "feat: the first attempt");
@@ -202,6 +221,25 @@ fn a_branch_two_sessions_worked_on_answers_from_the_session_that_landed_it() {
             report["session"]["token"], retried.second,
             "{reference} answers from a superseded session: {report}"
         );
+
+        // The verb that sequences an upgrade behind a release reads the same landing
+        // through the same reader — including under the change request's own URL,
+        // which is the spelling a planner holds and the one the incident was
+        // reported under.
+        let assert = retried
+            .hosted
+            .world
+            .onevcs()
+            .args(["release", "status", reference, "--json"])
+            .assert()
+            .success();
+        let release: Value =
+            serde_json::from_slice(&assert.get_output().stdout).expect("a report is JSON");
+        assert_eq!(
+            release["state"], "awaiting-human-step",
+            "{reference} reads as unlanded to `release status`: {release}"
+        );
+        assert_eq!(release["target"], "image", "{release}");
     }
 
     // The first attempt's clone is still a place the branch is — the report says so —
@@ -239,18 +277,11 @@ fn a_branch_two_sessions_worked_on_answers_from_the_session_that_landed_it() {
 #[test]
 fn a_chain_of_retries_is_followed_to_the_session_that_actually_landed() {
     let hosted = Hosted::new(DIRECT);
-    // A repository that releases something, so the landing this chain reaches can be
-    // asked about by the verb that reads one: `release status` takes the same four
-    // reference spellings, through the same reader, so a chain it stopped short on
-    // would report "not landed" for work that had merged.
-    std::fs::write(
-        hosted.world.home().join("releases.yml"),
-        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {host: \
-         github.com, owner: acme-corp, name: hosted}\n    adoption: published\n    \
-         default_target: image\n    targets:\n      - name: image\n        style: \
-         human-step\n        action: \"Push the image and record the tag.\"\n",
-    )
-    .expect("a release-targets file");
+    // `release status` takes the same four reference spellings, through the same
+    // reader, so a chain it stopped short on would report "not landed" for work that
+    // had merged.
+    std::fs::write(hosted.world.home().join("releases.yml"), RELEASES)
+        .expect("a release-targets file");
 
     let first = hosted.change(BRANCH, "feat: the first attempt");
     hosted

@@ -84,7 +84,7 @@ rationale; the mechanics live in the files named. -->
 
 ## Command surface
 
-`just --list` is the index; do not hand-roll equivalents. Six things it does
+`just --list` is the index; do not hand-roll equivalents. Five things it does
 not tell you:
 
 - **`just gate` is the bar, not `just check`.** `check` is the deterministic tier
@@ -129,9 +129,6 @@ not tell you:
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.
-- **`compat/` is a second cargo project, not a workspace member**, and
-  [`compat/AGENTS.md`](compat/AGENTS.md) says why. `just _crate-compat` runs it, from
-  `_crate-test` and `test-quick`.
 
 ## Commits, releases, and merging
 
