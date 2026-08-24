@@ -1,8 +1,8 @@
 //! The release-targets file: what each repository releases, and how a release of
 //! it is learned about.
 //!
-//! YAML, first match wins, matched on the same [`RuleMatch`] the rules file uses — two match vocabularies over the same identities would
-//! drift.
+//! YAML, first match wins, matched on the same [`RuleMatch`] the rules file uses —
+//! two match vocabularies over the same identities would drift.
 //!
 //! **The style decides the shape of a target rather than labelling it.** An
 //! *automated* target carries a probe and is answered by running it; a *human-step*
@@ -700,8 +700,7 @@ impl TryFrom<StoredTarget> for ReleaseTarget {
         let name = stored.name;
         let release = match stored.style {
             ReleaseStyle::Automated => {
-                if let Some(action) = stored.action {
-                    let _ = action;
+                if stored.action.is_some() {
                     return Err(format!(
                         "the release target {name:?} declares style: automated and names an \
                          action, which only a human-step target has — a machine releases an \
