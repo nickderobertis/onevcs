@@ -47,6 +47,16 @@ and one that history cannot decide reads as `unknown` rather than as work nobody
 published. A host that cannot be reached leaves its section unavailable instead of
 failing the command.
 
+A branch is often worked on by more than one session — a run stops and the next
+one continues the name — so the older session's record names the one that
+continued it, and every answer about a session or a branch follows that chain to
+its newest record before it reports a landing. A copy of the branch that was
+superseded is still reported as holding it and no longer decides anything about
+it. A chain this host cannot follow — a session record removed underneath one, a
+link into another repository, a cycle — reports `unknown` and says why, rather
+than falling back to whichever record still read: a wrong `no` there reads as an
+instruction to publish work the base already carries.
+
 `onevcs release` answers what happens **after** a change lands, so an upgrade can
 be sequenced behind the release that carries it rather than behind the merge.
 `onevcs release targets REPO` lists what a repository releases and whether it
@@ -163,8 +173,8 @@ A consumer that wants some of what a session writes reads it through the filter
 grammar the three producing libraries share — `EventStream::open_filtered(&token,
 filter)`, or `onevcs events TOKEN --filter SPEC` with the spec inline as JSON or in
 a file. An envelope passes when it matches any `include` matcher (or `include` is
-absent) and no `exclude` matcher, matching `source` by family, `kind` by glob
-(`change-*`), and the reserved label keys exactly:
+absent) and no `exclude` matcher, matching `source` by family, `phase` and the
+reserved label keys exactly, and `kind` by glob (`change-*`):
 
 ```yaml
 include:
@@ -172,6 +182,26 @@ include:
 exclude:
   - {kind: lock-wait}
 ```
+
+Every envelope carries the **phase** of a change's life its producer stamped it
+with — `development` (the work being made, including a push of the session's own
+branch), `integrate` (the merge queue, the merge, a sync conflict, and a push of
+any other branch), `review` (the change request opened, checked, and merged), and
+`release` (a probe, an acknowledgement, an observation). Naming a phase is how a
+consumer asks for "the review of this change" without listing the kinds in it, so
+a kind added to that phase later arrives in the read that already wanted it.
+
+`EventStream` takes the phases the session can actually produce: `development` and
+`integrate` always, `review` only where the resolved merge policy is not
+`local-direct`, and `release` only where `$ONEVCS_HOME/releases.yml` configures
+targets for that repository. Naming a phase a session does not have is refused by
+name, because a filter answered with silence and a session that did nothing look
+alike; naming none takes what there is. And where `release` is one of them, the
+read **also** hands back that repository's `release-observed` and
+`release-acknowledged` events whose landing commit is this session's own — the
+correlation `onevcs` can already make, so a consumer never has to find the
+repository's release stream. That set grows after the session closes, because a
+release happens when it happens.
 
 Before a caller has a token, `session_holders(repo)` answers who is in a
 repository: one `SessionHolder` per recorded session, carrying the token the calls
