@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.4.6...onevcs-testing-v0.4.7) - 2026-08-24
+
+### Added
+
+- *(events)* correlate release phases and retried sessions ([#80](https://github.com/nickderobertis/onevcs/pull/80))
+
 ## [0.4.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.3.1...onevcs-testing-v0.4.0) - 2026-08-21
 
 ### Added
