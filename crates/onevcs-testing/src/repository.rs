@@ -305,6 +305,10 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 session,
                 identity,
                 provenance,
+                // A retry link is a fact about run clones under a state root, and
+                // this provider keeps none: its sessions are records in a store, so
+                // there is no second copy of a branch for one to tell apart.
+                retried_by: None,
             })
         })
     }

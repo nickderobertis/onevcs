@@ -2018,6 +2018,11 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         identity: "github.com/nickderobertis/onevcs".to_owned(),
         lifecycle: Lifecycle::Open,
         provenance: Provenance::Complete,
+        // The field a later amendment added, declared there rather than here — which
+        // is why the assertion below reads the older amendment's declaration
+        // unchanged and `the_amendment_declares_the_phase_surface_and_the_retry_link`
+        // reads the newer one's.
+        retried_by: None,
     };
     let request = PublishRequest {
         policy: Some(MergePolicy::ChangeOpen),
