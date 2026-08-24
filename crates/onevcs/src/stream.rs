@@ -338,6 +338,14 @@ struct Correlated {
     /// after some of those lines were written, so a cursor that had advanced past
     /// them while there was nothing to match would lose them for good.
     handed: BTreeSet<u64>,
+    /// The candidates the last read weighed, so a reader polled in a loop asks
+    /// history about its landing when the *stream* has moved rather than when it
+    /// has been asked.
+    ///
+    /// Deciding a landing opens repositories and runs git; a session that never
+    /// lands, in an identity that releases often, would otherwise pay for that on
+    /// every poll for ever.
+    weighed: BTreeSet<u64>,
 }
 
 impl EventStream {
@@ -389,6 +397,7 @@ impl EventStream {
                 identity,
                 landing: None,
                 handed: BTreeSet::new(),
+                weighed: BTreeSet::new(),
             }),
             _ => None,
         };
@@ -471,18 +480,22 @@ impl Correlated {
             }
             candidates.push(envelope);
         }
-        if candidates.is_empty() {
+        let weighing: BTreeSet<u64> = candidates.iter().map(|envelope| envelope.seq).collect();
+        // Nothing to correlate, or nothing new to correlate: this stream has not
+        // moved since the last read weighed it, and history is not asked again for
+        // an answer it has already been asked for.
+        if weighing.is_empty() || (self.landing.is_none() && weighing == self.weighed) {
             return Ok(Vec::new());
         }
-        // Asked only where there is something to correlate, and remembered once
-        // answered: deciding a landing reads repositories, and a reader polled in a
-        // loop must not do that per call for a repository that has released nothing.
+        self.weighed = weighing;
         let landing = match &self.landing {
             Some(landing) => landing.clone(),
             None => match landed_at(session) {
                 // Nothing records that this session's work reached its base, so
                 // nothing here is this session's. Not handed back and not accounted
-                // for, so the same events are considered again once one does.
+                // for, so the same events are weighed again once something is
+                // appended beside them — or once history records a landing, which is
+                // what the next read this reader is asked for finds out.
                 None => return Ok(Vec::new()),
                 Some(landing) => {
                     self.landing = Some(landing.clone());
