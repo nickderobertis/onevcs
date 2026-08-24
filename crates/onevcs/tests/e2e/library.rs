@@ -2236,36 +2236,11 @@ fn a_phase_a_session_no_longer_has_is_dropped_in_silence_and_refused_when_it_is_
     assert!(refused.to_string().contains("release"), "{refused}");
 }
 
-#[test]
-fn a_release_that_names_no_landing_commit_is_refused_rather_than_read_as_another_landings() {
-    // The one field a correlation can be wrong about. A release event carrying no
-    // commit is a record nothing can be concluded from — and reading it as "not this
-    // session's" is indistinguishable from a release of another landing, which is a
-    // consumer waiting for ever on one that already happened. So it is refused where
-    // it is read, naming the line and the repository it is about, and never the
-    // stream those releases are recorded on: that address is not a consumer's.
-    let world = World::new();
-    inhabit(&world);
-    let (_origin, _identity) = hosted(&world, LOCAL);
-    releasing(&world);
-
-    let session = landed(&world, "feature/nameless", "one.txt");
-    let identity = onevcs::session(&Providers::real(), &session.token)
-        .expect("the session record")
-        .identity;
-    let mut reader = EventStream::open(&session.token).expect("the session's stream");
-    reader.read().expect("everything through the close");
-    let container = "container".parse().expect("a target name");
-    onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
-        .expect("this landing's release is recorded");
-
-    // llmlint: ignore-block[tests_mirror_real_usage] the *file* is the input under test.
-    // Every release event this crate writes carries the commit — `acknowledge` refuses a
-    // reference that has not landed — so no public interface can produce one without, and
-    // that is exactly why a reader has to answer for finding one: the file is what a
-    // newer `onevcs` sharing this state root, or a damaged disk, leaves behind.
-    let streams = world.home().join("streams");
-    let releases = std::fs::read_dir(&streams)
+/// The file this identity's releases are recorded on, found the only way a journey
+/// can: by looking under the state root. Nothing hands the name out, which is the
+/// point — a consumer of a *session* never has it.
+fn release_record_of(world: &World) -> std::path::PathBuf {
+    std::fs::read_dir(world.home().join("streams"))
         .expect("a streams directory")
         .flatten()
         .map(|entry| entry.path())
@@ -2273,32 +2248,100 @@ fn a_release_that_names_no_landing_commit_is_refused_rather_than_read_as_another
             path.file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("releases-"))
         })
-        .expect("the identity recorded its releases somewhere under the state root");
-    let damaged: String = std::fs::read_to_string(&releases)
-        .expect("the release record")
-        .lines()
-        .map(|line| {
-            let mut event: serde_json::Value =
-                serde_json::from_str(line).expect("every line is an envelope");
-            event["payload"]
-                .as_object_mut()
-                .expect("a payload is an object")
-                .remove("landing_commit");
-            format!("{event}\n")
-        })
-        .collect();
-    std::fs::write(&releases, damaged).expect("a release record naming no landing");
-    // llmlint: ignore-end[tests_mirror_real_usage]
+        .expect("the identity recorded its releases somewhere under the state root")
+}
 
-    let refused = EventStream::open(&session.token)
-        .expect("the session's stream is still there")
-        .read()
-        .expect_err("a release naming no landing commit is refused");
-    let reason = refused.to_string();
-    assert!(reason.contains("line 1"), "{reason}");
-    assert!(reason.contains(&identity), "{reason}");
-    assert!(
-        !reason.contains("releases-"),
-        "a refusal handed over the address this join keeps private: {reason}"
-    );
+#[test]
+fn a_release_record_that_is_not_what_a_writer_left_is_refused_where_the_session_reads_it() {
+    // A correlated read is a reader of *values*, so it is held to what one is held
+    // to: a line it cannot parse, a line belonging to another stream, and a release
+    // that names no landing commit are each refused where they are read. The last is
+    // the one this join could most easily get wrong — reading it as "not this
+    // session's" is indistinguishable from a release of another landing, which is a
+    // consumer waiting for ever on one that already happened.
+    //
+    // Every refusal names the line and the repository it is about, and none of them
+    // names the stream those releases are recorded on: that address is not a
+    // consumer's, and a refusal is the easiest place for it to escape.
+    for (damage, expected) in [
+        (Damage::Unparseable, "is not an event envelope"),
+        (Damage::AnotherStream, "carries an event of another stream"),
+        (Damage::Nameless, "names no landing commit"),
+    ] {
+        let world = World::new();
+        inhabit(&world);
+        let (_origin, _identity) = hosted(&world, LOCAL);
+        releasing(&world);
+
+        let session = landed(&world, "feature/damaged", "one.txt");
+        let identity = onevcs::session(&Providers::real(), &session.token)
+            .expect("the session record")
+            .identity;
+        EventStream::open(&session.token)
+            .expect("the session's stream")
+            .read()
+            .expect("everything through the close");
+        let container = "container".parse().expect("a target name");
+        onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
+            .expect("this landing's release is recorded");
+
+        // llmlint: ignore-block[tests_mirror_real_usage] the *file* is the input under test.
+        // A writer appends whole envelopes of its own stream, and every release event this
+        // crate writes carries the commit — `acknowledge` refuses a reference that has not
+        // landed — so no public interface can produce any of these three. That is exactly
+        // why a reader has to answer for finding one: this is what a torn write, a damaged
+        // disk, or a newer `onevcs` sharing this state root leaves behind. The same posture
+        // the corrupted-session-stream journeys above take.
+        let record = release_record_of(&world);
+        let recorded = std::fs::read_to_string(&record).expect("the release record");
+        let damaged = match damage {
+            Damage::Unparseable => "{\"v\": 1}\n".to_owned(),
+            Damage::AnotherStream => std::fs::read_to_string(
+                world
+                    .home()
+                    .join("streams")
+                    .join(format!("{}.ndjson", session.token.0)),
+            )
+            .expect("the session's own stream"),
+            Damage::Nameless => recorded
+                .lines()
+                .map(|line| {
+                    let mut event: serde_json::Value =
+                        serde_json::from_str(line).expect("every line is an envelope");
+                    event["payload"]
+                        .as_object_mut()
+                        .expect("a payload is an object")
+                        .remove("landing_commit");
+                    format!("{event}\n")
+                })
+                .collect(),
+        };
+        std::fs::write(&record, damaged).expect("a release record no writer left");
+        // llmlint: ignore-end[tests_mirror_real_usage]
+
+        let refused = EventStream::open(&session.token)
+            .expect("the session's stream is still there")
+            .read()
+            .expect_err("a release record that is not what a writer left is refused");
+        let reason = refused.to_string();
+        assert!(reason.contains("line 1"), "{damage:?}: {reason}");
+        assert!(reason.contains(expected), "{damage:?}: {reason}");
+        assert!(reason.contains(&identity), "{damage:?}: {reason}");
+        assert!(
+            !reason.contains("releases-"),
+            "{damage:?} handed over the address this join keeps private: {reason}"
+        );
+    }
+}
+
+/// The three ways a release record stops being what a writer left.
+#[derive(Debug, Clone, Copy)]
+enum Damage {
+    /// A line that is not an envelope at all.
+    Unparseable,
+    /// An envelope of another stream, in this file.
+    AnotherStream,
+    /// A release that names no landing commit, so nothing can say which work it
+    /// released.
+    Nameless,
 }
