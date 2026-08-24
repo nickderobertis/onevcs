@@ -1578,10 +1578,16 @@ fn a_release_document_a_later_build_wrote_is_read_rather_than_refused() {
     let mut document: Value =
         serde_json::from_str(&std::fs::read_to_string(&record).expect("a record"))
             .expect("the record is JSON");
+    // llmlint: ignore-block[tests_mirror_real_usage] the *document* is the input under
+    // test. Its premise is a record a **newer** `onevcs` wrote — a version above this
+    // build's and keys it has never heard of — and no interface of this build can produce
+    // one, because this build does not have those keys. Writing it is the only way to
+    // hold this build to handing them back.
     document["version"] = serde_json::json!(99);
     document["attestations"] = serde_json::json!({"crate": "signed"});
     document["baselines"]["crate"][&commit]["provenance"] = serde_json::json!("a later build's");
     std::fs::write(&record, document.to_string()).expect("a record from a later build");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     // A verb that rewrites the whole document: the acknowledgement is written under
     // the same lock, over the same file.

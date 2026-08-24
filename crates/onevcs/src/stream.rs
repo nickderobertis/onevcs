@@ -331,7 +331,12 @@ struct Correlated {
     /// The commit this session's work landed at, once history records one. Absent
     /// until it does, which is why nothing is handed back before then rather than
     /// being handed back unmatched.
-    landing: Option<String>,
+    ///
+    /// An [`ObjectId`], as the value it is compared against is: both sides of this
+    /// correlation come from outside the process — one off a stream, one out of a
+    /// repository — and a value that is not a commit id cannot be the commit either
+    /// of them claims.
+    landing: Option<ObjectId>,
     /// The events of that stream this reader has already accounted for, by the
     /// producer's own `seq`.
     ///
@@ -527,7 +532,7 @@ impl Correlated {
                          about which work it released",
                     )
                 })?;
-            if named.as_str() != landing {
+            if named != landing {
                 continue;
             }
             self.handed.insert(envelope.seq);
@@ -620,10 +625,15 @@ fn supported(session: &SessionToken) -> (BTreeSet<Phase>, Option<String>) {
 /// release against, through the same reader — so what a session's releases are
 /// correlated by is the landing the rest of this crate would name, retries followed
 /// and all.
-fn landed_at(session: &SessionToken) -> Option<String> {
+///
+/// Read through the conversion that decides what an object id is, for the reason
+/// [`crate::landed`] reads its own records through it: the evidence travels as a
+/// `Sha`, which the contract fixes as an unvalidated string, and a value that is not
+/// a commit id is no landing to correlate against rather than one to compare.
+fn landed_at(session: &SessionToken) -> Option<ObjectId> {
     let registry = store::load().ok()?;
     match status::landing_of(&registry, &session.0).ok()?.landed {
-        Landed::Yes { evidence } => Some(evidence.commit().to_owned()),
+        Landed::Yes { evidence } => ObjectId::parse(evidence.commit()),
         Landed::No | Landed::Unknown => None,
     }
 }
