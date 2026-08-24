@@ -2345,3 +2345,84 @@ enum Damage {
     /// released.
     Nameless,
 }
+
+#[test]
+fn a_release_record_this_host_has_and_cannot_see_is_a_refusal_rather_than_no_releases() {
+    // The distinction the whole feature rests on, one level down: a repository that
+    // has recorded no release and a record this host cannot read are different
+    // facts, and answering the second as the first would have a consumer waiting on
+    // a release that is sitting right there.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+
+    let session = landed(&world, "feature/unreadable", "one.txt");
+    let identity = onevcs::session(&Providers::real(), &session.token)
+        .expect("the session record")
+        .identity;
+    let container = "container".parse().expect("a target name");
+    onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
+        .expect("this landing's release is recorded");
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the *filesystem* is the input under
+    // test. A record this host has and cannot see is what a permission change, a mount
+    // that went away, or a half-restored backup leaves; no interface of this crate can
+    // produce one, which is why the reader has to answer for meeting it.
+    let record = release_record_of(&world);
+    std::fs::remove_file(&record).expect("the record was there");
+    std::fs::create_dir(&record).expect("something in its place that is not a file");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    let refused = EventStream::open(&session.token)
+        .expect("the session's stream is still there")
+        .read()
+        .expect_err("a record this host has and cannot see is not `no releases`");
+    let reason = refused.to_string();
+    assert!(reason.contains("cannot be read"), "{reason}");
+    assert!(reason.contains(&identity), "{reason}");
+    assert!(
+        !reason.contains("releases-"),
+        "a refusal handed over the address this join keeps private: {reason}"
+    );
+}
+
+#[test]
+fn a_release_targets_document_this_build_cannot_read_rules_no_phase_out() {
+    // Every answer the phase derivation cannot reach widens the set rather than
+    // narrowing it, because a read that quietly left events out is indistinguishable
+    // from a session that never wrote them. A malformed release-targets file is one
+    // such answer: it is refused, by name, where a *release verb* meets it — and it
+    // is not this reader's business to decide from it that a repository releases
+    // nothing.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+    let session = landed(&world, "feature/misconfigured", "one.txt");
+
+    std::fs::write(
+        world.home().join("releases.yml"),
+        "version: 1\ndefault: [\n",
+    )
+    .expect("a release-targets file nothing can read");
+
+    // The verb that is about releases says so, naming the file.
+    let refused = onevcs::release_targets("hosted")
+        .expect_err("a malformed release-targets file is refused where it is read");
+    assert!(refused.to_string().contains("releases.yml"), "{refused}");
+
+    // The session's stream is still the session's stream, and naming the phase is
+    // still answered rather than refused.
+    let events = EventStream::open_filtered(&session.token, phased(Phase::Release))
+        .expect("a document this build cannot read rules no phase out")
+        .read()
+        .expect("the release phase of this session");
+    assert!(
+        events
+            .iter()
+            .all(|event| event.kind == onevcs::EventKind::ReleaseProbed),
+        "{:?}",
+        events.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+}

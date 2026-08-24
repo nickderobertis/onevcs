@@ -464,11 +464,22 @@ impl Correlated {
     /// event was written.
     fn fresh(&mut self, session: &SessionToken, filter: &EventFilter) -> Result<Vec<Envelope>> {
         let path = path_for(&self.token)?;
-        // A repository nothing has recorded a release for yet has no such stream, and
-        // that is an answer rather than a gap: the file is written by the first
-        // release verb that says anything about this identity.
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return Ok(Vec::new());
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            // A repository nothing has recorded a release for yet has no such record,
+            // and that is an answer rather than a gap: the file is written by the
+            // first release verb that says anything about this identity.
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            // Every *other* way the read fails is a record this host has and cannot
+            // see, and answering "no releases" from one would be this reader deciding
+            // that some of what it was asked for is not worth reading — which is the
+            // one thing a reader of values must not do.
+            Err(failure) => {
+                return Err(error::invalid(format!(
+                    "the release record for {identity} cannot be read: {failure}",
+                    identity = self.identity,
+                )))
+            }
         };
         let mut candidates = Vec::new();
         for (index, line) in raw.lines().enumerate() {
@@ -610,10 +621,13 @@ fn supported(session: &SessionToken) -> (BTreeSet<Phase>, Option<String>) {
         phases.insert(Phase::Review);
     }
     // A repository that releases nothing has no release to wait for, which is the
-    // state every host is in until it configures one.
-    if release::for_repository(&registry, &identity)
-        .is_ok_and(|located| !located.releases.targets.is_empty())
-    {
+    // state every host is in until it configures one — and it is the *only* answer
+    // that rules the phase out. A release-targets document this build cannot read
+    // rules nothing out, so it widens like every other answer this cannot reach; the
+    // release verbs are where such a document is refused by name.
+    let releases_nothing = release::for_repository(&registry, &identity)
+        .is_ok_and(|located| located.releases.targets.is_empty());
+    if !releases_nothing {
         phases.insert(Phase::Release);
     }
     (phases, Some(identity))
