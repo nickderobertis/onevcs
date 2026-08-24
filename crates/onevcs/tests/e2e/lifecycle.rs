@@ -18,8 +18,10 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
+use onevcs::{Git, Providers, SessionRequest, Vcs};
 use predicates::prelude::*;
 
+use crate::honesty::inhabit;
 use crate::registry::configure_rules;
 use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, World};
@@ -5264,6 +5266,122 @@ fn only_the_newest_abandoned_sessions_holding_work_can_still_be_resumed() {
             "the reclaimed sessions' work is still on their branches"
         );
     }
+}
+
+/// The defect this journey exists for: `open`'s reclamation proved *nobody is
+/// working in here* from an occupancy lease no session holds past the command that
+/// took it, and deleted the run roots of live dispatches as a result. Three of one
+/// run's were destroyed within ninety seconds of launch, and every one of them was
+/// reported as a missing `claude` binary — a spawn into a working directory that
+/// was no longer there.
+///
+/// In-process for the reason `library.rs` and `holders.rs` are: a session's owner
+/// is the process that opened it, and only a caller embedding the crate stays alive
+/// afterwards the way a consumer driving a dispatch does. The second session is
+/// opened through the real binary, which is where reclamation runs.
+#[test]
+fn opening_a_session_leaves_a_live_session_of_the_same_identity_alone() {
+    let fixture = Fixture::local(&local_direct());
+    inhabit(&fixture.world);
+
+    // Nothing is committed in it, deliberately: a session that has opened and not
+    // yet made a commit holds no unpublished work, which is exactly the state the
+    // lease rule removed outright rather than retaining. The window was widest when
+    // a dispatch was youngest.
+    let live = Git
+        .open_session(SessionRequest {
+            repo: "project".to_owned(),
+            branch: Some("feature/live".to_owned()),
+            base: None,
+            execution_checkout: None,
+        })
+        .expect("the embedding process opens a real session");
+    let run_root = live.worktree.parent().expect("a run root").to_owned();
+    let clone = run_root.join("clone");
+    assert!(clone.is_dir(), "the premise: the live session cut a clone");
+
+    // A second session of the same identity, opened the ordinary way while the
+    // first is still live. Nothing holds the first one's lease: `open` dropped it
+    // as it returned, which is the whole of what made this reclaimable.
+    let (_, second) = fixture.open(&["--branch", "feature/second"]);
+    assert!(second.is_dir(), "the second session opens as it always did");
+    assert_ne!(second.parent(), Some(run_root.as_path()));
+
+    assert!(
+        live.worktree.is_dir(),
+        "the live session's worktree survives another session opening"
+    );
+    assert!(
+        clone.is_dir(),
+        "and so does the clone its worktree is cut from"
+    );
+
+    // Surviving as a directory is not the claim; surviving as a session is. The
+    // work made after the overlap reaches the branch, which is what a dispatch
+    // deleted underneath itself could not do.
+    fixture.world.commit_file(
+        &live.worktree,
+        "kept.txt",
+        "kept\n",
+        "feat: work made while a sibling session opened",
+    );
+    onevcs::close_session(&Providers::real(), &live.token).expect("the live session still closes");
+    assert!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["branch", "--list", "feature/live"])
+            .contains("feature/live"),
+        "and the work it made is handed back on its branch"
+    );
+}
+
+/// The other half, so the fix cannot be "stop reclaiming". A session record that
+/// says `open` is not by itself protection: what protects a run root is an owner
+/// this host can still see, and a command that exited took its ownership with it.
+#[test]
+fn an_open_session_whose_owner_has_exited_is_reclaimed_by_the_next_open() {
+    let fixture = Fixture::local(&local_direct());
+
+    // Left open rather than closed — the shape of a run this host lost — and
+    // holding one commit nothing has published, so it reaches the retention list.
+    let (holding_work, worktree) = fixture.open(&["--branch", "feature/holding"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: unpublished work");
+    let retained = worktree.parent().expect("a run root").to_owned();
+
+    // Also left open, and holding nothing: no commit of its own ever happened, so
+    // there is no work its removal could lose.
+    let (empty, empty_worktree) = fixture.open(&["--branch", "feature/empty"]);
+    let removed = empty_worktree.parent().expect("a run root").to_owned();
+    assert!(
+        retained.is_dir() && removed.is_dir(),
+        "the premise: both run roots are there, and both records say `open`"
+    );
+
+    fixture.open(&["--branch", "feature/next"]);
+
+    assert!(
+        !removed.is_dir(),
+        "an open session whose owner is gone and whose clone holds nothing is reclaimed"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "adopt", &empty])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("has been reclaimed"));
+    assert!(
+        retained.is_dir(),
+        "and the bounded retention still keeps the newest few that hold work"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "adopt", &holding_work])
+        .assert()
+        .success();
 }
 
 #[test]
