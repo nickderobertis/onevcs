@@ -157,6 +157,57 @@ pub fn documented_report_version() -> u32 {
         .expect("the documented version is a number")
 }
 
+/// The longest an actor may be, read out of the amendment that promises it.
+///
+/// The number is stated in prose an operator reads and decided by a constant this
+/// crate keeps private, which makes the document a second statement of it. Reading
+/// it here is what stops the two from moving apart: the journey beside this drives
+/// a name of exactly this length and one character past it.
+#[cfg(unix)]
+pub fn documented_actor_limit() -> usize {
+    const OPENS: &str = "one line, not blank, at most ";
+    let contract = contract();
+    let at = contract
+        .find(OPENS)
+        .expect("the amendment states the length an actor is held to");
+    contract[at + OPENS.len()..]
+        .split_whitespace()
+        .next()
+        .and_then(|number| number.parse().ok())
+        .expect("the documented length is a number")
+}
+
+/// The variables a probe is given, read out of the record that documents them.
+///
+/// Same reason: the list is stated for an operator wondering what their probe can
+/// see, and decided by a private constant. The journey beside this runs a real probe
+/// and compares what it was handed against exactly this.
+#[cfg(unix)]
+pub fn documented_probe_environment() -> Vec<String> {
+    const OPENS: &str = "| a probe's environment |";
+    let record = inferred_surface();
+    let row = record
+        .lines()
+        .find(|line| line.starts_with(OPENS))
+        .expect("the record documents what a probe is given");
+    let cell = row[OPENS.len()..]
+        .split('|')
+        .next()
+        .expect("the row has a shape column");
+    let mut names: Vec<String> = cell
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+    names.sort_unstable();
+    assert!(
+        !names.is_empty(),
+        "the record names the variables in backticks"
+    );
+    names
+}
+
 /// Every command a user is promised, read out of `docs/contract.md`'s usage block.
 ///
 /// Deliberately not read from the parser: these journeys assert what the *user*

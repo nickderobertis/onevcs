@@ -1692,6 +1692,47 @@ fn the_sweep_age_floor_defaults_to_the_number_the_record_states() {
     );
 }
 
+/// The two lengths this crate holds a name to, and the documents that state them.
+///
+/// Both are restated in prose an operator reads — a `TargetName`'s in
+/// `docs/inferred-surface.md`, an actor's in the approved amendment — so both are a
+/// second statement of a number the code decides. Neither constant is public, and
+/// neither should be: what the limit *is* is nobody's business outside this crate,
+/// and what a caller meets is the conversion. So the gate is driven through the
+/// conversion instead, at exactly the length the document promises and one character
+/// past it, which is the pair a number that moved cannot satisfy.
+#[test]
+fn a_name_is_held_to_the_length_the_documents_state() {
+    let documented = |record: &str, opens: &str| -> usize {
+        let text = repo_file(record);
+        let at = text
+            .find(opens)
+            .unwrap_or_else(|| panic!("{record} states {opens:?}"));
+        text[at + opens.len()..]
+            .split_whitespace()
+            .next()
+            .and_then(|number| number.parse().ok())
+            .unwrap_or_else(|| panic!("{record} writes a number after {opens:?}"))
+    };
+
+    let longest = documented(
+        "docs/inferred-surface.md",
+        "`TargetName` | non-empty, at most ",
+    );
+    TargetName::try_from("c".repeat(longest)).expect("a name of the documented length is one");
+    TargetName::try_from("c".repeat(longest + 1))
+        .expect_err("a name one character past the documented length is not");
+
+    // An actor's limit is reached through no type — it is read out of the
+    // environment where a release is acknowledged — so `tests/e2e/releases.rs` drives
+    // this half over the real binary. What is asserted here is that the number is
+    // stated where that journey reads it.
+    assert!(
+        documented("docs/contract.md", "one line, not blank, at most ") > 0,
+        "the amendment states the length an actor is held to"
+    );
+}
+
 /// Every word the landing answer travels as, and the record that documents them.
 ///
 /// The record describes a surface that leaves this process — the tiers a `landed`

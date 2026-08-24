@@ -26,6 +26,7 @@ use serde_json::Value;
 
 use crate::host::{Hosted, DIRECT};
 use crate::lifecycle::{local_direct, Fixture};
+use crate::support::{documented_actor_limit, documented_probe_environment};
 use crate::world::World;
 
 /// A registered repository with release targets, and the answers its probes give.
@@ -234,6 +235,15 @@ fn holding(target: &str) -> String {
         "      - name: {target}\n        style: automated\n        probe:\n          shell: \
          'printf \"x\\n\" >> \"$HOME/waiting\"; while [ ! -f \"$HOME/go\" ]; do sleep 0.02; \
          done; cat \"$HOME/answers/{target}\"'\n          timeout_seconds: 30\n"
+    )
+}
+
+/// A shell probe running `line`, for a journey that is about what the probe *is
+/// given* rather than about what it answers.
+fn probing(target: &str, line: &str) -> String {
+    format!(
+        "      - name: {target}\n        style: automated\n        probe:\n          shell: \
+         '{line}'\n          timeout_seconds: 20\n"
     )
 }
 
@@ -601,6 +611,73 @@ const CONTAINER: &str = "      - name: container\n        style: human-step\n   
                          \"Push the image to the internal registry and record the tag.\"\n";
 
 #[test]
+fn a_probe_is_handed_exactly_the_environment_the_record_documents() {
+    // "An explicitly constructed environment" is what the amendment promises, and the
+    // record says which variables that is — so an operator wondering what their probe
+    // can see reads a list this journey holds the crate to. A real probe writes down
+    // the names it was actually handed and then answers a version like any other, and
+    // what it wrote is compared against the documented list rather than against a
+    // second copy of it kept here.
+    let releasing = Releasing::with_criteria(
+        "{}",
+        &probing(
+            "crate",
+            "env | cut -d= -f1 | sort > \"$HOME/handed\"; echo 1.0.0",
+        ),
+    );
+    assert_eq!(
+        releasing.json(&["latest", "project", "--target", "crate"]),
+        serde_json::json!({"state": "released", "version": "1.0.0"})
+    );
+
+    let handed = std::fs::read_to_string(releasing.fixture.world.path("handed"))
+        .expect("the probe wrote down what it was given");
+    // `sh` maintains these itself in every shell it starts, whatever it was handed,
+    // so they are the shell's and not the constructed environment's.
+    const THE_SHELLS_OWN: &[&str] = &["PWD", "SHLVL", "_", "IFS", "OPTIND", "PS1", "PS2", "PS4"];
+    let handed: Vec<&str> = handed
+        .lines()
+        .filter(|it| !it.is_empty() && !THE_SHELLS_OWN.contains(it))
+        .collect();
+    let documented = documented_probe_environment();
+    assert!(
+        handed
+            .iter()
+            .all(|name| documented.iter().any(|it| it == name)),
+        "a probe is handed only what the record documents; it got {handed:?} and the record \
+         names {documented:?}"
+    );
+    // The two of the four this platform has. The other two are Windows' own, and the
+    // record says so — a Unix host that had them would be the surprise.
+    for named in ["HOME", "PATH"] {
+        assert!(
+            handed.contains(&named),
+            "a probe needs {named} to be found and to read its own configuration: {handed:?}"
+        );
+    }
+    // Everything the caller was holding — a credential for something unrelated among
+    // it — is not a probe's business, and these are what this suite is holding.
+    for held in [
+        "ONEVCS_HOME",
+        "ONEVCS_GH",
+        "ONEVCS_ACTOR",
+        "ONEVCS_LOCK_TIMEOUT_SECONDS",
+    ] {
+        assert!(
+            !handed.contains(&held),
+            "{held} reached a probe: {handed:?}"
+        );
+    }
+}
+
+// llmlint: ignore-block[e2e_not_mocked] the remote host's own decisioning — whether a
+// merge is allowed, and what commit it landed at — is the one boundary an offline,
+// credential-free gate cannot drive, and `world.rs` installs a program that answers it
+// as `gh` and substitutes nothing else. Everything under it here is real: a real bare
+// origin, a real clone, a real `git push`, a real merge with real git, and a real probe
+// subprocess against a real file. The same publication against a real GitHub is
+// `tests/smoke/`, which `just smoke-real` runs with a credential.
+#[test]
 fn a_change_the_host_merges_captures_its_baselines_like_a_local_landing_does() {
     // Every other journey here lands `local-direct`, where this crate performs the
     // merge itself. A hosted publication is the other path — GitHub lands the change
@@ -658,6 +735,7 @@ fn a_change_the_host_merges_captures_its_baselines_like_a_local_landing_does() {
     assert_eq!(released["version"], "1.1.0");
     assert_eq!(released["style"], "automated");
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn what_a_human_step_target_has_released_is_the_newest_thing_anybody_recorded() {
@@ -1729,7 +1807,23 @@ fn an_acknowledgement_records_whoever_the_invocation_says_performed_it() {
     // A knob set to something that cannot name anybody is a misconfiguration and is
     // refused by name — never silently replaced with the next source's answer, which
     // would record somebody else's name for an operator who said whose it was.
-    for unusable in ["   ", "nick\nsomebody-else", &"n".repeat(200)] {
+    // The length is stated in the approved amendment, and read from there rather than
+    // repeated: a name of exactly it is usable and one character past it is not,
+    // which is the pair a number that moved in the code alone cannot satisfy.
+    let longest = documented_actor_limit();
+    let assert = acknowledging(
+        &releasing,
+        "1.0.5",
+        true,
+        &[("ONEVCS_ACTOR", &"n".repeat(longest))],
+    )
+    .assert()
+    .success();
+    let recorded: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document");
+    assert_eq!(recorded["actor"], "n".repeat(longest));
+
+    for unusable in ["   ", "nick\nsomebody-else", &"n".repeat(longest + 1)] {
         let refused = acknowledging(&releasing, "1.0.3", true, &[("ONEVCS_ACTOR", unusable)])
             .assert()
             .failure()
@@ -1742,7 +1836,7 @@ fn an_acknowledgement_records_whoever_the_invocation_says_performed_it() {
     }
     assert_eq!(
         releasing.json(&["status", "feature/one", "--target", "container"])["version"],
-        "1.0.2",
+        "1.0.5",
         "a refused invocation records nothing"
     );
 
@@ -2265,6 +2359,13 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
     // and the only one an ask below actually contends is that one. The stream the
     // asks record their probes on has not been written yet, so its lock is not among
     // these and they are not held away from reporting what they did.
+    // llmlint: ignore-block[tests_mirror_real_usage] a lock is held by a verb for the
+    // length of one read-modify-write and released before that process exits, so there
+    // is no command to run that leaves one held while this journey's asks meet it —
+    // which is the whole condition under test. The locks are found the only way
+    // anything can find them, by what appeared under the state root, and held while the
+    // real CLI contends them. `lifecycle.rs` and `sweep.rs` reach occupancy the same
+    // way.
     let held: Vec<std::fs::File> = releasing
         .fixture
         .world
@@ -2277,6 +2378,7 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
         !held.is_empty(),
         "the landing wrote a release record, so this world has locks to hold"
     );
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let asks: Vec<std::thread::JoinHandle<std::process::Output>> = (0..ASKING)
         .map(|_| {
