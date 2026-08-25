@@ -508,11 +508,16 @@ impl RemoteHost for Earlier {
 
     fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
         Ok(onevcs::ChangeChecks {
+            // A supplied host that says which checks there are and not which commit
+            // they are about, which is every host written against the surface before
+            // a check carried one: the publication consults them as it always did.
             checks: vec![Check {
                 name: "gate".to_owned(),
                 status: "completed".to_owned(),
                 conclusion: Some("success".to_owned()),
                 required: true,
+                head: None,
+                url: None,
             }],
             sources: [CheckSource::StatusChecks].into_iter().collect(),
         })
@@ -558,6 +563,9 @@ fn a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed
         "feat: add the queueing thing",
     );
 
+    // Its check names no commit, which is what every host written against the
+    // surface before a check carried one reports — and such a check is consulted
+    // exactly as it always was rather than holding the publication until its bound.
     let host = MemoryHost::seeded(HostState {
         authenticated_user: "tester".to_owned(),
         checks: [(
@@ -567,6 +575,8 @@ fn a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed
                 status: "completed".to_owned(),
                 conclusion: Some("success".to_owned()),
                 required: true,
+                head: None,
+                url: None,
             }],
         )]
         .into_iter()

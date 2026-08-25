@@ -203,6 +203,60 @@ third-party integration posted. `ONEVCS_CHECK_SOURCE` (`auto`, `status-checks`,
 `actions`) narrows that to one source for an operator who already knows what their
 credential can read; an unrecognized value is refused where it is named.
 
+**A check says which commit the host attached it to, and where it is on the host.**
+A change request outlives every commit that is ever its head: each push gives it a
+new one, and the host attaches that head's checks seconds to minutes later. Until it
+does, the change request still reports the *previous* head's — so a publication
+reading "the checks on this change request" moments after pushing read a verdict
+about work it had already replaced, and nothing in the answer could tell it. One
+did: it declared a required check failed one second before that check had started on
+the commit it had just pushed, and spent the work's last retry on it.
+
+```rust
+pub struct Check {                       // the four the contract fixed, and two more:
+    pub head: Option<Sha>,               // the commit the host attached this check to
+    pub url: Option<Url>,                // where the check is on the host
+}
+```
+
+Two fields and no method over them. What to *do* about a check whose commit is not
+the one you are holding is the reading of whoever is holding it — this crate's own
+is private to the publication path — so the surface says what the host answered and
+stops there.
+
+Both are optional because the answer is the host's to give, and `None` means the
+host did not say rather than a commit inferred from the change request's own head:
+"nothing has been reported about this commit" and "this check is about the commit
+you are holding" are different answers and only one may be acted on. A check naming
+no commit is consulted exactly as it was before the field existed — a host that will
+not say is not a reason to stall a publication for ever — and a check naming some
+other commit is not consulted at all. Both fields are omitted when absent, so a
+`Check` an older build serialized still reads.
+
+`GitHub` fills them from its own response rather than from the question it asked.
+The rollup is read as `gh pr view --json headRefOid,statusCheckRollup`, in one call,
+because what GitHub renders there *is* that head's rollup and which head it was is
+the whole of what makes the answer addressable; a check run's `detailsUrl` is the
+address. The Actions source asks the same field for the change request's head as it
+stands *now* rather than as the caller found it, and takes each job's commit from
+its workflow run's own `head_sha` and its address from the job's `html_url` — so
+both sources answer about the head the host currently has rather than the one it had
+when the change request was found.
+
+A publication watches **the commit it pushed** — read from the tree it pushed, not
+from the head the host reports, which is the same value only once the host has
+noticed — and consults only the checks attached to it or to no commit at all. A
+change whose every check names another commit is *pending*: the watch goes on
+waiting, and the bound that eventually ends it names the commit nothing has been
+reported on. Reported as "no checks", that state is indistinguishable from a change
+nothing blocks, which is the same empty list and the opposite answer.
+
+The refusal a red required check produces carries what refused it, beside the
+bounded log excerpt it already quoted: the check's URL on the host, and the id of
+the artifact this crate had already stored that log as, with the command that prints
+it. Whatever is dispatched next reads the refusal rather than the stream, and handed
+the word `checks-failed` alone it has to rediscover both.
+
 **Enumerating a repository's session holders is a library call too.** The contract
 gives the enumeration one surface — `onevcs session holders REPO [--json]` — and a
 caller embedding this crate had no route to it at all: the records, the view over

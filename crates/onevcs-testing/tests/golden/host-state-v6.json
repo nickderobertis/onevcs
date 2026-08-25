@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 6,
   "authenticated_user": "seeded-user",
   "changes": [
     {
@@ -24,7 +24,9 @@
         "name": "gate",
         "status": "completed",
         "conclusion": "success",
-        "required": true
+        "required": true,
+        "head": "def456",
+        "url": "https://github.com/acme-corp/widgets/runs/7"
       },
       {
         "name": "coverage",

@@ -1449,6 +1449,8 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         status: "completed".to_owned(),
         conclusion: Some("success".to_owned()),
         required: true,
+        head: Some(Sha("0f1e2d3".to_owned())),
+        url: Url::parse("https://github.com/nickderobertis/onevcs/runs/7").ok(),
     };
     let spec = ChangeSpec {
         head: "feature".to_owned(),
@@ -2182,6 +2184,8 @@ fn the_amendment_declares_what_a_hosts_checks_say_about_where_they_came_from() {
             status: "completed".to_owned(),
             conclusion: Some("success".to_owned()),
             required: true,
+            head: None,
+            url: None,
         }],
         sources: [CheckSource::Actions, CheckSource::BranchRules]
             .into_iter()
@@ -2232,6 +2236,79 @@ fn the_amendment_declares_what_a_hosts_checks_say_about_where_they_came_from() {
     assert_eq!(
         serde_json::to_value(&answer).expect("the answer serializes")["sources"],
         json!(["actions", "branch-rules"])
+    );
+}
+
+#[test]
+fn the_amendment_declares_the_commit_a_check_is_attached_to() {
+    // Reconciled the way the amendments above are: the type is built from outside
+    // the crate with every field named, and the amendment is held to declaring it.
+    // What is worth gating beyond that is the *serialization*, because that is the
+    // half a compiler cannot check — a consumer reads a `Check` out of JSON, and an
+    // absent commit written as `null` or filled in from somewhere would read as an
+    // answer the host never gave.
+    let attached = Check {
+        name: "gate".to_owned(),
+        status: "completed".to_owned(),
+        conclusion: Some("failure".to_owned()),
+        required: true,
+        head: Some(Sha("0f1e2d3".to_owned())),
+        url: Url::parse("https://github.com/nickderobertis/onevcs/actions/runs/1/job/2").ok(),
+    };
+    let unsaid = Check {
+        head: None,
+        url: None,
+        ..attached.clone()
+    };
+    assert_ne!(
+        attached, unsaid,
+        "a check the host named a commit for is not the same answer as one it did not"
+    );
+
+    let written = serde_json::to_value(&attached).expect("a check serializes");
+    assert_eq!(written["head"], json!("0f1e2d3"));
+    assert_eq!(
+        written["url"],
+        json!("https://github.com/nickderobertis/onevcs/actions/runs/1/job/2")
+    );
+    assert_eq!(
+        serde_json::to_value(&unsaid).expect("a check serializes"),
+        json!({
+            "name": "gate",
+            "status": "completed",
+            "conclusion": "failure",
+            "required": true,
+        }),
+        "an absent commit is omitted rather than written as null"
+    );
+    // …and a check written before the fields existed still reads, as one whose
+    // commit that build never recorded.
+    let older: Check = serde_json::from_value(json!({
+        "name": "gate",
+        "status": "completed",
+        "conclusion": "failure",
+        "required": true,
+    }))
+    .expect("a check an older build wrote still reads");
+    assert_eq!(older, unsaid);
+
+    let declarations = amendment_declaring("pub head: Option<Sha>");
+    for declared in [
+        "pub head: Option<Sha>,               // the commit the host attached this check to",
+        "pub url: Option<Url>,                // where the check is on the host",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+    // Two fields and no method over them: what to do about a check whose commit is
+    // not the one you are holding is the caller's reading, and this crate's own is
+    // private to the publication path. An amendment that declared a method here
+    // would be a public item the approved contract does not name.
+    assert!(
+        !declarations.contains("impl Check"),
+        "the amendment declares no method over the two fields: {declarations}"
     );
 }
 

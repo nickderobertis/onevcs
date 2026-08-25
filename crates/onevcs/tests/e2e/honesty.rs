@@ -76,12 +76,17 @@ pub fn run(args: &[&str], providers: Providers<'_>) -> u8 {
 }
 
 /// What the substituted host reports, and what the provider is seeded with.
+///
+/// It names no commit, which is a host that does not say which head its checks are
+/// about — read exactly as it was before checks carried one.
 fn green_gate() -> Check {
     Check {
         name: "gate".to_owned(),
         status: "completed".to_owned(),
         conclusion: Some("success".to_owned()),
         required: true,
+        head: None,
+        url: None,
     }
 }
 

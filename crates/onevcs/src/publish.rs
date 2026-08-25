@@ -1216,8 +1216,19 @@ fn publish_as_change(
     // tree that was pushed rather than asked of the remote, because asking the remote
     // is one more read that can fail for the very reason being reported.
     let pushed_at = git::tip(&context.worktree, &context.branch);
-    land_as_change(context, stream, subject)
-        .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
+    // The commit is what the watch below decides *which* of the host's checks are
+    // about this publication, so a tree that will not say what it just pushed is a
+    // merge path this build cannot read rather than one it reads about some other
+    // commit. It reaches the operator as exactly that, through `unverified`.
+    match pushed_at.as_deref() {
+        Some(sha) => land_as_change(context, stream, subject, &Sha(sha.to_owned())),
+        None => Err(crate::error::invalid(format!(
+            "{:?} was pushed and this worktree will not say which commit it is at, so which of \
+             the host's checks are about what was just pushed cannot be decided",
+            context.branch
+        ))),
+    }
+    .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
 }
 
 /// Refuse an identity that has no host at all, before anything is pushed.
@@ -1274,6 +1285,7 @@ fn land_as_change(
     context: &Context<'_>,
     stream: &mut Stream,
     subject: &str,
+    pushed: &Sha,
 ) -> Result<PublishOutcome> {
     let slug = change_host(&context.resolution.key)?;
     let host = context.hosting.for_repo(&slug)?;
@@ -1333,7 +1345,7 @@ fn land_as_change(
         // change-direct publication asks for the merge itself, so it waits for the
         // checks the host says block one first.
         if context.effective == MergePolicy::ChangeDirect {
-            await_checks(host.as_ref(), &change, stream)?;
+            await_checks(host.as_ref(), &change, pushed, stream)?;
         }
         stream.emit(
             EventKind::MergeQueued,
@@ -1349,13 +1361,20 @@ fn land_as_change(
             // nothing armed against it, and one loop rather than a read followed by a
             // watch reports each transition exactly once.
             let mut armed = false;
-            watch(host.as_ref(), &change, stream, "merged", |host, _| {
-                if !armed {
-                    host.merge(&change, MergePolicy::ChangeAuto)?;
-                    armed = true;
-                }
-                host.merged_at(&change)
-            })?
+            watch(
+                host.as_ref(),
+                &change,
+                pushed,
+                stream,
+                "merged",
+                |host, _| {
+                    if !armed {
+                        host.merge(&change, MergePolicy::ChangeAuto)?;
+                        armed = true;
+                    }
+                    host.merged_at(&change)
+                },
+            )?
         } else {
             match host.merge(&change, context.effective)? {
                 MergeOutcome::Merged(sha) => sha,
@@ -1500,24 +1519,100 @@ fn excerpt(log: &str) -> String {
 /// then the host's own to refuse under its own rules. `change-auto` is the policy
 /// that fails closed on that, because its watch ends at a merge the host performs
 /// and a host holding a change behind a check nobody declared never performs one.
-fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stream) -> Result<()> {
+fn await_checks(
+    host: &dyn RemoteHost,
+    change: &ChangeRequest,
+    pushed: &Sha,
+    stream: &mut Stream,
+) -> Result<()> {
     watch(
         host,
         change,
+        pushed,
         stream,
         "settled its required checks on",
-        |_, checks| {
+        |_, reported| {
+            let Reported::About(checks) = reported else {
+                // The host has posted nothing about the commit this publication
+                // pushed. That is a clock and not an answer — the checks it *is*
+                // reporting belong to a head this run replaced — so the watch keeps
+                // waiting rather than merging on an emptiness that is really
+                // somebody else's verdict having been filtered out.
+                return Ok(None);
+            };
             let settled = checks
                 .iter()
                 .filter(|check| check.required)
-                .all(Check::green);
+                .all(|check| check.green());
             Ok(settled.then_some(()))
         },
     )
 }
 
-/// Watch a change request until `ending` answers, reporting every check transition
-/// as it happens.
+/// What a host's answer about a change request says about **one commit**.
+///
+/// The publication path's whole defence against a verdict that is about the wrong
+/// thing, and it is a type rather than a filter so the distinction cannot be
+/// dropped by accident: "the host has said nothing about this commit yet" and "the
+/// host says nothing blocks it" are the same empty list and opposite answers. A
+/// caller reaches the checks only by having said which of the two it is holding.
+///
+/// A publication watches the commit it just pushed. The host attaches that commit's
+/// checks seconds to minutes later, and until it does, the change request still
+/// carries the *previous* head's — a red one of which used to end the publication
+/// with a verdict that predated the check it claimed to have read.
+enum Reported<'a> {
+    /// What this answer holds about the commit: the checks the host attached to it,
+    /// and the checks the host attached to no commit at all. Empty is an answer —
+    /// the one a repository that declares no check gives — and it is only ever
+    /// reached when the host reported no checks whatsoever.
+    About(Vec<&'a Check>),
+    /// Every check the host reported names some *other* commit, so it has said
+    /// nothing about this one. What a head pushed moments ago looks like.
+    NotYet,
+}
+
+impl<'a> Reported<'a> {
+    /// Read one host answer as what it says about `commit`.
+    fn of(answered: &'a [Check], commit: &Sha) -> Self {
+        let about: Vec<&Check> = answered
+            .iter()
+            .filter(|check| is_about(check, commit))
+            .collect();
+        if about.is_empty() && !answered.is_empty() {
+            return Self::NotYet;
+        }
+        Self::About(about)
+    }
+
+    /// The checks that are about the commit, which is none of them until the host
+    /// has said anything about it.
+    fn checks(&self) -> &[&'a Check] {
+        match self {
+            Self::About(checks) => checks,
+            Self::NotYet => &[],
+        }
+    }
+}
+
+/// Whether one check is the host's answer *about* `commit`.
+///
+/// Two cases, and the second is why this is not equality: a check the host attached
+/// to `commit` is about it, and so is a check the host named no commit for at all.
+/// A host that will not say which head its checks belong to is a host whose checks
+/// are read exactly as they were before any of them carried one — declining to
+/// answer is not a reason to stall a publication until its bound. Only a check
+/// naming some *other* commit is set aside.
+///
+/// Private, and it belongs here rather than on [`Check`]: it is this path's reading
+/// of the host's answer, not a property of the answer, and the approved surface
+/// declares the field and no method over it.
+fn is_about(check: &Check, commit: &Sha) -> bool {
+    check.head.as_ref().is_none_or(|head| head == commit)
+}
+
+/// Watch a change request **at one commit** until `ending` answers, reporting every
+/// check transition as it happens.
 ///
 /// Three ways out, and each one says which it was: `ending` answers, a **required**
 /// check concludes red ([`Error::ChecksFailed`], naming it and quoting its log), or
@@ -1528,12 +1623,22 @@ fn await_checks(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stre
 ///
 /// Only required checks may end it: a non-blocking check never holds or fails a
 /// merge, which is the whole reason `required` travels on a [`Check`].
+///
+/// `pushed` is what the checks are read *about*, and it is the commit this run put
+/// on the remote rather than the head the host reports for the change request —
+/// which is the same value only once the host has noticed the push. A change
+/// request is a resource that outlives any one commit on it, so a watch keyed on
+/// the change request alone answers from whatever head the host last attached
+/// checks to. [`Reported`] is where that is decided, and everything past it — the
+/// stream, the red-check verdict, and the bound's own sentence — sees only checks
+/// about `pushed`.
 fn watch<T>(
     host: &dyn RemoteHost,
     change: &ChangeRequest,
+    pushed: &Sha,
     stream: &mut Stream,
     awaited: &str,
-    mut ending: impl FnMut(&dyn RemoteHost, &[Check]) -> Result<Option<T>>,
+    mut ending: impl FnMut(&dyn RemoteHost, &Reported<'_>) -> Result<Option<T>>,
 ) -> Result<T> {
     let bound = std::time::Duration::from_secs_f64(gh::checks_timeout()?);
     let poll = std::time::Duration::from_secs_f64(gh::checks_poll()?);
@@ -1547,8 +1652,12 @@ fn watch<T>(
         // on here: a credential that can see only GitHub Actions still gates a merge
         // on what it *can* see, and a credential that could see nothing was a
         // refusal above rather than an empty answer.
-        let checks = host.change_checks(change)?.checks;
-        for check in &checks {
+        let answered = host.change_checks(change)?.checks;
+        // Narrowed to the commit this publication pushed before anything is reported
+        // or acted on, so a check the host attached to a head this run replaced
+        // reaches neither the stream nor the verdict.
+        let about = Reported::of(&answered, pushed);
+        for check in about.checks() {
             let previous = reported
                 .iter()
                 .find(|(name, _)| name == &check.name)
@@ -1592,21 +1701,25 @@ fn watch<T>(
             reported.retain(|(name, _)| name != &check.name);
             reported.push((check.name.clone(), check.status.clone()));
         }
-        if let Some(failed) = checks.iter().find(|check| check.required && check.red()) {
+        if let Some(failed) = about
+            .checks()
+            .iter()
+            .find(|check| check.required && check.red())
+        {
             return Err(checks_failed(failed, &logs));
         }
-        if let Some(answer) = ending(host, &checks)? {
+        if let Some(answer) = ending(host, &about)? {
             return Ok(answer);
         }
         if started.elapsed() >= bound {
-            return Err(unsettled(change, &checks, bound, awaited));
+            return Err(unsettled(change, pushed, &about, bound, awaited));
         }
         std::thread::sleep(poll);
     }
 }
 
-/// A required check that concluded red, named, with a bounded excerpt of what it
-/// printed.
+/// A required check that concluded red, named, with everywhere its evidence is and
+/// a bounded excerpt of what it printed.
 ///
 /// The excerpt is on the failure itself rather than only in the artifact beside it,
 /// because a caller routing this failure — or a person reading stderr — otherwise
@@ -1614,18 +1727,37 @@ fn watch<T>(
 /// hand to find out why. A log this crate could not read back is simply not quoted:
 /// an excerpt naming the reason there is no excerpt would read as the check's own
 /// output.
+///
+/// The other two are *pointers*, and they are here because the excerpt is bounded
+/// and this failure is usually read by whatever gets dispatched next: where the
+/// check is on the host, so a person can open it, and the artifact this watch
+/// already stored the whole log as, with the command that prints it. A retry handed
+/// the word `checks-failed` and nothing else has to rediscover both.
 fn checks_failed(check: &Check, logs: &[(String, crate::event::ArtifactId)]) -> Error {
-    let said = logs
-        .iter()
-        .find(|(name, _)| name == &check.name)
+    let stored = logs.iter().find(|(name, _)| name == &check.name);
+    let said = stored
         .and_then(|(_, id)| stream::read_artifact(&id.0).ok())
         .map(|log| excerpt(&log))
         .filter(|log| !log.trim().is_empty())
-        .map(|log| format!(". It said:\n{}", guidance::quoted_output(&log)))
+        .map(|log| format!(" It said:\n{}", guidance::quoted_output(&log)))
+        .unwrap_or_default();
+    let at = check
+        .url
+        .as_ref()
+        .map(|url| format!(" It ran at {url}."))
+        .unwrap_or_default();
+    let evidence = stored
+        .map(|(_, id)| {
+            format!(
+                " Its whole log is artifact {id} — `{command}`.",
+                id = id.0,
+                command = guidance::command(["onevcs", "artifact", "cat", &id.0]),
+            )
+        })
         .unwrap_or_default();
     Error::ChecksFailed {
         reason: format!(
-            "required check {:?} concluded {}{said}",
+            "required check {:?} concluded {}.{at}{evidence}{said}",
             check.name,
             check
                 .conclusion
@@ -1643,11 +1775,31 @@ fn checks_failed(check: &Check, logs: &[(String, crate::event::ArtifactId)]) -> 
 /// Those are three different next moves.
 fn unsettled(
     change: &ChangeRequest,
-    checks: &[Check],
+    pushed: &Sha,
+    reported: &Reported<'_>,
     bound: std::time::Duration,
     awaited: &str,
 ) -> Error {
-    let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
+    let Reported::About(checks) = reported else {
+        // A fourth ending, and the one that must not read as any of the three below:
+        // the host answered, and everything it said was about a head this run
+        // replaced. "Nothing blocks the merge" is what that used to look like.
+        return Error::ChecksUnsettled {
+            reason: format!(
+                "the host had not {awaited} {url} within {seconds}s; it has reported no check at \
+                 all on {commit}, the commit this publication pushed — every check it does report \
+                 is attached to some other commit",
+                url = change.url,
+                seconds = bound.as_secs_f64(),
+                commit = pushed.0,
+            ),
+        };
+    };
+    let required: Vec<&Check> = checks
+        .iter()
+        .copied()
+        .filter(|check| check.required)
+        .collect();
     let pending: Vec<&str> = required
         .iter()
         .filter(|check| !check.settled())

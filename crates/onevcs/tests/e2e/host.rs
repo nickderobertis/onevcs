@@ -388,8 +388,9 @@ fn explicit_complete_check_sources_read_the_rollup() {
         assert!(
             calls
                 .iter()
-                .any(|call| call.contains("--json statusCheckRollup")),
-            "{source} reads the complete check rollup: {calls:?}"
+                .any(|call| call.contains("--json headRefOid,statusCheckRollup")),
+            "{source} reads the complete check rollup, and the commit it is the rollup of: \
+             {calls:?}"
         );
         assert!(
             calls.iter().any(|call| call.starts_with("pr checks ")),
@@ -1821,6 +1822,294 @@ fn an_automated_change_merges_once_every_required_check_is_green() {
     assert!(!hosted.world.events_of(&token, "merge-queued").is_empty());
 }
 
+/// A branch that already carries work, given one more commit through a second
+/// session on the same name — which is what a retry of a dispatched piece of work
+/// looks like from here.
+fn more_work(hosted: &Hosted, branch: &str, file: &str, subject: &str) -> String {
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["session", "open", "hosted", "--branch", branch])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    hosted
+        .world
+        .commit_file(&worktree_of(&stdout), file, "more\n", subject);
+    token_of(&stdout)
+}
+
+/// A change request the host already holds for a branch, opened at the commit that
+/// branch was at before this run added anything.
+///
+/// Opened by a publication rather than seeded, because that is how one gets there:
+/// an earlier run put the branch up for review, and the retry below is asked to
+/// land it after doing more work. `change-open` narrows the repository's own policy,
+/// which a per-run policy may do, and it reads no checks at all — so every reading
+/// of the rollup counted afterwards belongs to the publication under test.
+fn already_open(hosted: &Hosted, branch: &str, subject: &str) {
+    let token = hosted.change(branch, subject);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--policy", "change-open"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn a_push_whose_commit_cannot_be_read_back_is_a_merge_path_this_build_will_not_guess_at() {
+    // The other side of watching a commit: the publication has to know which one it
+    // pushed, and the tree it pushed from is what says so. A tree that will not is a
+    // merge path this build cannot read — reported as exactly that, with the branch
+    // named as being on the origin — rather than a watch quietly widened back to
+    // "whatever checks this change request has", which is the defect the commit
+    // exists to close.
+    //
+    // Driven the way an operator would hit it: the repository's own `pre-push` hook
+    // takes the branch out from under the publication while accepting the push.
+    let hosted = Hosted::new(DIRECT);
+    hosted.world.install_pre_push(
+        &hosted.checkout,
+        "git update-ref -d refs/heads/feature/vanishing",
+    );
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/vanishing", "feat: add the vanishing thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        // The contract's code for a push that landed with the merge path unread.
+        .code(1)
+        .stderr(predicate::str::contains(
+            "which of the host's checks are about what was just pushed cannot be decided",
+        ))
+        .stderr(predicate::str::contains(
+            "\"feature/vanishing\" is on origin",
+        ));
+    assert!(
+        hosted.branch_on_origin("feature/vanishing").is_some(),
+        "the push reached the origin, which is why this is not a publication that never ran"
+    );
+    assert_eq!(hosted.origin_log().len(), 1, "nothing may have merged");
+}
+
+#[test]
+fn a_publication_never_answers_from_a_check_the_host_left_on_the_head_it_replaced() {
+    // The defect this guards against, driven end to end: a required check that
+    // concluded **red on the commit this branch used to be at**, read by a
+    // publication moments after it pushed a new one. GitHub attaches a head's checks
+    // when it processes the push rather than when the push returns, so for the first
+    // seconds the change request still answers with the previous head's verdict —
+    // and a publication that read it ended the work on a check that had not run on
+    // anything it pushed.
+    let hosted = Hosted::new(DIRECT);
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    already_open(&hosted, "feature/retried", "feat: add the thing");
+    let replaced = hosted
+        .branch_on_origin("feature/retried")
+        .expect("the first publication pushed the branch");
+
+    // What the host says about that earlier head: the check failed.
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("failure"),
+        required: true,
+    }]);
+    hosted
+        .world
+        .host_log("gate", "the run on the head that was replaced\n");
+    let token = more_work(
+        &hosted,
+        "feature/retried",
+        "two.txt",
+        "fix: repair the thing",
+    );
+
+    // …and what it says once it has noticed the push: a green check on the commit
+    // that was actually pushed. Both take effect from the second reading of the
+    // rollup, which is the smallest moment a watch can observe moving.
+    hosted.world.host_notices_the_push_after(1);
+    hosted.world.host_checks_after(
+        1,
+        &[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }],
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_POLL_SECONDS", "1")
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "60")
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let pushed = hosted
+        .branch_on_origin("feature/retried")
+        .expect("the retry pushed the branch again");
+    assert_ne!(pushed, replaced, "the retry pushed a commit of its own");
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the change landed once the host answered about what was pushed"
+    );
+
+    // It waited rather than answering at once, and the answer it waited past never
+    // reached the stream: a check on a head this run replaced is not this
+    // publication's verdict and is not its evidence either.
+    let rollups = hosted
+        .world
+        .host_calls()
+        .iter()
+        .filter(|call| call.contains("statusCheckRollup"))
+        .count();
+    assert!(
+        rollups >= 2,
+        "the publication read the host again rather than acting on the first answer: {rollups}"
+    );
+    let checks = hosted.world.events_of(&token, "change-check");
+    assert!(
+        checks
+            .iter()
+            .all(|event| event["payload"]["conclusion"] != "failure"),
+        "the replaced head's red check is not reported as this publication's: {checks:?}"
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|event| event["payload"]["conclusion"] == "success"),
+        "the check on the pushed commit is: {checks:?}"
+    );
+}
+
+#[test]
+fn a_credential_that_reads_only_actions_also_waits_for_the_commit_that_was_pushed() {
+    // The same defect on the narrower source, which is the one CI runs under: a
+    // fine-grained token cannot resolve a check run at all, so it reads GitHub
+    // Actions — and the jobs it finds are the jobs on whatever head the host has,
+    // which moments after a push is still the head this run replaced. It has its own
+    // way of going stale, too: the commit the Actions API is *asked* about used to
+    // be the one read when the change request was found, so a build that kept it
+    // would go on asking about a replaced commit for as long as it watched.
+    let hosted = Hosted::new(DIRECT);
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted.world.answer_malformed("actions-only");
+    already_open(&hosted, "feature/narrowed", "feat: add the thing");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("failure"),
+        required: true,
+    }]);
+    let token = more_work(
+        &hosted,
+        "feature/narrowed",
+        "two.txt",
+        "fix: repair the thing",
+    );
+    hosted.world.host_notices_the_push_after(1);
+    hosted.world.host_checks_after(
+        1,
+        &[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }],
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_POLL_SECONDS", "1")
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "60")
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the change landed once the Actions API answered about what was pushed"
+    );
+
+    // Through the narrower source, and only it: the rollup was refused, so a
+    // journey that had quietly read it would be proving nothing about the
+    // credential CI runs under.
+    let calls = hosted.world.host_calls();
+    assert!(
+        calls.iter().any(|call| call.contains("/actions/runs")),
+        "the checks were read through the Actions API: {calls:?}"
+    );
+    let checks = hosted.world.events_of(&token, "change-check");
+    assert!(
+        checks
+            .iter()
+            .all(|event| event["payload"]["conclusion"] != "failure"),
+        "the replaced head's red job is not reported as this publication's: {checks:?}"
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|event| event["payload"]["conclusion"] == "success"),
+        "the job on the pushed commit is: {checks:?}"
+    );
+}
+
+#[test]
+fn a_publication_whose_checks_all_name_another_commit_waits_and_says_so() {
+    // The same host, which never notices the push at all. There is no answer about
+    // the commit that was pushed, and "no answer" must not read as either of the two
+    // things it used to be indistinguishable from: the previous head's verdict, or a
+    // change request nothing blocks. The bound ends it, naming the commit nothing has
+    // been reported on.
+    let hosted = Hosted::new(DIRECT);
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    already_open(&hosted, "feature/unnoticed", "feat: add the thing");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("failure"),
+        required: true,
+    }]);
+    let token = more_work(&hosted, "feature/unnoticed", "two.txt", "fix: repair it");
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_POLL_SECONDS", "1")
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        // The contract's code for the host's checks not answering in time.
+        .code(1)
+        .stderr(predicate::str::contains("is attached to some other commit"))
+        .stderr(predicate::str::contains("concluded failure").not());
+    let pushed = hosted
+        .branch_on_origin("feature/unnoticed")
+        .expect("the branch reached the origin");
+    assert!(
+        crate::publish_branch::stderr_of(&assert).contains(&pushed),
+        "the bound names the commit nothing has been reported on: {}",
+        crate::publish_branch::stderr_of(&assert)
+    );
+    assert_eq!(hosted.origin_log().len(), 1, "nothing may have merged");
+}
+
 #[test]
 fn a_failing_required_check_stops_the_publication_and_names_it() {
     let hosted = Hosted::new(AUTOMATED);
@@ -1835,7 +2124,7 @@ fn a_failing_required_check_stops_the_publication_and_names_it() {
         .host_log("gate", "the required check found a regression\n");
     let token = hosted.change("feature/red", "feat: add the red thing");
 
-    hosted
+    let assert = hosted
         .world
         .onevcs()
         .args(["publish", &token])
@@ -1856,6 +2145,33 @@ fn a_failing_required_check_stops_the_publication_and_names_it() {
         .world
         .onevcs()
         .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("found a regression"));
+
+    // …and the refusal itself carries both pointers, because whatever is dispatched
+    // next reads *this* and not the stream: where the check is on the host, so a
+    // person can open it, and the artifact this watch already stored the whole log
+    // as, with the command that prints it. Handed the word `checks-failed` alone, a
+    // retry has to rediscover both.
+    let refusal = crate::publish_branch::stderr_of(&assert);
+    assert!(
+        refusal.contains("https://github.com/acme-corp/hosted/actions/runs/1/job/1"),
+        "the refusal says where the check that refused it is on the host: {refusal}"
+    );
+    assert!(
+        refusal.contains(&format!("artifact {id}")),
+        "the refusal names the log this watch already stored: {refusal}"
+    );
+    let printed = refusal
+        .split('`')
+        .find(|span| span.starts_with("onevcs "))
+        .unwrap_or_else(|| panic!("the refusal names no command: {refusal}"))
+        .to_owned();
+    hosted
+        .world
+        .onevcs()
+        .args(printed.split_whitespace().skip(1))
         .assert()
         .success()
         .stdout(predicate::str::contains("found a regression"));

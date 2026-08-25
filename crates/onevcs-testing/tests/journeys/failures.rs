@@ -419,6 +419,8 @@ fn a_check_named_something_that_is_not_a_filename_still_has_its_log_stored() {
         status: "completed".to_owned(),
         conclusion: Some("success".to_owned()),
         required: true,
+        head: None,
+        url: None,
     };
     let mut checks = BTreeMap::new();
     checks.insert(ChangeId("1".to_owned()), vec![check.clone()]);

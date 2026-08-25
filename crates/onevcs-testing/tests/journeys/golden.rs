@@ -27,19 +27,19 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v5-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v5-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v6-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v6-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v5.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v5.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v6.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v6.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v4.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v4.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v5.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v5.json");
 
 /// Every optional key of a repository state, as the document spells it.
 const VCS_OPTIONAL: &[&str] = &[
@@ -193,7 +193,7 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
     std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
     assert!(
-        VCS_PREVIOUS.contains(r#""version": 4"#) && !VCS_PREVIOUS.contains("landed"),
+        HOST_PREVIOUS.contains(r#""version": 5"#) && !HOST_PREVIOUS.contains(r#""head":"#),
         "the previous document is the one that predates the field, or it proves nothing"
     );
 
@@ -201,8 +201,8 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
 
     // Read as the shape this build writes, with everything it did hold intact and
-    // the fields it never held empty — which is the answer, not a gap: nothing held
-    // that preserved branch and nobody had counted its lines.
+    // the field it never held empty — which is the answer rather than a gap: that
+    // build's host never recorded which commit a check was about.
     let state = host.state().expect("readable");
     assert_eq!(state.version, STATE_VERSION);
     assert_eq!(state.authenticated_user, "seeded-user");
@@ -211,20 +211,29 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
         state.titles[&state.changes[0].id],
         "feat: the seeded change"
     );
-    assert_eq!(state.checks[&state.changes[0].id].len(), 2);
+    let carried = &state.checks[&state.changes[0].id];
+    assert_eq!(carried.len(), 2);
+    // The field a version 5 document could not hold, read as the answer that
+    // document *was*: a build that never recorded which commit its host attached a
+    // check to did not thereby say the check is about the change request's own head.
+    // Filling it in from `head_sha` is the one thing that must not happen here —
+    // a publication would then read a scenario's stale checks as current.
+    for check in carried {
+        assert_eq!(
+            check.head, None,
+            "a document that predates the commit a check is attached to says nothing about \
+             one: {check:?}"
+        );
+        assert_eq!(check.url, None);
+    }
     let repository = vcs.state().expect("readable");
     assert_eq!(repository.version, STATE_VERSION);
     assert_eq!(repository.sessions.len(), 1);
     assert_eq!(repository.publications.len(), 1);
-    // The one field a version 4 document could not hold, carried forward as the
-    // answer that document *was*: a list of preserved work nobody had published.
-    // Left at its own default it would read as "nothing here can say", and a
-    // consumer's scenario would start reporting work it had always called
-    // unpublished as work that may have landed.
     assert_eq!(
         repository.preserved[0].landed,
         Landed::No,
-        "a document that predates the landing answer carries the one its list meant: {:?}",
+        "everything the previous document did hold reads back unchanged: {:?}",
         repository.preserved[0]
     );
 

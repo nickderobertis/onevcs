@@ -33,7 +33,8 @@ use crate::store::Checked;
 /// fields a `Recoverable` gained inside [`VcsState::preserved`] — the live session
 /// holding a branch, and the lines it would land when it removes more than it adds.
 /// `5` is one more of those: whether the branch's work reached its base, and what
-/// says so.
+/// says so. `6` is the two a `Check` gained inside [`HostState::checks`] — the
+/// commit the host attached that check to, and where the check is on the host.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -43,7 +44,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 5;
+pub const STATE_VERSION: u32 = 6;
 
 /// The oldest document version this build reads.
 ///
@@ -57,7 +58,11 @@ pub const STATE_VERSION: u32 = 5;
 /// hold or a line count, which is what they said. `4` to `5` added one that every row
 /// answers rather than one that appears when it holds something, so a version 4
 /// document's rows are carried forward as the answer that list *was*: preserved work
-/// nobody published, which is work that did not land.
+/// nobody published, which is work that did not land. `5` to `6` added two that
+/// appear only when they hold something, so a version 5 document's checks read as
+/// checks whose commit and address that build never recorded — which is what they
+/// were, and the one thing that must not be filled in from the change request's own
+/// head.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -578,9 +583,11 @@ impl Checked for HostState {
         Ok(())
     }
 
-    /// A version 2 document held no bodies, and reads as what it was: change
-    /// requests opened with none. There is nothing to fill in — an absent entry is
-    /// already that answer — so this is the version and nothing else.
+    /// A version 2 document held no bodies, and a version 5 document's checks named
+    /// no commit; each reads as what it was — change requests opened with none, and
+    /// checks whose head that build never recorded. There is nothing to fill in — an
+    /// absent field is already that answer, and a check's commit is the one thing
+    /// that must never be inferred — so this is the version and nothing else.
     fn carry_forward(&mut self) {
         self.version = STATE_VERSION;
     }

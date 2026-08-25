@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 6,
   "identities": [
     {
       "origin": "github.com/acme-corp/widgets",
@@ -31,6 +31,9 @@
       },
       "checkout": "/scratch/widgets",
       "stopped_because": "the run was interrupted",
+      "landed": {
+        "state": "no"
+      },
       "recover_command": [
         "onevcs",
         "recover",
