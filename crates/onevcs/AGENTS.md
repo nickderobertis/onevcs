@@ -544,6 +544,19 @@ Six rules govern how it decides.
 The flag surface is shared with `oneagentgraph sweep`, spelling for spelling and
 default for default; neither side may amend it alone.
 
+**A session's own run roots are reaped by `workspace::reclaim`, and the occupancy
+lease is not what proves one abandoned.** The lease is per command and outlives
+none of them — `open` takes it shared and drops it as it returns — so a dispatch
+working in its worktree for hours holds no lease at all, and reading an exclusive
+take as *nothing is working in here* deleted three live dispatches inside ninety
+seconds of their launch. So `reclaim` asks the session records first, exactly the
+way `vcs::held_by` asks them of a branch: an open record whose owner is that same
+process, still running, is never a candidate, whatever its clone has committed and
+whoever holds the lease. The lease is asked afterwards and still answers for the
+command that is inside a run root *now*, which is the state a record does not
+cover; a run root no record names has only that answer, and is reclaimable, since
+protecting it would make a refused open's litter permanent.
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory
