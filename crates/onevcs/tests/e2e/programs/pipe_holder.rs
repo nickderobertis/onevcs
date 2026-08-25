@@ -23,6 +23,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+// Every `const … : &str` below is the protocol this program and the journey meet
+// on, and the journey reads its own spelling of each one **out of this file** — the
+// two are compiled separately, so a shared constant is not available to them and a
+// second spelling would drift in silence.
+
+/// The name this program answers to as the stand-in rather than as the holder.
+const STAND_IN: &str = "git";
 /// The directory the journey and this program meet in.
 const RENDEZVOUS: &str = "ONEVCS_JOURNEY_RENDEZVOUS";
 /// The real git the stand-in runs, resolved by the journey before the stand-in's
@@ -52,7 +59,7 @@ fn main() {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    if name == "git" {
+    if name == STAND_IN {
         stand_in();
     }
     hold();

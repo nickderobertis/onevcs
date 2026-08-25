@@ -32,14 +32,25 @@ use assert_cmd::cargo::CommandCargoExt;
 
 use crate::support::plain_path;
 
-/// The directory the journey and its stand-in `git` meet in.
-const RENDEZVOUS: &str = "ONEVCS_JOURNEY_RENDEZVOUS";
-/// The real git the stand-in runs, resolved before the stand-in went on `PATH`.
-const REAL_GIT: &str = "ONEVCS_JOURNEY_REAL_GIT";
-/// The git subcommand whose first invocation publishes its pipe.
-const ARM_ON: &str = "ONEVCS_JOURNEY_ARM_ON";
-/// How long the armed invocation outlives the real git it ran.
-const LINGER: &str = "ONEVCS_JOURNEY_LINGER_SECONDS";
+/// The stand-in's own source, which is both what the journey compiles and where
+/// the protocol the two meet on is spelled.
+const STAND_IN_SOURCE: &str = include_str!("programs/pipe_holder.rs");
+
+/// One name the stand-in's source declares, read out of it rather than repeated
+/// here.
+///
+/// The stand-in is compiled separately from this journey, so no constant can be
+/// shared between them — and a protocol written down twice agrees with itself
+/// however wrong both halves are. This is the same move `support.rs` makes for the
+/// contract's promises: read the value from the thing that acts on it.
+fn declared(name: &str) -> String {
+    let opens = format!("const {name}: &str = \"");
+    let at = STAND_IN_SOURCE
+        .find(&opens)
+        .unwrap_or_else(|| panic!("the stand-in's source declares {name}"));
+    let rest = &STAND_IN_SOURCE[at + opens.len()..];
+    rest[..rest.find('"').expect("a declared string literal is closed")].to_owned()
+}
 
 /// The subcommand the journeys hold the pipe of: a fetch is load-bearing — its
 /// output decides what the session is cut from — so a run that lost it, or never
@@ -98,8 +109,8 @@ fn a_fired_bound_is_reported_while_an_unrelated_process_holds_a_duplicate_of_git
     let mut opening = journey.session_open(
         "feature/held-bound",
         &[
-            ("ONEVCS_GIT_TIMEOUT", FIRED_BOUND_SECONDS),
-            (LINGER, HOLDER_BOUND_SECONDS),
+            ("ONEVCS_GIT_TIMEOUT".to_owned(), FIRED_BOUND_SECONDS),
+            (declared("LINGER"), HOLDER_BOUND_SECONDS),
         ],
     );
 
@@ -187,14 +198,14 @@ impl Journey {
 
     /// Spawn `session open` through the stand-in `git`, and do not wait for it: the
     /// holder is launched while this is still running.
-    fn session_open(&self, branch: &str, environment: &[(&str, &str)]) -> Child {
+    fn session_open(&self, branch: &str, environment: &[(String, &str)]) -> Child {
         let mut command = self.onevcs();
         command
             .args(["session", "open", "project", "--branch", branch])
             .env("PATH", self.path_with_stand_in())
-            .env(RENDEZVOUS, &self.rendezvous)
-            .env(REAL_GIT, real_git())
-            .env(ARM_ON, HELD_SUBCOMMAND)
+            .env(declared("RENDEZVOUS"), &self.rendezvous)
+            .env(declared("REAL_GIT"), real_git())
+            .env(declared("ARM_ON"), HELD_SUBCOMMAND)
             .stdin(Stdio::null())
             // Files rather than pipes: this journey waits on the command by polling
             // rather than by reading, and a pipe nobody is reading is a second way
@@ -226,7 +237,8 @@ impl Journey {
             .expect("the unrelated holder starts");
         // Only now may the stand-in run git: before this, the write end it published
         // is one nobody else holds.
-        std::fs::write(self.rendezvous.join("taken"), "").expect("the hand-off is acknowledged");
+        std::fs::write(self.rendezvous.join(declared("TAKEN")), "")
+            .expect("the hand-off is acknowledged");
         Holder {
             held,
             release: self.rendezvous.join("released"),
@@ -235,7 +247,7 @@ impl Journey {
 
     /// The process and standard-output handle the stand-in `git` published.
     fn published(&self) -> (u32, isize) {
-        let record = self.rendezvous.join("held");
+        let record = self.rendezvous.join(declared("HELD"));
         let deadline = Instant::now() + ANSWER_BOUND;
         loop {
             if let Ok(text) = std::fs::read_to_string(&record) {
@@ -377,8 +389,7 @@ fn helper() -> PathBuf {
     let built = BUILT.get_or_init(|| {
         let directory = tempfile::tempdir().expect("a scratch directory for the helper");
         let source = directory.path().join("pipe_holder.rs");
-        std::fs::write(&source, include_str!("programs/pipe_holder.rs"))
-            .expect("the helper's source is written out");
+        std::fs::write(&source, STAND_IN_SOURCE).expect("the helper's source is written out");
         let compiled = Command::new("rustc")
             .args(["--edition", "2021", "-C", "debuginfo=0", "-o"])
             .arg(directory.path().join(helper_name()))
@@ -405,11 +416,13 @@ fn helper_name() -> &'static str {
     }
 }
 
-fn stand_in_name() -> &'static str {
-    if cfg!(windows) {
-        "git.exe"
-    } else {
-        "git"
+/// The stand-in under the name it has to answer to, which is the name the program
+/// itself checks for.
+fn stand_in_name() -> String {
+    let stem = declared("STAND_IN");
+    match cfg!(windows) {
+        true => format!("{stem}.exe"),
+        false => stem,
     }
 }
 
