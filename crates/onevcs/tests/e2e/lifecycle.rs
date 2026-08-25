@@ -158,82 +158,6 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
 }
 
 #[test]
-fn opening_a_session_finishes_when_git_exits_while_an_inherited_pipe_handle_stays_open() {
-    let fixture = Fixture::local(&local_direct());
-    let wrappers = fixture.world.path("git-wrapper");
-    std::fs::create_dir(&wrappers).expect("a wrapper directory");
-    let wrapper = wrappers.join("git");
-    let holder = fixture.world.path("unrelated-holder.pid");
-    let finished = fixture.world.path("unrelated-holder.finished");
-    let armed = fixture.world.path("unrelated-holder-armed");
-    let real_git = std::process::Command::new("bash")
-        .args(["-c", "command -v git"])
-        .output()
-        .expect("the host can locate real git");
-    let real_git = String::from_utf8(real_git.stdout)
-        .expect("git's path is text")
-        .trim()
-        .to_owned();
-    std::fs::write(
-        &wrapper,
-        format!(
-            "#!/usr/bin/env bash\n\
-             if mkdir \"{}\" 2>/dev/null; then\n\
-               (sleep 5; echo finished >\"{}\") &\n\
-               echo $! >\"{}\"\n\
-             fi\n\
-             exec \"{}\" \"$@\"\n",
-            armed.display(),
-            finished.display(),
-            holder.display(),
-            real_git,
-        ),
-    )
-    .expect("the git launcher");
-    let mut permissions = std::fs::metadata(&wrapper)
-        .expect("the launcher exists")
-        .permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&wrapper, permissions).expect("the launcher is executable");
-    let mut path = wrappers.into_os_string();
-    path.push(":");
-    path.push(std::env::var_os("PATH").unwrap_or_default());
-
-    let started = std::time::Instant::now();
-    let opened = fixture
-        .world
-        .onevcs()
-        .env("PATH", path)
-        .args([
-            "session",
-            "open",
-            "project",
-            "--branch",
-            "feature/pipe-holder",
-        ])
-        .assert()
-        .success();
-    let token = token_of(&opened.get_output().stdout);
-    let worktree = worktree_of(&opened.get_output().stdout);
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(3),
-        "session opening follows Git's exit, not an unrelated process's inherited pipe handle"
-    );
-    assert!(worktree.is_dir(), "the real Git worktree was opened");
-    assert_eq!(fixture.world.events_of(&token, "session-opened").len(), 1);
-
-    let pid = std::fs::read_to_string(&holder)
-        .expect("the unrelated holder recorded its pid")
-        .trim()
-        .to_owned();
-    assert!(
-        !pid.is_empty() && !finished.exists(),
-        "holder {pid:?} was started and still outlives the Git command"
-    );
-    await_file(&finished);
-}
-
-#[test]
 fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch() {
     let fixture = Fixture::local(&local_direct());
     // Somebody else's change lands on origin. The registered checkout is not touched
@@ -5610,14 +5534,6 @@ fn row<'a>(rows: &'a [serde_json::Value], branch: &str) -> &'a serde_json::Value
     rows.iter()
         .find(|row| row["branch"]["branch"] == branch)
         .unwrap_or_else(|| panic!("no row for {branch} in {rows:#?}"))
-}
-
-fn await_file(path: &std::path::Path) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !path.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(path.exists(), "{} was eventually written", path.display());
 }
 
 /// Block until a process is gone, whatever became of its parent.

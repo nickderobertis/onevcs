@@ -40,6 +40,10 @@ mod holders;
 mod honesty;
 #[cfg(unix)]
 mod host;
+// Linux and Windows: it takes a duplicate of another process's pipe, which is
+// `/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and macOS offers an
+// unrelated process neither of those. Its own header carries the reason in full.
+mod inherited_pipes;
 // Unix only: its hosted journeys publish through the same substituted `gh` as
 // `host.rs`, and two of them land a branch on a base without this crate at all. Its
 // own header carries the reason in full.

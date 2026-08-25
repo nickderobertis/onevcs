@@ -354,7 +354,23 @@ without building its own premise would prove nothing.
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
-builds the crate and runs the contract, boundary, and packaging suites.
+builds the crate and runs the contract, boundary, packaging, and inherited-pipe
+suites.
+
+`tests/e2e/inherited_pipes.rs` is the one journey module that carries its own
+fixture rather than `world.rs`'s, and the reason is that it has to run **where
+`world.rs` cannot**. What it holds is that a bounded command ends on git's own exit
+and never on end-of-file: a pipe's write end is duplicated the moment anything else
+takes a handle on it, and on Windows every inheritable handle is inherited by
+whatever the process spawns next. So its holder is deliberately outside the lineage
+`onevcs` spawned — the journey starts it itself, concurrently, and hands it a
+duplicate taken out of the running stand-in `git`, which nothing `onevcs` kills can
+reach. Two consequences to keep. Its stand-in `git` is a `std`-only program compiled
+by `rustc` at journey time (`tests/e2e/programs/pipe_holder.rs`), because on `PATH`
+as `git` it has to be executable on every host and a shell script is not; and it is
+Linux-and-Windows rather than every host, because taking a duplicate of another
+process's pipe is `/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and
+macOS offers an unrelated process neither.
 
 Two journeys go one step narrower and skip on Apple platforms: the ones about a path
 listing this process cannot decode. Their premise is a filename that is not UTF-8,

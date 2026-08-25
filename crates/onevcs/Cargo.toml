@@ -62,6 +62,16 @@ windows-sys = { version = "0.61.2", features = [
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }
 
+# One journey takes a duplicate of another process's pipe, which is how a handle
+# comes to outlive the command that wrote through it. `DuplicateHandle` is the only
+# spelling of that on Windows; `tests/e2e/inherited_pipes.rs` says why the journey
+# needs one.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
 # The mounted filesystem one sweep journey needs, which only Linux here can mount
 # without a package outside the distribution's own: `tests/e2e/refusing_fs.rs` says
 # what it is for and `crates/onevcs/AGENTS.md` says what a host needs to run it.

@@ -43,6 +43,7 @@ const HELPERS: &[(&str, &str)] = &[
     ("crates/onevcs/tests/e2e/support.rs", "onevcs"),
     ("crates/onevcs/tests/e2e/world.rs", "onevcs"),
     ("crates/onevcs/tests/e2e/world.rs", "shell"),
+    ("crates/onevcs/tests/e2e/inherited_pipes.rs", "onevcs"),
     ("crates/onevcs/tests/e2e/smoke.rs", "smoking"),
     ("crates/onevcs/tests/e2e/packaging.rs", "run_installed"),
 ];
