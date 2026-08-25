@@ -2455,7 +2455,10 @@ fn a_refusal_whose_output_could_not_be_stored_says_so_rather_than_naming_an_empt
     let original = std::fs::metadata(&artifacts)
         .expect("the artifact store")
         .permissions();
-    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o555))
+    // Owner read and traverse, and no write to anybody: the process under test owns
+    // this directory, so taking the owner's write bit is the whole of what makes the
+    // store refuse — and nothing here needs a group or another user to reach it.
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o500))
         .expect("an artifact store nothing may write to");
 
     let refused = fixture

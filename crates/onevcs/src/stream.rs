@@ -436,6 +436,16 @@ impl EventStream {
             // build's own vocabulary, so there is no honest way to hand one over —
             // and nothing is lost by not, because a consumer reading through this
             // type could not have named it either.
+            //
+            // llmlint: ignore[boundary_inputs_validated] the two refusals this reader owes
+            // are `attributed`'s, and both are asked of the line above before this
+            // discards it: a line that is not an envelope, and one belonging to another
+            // stream. The envelope's *version* and its *stamp* are not checked here and
+            // never have been, for any line — this reader hands back what a writer left
+            // and `status` is the surface that reports a version it cannot read or a
+            // stamp it cannot order, as a gap in its notes. So passing over a kindless
+            // line removes no check a line with a kind gets; it removes a value nothing
+            // downstream could have named.
             let Line::Known(envelope) = attributed(&line, &self.session.0, line_number)? else {
                 continue;
             };

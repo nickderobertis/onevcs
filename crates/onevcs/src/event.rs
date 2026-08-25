@@ -270,6 +270,18 @@ pub(crate) struct UnknownKind {
 
 impl Line {
     /// One line of a stream, tolerant of its kind and of nothing else.
+    // llmlint: ignore[boundary_inputs_validated] the envelope's *shape* is validated here
+    // and exactly as strictly as it always was: every field but `kind` goes through the
+    // same derive, and a `kind` that is not a string is still refused. The two semantic
+    // checks — that `v` is the version this build reads, and that `ts` is a stamp it can
+    // order — are deliberately not here, for the reason `Envelope` has never made them
+    // either: what to do about one is the *reader's*, and the readers disagree. `status`
+    // reports each as a gap in its notes rather than refusing, because it is asked what
+    // became of a piece of work and must not answer "there is none" for "could not
+    // look" — and it applies both to a line whose kind has no word here exactly as to
+    // one it knows, which is what `UnknownKind` carries the header for. Deciding either
+    // here would take that choice away from the one caller that has to report rather
+    // than refuse.
     pub(crate) fn read(line: &str) -> serde_json::Result<Self> {
         let stored: StoredEnvelope = serde_json::from_str(line)?;
         let header = UnknownKind {
