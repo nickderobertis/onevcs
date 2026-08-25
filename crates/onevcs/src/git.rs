@@ -39,15 +39,16 @@ pub const DEFAULT_TIMEOUT_SECONDS: f64 = 600.0;
 /// tens of minutes, and this leaves room for one slowed by everything else on the
 /// host without letting a genuinely hung push sit forever.
 pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
-/// How long a fired bound waits for git's pipes after terminating its group. Only
-/// a descendant this process may not signal can hold them past that, and hanging
-/// there would defeat the bound that just fired.
-const DRAIN: Duration = Duration::from_secs(30);
-/// How often a child that has drained without exiting is asked whether it has gone.
+/// How often a running child is asked whether it has exited.
 /// There is no portable wait that takes a deadline, so this is what stands in for
 /// one; small enough to cost an ordinary run nothing, and large enough that a hook
 /// running out its whole bound is not asked a million times.
 const EXIT_POLL: Duration = Duration::from_millis(10);
+/// Time for reader threads to hand over bytes already in the pipes after the
+/// command exits. This is deliberately a fixed window, not a wait for EOF: a
+/// process unrelated to the completed command may still hold an inherited pipe
+/// handle, especially on Windows.
+const EXIT_DRAIN: Duration = Duration::from_millis(100);
 
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
 /// repository's own, `Ordinary` where it runs none.
@@ -195,50 +196,29 @@ fn bounded(
 
     let mut child = command.spawn().map_err(unspawnable)?;
 
-    // Bytes, decoded by whoever asked for the run, and the read's own result
-    // deliberately dropped: what each thread owes the wait below is the EOF signal,
-    // which it has to send whether the read ended or broke, and a read that broke
-    // still leaves behind everything it had already taken.
+    // Bytes are handed over as they are read, rather than only at EOF. The child
+    // exit below is the lifetime signal; EOF only lets a reader retire early.
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
-    let (sender, receiver) = mpsc::channel();
-    let out_sender = sender.clone();
+    let (out_sender, out_receiver) = mpsc::channel();
     let out_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer);
-        let _ = out_sender.send(());
-        buffer
+        forward(&mut stdout, &out_sender);
     });
+    let (err_sender, err_receiver) = mpsc::channel();
     let err_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stderr.read_to_end(&mut buffer);
-        let _ = sender.send(());
-        buffer
+        forward(&mut stderr, &err_sender);
     });
 
-    // Both pipes reaching EOF is what proves nothing git started is still writing.
-    // Waiting on the child alone would return while a hook's orphaned child still
-    // holds them, which is the leak the group teardown below exists to prevent.
-    let drained = wait_for_both(&receiver, started, bound);
-    // …and draining is not exiting. A hook that closes both streams and then keeps
-    // running has sent every EOF it will ever send while still holding the process,
-    // so the exit is collected under that same deadline rather than after it. Both
-    // halves are the one bound the caller set, and a `wait` outside it would leave
-    // that bound silently not applying to the run they set it for.
-    let exited = if drained {
-        wait_for_exit(&mut child, started, bound)
-    } else {
-        None
-    };
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let exited = wait_for_exit(&mut child, started, bound, || {
+        drain(&out_receiver, &mut out);
+        drain(&err_receiver, &mut err);
+    });
 
     let Some(collected) = exited else {
         terminate_group(&child);
-        // Only pipes that have not reached EOF are worth waiting for: a hook that
-        // closed both and then hung has nothing left to send, and DRAIN spent on a
-        // second EOF that will never come is DRAIN added to the fired bound.
-        if drained || !wait_for_both(&receiver, Instant::now(), DRAIN) {
-            let _ = child.kill();
-        }
+        let _ = child.kill();
         let _ = child.wait();
         let _ = out_reader.join();
         let _ = err_reader.join();
@@ -253,11 +233,39 @@ fn bounded(
     };
 
     let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
+    let drain_until = Instant::now() + EXIT_DRAIN;
+    while Instant::now() < drain_until {
+        if drain(&out_receiver, &mut out) && drain(&err_receiver, &mut err) {
+            break;
+        }
+        std::thread::sleep(EXIT_POLL);
+    }
+    drain(&out_receiver, &mut out);
+    drain(&err_receiver, &mut err);
     Ok(Ran {
         status: status.code().unwrap_or(128),
-        stdout: out_reader.join().unwrap_or_default(),
-        stderr: err_reader.join().unwrap_or_default(),
+        stdout: out,
+        stderr: err,
     })
+}
+
+fn forward(reader: &mut impl Read, sender: &mpsc::Sender<Vec<u8>>) {
+    let mut chunk = [0_u8; 8192];
+    while let Ok(read) = reader.read(&mut chunk) {
+        if read == 0 || sender.send(chunk[..read].to_vec()).is_err() {
+            break;
+        }
+    }
+}
+
+fn drain(receiver: &mpsc::Receiver<Vec<u8>>, output: &mut Vec<u8>) -> bool {
+    loop {
+        match receiver.try_recv() {
+            Ok(chunk) => output.extend(chunk),
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => return true,
+        }
+    }
 }
 
 /// One bounded run's own answer: how it ended, and the bytes it wrote.
@@ -483,30 +491,20 @@ fn runs_repository_hooks(args: &[&str]) -> bool {
 /// configuration, so a deadline built from one is a misconfigured knob arriving as
 /// a crash. Nothing in this module advances an `Instant`, so there is no value of
 /// it left that could.
-fn wait_for_both(receiver: &mpsc::Receiver<()>, started: Instant, bound: Duration) -> bool {
-    for _ in 0..2 {
-        let remaining = bound.saturating_sub(started.elapsed());
-        if receiver.recv_timeout(remaining).is_err() {
-            return false;
-        }
-    }
-    true
-}
-
 /// The child's own exit, collected within the same bound its pipes were read
 /// under, or nothing at all once that bound has passed since `started`.
 ///
-/// Both pipes reaching EOF does not prove the process is gone — a hook that closes
-/// stdout and stderr and then keeps running has drained without exiting — and
-/// `wait` carries no bound of its own, so asked there it would sit for as long as
-/// that hook lives. A bound that silently stops applying is worse than none, because
-/// the caller who set it believes they are covered.
+/// Output is drained while this polls, but the process's own status is the only
+/// completion signal. A bound that silently stops applying is worse than none,
+/// because the caller who set it believes they are covered.
 fn wait_for_exit(
     child: &mut Child,
     started: Instant,
     bound: Duration,
+    mut capture: impl FnMut(),
 ) -> Option<std::io::Result<ExitStatus>> {
     loop {
+        capture();
         match child.try_wait() {
             Ok(Some(status)) => return Some(Ok(status)),
             // A child this process cannot ask about is one it will never collect,

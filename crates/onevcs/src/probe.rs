@@ -45,8 +45,12 @@ const PASSED_THROUGH: &[&str] = &[
     "USERPROFILE",
 ];
 
-/// How often a probe that has drained is asked whether it has exited.
+/// How often a running probe is asked whether it has exited.
 const POLL: Duration = Duration::from_millis(20);
+/// Time for reader threads to hand over bytes already buffered when the probe
+/// exits. EOF is not the lifetime signal: an unrelated process may retain an
+/// inherited pipe handle after the probe itself is gone.
+const EXIT_DRAIN: Duration = Duration::from_millis(100);
 
 /// What running one probe produced: its answer, and how long it took.
 pub struct Probed {
@@ -187,27 +191,21 @@ fn read(mut command: Command, bound: Duration, label: &str) -> ReleaseAnswer {
     let started = Instant::now();
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
-    let (sender, receiver) = mpsc::channel();
-    let out_sender = sender.clone();
+    let (out_sender, out_receiver) = mpsc::channel();
     let out_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer);
-        let _ = out_sender.send(());
-        buffer
+        forward(&mut stdout, &out_sender);
     });
+    let (err_sender, err_receiver) = mpsc::channel();
     let err_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stderr.read_to_end(&mut buffer);
-        let _ = sender.send(());
-        buffer
+        forward(&mut stderr, &err_sender);
     });
 
-    let drained = drained_within(&receiver, started, bound);
-    let exited = if drained {
-        exited_within(&mut child, started, bound)
-    } else {
-        None
-    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let exited = exited_within(&mut child, started, bound, || {
+        drain(&out_receiver, &mut stdout);
+        drain(&err_receiver, &mut stderr);
+    });
     let Some(status) = exited else {
         git::terminate_group(&child);
         let _ = child.kill();
@@ -221,8 +219,15 @@ fn read(mut command: Command, bound: Duration, label: &str) -> ReleaseAnswer {
             bound = bound.as_secs()
         ));
     };
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
+    let drain_until = Instant::now() + EXIT_DRAIN;
+    while Instant::now() < drain_until {
+        if drain(&out_receiver, &mut stdout) && drain(&err_receiver, &mut stderr) {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    drain(&out_receiver, &mut stdout);
+    drain(&err_receiver, &mut stderr);
     let status = match status {
         Ok(status) => status,
         Err(failure) => return not_answered(format!("{label} could not be collected: {failure}")),
@@ -290,30 +295,37 @@ fn diagnosis(stderr: &[u8]) -> String {
     format!(" and said {clipped:?}")
 }
 
-/// Wait for both pipes to reach EOF within the bound, counted from `started`.
-fn drained_within(receiver: &mpsc::Receiver<()>, started: Instant, bound: Duration) -> bool {
-    for _ in 0..2 {
-        if receiver
-            .recv_timeout(bound.saturating_sub(started.elapsed()))
-            .is_err()
-        {
-            return false;
+fn forward(reader: &mut impl Read, sender: &mpsc::Sender<Vec<u8>>) {
+    let mut chunk = [0_u8; 8192];
+    while let Ok(read) = reader.read(&mut chunk) {
+        if read == 0 || sender.send(chunk[..read].to_vec()).is_err() {
+            break;
         }
     }
-    true
+}
+
+fn drain(receiver: &mpsc::Receiver<Vec<u8>>, output: &mut Vec<u8>) -> bool {
+    loop {
+        match receiver.try_recv() {
+            Ok(chunk) => output.extend(chunk),
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => return true,
+        }
+    }
 }
 
 /// Collect the child's exit within the same bound its pipes were read under.
 ///
-/// Draining is not exiting: a probe that closes both streams and then keeps running
-/// has sent every EOF it will ever send while still holding the process, and a
-/// `wait` outside the bound would leave that bound silently not applying.
+/// Output is drained while this polls, but only the probe's status decides that it
+/// finished. A `wait` outside the bound would leave that bound silently not applying.
 fn exited_within(
     child: &mut Child,
     started: Instant,
     bound: Duration,
+    mut capture: impl FnMut(),
 ) -> Option<std::io::Result<std::process::ExitStatus>> {
     loop {
+        capture();
         match child.try_wait() {
             Ok(Some(status)) => return Some(Ok(status)),
             Err(failure) => return Some(Err(failure)),

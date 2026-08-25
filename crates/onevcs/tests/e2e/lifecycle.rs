@@ -158,6 +158,45 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
 }
 
 #[test]
+fn opening_a_session_finishes_when_git_exits_while_an_inherited_pipe_handle_stays_open() {
+    let fixture = Fixture::local(&local_direct());
+    let holder = fixture.world.path("post-checkout-holder.pid");
+    fixture.world.install_hook(
+        &fixture.checkout,
+        "post-checkout",
+        &format!("sleep 30 & echo $! >\"{}\"", holder.display()),
+    );
+
+    let started = std::time::Instant::now();
+    let (token, worktree) = fixture.open(&["--branch", "feature/pipe-holder"]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "session opening follows Git's exit, not a descendant's inherited pipe handle"
+    );
+    assert!(worktree.is_dir(), "the real Git worktree was opened");
+    assert_eq!(fixture.world.events_of(&token, "session-opened").len(), 1);
+
+    let pid = std::fs::read_to_string(&holder)
+        .expect("the unrelated holder recorded its pid")
+        .trim()
+        .to_owned();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .expect("the journey can inspect the exact process it started")
+            .success(),
+        "the handle holder still outlives the Git command"
+    );
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .expect("the journey can stop the exact process it started");
+    assert!(status.success(), "the handle holder was stopped");
+    await_gone(&pid);
+}
+
+#[test]
 fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_own_branch() {
     let fixture = Fixture::local(&local_direct());
     // Somebody else's change lands on origin. The registered checkout is not touched
