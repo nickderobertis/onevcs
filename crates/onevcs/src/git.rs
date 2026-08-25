@@ -314,7 +314,8 @@ pub(crate) trait PipeRead: Read + std::os::windows::io::AsRawHandle {
         if available == 0 {
             return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
         }
-        self.read(&mut buffer[..buffer.len().min(available as usize)])
+        let readable = buffer.len().min(available as usize);
+        self.read(&mut buffer[..readable])
     }
 }
 
