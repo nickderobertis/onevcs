@@ -3532,6 +3532,101 @@ fn a_push_a_hook_refuses_records_what_the_hook_wrote() {
 }
 
 #[test]
+fn a_refused_publishing_push_says_where_its_output_is_and_quotes_the_end_of_it() {
+    // The evidence exists and always did; what an operator had no way to reach was
+    // *where*. A refusal that reports git's three generic lines while the merge
+    // path's whole run sits in an artifact and in a file beside it is a refusal that
+    // has to be searched behind — one landing here cost an hour that way, to find
+    // four redundant comment lines.
+    //
+    // And the end of it, not the beginning. A judged tier prints its findings last:
+    // the real log this journey stands in for ran to seventy-six thousand bytes with
+    // its one finding in the last twelve lines, while the bounded head that travels
+    // inline on the `push` event was the toolchain warming up.
+    let fixture = Fixture::local(&local_direct());
+    fixture.world.install_pre_push(
+        &fixture.checkout,
+        // Long enough that the excerpt has to cut, with the diagnosis last and the
+        // noise first, which is the shape of every verification log there is.
+        "for i in $(seq 1 400); do echo \"resolving dependency $i\" >&2; done\n\
+         echo 'llmlint: comment_adds_nothing at src/thing.rs:12' >&2\n\
+         exit 1",
+    );
+    let (token, worktree) = fixture.open(&["--branch", "feature/diagnosable"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(stderr.contains("rejected by the merge path"), "{stderr}");
+
+    // Both places, each named as the thing that reaches it: the artifact with the
+    // command that prints it, and the preserved file with the path to open.
+    let push = &fixture.world.events_of(&token, "push")[0];
+    let id = push["artifacts"][0]["id"]
+        .as_str()
+        .expect("the push stored what it wrote");
+    let preserved = push["payload"]["preserved_log"]
+        .as_str()
+        .expect("and preserved it beyond the run's own tree");
+    assert!(
+        stderr.contains(id),
+        "the refusal names no artifact:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("onevcs artifact cat {id}")),
+        "the refusal names the artifact and not how to read it:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(preserved),
+        "the refusal names no preserved log:\n{stderr}"
+    );
+
+    // The end of the log, said to be an excerpt, with the beginning left where the
+    // refusal has just said the whole of it is.
+    assert!(
+        stderr.contains("llmlint: comment_adds_nothing at src/thing.rs:12"),
+        "the refusal quotes none of the diagnosis:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("earlier output omitted"),
+        "the excerpt does not say it is one:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("resolving dependency 1\n"),
+        "the excerpt was taken from the head of the log, which is the part nobody \
+         needed:\n{stderr}"
+    );
+
+    // …and what it pointed at is really there and really whole, read the way it said
+    // to read it.
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("resolving dependency 1\n"))
+        .stdout(predicate::str::contains(
+            "llmlint: comment_adds_nothing at src/thing.rs:12",
+        ));
+    let whole = std::fs::read_to_string(preserved).expect("the preserved log is readable");
+    assert!(whole.contains("resolving dependency 1\n"), "{preserved}");
+    assert!(
+        whole.contains("llmlint: comment_adds_nothing at src/thing.rs:12"),
+        "{preserved}"
+    );
+    assert_eq!(fixture.origin_log().len(), 1, "nothing may have landed");
+}
+
+#[test]
 fn a_push_that_is_accepted_records_what_it_wrote_too() {
     // The other half of "unconditional": a publication that landed leaves an account
     // of the push that landed it, so the record of a green run is readable and not

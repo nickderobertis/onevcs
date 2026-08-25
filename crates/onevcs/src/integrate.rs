@@ -317,7 +317,7 @@ fn train(
         // below, so the stored artifact is what outlives the run.
         // The base the train advanced, which is the work being integrated rather
         // than any one branch being made.
-        publish::record_push(
+        let kept = publish::record_push(
             stream,
             &Ref::from_git(base),
             &result,
@@ -325,17 +325,16 @@ fn train(
             crate::event::Phase::Integrate,
         )?;
         if !result.accepted() {
-            return Err(Error::PushRejected {
-                reason: format!(
-                    "the push of {base:?} was rejected by the merge path: {}",
-                    result.refusal().unwrap_or_else(|| result
-                        .output()
-                        .lines()
-                        .next_back()
-                        .unwrap_or("")
-                        .trim())
-                ),
-            });
+            // Through the one refusal builder every publishing push uses, for the
+            // reason the recorder above is one producer: a train's push is where the
+            // hook rules on the whole train, and an operator diagnosing that refusal
+            // needs the same account — where what it wrote is, and the end of it —
+            // as one diagnosing a publication's.
+            return Err(publish::rejected(
+                &format!("the push of {base:?}"),
+                &result,
+                &kept,
+            ));
         }
         ending = Ending::AdvancedAndPushed;
     }

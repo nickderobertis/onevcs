@@ -1019,7 +1019,7 @@ fn publish_locally(
             // The squash goes onto the base rather than onto the branch it landed,
             // so this push is the work being integrated whatever branch the payload
             // names.
-            record_push(
+            let kept = record_push(
                 stream,
                 &context.branch,
                 &pushed,
@@ -1027,7 +1027,7 @@ fn publish_locally(
                 Phase::Integrate,
             )?;
             if !pushed.accepted() {
-                return Err(rejected(context, &pushed));
+                return Err(rejected(&publishing(&context.branch), &pushed, &kept));
             }
             fast_forward_publication(publication, context.target.base())?;
             stream.emit(
@@ -1046,29 +1046,69 @@ fn publish_locally(
     outcome
 }
 
-/// A push the merge path refused, reported as what git said it was.
+/// How a publication names the push it was refused, so the one refusal builder is
+/// handed the same phrase from both of its call sites here.
+fn publishing(branch: &Ref) -> String {
+    format!("the publishing push of {branch:?}")
+}
+
+/// A push the merge path refused: what git said it was, everywhere the merge path's
+/// own account of it can be read, and the end of that account.
 ///
 /// [`Error::PushRejected`] rather than [`Error::GateFailed`]: the same exit code, and a
-/// kind a caller can route on. What the hook or the remote actually *wrote* is not
-/// in here — it is the artifact `record_push` stored a moment earlier, because it
-/// is a run of the repository's whole verification and does not belong inline.
+/// kind a caller can route on.
+///
+/// **The pointers are the point.** What the hook or the remote wrote is a run of the
+/// repository's whole verification and does not belong inline, so `record_push`
+/// stored it a moment earlier — as an artifact, and where the caller had a run root,
+/// as a file that outlives the tree the publication was built in. This used to name
+/// neither, and a refusal that reports git's three generic lines while the diagnosis
+/// sits in two places nothing points at is a refusal an operator has to go searching
+/// behind: one landing here cost an hour that way, to find four redundant comment
+/// lines. So the failure names both, and each only where it exists.
+///
+/// **The excerpt is from the end**, for the reason [`excerpt`] states: a judged tier
+/// prints its findings last, and the bounded *head* that travels inline on the `push`
+/// event is systematically the least useful part of the log. It is an excerpt rather
+/// than the whole because the whole is what the pointers above are for.
 ///
 /// This is also what an *unclassified* rejection is reported as, deliberately: it
 /// names the push and hands over git's own per-ref summary without deciding what
 /// produced it. The fallback below it is for a failure that never reached a ref at
 /// all — no credential, no remote — where git's last line is the whole answer.
-fn rejected(context: &Context<'_>, pushed: &git::Pushed) -> Error {
+///
+/// `what` is the push, named as its own caller names it: the branch a publication
+/// was landing, or the base a merge train advanced.
+pub(crate) fn rejected(what: &str, pushed: &git::Pushed, kept: &Kept) -> Error {
+    let summary = pushed
+        .refusal()
+        .unwrap_or_else(|| pushed.output().lines().next_back().unwrap_or("").trim());
+    // Said rather than left to be inferred. A refusal that names nowhere reads as one
+    // that simply did not bother to; "there is nothing to go and read" and "there is,
+    // and this failure has lost the address of it" are the same sentence to an
+    // operator and different next moves. `record_push` has already said on stderr why
+    // each store refused the bytes.
+    let where_it_is = if kept.anywhere() {
+        kept.evidence()
+    } else {
+        " What it wrote could not be stored anywhere, so the excerpt below is all that \
+         survives of it."
+            .to_owned()
+    };
+    let wrote = pushed.output().trim();
+    let said = if wrote.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " It said:\n{}",
+            guidance::quoted_output(&excerpt(
+                wrote,
+                "the whole of it is where this refusal says"
+            ))
+        )
+    };
     Error::PushRejected {
-        reason: format!(
-            "the publishing push of {:?} was rejected by the merge path: {}",
-            context.branch,
-            pushed.refusal().unwrap_or_else(|| pushed
-                .output()
-                .lines()
-                .next_back()
-                .unwrap_or("")
-                .trim())
-        ),
+        reason: format!("{what} was rejected by the merge path: {summary}.{where_it_is}{said}"),
     }
 }
 
@@ -1153,7 +1193,7 @@ fn publish_as_change(
         environment,
     )?;
     // The session's own branch, on its way to being proposed: the work being made.
-    record_push(
+    let kept = record_push(
         stream,
         &context.branch,
         &pushed,
@@ -1174,7 +1214,7 @@ fn publish_as_change(
             None => None,
         };
         let (Some(replaced), Some(declined)) = (replacing, declined) else {
-            return Err(rejected(context, &pushed));
+            return Err(rejected(&publishing(&context.branch), &pushed, &kept));
         };
         let branch = &context.branch;
         let base = context.target.base();
@@ -1480,31 +1520,38 @@ fn write_landing(context: &Context<'_>, sha: &Sha) -> Result<()> {
     Ok(())
 }
 
-/// How much of a failing check's log travels on the failure that names it.
+/// How much of a verifier's log travels on the failure that names it.
 ///
 /// Well under the envelope's own 4096-byte payload limit, because this is a
 /// pointer to the evidence and not a second copy of it: the whole log is the
-/// artifact the `change-check` event already carries, fetched with `onevcs
-/// artifact cat`.
-const CHECK_LOG_EXCERPT: usize = 2048;
+/// artifact the event beside it already carries, fetched with `onevcs artifact
+/// cat`. One bound for both verifiers this crate reports on — a host's required
+/// check and the repository's own merge path — because the reason is the same for
+/// each: how long a verification's log runs is the verifier's business, and neither
+/// failure is the place to carry the whole of one.
+const LOG_EXCERPT: usize = 2048;
 
-/// The end of a check's log, bounded at a line boundary.
+/// The end of a verifier's log, bounded at a line boundary.
 ///
-/// The *end*, because a CI job prints its diagnosis last and its setup first — an
-/// excerpt taken from the top of a twenty-thousand-line log is the part nobody
-/// needed. What was cut is marked, so a reader can tell an excerpt from a short log.
-fn excerpt(log: &str) -> String {
+/// The *end*, because a verification prints its diagnosis last and its setup first —
+/// an excerpt taken from the top of a twenty-thousand-line log is the part nobody
+/// needed. That is not a guess about CI: a merge path that refused a publication
+/// here put its one finding in the last twelve lines of seventy-six thousand bytes,
+/// and the bounded head that travelled on the `push` event was the toolchain warming
+/// up. What was cut is marked, so a reader can tell an excerpt from a short log, and
+/// `whole` says where the rest of it is — which the failure has already named.
+fn excerpt(log: &str, whole: &str) -> String {
     let trimmed = log.trim_end();
-    if trimmed.len() <= CHECK_LOG_EXCERPT {
+    if trimmed.len() <= LOG_EXCERPT {
         return trimmed.to_owned();
     }
-    let mut cut = trimmed.len() - CHECK_LOG_EXCERPT;
+    let mut cut = trimmed.len() - LOG_EXCERPT;
     while cut < trimmed.len() && !trimmed.is_char_boundary(cut) {
         cut += 1;
     }
     let tail = &trimmed[cut..];
     let tail = tail.find('\n').map_or(tail, |at| &tail[at + 1..]);
-    format!("[…earlier output omitted; the whole log is the check's artifact…]\n{tail}")
+    format!("[…earlier output omitted; {whole}…]\n{tail}")
 }
 
 /// Wait until every required check the host reports has settled without blocking.
@@ -1737,7 +1784,7 @@ fn checks_failed(check: &Check, logs: &[(String, crate::event::ArtifactId)]) -> 
     let stored = logs.iter().find(|(name, _)| name == &check.name);
     let said = stored
         .and_then(|(_, id)| stream::read_artifact(&id.0).ok())
-        .map(|log| excerpt(&log))
+        .map(|log| excerpt(&log, "the whole log is the check's artifact"))
         .filter(|log| !log.trim().is_empty())
         .map(|log| format!(" It said:\n{}", guidance::quoted_output(&log)))
         .unwrap_or_default();
@@ -1858,7 +1905,7 @@ pub(crate) fn record_push(
     pushed: &git::Pushed,
     preserve_under: Option<&Path>,
     phase: Phase,
-) -> Result<()> {
+) -> Result<Kept> {
     let output = pushed.output();
     let stored = stream::store_artifact("log", output);
     let kept = preserve_under.map(|root| merge_path::preserve_log(root, branch, output));
@@ -1886,8 +1933,72 @@ pub(crate) fn record_push(
             json!(preserved.display().to_string()),
         );
     }
+    let evidence = Kept {
+        artifact: artifact.as_ref().map(|stored| stored.id.clone()),
+        preserved: match kept {
+            Some(Ok(preserved)) => Some(preserved),
+            Some(Err(_)) | None => None,
+        },
+    };
     stream.emit_push(phase, payload, artifact.into_iter().collect());
-    Ok(())
+    Ok(evidence)
+}
+
+/// Where a recorded push's output can be read once the push is over.
+///
+/// Handed back rather than only written, because the refusal that reports a push
+/// the merge path turned down is read by whoever has to diagnose it — and until it
+/// named these, an operator was told three lines of git's generic message while the
+/// whole verification sat in two places nothing pointed at. An hour went on
+/// rediscovering four redundant comment lines that way.
+///
+/// Either may be absent and both may be: the artifact is missing where the state
+/// root would not take the bytes, and the preserved copy where the caller had no
+/// run root to outlive its tree or the write failed. A refusal that has neither
+/// must say there is nothing to read rather than name a place that holds nothing.
+pub(crate) struct Kept {
+    /// The artifact the whole output was stored as, fetched with `onevcs artifact
+    /// cat`.
+    artifact: Option<crate::event::ArtifactId>,
+    /// The file under the run root that outlives the tree the push was built in.
+    preserved: Option<PathBuf>,
+}
+
+impl Kept {
+    /// Where the whole of what the push wrote can be read, as a refusal says it.
+    ///
+    /// Both when both are there, because they answer different questions: the
+    /// artifact survives the run root being reaped and is fetched through this
+    /// crate's own CLI, and the preserved file is a path an operator can open
+    /// directly, beside every other attempt on the same branch.
+    fn evidence(&self) -> String {
+        let artifact = self.artifact.as_ref().map(|id| {
+            format!(
+                "artifact {id} — `{command}`",
+                id = id.0,
+                command = guidance::command(["onevcs", "artifact", "cat", &id.0]),
+            )
+        });
+        let preserved = self
+            .preserved
+            .as_ref()
+            .map(|path| format!("preserved at {}", path.display()));
+        match (artifact, preserved) {
+            (Some(artifact), Some(preserved)) => {
+                format!(" Its whole output is {artifact}, and {preserved}.")
+            }
+            (Some(one), None) | (None, Some(one)) => format!(" Its whole output is {one}."),
+            // Both stores refused the bytes, and each said why on stderr as it
+            // happened. Naming neither is the point: a path that holds nothing sends
+            // an operator to look at it.
+            (None, None) => String::new(),
+        }
+    }
+
+    /// Whether the output was kept anywhere at all.
+    fn anywhere(&self) -> bool {
+        self.artifact.is_some() || self.preserved.is_some()
+    }
 }
 
 /// The publication checkout must be clean and on its root branch before anything
