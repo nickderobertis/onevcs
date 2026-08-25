@@ -161,16 +161,21 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
 fn opening_a_session_finishes_when_git_exits_while_an_inherited_pipe_handle_stays_open() {
     let fixture = Fixture::local(&local_direct());
     let holder = fixture.world.path("post-checkout-holder.pid");
+    let finished = fixture.world.path("post-checkout-holder.finished");
     fixture.world.install_hook(
         &fixture.checkout,
         "post-checkout",
-        &format!("sleep 30 & echo $! >\"{}\"", holder.display()),
+        &format!(
+            "(sleep 5; echo finished >\"{}\") & echo $! >\"{}\"",
+            finished.display(),
+            holder.display()
+        ),
     );
 
     let started = std::time::Instant::now();
     let (token, worktree) = fixture.open(&["--branch", "feature/pipe-holder"]);
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
+        started.elapsed() < std::time::Duration::from_secs(3),
         "session opening follows Git's exit, not a descendant's inherited pipe handle"
     );
     assert!(worktree.is_dir(), "the real Git worktree was opened");
@@ -181,19 +186,10 @@ fn opening_a_session_finishes_when_git_exits_while_an_inherited_pipe_handle_stay
         .trim()
         .to_owned();
     assert!(
-        std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .status()
-            .expect("the journey can inspect the exact process it started")
-            .success(),
-        "the handle holder still outlives the Git command"
+        !pid.is_empty() && !finished.exists(),
+        "holder {pid:?} was started and still outlives the Git command"
     );
-    let status = std::process::Command::new("kill")
-        .args(["-TERM", &pid])
-        .status()
-        .expect("the journey can stop the exact process it started");
-    assert!(status.success(), "the handle holder was stopped");
-    await_gone(&pid);
+    await_file(&finished);
 }
 
 #[test]
@@ -5573,6 +5569,14 @@ fn row<'a>(rows: &'a [serde_json::Value], branch: &str) -> &'a serde_json::Value
     rows.iter()
         .find(|row| row["branch"]["branch"] == branch)
         .unwrap_or_else(|| panic!("no row for {branch} in {rows:#?}"))
+}
+
+fn await_file(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(path.exists(), "{} was eventually written", path.display());
 }
 
 /// Block until a process is gone, whatever became of its parent.

@@ -483,14 +483,6 @@ fn runs_repository_hooks(args: &[&str]) -> bool {
         .any(|command| args.len() >= command.len() && &args[..command.len()] == *command)
 }
 
-/// Wait for both pipe readers to report EOF, or give up once `bound` has passed
-/// since `started`.
-///
-/// How much of the bound is left, rather than the instant it runs out at: adding a
-/// `Duration` to an `Instant` panics on overflow, and a bound is external
-/// configuration, so a deadline built from one is a misconfigured knob arriving as
-/// a crash. Nothing in this module advances an `Instant`, so there is no value of
-/// it left that could.
 /// The child's own exit, collected within the same bound its pipes were read
 /// under, or nothing at all once that bound has passed since `started`.
 ///
