@@ -193,7 +193,7 @@ fn opening_a_session_finishes_when_git_exits_while_an_inherited_pipe_handle_stay
     let mut permissions = std::fs::metadata(&wrapper)
         .expect("the launcher exists")
         .permissions();
-    permissions.set_mode(0o755);
+    permissions.set_mode(0o700);
     std::fs::set_permissions(&wrapper, permissions).expect("the launcher is executable");
     let mut path = wrappers.into_os_string();
     path.push(":");
