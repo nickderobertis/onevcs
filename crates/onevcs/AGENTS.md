@@ -375,6 +375,20 @@ And it is Linux and Windows only: taking a duplicate of another process's pipe i
 `/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and macOS offers an
 unrelated process neither.
 
+**A fixture that selects a repository by `path:` must spell it the way the registry
+holds it, which is not the way the fixture built it.** `policy::matches` compares a
+rule's `path:` literally against the registered checkout, and that is
+`canonicalize`'s answer — on Windows the verbatim `\\?\` namespace, which no plain
+path equals. So ask the binary (`onevcs resolve` answers `publication_checkout`)
+rather than composing the path. A fixture that composed one matched no repository on
+Windows and only there, which is not how it reads: no release target existed, the
+command refused before running anything, and the three probe-driven inherited-pipe
+journeys waited out their whole bound and then blamed the stand-in for not
+publishing a pipe nobody had asked it for. `just gate` runs on Linux, where the two
+spellings are the same string, so this is another class of defect only `cross` sees
+— and it is why `published` in that module takes the running command and refuses to
+keep waiting on one that has already ended.
+
 Two journeys go one step narrower and skip on Apple platforms: the ones about a path
 listing this process cannot decode. Their premise is a filename that is not UTF-8,
 and only a filesystem storing a name as the bytes it was handed will hold one — git

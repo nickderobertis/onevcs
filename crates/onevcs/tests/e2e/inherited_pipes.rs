@@ -139,7 +139,7 @@ fn a_session_opens_while_an_unrelated_process_holds_a_duplicate_of_gits_pipe() {
 
     // Launched here, by this process, while `session open` is running: nothing in
     // the lineage `onevcs` spawned, and nothing its teardown can reach.
-    let mut holder = journey.hand_the_pipe_to_an_unrelated_process();
+    let mut holder = journey.hand_the_pipe_to_an_unrelated_process(&mut opening);
 
     let status = journey.answered(&mut opening, "session open");
     assert!(
@@ -178,7 +178,7 @@ fn a_fired_bound_is_reported_while_an_unrelated_process_holds_a_duplicate_of_git
         ],
     );
 
-    let mut holder = journey.hand_the_pipe_to_an_unrelated_process();
+    let mut holder = journey.hand_the_pipe_to_an_unrelated_process(&mut opening);
 
     let status = journey.answered(&mut opening, "the fired bound");
     assert!(
@@ -210,7 +210,7 @@ fn a_probes_fired_bound_is_reported_while_an_unrelated_process_holds_a_duplicate
         FIRED_BOUND_SECONDS,
     );
 
-    let mut holder = journey.hand_the_pipe_to_an_unrelated_process();
+    let mut holder = journey.hand_the_pipe_to_an_unrelated_process(&mut asking);
 
     let status = journey.answered(&mut asking, "the probe's fired bound");
     assert!(
@@ -244,8 +244,11 @@ fn a_callers_answer_carries_the_commands_own_stdout_and_not_a_line_added_after_i
         &[THE_COMMANDS_VERSION, NEITHER, "0", "0"],
         PATIENT_BOUND_SECONDS,
     );
-    let mut writer =
-        journey.hand_the_pipe_to_an_unrelated_writer(Stream::Out, NOT_THE_COMMANDS_OUTPUT);
+    let mut writer = journey.hand_the_pipe_to_an_unrelated_writer(
+        &mut asking,
+        Stream::Out,
+        NOT_THE_COMMANDS_OUTPUT,
+    );
 
     let status = journey.answered(&mut asking, "release latest");
     journey.wrote_into_the_pipe();
@@ -281,8 +284,11 @@ fn a_callers_answer_carries_the_commands_own_stderr_and_not_a_line_added_after_i
         &[NEITHER, THE_COMMANDS_DIAGNOSIS, "3", "0"],
         PATIENT_BOUND_SECONDS,
     );
-    let mut writer =
-        journey.hand_the_pipe_to_an_unrelated_writer(Stream::Err, NOT_THE_COMMANDS_OUTPUT);
+    let mut writer = journey.hand_the_pipe_to_an_unrelated_writer(
+        &mut asking,
+        Stream::Err,
+        NOT_THE_COMMANDS_OUTPUT,
+    );
 
     let status = journey.answered(&mut asking, "release latest");
     journey.wrote_into_the_pipe();
@@ -314,6 +320,9 @@ struct Journey {
     _directory: tempfile::TempDir,
     root: PathBuf,
     rendezvous: PathBuf,
+    /// The registered checkout, spelled the way the registry holds it. See
+    /// [`Journey::registered_checkout`].
+    publication: PathBuf,
 }
 
 impl Journey {
@@ -330,10 +339,13 @@ impl Journey {
         .expect("a git configuration");
         let rendezvous = root.join("rendezvous");
         std::fs::create_dir(&rendezvous).expect("a rendezvous directory");
-        let journey = Self {
+        let mut journey = Self {
             _directory: directory,
             root,
             rendezvous,
+            // Answered by the binary once there is a registered checkout to ask
+            // about, which is the last thing this does.
+            publication: PathBuf::new(),
         };
         journey.seed_origin();
         let root = journey.root.clone();
@@ -351,7 +363,41 @@ impl Journey {
             "the checkout registers:\n{}",
             String::from_utf8_lossy(&registered.stderr)
         );
+        journey.publication = journey.registered_checkout();
         journey
+    }
+
+    /// The registered checkout as the **registry** holds it, asked of the binary
+    /// rather than composed here.
+    ///
+    /// A release rule selects a repository by comparing its `path:` against that
+    /// stored spelling literally, and the stored spelling is the canonical one —
+    /// which on Windows means the verbatim `\\?\` namespace that `plain_path`
+    /// strips from this journey's own scratch root. A document that named the
+    /// plain spelling therefore matched no repository *there* and only there: no
+    /// release target was found, `release latest` refused before it ran anything,
+    /// and the probe whose pipe these journeys take never started to publish one.
+    ///
+    /// So it is read from the thing that acts on it, which is the same move
+    /// [`declared`] makes for the stand-in's protocol.
+    fn registered_checkout(&self) -> PathBuf {
+        let resolved = self
+            .onevcs()
+            .args(["resolve", "project"])
+            .output()
+            .expect("the binary must be built");
+        assert!(
+            resolved.status.success(),
+            "the registered checkout resolves:\n{}",
+            String::from_utf8_lossy(&resolved.stderr)
+        );
+        let answer: serde_json::Value =
+            serde_json::from_slice(&resolved.stdout).expect("resolve answers with one object");
+        PathBuf::from(
+            answer["publication_checkout"]
+                .as_str()
+                .expect("the answer names the publication checkout"),
+        )
     }
 
     /// A bare origin with one commit on `main`, built the way an origin is.
@@ -397,7 +443,9 @@ impl Journey {
     /// reason the stand-in `git` is: it has to run on every host this journey does.
     fn release_latest(&self, probe_arguments: &[&str], bound: &str) -> Child {
         let name = role_name("PROBE");
-        std::fs::copy(helper(), self.root.join("project").join(&name))
+        // Installed at, and matched on, the checkout the registry holds — the one
+        // `release latest` will read the script out of.
+        std::fs::copy(helper(), self.publication.join(&name))
             .expect("the repository carries its release probe");
         let document = format!(
             "version: 1\n\
@@ -407,7 +455,7 @@ impl Journey {
              \x20     - name: crate\n        style: automated\n        probe:\n\
              \x20         script: {name}\n          args: [{rendezvous:?}{arguments}]\n\
              \x20         timeout_seconds: {bound}\n",
-            checkout = self.root.join("project").to_string_lossy(),
+            checkout = self.publication.to_string_lossy(),
             rendezvous = self.rendezvous.to_string_lossy(),
             arguments = probe_arguments
                 .iter()
@@ -430,8 +478,8 @@ impl Journey {
     /// Take a duplicate of the write end of the pipe the stand-in `git` is writing
     /// on, and give it to a process this journey starts and `onevcs` has never
     /// heard of.
-    fn hand_the_pipe_to_an_unrelated_process(&self) -> Holder {
-        let (pid, handle) = self.published(Stream::Out);
+    fn hand_the_pipe_to_an_unrelated_process(&self, running: &mut Child) -> Holder {
+        let (pid, handle) = self.published(running, Stream::Out);
         let write_end = duplicate_write_end(pid, handle, Stream::Out);
         // The duplicate is passed as the holder's *input*, so the one thing it can
         // never do is write to the stream `onevcs` is reading. It is moved into the
@@ -459,8 +507,13 @@ impl Journey {
     ///
     /// The duplicate is that process's own standard output, so the line it writes
     /// goes into the very stream `onevcs` collected — after the command exited.
-    fn hand_the_pipe_to_an_unrelated_writer(&self, stream: Stream, line: &str) -> Holder {
-        let (pid, handle) = self.published(stream);
+    fn hand_the_pipe_to_an_unrelated_writer(
+        &self,
+        running: &mut Child,
+        stream: Stream,
+        line: &str,
+    ) -> Holder {
+        let (pid, handle) = self.published(running, stream);
         let write_end = duplicate_write_end(pid, handle, stream);
         let writer = self.root.join(role_name("MARKER"));
         std::fs::copy(helper(), &writer).expect("the unrelated writer is installed");
@@ -484,7 +537,16 @@ impl Journey {
     }
 
     /// The running command's process, and the handle it owns for `stream`.
-    fn published(&self, stream: Stream) -> (u32, isize) {
+    ///
+    /// `running` is the `onevcs` this is waiting on, and its exit is the second
+    /// way out: a run that is over will never publish, so waiting the rest of the
+    /// bound out only turns a refusal `onevcs` already printed into a timeout
+    /// blamed on the hand-off. That is exactly how a stand-in the command never
+    /// reached read as a stand-in that would not publish. Nothing races: whichever
+    /// role publishes does so before it waits to be told the duplicate was taken,
+    /// and nothing here writes that acknowledgement until this has returned — so a
+    /// run cannot end between the record being written and being seen.
+    fn published(&self, running: &mut Child, stream: Stream) -> (u32, isize) {
         let record = self.rendezvous.join(declared("HELD"));
         let deadline = Instant::now() + ANSWER_BOUND;
         loop {
@@ -502,6 +564,18 @@ impl Journey {
                         },
                     );
                 }
+            }
+            if let Some(status) = running
+                .try_wait()
+                .expect("the spawned binary is waited for")
+            {
+                panic!(
+                    "the command under test ended ({status}) without publishing the pipes it \
+                     holds, so it never ran the command whose pipe this journey takes.\n\
+                     it wrote: {wrote}\nit said: {said}",
+                    wrote = self.wrote(),
+                    said = self.said()
+                );
             }
             assert!(
                 Instant::now() < deadline,
