@@ -21,7 +21,8 @@ use std::io::Read;
 use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
@@ -44,11 +45,6 @@ pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
 /// one; small enough to cost an ordinary run nothing, and large enough that a hook
 /// running out its whole bound is not asked a million times.
 const EXIT_POLL: Duration = Duration::from_millis(10);
-/// Time for reader threads to hand over bytes already in the pipes after the
-/// command exits. This is deliberately a fixed window, not a wait for EOF: a
-/// process unrelated to the completed command may still hold an inherited pipe
-/// handle, especially on Windows.
-const EXIT_DRAIN: Duration = Duration::from_millis(100);
 
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
 /// repository's own, `Ordinary` where it runs none.
@@ -198,30 +194,17 @@ fn bounded(
 
     // Bytes are handed over as they are read, rather than only at EOF. The child
     // exit below is the lifetime signal; EOF only lets a reader retire early.
-    let mut stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    let (out_sender, out_receiver) = mpsc::channel();
-    let out_reader = std::thread::spawn(move || {
-        forward(&mut stdout, &out_sender);
-    });
-    let (err_sender, err_receiver) = mpsc::channel();
-    let err_reader = std::thread::spawn(move || {
-        forward(&mut stderr, &err_sender);
-    });
+    let out_reader = PipeCapture::start(child.stdout.take().expect("stdout was piped"));
+    let err_reader = PipeCapture::start(child.stderr.take().expect("stderr was piped"));
 
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let exited = wait_for_exit(&mut child, started, bound, || {
-        drain(&out_receiver, &mut out);
-        drain(&err_receiver, &mut err);
-    });
+    let exited = wait_for_exit(&mut child, started, bound);
 
     let Some(collected) = exited else {
         terminate_group(&child);
         let _ = child.kill();
         let _ = child.wait();
-        let _ = out_reader.join();
-        let _ = err_reader.join();
+        let _ = out_reader.finish();
+        let _ = err_reader.finish();
         let elapsed = started.elapsed().as_secs_f64();
         let (knob, _) = class.knob();
         return Err(Error::Invalid {
@@ -233,15 +216,12 @@ fn bounded(
     };
 
     let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
-    let drain_until = Instant::now() + EXIT_DRAIN;
-    while Instant::now() < drain_until {
-        if drain(&out_receiver, &mut out) && drain(&err_receiver, &mut err) {
-            break;
-        }
-        std::thread::sleep(EXIT_POLL);
-    }
-    drain(&out_receiver, &mut out);
-    drain(&err_receiver, &mut err);
+    // The child's exit is completion. Each non-blocking reader is then asked to
+    // take every byte already buffered and stop at the first empty read, even when
+    // an unrelated process still owns a duplicate write handle. Joining is now a
+    // deterministic hand-off, not a scheduling window and not a wait for EOF.
+    let out = out_reader.finish();
+    let err = err_reader.finish();
     Ok(Ran {
         status: status.code().unwrap_or(128),
         stdout: out,
@@ -249,24 +229,97 @@ fn bounded(
     })
 }
 
-fn forward(reader: &mut impl Read, sender: &mpsc::Sender<Vec<u8>>) {
-    let mut chunk = [0_u8; 8192];
-    while let Ok(read) = reader.read(&mut chunk) {
-        if read == 0 || sender.send(chunk[..read].to_vec()).is_err() {
-            break;
-        }
+pub(crate) struct PipeCapture {
+    stopping: Arc<AtomicBool>,
+    reader: std::thread::JoinHandle<Vec<u8>>,
+}
+
+impl PipeCapture {
+    pub(crate) fn start<R: PipeRead + Send + 'static>(mut pipe: R) -> Self {
+        pipe.nonblocking();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&stopping);
+        let reader = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match pipe.read_available(&mut chunk) {
+                    Ok(0) if requested.load(Ordering::Acquire) => break,
+                    Ok(0) => std::thread::sleep(EXIT_POLL),
+                    Ok(read) => output.extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if requested.load(Ordering::Acquire) {
+                            break;
+                        }
+                        std::thread::sleep(EXIT_POLL);
+                    }
+                    Err(_) => break,
+                }
+            }
+            output
+        });
+        Self { stopping, reader }
+    }
+
+    pub(crate) fn finish(self) -> Vec<u8> {
+        self.stopping.store(true, Ordering::Release);
+        self.reader.join().unwrap_or_default()
     }
 }
 
-fn drain(receiver: &mpsc::Receiver<Vec<u8>>, output: &mut Vec<u8>) -> bool {
-    loop {
-        match receiver.try_recv() {
-            Ok(chunk) => output.extend(chunk),
-            Err(mpsc::TryRecvError::Empty) => return false,
-            Err(mpsc::TryRecvError::Disconnected) => return true,
+#[cfg(unix)]
+pub(crate) trait PipeRead: Read + std::os::fd::AsRawFd {
+    fn nonblocking(&mut self) {
+        let descriptor = self.as_raw_fd();
+        // SAFETY: this is the live descriptor owned by `self`; both calls only
+        // inspect and add the non-blocking status flag to that descriptor.
+        unsafe {
+            let flags = libc::fcntl(descriptor, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
         }
     }
+
+    fn read_available(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.read(buffer)
+    }
 }
+
+#[cfg(unix)]
+impl<T: Read + std::os::fd::AsRawFd> PipeRead for T {}
+
+#[cfg(windows)]
+pub(crate) trait PipeRead: Read + std::os::windows::io::AsRawHandle {
+    fn nonblocking(&mut self) {}
+
+    fn read_available(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        let mut available = 0_u32;
+        // SAFETY: the handle belongs to `self`; no output buffer is supplied, and
+        // `available` is a valid out pointer for the duration of the call.
+        let succeeded = unsafe {
+            PeekNamedPipe(
+                self.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if succeeded == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if available == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+        }
+        self.read(&mut buffer[..buffer.len().min(available as usize)])
+    }
+}
+
+#[cfg(windows)]
+impl<T: Read + std::os::windows::io::AsRawHandle> PipeRead for T {}
 
 /// One bounded run's own answer: how it ended, and the bytes it wrote.
 ///
@@ -493,10 +546,8 @@ fn wait_for_exit(
     child: &mut Child,
     started: Instant,
     bound: Duration,
-    mut capture: impl FnMut(),
 ) -> Option<std::io::Result<ExitStatus>> {
     loop {
-        capture();
         match child.try_wait() {
             Ok(Some(status)) => return Some(Ok(status)),
             // A child this process cannot ask about is one it will never collect,

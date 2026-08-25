@@ -160,23 +160,64 @@ fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
 #[test]
 fn opening_a_session_finishes_when_git_exits_while_an_inherited_pipe_handle_stays_open() {
     let fixture = Fixture::local(&local_direct());
-    let holder = fixture.world.path("post-checkout-holder.pid");
-    let finished = fixture.world.path("post-checkout-holder.finished");
-    fixture.world.install_hook(
-        &fixture.checkout,
-        "post-checkout",
-        &format!(
-            "(sleep 5; echo finished >\"{}\") & echo $! >\"{}\"",
+    let wrappers = fixture.world.path("git-wrapper");
+    std::fs::create_dir(&wrappers).expect("a wrapper directory");
+    let wrapper = wrappers.join("git");
+    let holder = fixture.world.path("unrelated-holder.pid");
+    let finished = fixture.world.path("unrelated-holder.finished");
+    let armed = fixture.world.path("unrelated-holder-armed");
+    let real_git = std::process::Command::new("bash")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("the host can locate real git");
+    let real_git = String::from_utf8(real_git.stdout)
+        .expect("git's path is text")
+        .trim()
+        .to_owned();
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/usr/bin/env bash\n\
+             if mkdir \"{}\" 2>/dev/null; then\n\
+               (sleep 5; echo finished >\"{}\") &\n\
+               echo $! >\"{}\"\n\
+             fi\n\
+             exec \"{}\" \"$@\"\n",
+            armed.display(),
             finished.display(),
-            holder.display()
+            holder.display(),
+            real_git,
         ),
-    );
+    )
+    .expect("the git launcher");
+    let mut permissions = std::fs::metadata(&wrapper)
+        .expect("the launcher exists")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&wrapper, permissions).expect("the launcher is executable");
+    let mut path = wrappers.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
 
     let started = std::time::Instant::now();
-    let (token, worktree) = fixture.open(&["--branch", "feature/pipe-holder"]);
+    let opened = fixture
+        .world
+        .onevcs()
+        .env("PATH", path)
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/pipe-holder",
+        ])
+        .assert()
+        .success();
+    let token = token_of(&opened.get_output().stdout);
+    let worktree = worktree_of(&opened.get_output().stdout);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(3),
-        "session opening follows Git's exit, not a descendant's inherited pipe handle"
+        "session opening follows Git's exit, not an unrelated process's inherited pipe handle"
     );
     assert!(worktree.is_dir(), "the real Git worktree was opened");
     assert_eq!(fixture.world.events_of(&token, "session-opened").len(), 1);
@@ -3935,10 +3976,10 @@ fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
     assert!(assert.get_output().stdout.len() > 4096);
 }
 
-/// Lines enough to put several pipe buffers through one of a hook's streams. A
-/// Linux pipe holds 64 KiB unless an operator has raised it, and a line here is
-/// around sixty bytes.
-const PIPE_FILLING_LINES: usize = 3000;
+/// Enough lines to leave megabytes queued between a fast pipe reader and its
+/// collector when the command exits. This is deliberately far beyond both a pipe
+/// buffer and the former fixed post-exit scheduling allowance.
+const PIPE_FILLING_LINES: usize = 100_000;
 /// The volume the merge-path failure was measured at: twice a pipe's default
 /// capacity, which is what a verification wedged writing.
 const A_WEDGING_VOLUME: usize = 128 * 1024;
@@ -3960,10 +4001,10 @@ const CAPTURE_BOUND: std::time::Duration = std::time::Duration::from_secs(300);
 fn a_loud_hook(status: i32) -> String {
     format!(
         "echo the hook began its run; \
-         i=0; while [ $i -lt {PIPE_FILLING_LINES} ]; \
-         do echo the hook is reporting line $i of what it did; i=$((i+1)); done; \
-         j=0; while [ $j -lt {PIPE_FILLING_LINES} ]; \
-         do echo the hook is complaining about line $j of what it read >&2; j=$((j+1)); done; \
+         awk 'BEGIN {{ for (i=0; i<{PIPE_FILLING_LINES}; i++) \
+         print \"the hook is reporting line \" i \" of what it did\" }}'; \
+         awk 'BEGIN {{ for (i=0; i<{PIPE_FILLING_LINES}; i++) \
+         print \"the hook is complaining about line \" i \" of what it read\" > \"/dev/stderr\" }}'; \
          echo the hook finished its run; exit {status}"
     )
 }
