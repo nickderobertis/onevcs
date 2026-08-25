@@ -240,6 +240,34 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
         "the scratch repository's rulesets declare no required check"
     );
 
+    // The commit each source says its check is attached to, which is what a
+    // publication narrows its watch by. Only this tier can prove the real host
+    // returns it: a field GitHub does not answer with would leave every check
+    // unattributed, the narrowing inert, and nothing offline able to tell — which is
+    // exactly how `isRequired` got here. Both sources answer, and they answer the
+    // same commit as the change request's own head.
+    assert_eq!(
+        check.head.as_ref(),
+        Some(&change.head_sha),
+        "GitHub's rollup says which commit the checks it rendered are about"
+    );
+    assert_eq!(
+        by_actions.head, check.head,
+        "the two sources agree on the commit the check ran against"
+    );
+    // And where the check is, which is what the refusal a red one produces hands
+    // over so whoever is dispatched next can open it.
+    assert!(
+        check.url.is_some() && by_actions.url.is_some(),
+        "both sources say where the check is on the host: {check:?} and {by_actions:?}"
+    );
+    println!(
+        "smoke checks: check {:?} attached to {} at {}",
+        check.name,
+        change.head_sha.0,
+        check.url.as_ref().expect("checked above")
+    );
+
     // And its log, fetched from the real job rather than described — through the
     // Actions API, which addresses it by the job id that same listing named.
     let artifact = host

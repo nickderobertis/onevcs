@@ -284,6 +284,26 @@ pub struct Check {
     pub conclusion: Option<String>,
     /// Whether it blocks the merge.
     pub required: bool,
+    /// The commit the host attached this check to, or `None` where the host did not
+    /// say which one it is about.
+    ///
+    /// What makes a check's verdict addressable to a commit rather than to a change
+    /// request. A change request is a moving target — every push gives it a new head,
+    /// and the host attaches the new head's checks seconds to minutes later — so a
+    /// caller reading "the checks on this change request" moments after a push reads
+    /// the *previous* head's answer and cannot tell. `None` is the host declining to
+    /// say and never a commit inferred from the change request: a caller that must
+    /// distinguish them has to be able to, and one that cannot is told nothing rather
+    /// than told wrongly.
+    ///
+    /// Defaulted, so a check some earlier build serialized still reads — as one whose
+    /// commit that build never recorded, which is what it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<Sha>,
+    /// Where this check is on the host, so whoever is handed its refusal can go and
+    /// look at it. `None` where the host reported no address for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<Url>,
 }
 
 impl Check {
@@ -563,7 +583,17 @@ impl GitHub {
     /// one and cannot become one, which is what [`GitHub::actions_checks`] answers
     /// instead.
     fn rollup_checks(&self, cr: &ChangeRequest) -> Result<Vec<Check>> {
-        let value = self.view(&cr.id.0, "statusCheckRollup")?;
+        // `headRefOid` in the same call, because the rollup GitHub renders is the
+        // rollup of the change request's *last commit* as that one response saw it —
+        // and which commit that was is the whole of what makes the answer
+        // addressable. Asked together rather than in a second call for the same
+        // reason a second call could not answer it: the head moves, so a commit read
+        // afterwards is not necessarily the one those checks were about. It costs
+        // this call nothing, because the field needs no more than the read access
+        // that found the change request while `statusCheckRollup` needs far more —
+        // a credential refused for one of them was already refused for the call.
+        let value = self.view(&cr.id.0, "headRefOid,statusCheckRollup")?;
+        let head = reported_sha(&value, "headRefOid")?;
         let reported = value.get("statusCheckRollup").ok_or_else(|| {
             invalid(format!(
                 "gh pr view reported no checks at all on {}",
@@ -582,7 +612,7 @@ impl GitHub {
         let required = self.required_checks(cr)?;
         rollup
             .iter()
-            .map(|entry| check(entry, cr, &required))
+            .map(|entry| check(entry, cr, &required, head.as_ref()))
             .collect()
     }
 
@@ -613,6 +643,8 @@ impl GitHub {
                     name: job.name,
                     status: job.status,
                     conclusion: job.conclusion,
+                    head: job.head,
+                    url: job.url,
                 })
                 .collect(),
             sources: [CheckSource::Actions, CheckSource::BranchRules]
@@ -625,9 +657,17 @@ impl GitHub {
     ///
     /// Two calls per run, because the Actions API reports a *run*'s status at the
     /// run and a job's at the job, and a run that is still going says nothing about
-    /// which of its jobs have finished.
+    /// which of its jobs have finished — and one before them, for which commit that
+    /// head is *now*. Asked rather than taken off the [`ChangeRequest`] the caller
+    /// holds, because that one was read when the change request was found: a
+    /// publication finds it moments after pushing, when the host may not have
+    /// processed the push, and a build that kept asking about the head it first saw
+    /// would go on asking about a commit this run replaced for as long as it
+    /// watched. The rollup source re-reads the same field on every call for the same
+    /// reason; this is that, on the source a fine-grained token is left with.
     fn actions_jobs(&self, cr: &ChangeRequest) -> Result<Vec<Job>> {
-        let sha = commit(&cr.head_sha)?;
+        let current = head_sha(&self.view(&cr.id.0, "headRefOid")?)?;
+        let sha = commit(&current)?;
         let runs = self.api(&format!(
             "repos/{}/actions/runs?head_sha={sha}&per_page={PAGE}",
             self.repo
@@ -643,12 +683,17 @@ impl GitHub {
                         cr.url
                     ))
                 })?;
+            // The commit off the run's own record rather than the one this query
+            // filtered on: what the host says it ran against is the host's answer,
+            // and a build that stamped the question onto the answer could not tell a
+            // host that disagreed.
+            let head = reported_sha(run, "head_sha")?;
             let listing = self.api(&format!(
                 "repos/{}/actions/runs/{id}/jobs?per_page={PAGE}",
                 self.repo
             ))?;
             for entry in listed(&listing, "jobs", &format!("workflow run {id}"))? {
-                jobs.push(job(entry, cr)?);
+                jobs.push(job(entry, cr, head.as_ref())?);
             }
         }
         Ok(jobs)
@@ -792,13 +837,24 @@ fn path_segment(value: &str) -> String {
 /// It arrives off a host response and goes on to be one parameter of several, so a
 /// value carrying anything but hex digits could address a query nobody wrote.
 fn commit(sha: &Sha) -> Result<&str> {
-    if sha.0.is_empty() || !sha.0.chars().all(|c| c.is_ascii_hexdigit()) {
+    if !is_commit_hash(&sha.0) {
         return Err(invalid(format!(
             "{:?} is not a commit hash, so the checks reported against it cannot be asked for",
             sha.0
         )));
     }
     Ok(&sha.0)
+}
+
+/// Whether text the host handed over is the shape of a commit hash.
+///
+/// The one shape rule, so the two boundaries that read a commit off this host agree
+/// about what one is: the commit an Actions query is built from ([`commit`]) and the
+/// commit a host says it attached a check to ([`reported_sha`]). Shared as the rule
+/// rather than as the refusal because each of those refusals costs something
+/// different and says so.
+fn is_commit_hash(sha: &str) -> bool {
+    !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// One workflow job, as the Actions API reports it.
@@ -811,6 +867,10 @@ struct Job {
     status: String,
     /// How it ended, once it has.
     conclusion: Option<String>,
+    /// The commit its workflow run was reported against, off that run's own record.
+    head: Option<Sha>,
+    /// Where a human reads this job on the host.
+    url: Option<Url>,
 }
 
 /// One job of an Actions listing, required to say what it is.
@@ -818,7 +878,7 @@ struct Job {
 /// Defaulting a missing field is what would let a job that is still running be read
 /// as a green check, which is the shape that must never be inferred — the same rule
 /// [`check`] below is held to, for the same reason.
-fn job(entry: &serde_json::Value, cr: &ChangeRequest) -> Result<Job> {
+fn job(entry: &serde_json::Value, cr: &ChangeRequest, head: Option<&Sha>) -> Result<Job> {
     let field = |name: &str| -> Result<&str> {
         entry
             .get(name)
@@ -850,7 +910,60 @@ fn job(entry: &serde_json::Value, cr: &ChangeRequest) -> Result<Job> {
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase),
+        head: head.cloned(),
+        url: reported_url(entry, "html_url"),
     })
+}
+
+/// The commit a host response names, off whichever field that response spells it
+/// in, or `None` where it named none.
+///
+/// Lenient about *absence* where [`head_sha`] refuses, and the difference is what
+/// each answer is for: a change request with no head is one this build cannot go on
+/// to ask the Actions API about at all, while a check whose source would not say
+/// which commit it is about is still a check, and reading it is still the answer.
+/// Inventing one is the thing that must not happen — which is why an absent field
+/// reads `None` rather than falling back to the head the caller already holds.
+///
+/// Strict about *shape* exactly where it is lenient about absence, and for the same
+/// reason. This is host-supplied text arriving at a trust boundary, and it is held
+/// to [`is_commit_hash`] like every other commit read off this host. Passed through
+/// unchecked it would be worse than a refusal rather than more forgiving than one:
+/// what a publication does with this value is compare it to the commit it pushed,
+/// so anything that is not a commit hash matches nothing and reads as "the host has
+/// said nothing about your commit yet" — silence — for as long as the watch runs,
+/// and then times out naming a commit the host never had trouble with. A malformed
+/// answer must not be able to wear the one shape this path exists to keep distinct
+/// from an answer.
+fn reported_sha(value: &serde_json::Value, field: &str) -> Result<Option<Sha>> {
+    let Some(reported) = value
+        .get(field)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if !is_commit_hash(reported) {
+        return Err(invalid(format!(
+            "gh reported {reported:?} as the {field} of a check, and that is not a commit hash, \
+             so which commit the check is attached to cannot be decided"
+        )));
+    }
+    Ok(Some(Sha(reported.to_owned())))
+}
+
+/// Where the host says something is, off whichever field that response spells it
+/// in, or `None` where it named nowhere this build can point a person at.
+///
+/// A URL that will not parse is `None` rather than a refusal: this is the address a
+/// refusal hands over so somebody can go and look, and failing a publication over a
+/// link would put the check's verdict behind a formatting complaint.
+fn reported_url(entry: &serde_json::Value, field: &str) -> Option<Url> {
+    entry
+        .get(field)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| Url::parse(value).ok())
 }
 
 /// The entries of one Actions listing, refused unless the page carried them all.
@@ -1132,6 +1245,7 @@ fn check(
     entry: &serde_json::Value,
     cr: &ChangeRequest,
     required: &BTreeSet<String>,
+    head: Option<&Sha>,
 ) -> Result<Check> {
     let field = |name: &str| -> Result<&str> {
         entry
@@ -1158,6 +1272,13 @@ fn check(
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase),
         required: blocks,
+        head: head.cloned(),
+        // A check run's own address, and only that spelling. A commit status
+        // spells it `targetUrl` — and never reaches here: it carries `state` where
+        // this reads `status`, so `field("status")` above refuses the whole answer
+        // before an address is looked for. Reading the second spelling would be a
+        // branch nothing can drive, on a path that already cannot be taken.
+        url: reported_url(entry, "detailsUrl"),
     })
 }
 

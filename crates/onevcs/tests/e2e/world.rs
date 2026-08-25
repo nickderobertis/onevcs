@@ -424,6 +424,26 @@ impl World {
             .expect("a call count the rollup changes after");
     }
 
+    /// Make the substituted host go on reporting the commit it already had for a
+    /// change request until it has been asked for its rollup `after` times.
+    ///
+    /// What a host that has not yet processed a push looks like from outside, and
+    /// the state the defect this guards against lives in: GitHub records a change
+    /// request's head — and renders its rollup from that head's checks — when it
+    /// processes the push rather than when the push returns, so a branch re-pushed
+    /// moments ago reports the *previous* head and the previous head's checks, and
+    /// answers about the commit that was just pushed only afterwards.
+    ///
+    /// Counted in readings rather than timed, for the same reason
+    /// [`World::host_checks_after`] is: a race a journey cannot state is a journey
+    /// that fails on a slow machine. Unset, the host never notices — which is a
+    /// change request whose head it recorded once and no push has moved since.
+    pub fn host_notices_the_push_after(&self, after: usize) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/head-noticed-after"), after.to_string())
+            .expect("a reading count the host notices the push after");
+    }
+
     fn write_rows(&self, at: &str, checks: &[Check]) {
         let rows: String = checks
             .iter()
@@ -463,6 +483,13 @@ impl World {
     /// entries back, `actions-only-rules-not-a-list` answers about the rulesets with
     /// something that is not a list of them, and `actions-only-rules-unsaid` names a
     /// ruleset that requires status checks and will not say which.
+    ///
+    /// Two more are about the commit a check says it is attached to, one per source:
+    /// `head-not-a-commit` answers the rollup's `headRefOid` with something that is
+    /// not a commit hash, and `actions-only-run-head-not-a-commit` does the same to
+    /// a workflow run's own `head_sha`. Both are host-supplied text a publication
+    /// goes on to compare against the commit it pushed, so neither may be taken on
+    /// trust.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -702,6 +729,23 @@ if [ -f "$STATE/checks-flip-after" ] && [ -f "$STATE/checks.rows.next" ]; then
 fi
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
 
+# Which commit this host believes a change request is at, which is not necessarily
+# where the branch is: GitHub records that when it *processes* a push rather than
+# when the push returns, and renders the rollup from that head's checks. A world
+# that says nothing here is a host that never noticed, which is the recorded head
+# for ever; one that does says so in readings of the rollup, the same unit the
+# rollup's own flip above is counted in.
+head_seen() {
+  local recorded="$1" branch="$2"
+  if [ -f "$STATE/head-noticed-after" ] \
+    && [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+         -gt "$(cat "$STATE/head-noticed-after")" ]; then
+    git --git-dir "$ORIGIN" rev-parse "refs/heads/$branch" 2>/dev/null || printf '%s' "$recorded"
+    return
+  fi
+  printf '%s' "$recorded"
+}
+
 # What a credential GitHub will not let read a change request's check runs is told,
 # in the two shapes it is told it: the GraphQL rollup names the node it would not
 # produce, and the REST endpoints answer 403. Both are refusals, and neither says
@@ -778,7 +822,11 @@ case "$command" in
         runs=0
         for record in "$STATE"/pr-*.env; do
           [ -e "$record" ] || continue
-          if ( . "$record"; [ "$PR_HEAD_SHA" = "$head_sha" ] ); then runs=1; fi
+          # Through the same lag the change request's own head is reported through:
+          # GitHub attaches a workflow run to a commit when it processes the push,
+          # so a run on the head this host has not noticed yet is a run it does not
+          # report either.
+          if ( . "$record"; [ "$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")" = "$head_sha" ] ); then runs=1; fi
         done
         if [ "$runs" = "0" ]; then
           # No workflow has run on that commit, which is what a commit nothing was
@@ -786,19 +834,29 @@ case "$command" in
           printf '{"total_count":0,"workflow_runs":[]}\n'
           exit 0
         fi
+        # A run whose own record says it ran against something that is not a commit
+        # hash. The commit a job's check is attached to is taken off this field
+        # rather than off the query, so this is the one place that answer can arrive
+        # malformed on the Actions path.
+        if [ "$malformed" = "actions-only-run-head-not-a-commit" ]; then
+          head_sha="the tip of feature/x"
+        fi
         printf '{"total_count":1,"workflow_runs":[{"id":1,"head_sha":"%s","status":"completed"}]}\n' "$head_sha"
         exit 0 ;;
       */actions/runs/*/jobs)
         # The same rows the rollup is rendered from, as the jobs of that one run —
         # so what this host reports through either source and what it acts on when
         # asked to merge cannot disagree. A job's id is its row, which is the id
-        # `gh run view --job` answers to as well.
+        # `gh run view --job` answers to as well, and `html_url` is the same address
+        # the rollup reports that check's `detailsUrl` as: one check, one place on
+        # the host, whichever source a credential can read it from.
+        slug="${path#repos/}"; slug="${slug%%/actions/*}"
         rows=""; separator=""; row=0; entry=""
         while IFS='|' read -r name status conclusion required; do
           [ -n "$name" ] || continue
           row=$((row + 1))
           if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
-          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry}"
+          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\"}"
           separator=","
         done <"$CHECKS" 2>/dev/null || true
         total="$row"
@@ -895,12 +953,16 @@ done
 # `pr checks --required`, below.
 rollup() {
   printf '['
-  local separator="" name status conclusion required entry
+  local separator="" name status conclusion required entry row=0
   while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
+    row=$((row + 1))
     if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
-    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s}' \
-      "$separator" "$name" "$status" "$entry"
+    # `detailsUrl` is where a check run says it is, and it is the same address
+    # `pr checks` reports as that row's `link` — one check, one place on the host,
+    # whichever call asked about it.
+    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s"}' \
+      "$separator" "$name" "$status" "$entry" "$repo" "$row"
     separator=","
   done <"$CHECKS" 2>/dev/null || true
   printf ']'
@@ -1052,6 +1114,7 @@ case "$subcommand" in
       [ ! -f "$STATE/closed-$PR_NUMBER" ] || continue
       [ "$PR_HEAD" = "$head" ] || continue
       [ "$PR_BASE" = "$base" ] || continue
+      PR_HEAD_SHA="$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")"
       case "$malformed" in
         no-number)
           printf '%s{"url":"%s","state":"%s","headRefOid":"%s"}' \
@@ -1097,6 +1160,11 @@ case "$subcommand" in
     ;;
   view)
     . "$STATE/pr-$number.env"
+    PR_HEAD_SHA="$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")"
+    # A host that answers with a head that is not a commit hash at all. The rollup
+    # is rendered from this same field, so what a check is attached to arrives
+    # malformed here and nowhere else on that path.
+    if [ "$malformed" = "head-not-a-commit" ]; then PR_HEAD_SHA="the tip of the branch"; fi
     if [ -f "$STATE/closed-$number" ]; then PR_STATE=CLOSED; fi
     # `gh` returns exactly the fields it was asked for, and so does this: a caller
     # that reads a field out of an answer it never requested is a caller that works

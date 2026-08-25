@@ -162,12 +162,25 @@ pub fn full_host_state() -> HostState {
     checks.insert(
         id.clone(),
         vec![
-            green_check("gate"),
+            // One check carrying the commit the host attached it to and where it is
+            // on the host, and one carrying neither — because the document has to
+            // hold both: a host that says which head its checks are about, and a host
+            // that does not.
+            Check {
+                name: "gate".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some("success".to_owned()),
+                required: true,
+                head: Some(Sha("def456".to_owned())),
+                url: Url::parse("https://github.com/acme-corp/widgets/runs/7").ok(),
+            },
             Check {
                 name: "coverage".to_owned(),
                 status: "in_progress".to_owned(),
                 conclusion: None,
                 required: false,
+                head: None,
+                url: None,
             },
         ],
     );
@@ -203,12 +216,15 @@ pub fn full_host_state() -> HostState {
     }
 }
 
-/// A required check that has settled successfully.
+/// A required check that has settled successfully, on a host that does not say
+/// which commit it attached the check to.
 pub fn green_check(name: &str) -> Check {
     Check {
         name: name.to_owned(),
         status: "completed".to_owned(),
         conclusion: Some("success".to_owned()),
         required: true,
+        head: None,
+        url: None,
     }
 }
