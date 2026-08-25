@@ -13,10 +13,18 @@
 //! test. Each journey launches it itself, concurrently, out of the same process that
 //! is driving `onevcs`, and hands it a duplicate of the write end taken out of the
 //! running stand-in — nothing `onevcs` kills can reach it, and end-of-file will not
-//! arrive while it lives. Which is the whole point: the three journeys below are the
-//! difference between a session that opens and a command that never returns, and —
-//! for each of the two kinds of bounded command this crate runs — between a fired
-//! bound that is *reported* and one that hangs inside its own teardown.
+//! arrive while it lives. Which is the whole point. Three of the journeys below are
+//! the difference between a session that opens and a command that never returns,
+//! and — for each of the two kinds of bounded command this crate runs — between a
+//! fired bound that is *reported* and one that hangs inside its own teardown.
+//!
+//! The other two are about the bytes rather than about returning at all, and they
+//! are why the exit and not a span of wall-clock has to be what ends a collection.
+//! The unrelated process there **writes** into the pipe once the command that owned
+//! it is over. A collector that keeps reading for a fixed span afterwards hands
+//! those bytes to the caller as the command's own — and on the stream that carries a
+//! probe's answer, one extra line is not a stray byte but the *loss* of the version
+//! the probe did write, because two lines are not an answer at all.
 //!
 //! Linux and Windows, and the two for different halves of the same reason: taking a
 //! duplicate of another process's pipe is `/proc/<pid>/fd/1` on Linux and
@@ -76,6 +84,53 @@ const ANSWER_BOUND: Duration = Duration::from_secs(45);
 const FIRED_BOUND_SECONDS: &str = "5";
 /// How long the unrelated holder may live if the journey dies before releasing it.
 const HOLDER_BOUND_SECONDS: &str = "120";
+/// The bound a journey that is about a payload rather than about a bound gives its
+/// probe: far above what the hand-off costs, so nothing here fires it.
+const PATIENT_BOUND_SECONDS: &str = "20";
+
+/// How long after the command records that it is going the unrelated process writes
+/// its line into that command's pipe.
+///
+/// It is a margin, and the arithmetic is the point. A collector that ends with the
+/// command has stopped reading — and dropped the read end, which makes this write
+/// fail outright — within one exit poll of the exit, so 70ms is five to seven times
+/// the window it could still be inside. A collector that instead reads on for a
+/// fixed span afterwards was, in the build this catches, reading for 100ms, so 70ms
+/// is comfortably inside *that*. Nothing here turns on volume, on which thread runs
+/// first, or on when a byte happens to be delivered: the write is anchored to the
+/// command's own last act.
+const AFTER_THE_COMMAND_IS_GONE: Duration = Duration::from_millis(70);
+
+/// The line the unrelated process writes, which no command here ever wrote.
+const NOT_THE_COMMANDS_OUTPUT: &str = "0.0.0-written-by-an-unrelated-process";
+/// What the probe writes on the stream a journey is asserting about.
+const THE_COMMANDS_VERSION: &str = "9.9.9";
+/// …and on standard error, where a journey is asserting about that stream.
+const THE_COMMANDS_DIAGNOSIS: &str = "boom";
+/// The stream argument for a probe that leaves that stream alone.
+const NEITHER: &str = "-";
+
+/// Which of a command's two streams a journey is holding a duplicate of.
+#[derive(Clone, Copy)]
+enum Stream {
+    Out,
+    Err,
+}
+
+impl Stream {
+    /// The descriptor a command's own process knows this stream by.
+    ///
+    /// Only where a pipe is reached *through the process that owns it* is a stream
+    /// named this way; Windows names it by the handle the command published, so
+    /// there is nothing there for this to answer.
+    #[cfg(target_os = "linux")]
+    fn descriptor(self) -> u32 {
+        match self {
+            Stream::Out => 1,
+            Stream::Err => 2,
+        }
+    }
+}
 
 #[test]
 fn a_session_opens_while_an_unrelated_process_holds_a_duplicate_of_gits_pipe() {
@@ -150,7 +205,10 @@ fn a_probes_fired_bound_is_reported_while_an_unrelated_process_holds_a_duplicate
     // The same teardown, reached the other way a bounded command is run here: a
     // release probe the repository carries, which answers and then outstays the
     // bound the releases document gave it.
-    let mut asking = journey.latest();
+    let mut asking = journey.release_latest(
+        &[THE_COMMANDS_VERSION, NEITHER, "0", HOLDER_BOUND_SECONDS],
+        FIRED_BOUND_SECONDS,
+    );
 
     let mut holder = journey.hand_the_pipe_to_an_unrelated_process();
 
@@ -172,6 +230,80 @@ fn a_probes_fired_bound_is_reported_while_an_unrelated_process_holds_a_duplicate
     assert!(
         reason.contains("timed out"),
         "the refusal names the bound that fired: {reason}"
+    );
+}
+
+#[test]
+fn a_callers_answer_carries_the_commands_own_stdout_and_not_a_line_added_after_it() {
+    let journey = Journey::new();
+    // A probe's standard output *is* the answer a caller reads, byte for byte: one
+    // line is a version, two lines are not an answer at all. So a collector that
+    // keeps reading after the probe is over does not merely gain a stray byte — the
+    // version the probe did write stops reaching the caller.
+    let mut asking = journey.release_latest(
+        &[THE_COMMANDS_VERSION, NEITHER, "0", "0"],
+        PATIENT_BOUND_SECONDS,
+    );
+    let mut writer =
+        journey.hand_the_pipe_to_an_unrelated_writer(Stream::Out, NOT_THE_COMMANDS_OUTPUT);
+
+    let status = journey.answered(&mut asking, "release latest");
+    journey.wrote_into_the_pipe();
+    writer.assert_still_holding();
+    assert!(
+        status.success(),
+        "asking is not a failure: {}",
+        journey.said()
+    );
+
+    let answer: serde_json::Value = serde_json::from_str(journey.wrote().trim())
+        .expect("a release command prints one document");
+    assert_eq!(
+        answer["version"], THE_COMMANDS_VERSION,
+        "the version the probe wrote must reach the caller whole, and the line an \
+         unrelated process put in that pipe afterwards must not have displaced it: {answer}"
+    );
+    assert_eq!(answer["state"], "released");
+    assert!(
+        !journey.wrote().contains(NOT_THE_COMMANDS_OUTPUT),
+        "nothing an unrelated process wrote may reach a caller as the command's own: {}",
+        journey.wrote()
+    );
+}
+
+#[test]
+fn a_callers_answer_carries_the_commands_own_stderr_and_not_a_line_added_after_it() {
+    let journey = Journey::new();
+    // The other stream, and the other direction: what a probe wrote on standard
+    // error is quoted back to a caller as the reason it was turned down, so a
+    // collector reading on past the probe's exit puts words in its mouth.
+    let mut asking = journey.release_latest(
+        &[NEITHER, THE_COMMANDS_DIAGNOSIS, "3", "0"],
+        PATIENT_BOUND_SECONDS,
+    );
+    let mut writer =
+        journey.hand_the_pipe_to_an_unrelated_writer(Stream::Err, NOT_THE_COMMANDS_OUTPUT);
+
+    let status = journey.answered(&mut asking, "release latest");
+    journey.wrote_into_the_pipe();
+    writer.assert_still_holding();
+    assert!(
+        status.success(),
+        "asking is not a failure: {}",
+        journey.said()
+    );
+
+    let answer: serde_json::Value = serde_json::from_str(journey.wrote().trim())
+        .expect("a release command prints one document");
+    assert_eq!(answer["state"], "not-answered");
+    let reason = answer["reason"].as_str().expect("it says why");
+    assert!(
+        reason.contains("exited 3") && reason.contains(THE_COMMANDS_DIAGNOSIS),
+        "the refusal quotes what the probe itself wrote: {reason}"
+    );
+    assert!(
+        !reason.contains(NOT_THE_COMMANDS_OUTPUT),
+        "and nothing an unrelated process added to that pipe afterwards: {reason}"
     );
 }
 
@@ -263,8 +395,8 @@ impl Journey {
     ///
     /// The probe is the compiled program rather than a shell one-liner for the
     /// reason the stand-in `git` is: it has to run on every host this journey does.
-    fn latest(&self) -> Child {
-        let name = probe_name();
+    fn release_latest(&self, probe_arguments: &[&str], bound: &str) -> Child {
+        let name = role_name("PROBE");
         std::fs::copy(helper(), self.root.join("project").join(&name))
             .expect("the repository carries its release probe");
         let document = format!(
@@ -273,12 +405,14 @@ impl Journey {
              repositories:\n  - match: {{path: {checkout:?}}}\n\
              \x20   adoption: published\n    default_target: crate\n    targets:\n\
              \x20     - name: crate\n        style: automated\n        probe:\n\
-             \x20         script: {name}\n          args: [{rendezvous:?}, \"9.9.9\", \"{linger}\"]\n\
+             \x20         script: {name}\n          args: [{rendezvous:?}{arguments}]\n\
              \x20         timeout_seconds: {bound}\n",
             checkout = self.root.join("project").to_string_lossy(),
             rendezvous = self.rendezvous.to_string_lossy(),
-            linger = HOLDER_BOUND_SECONDS,
-            bound = FIRED_BOUND_SECONDS,
+            arguments = probe_arguments
+                .iter()
+                .map(|argument| format!(", {argument:?}"))
+                .collect::<String>(),
         );
         std::fs::write(self.root.join("state").join("releases.yml"), document)
             .expect("a release-targets file");
@@ -297,8 +431,8 @@ impl Journey {
     /// on, and give it to a process this journey starts and `onevcs` has never
     /// heard of.
     fn hand_the_pipe_to_an_unrelated_process(&self) -> Holder {
-        let (pid, handle) = self.published();
-        let write_end = duplicate_write_end(pid, handle);
+        let (pid, handle) = self.published(Stream::Out);
+        let write_end = duplicate_write_end(pid, handle, Stream::Out);
         // The duplicate is passed as the holder's *input*, so the one thing it can
         // never do is write to the stream `onevcs` is reading. It is moved into the
         // spawn, so this process stops holding it the moment the holder does.
@@ -320,22 +454,74 @@ impl Journey {
         }
     }
 
-    /// The process and standard-output handle the stand-in `git` published.
-    fn published(&self) -> (u32, isize) {
+    /// The same hand-off, to a process that will **write** into the pipe once the
+    /// command that owned it is over.
+    ///
+    /// The duplicate is that process's own standard output, so the line it writes
+    /// goes into the very stream `onevcs` collected — after the command exited.
+    fn hand_the_pipe_to_an_unrelated_writer(&self, stream: Stream, line: &str) -> Holder {
+        let (pid, handle) = self.published(stream);
+        let write_end = duplicate_write_end(pid, handle, stream);
+        let writer = self.root.join(role_name("MARKER"));
+        std::fs::copy(helper(), &writer).expect("the unrelated writer is installed");
+        let held = Command::new(&writer)
+            .arg(&self.rendezvous)
+            .arg(line)
+            .arg(AFTER_THE_COMMAND_IS_GONE.as_millis().to_string())
+            .arg(self.rendezvous.join("released"))
+            .arg(HOLDER_BOUND_SECONDS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(write_end))
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the unrelated writer starts");
+        std::fs::write(self.rendezvous.join(declared("TAKEN")), "")
+            .expect("the hand-off is acknowledged");
+        Holder {
+            held,
+            release: self.rendezvous.join("released"),
+        }
+    }
+
+    /// The running command's process, and the handle it owns for `stream`.
+    fn published(&self, stream: Stream) -> (u32, isize) {
         let record = self.rendezvous.join(declared("HELD"));
         let deadline = Instant::now() + ANSWER_BOUND;
         loop {
             if let Ok(text) = std::fs::read_to_string(&record) {
                 let mut lines = text.lines();
                 let pid = lines.next().and_then(|line| line.parse().ok());
-                let handle = lines.next().and_then(|line| line.parse().ok());
-                if let (Some(pid), Some(handle)) = (pid, handle) {
-                    return (pid, handle);
+                let out = lines.next().and_then(|line| line.parse().ok());
+                let err = lines.next().and_then(|line| line.parse().ok());
+                if let (Some(pid), Some(out), Some(err)) = (pid, out, err) {
+                    return (
+                        pid,
+                        match stream {
+                            Stream::Out => out,
+                            Stream::Err => err,
+                        },
+                    );
                 }
             }
             assert!(
                 Instant::now() < deadline,
-                "the stand-in git must publish the pipe it holds"
+                "the command under test must publish the pipes it holds"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Block until the unrelated writer says its line is in the pipe.
+    ///
+    /// Asserted rather than assumed: a journey that read a stream nothing was added
+    /// to would call that a pass, and prove nothing at all.
+    fn wrote_into_the_pipe(&self) {
+        let marked = self.rendezvous.join(declared("MARKED"));
+        let deadline = Instant::now() + ANSWER_BOUND;
+        while !marked.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the unrelated process must actually put its line in the command's pipe"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -415,7 +601,7 @@ impl Journey {
         // Copied rather than linked, and copied from a compiled program rather than
         // written as a script: on `PATH` as `git` it has to be executable on every
         // host, which a shell script is not.
-        std::fs::copy(helper(), directory.join(stand_in_name()))
+        std::fs::copy(helper(), directory.join(role_name("STAND_IN")))
             .expect("the stand-in is installed as git");
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         std::env::join_paths(std::iter::once(directory).chain(std::env::split_paths(&inherited)))
@@ -489,20 +675,10 @@ fn helper_name() -> &'static str {
     }
 }
 
-/// The stand-in under the name it has to answer to, which is the name the program
-/// itself checks for.
-fn stand_in_name() -> String {
-    let stem = declared("STAND_IN");
-    match cfg!(windows) {
-        true => format!("{stem}.exe"),
-        false => stem,
-    }
-}
-
-/// The probe under the name it has to answer to, which is the name the program
-/// itself checks for.
-fn probe_name() -> String {
-    let stem = declared("PROBE");
+/// One role of the helper under the name it has to answer to, which is the name the
+/// program itself checks for.
+fn role_name(role: &str) -> String {
+    let stem = declared(role);
     match cfg!(windows) {
         true => format!("{stem}.exe"),
         false => stem,
@@ -525,18 +701,19 @@ fn real_git() -> PathBuf {
 /// description on the same pipe rather than a second name for the same one, which
 /// is exactly what an unrelated process that inherited the handle would own.
 #[cfg(target_os = "linux")]
-fn duplicate_write_end(pid: u32, _handle: isize) -> std::fs::File {
+fn duplicate_write_end(pid: u32, _handle: isize, stream: Stream) -> std::fs::File {
+    let descriptor = stream.descriptor();
     std::fs::OpenOptions::new()
         .write(true)
-        .open(format!("/proc/{pid}/fd/1"))
-        .expect("the stand-in git's standard output is reachable while it waits")
+        .open(format!("/proc/{pid}/fd/{descriptor}"))
+        .expect("the running command's stream is reachable while it waits")
 }
 
 /// The same, spelled the way Windows spells it: the handle is duplicated out of
 /// the publishing process, which is how an unrelated process there comes to own
 /// one — deliberately, here, rather than by inheriting it from a concurrent spawn.
 #[cfg(windows)]
-fn duplicate_write_end(pid: u32, handle: isize) -> std::fs::File {
+fn duplicate_write_end(pid: u32, handle: isize, _stream: Stream) -> std::fs::File {
     use std::os::windows::io::FromRawHandle;
 
     use windows_sys::Win32::Foundation::{
@@ -554,7 +731,7 @@ fn duplicate_write_end(pid: u32, handle: isize) -> std::fs::File {
         let source = OpenProcess(PROCESS_DUP_HANDLE, 0, pid);
         assert!(
             !source.is_null(),
-            "the stand-in git must be open to duplication while it waits: {}",
+            "the running command must be open to duplication while it waits: {}",
             std::io::Error::last_os_error()
         );
         let mut duplicate: HANDLE = std::ptr::null_mut();
@@ -571,7 +748,7 @@ fn duplicate_write_end(pid: u32, handle: isize) -> std::fs::File {
         CloseHandle(source);
         assert!(
             duplicated != 0,
-            "the stand-in git's standard output must be duplicable: {failure}"
+            "the running command's stream must be duplicable: {failure}"
         );
         std::fs::File::from_raw_handle(duplicate as _)
     }

@@ -358,12 +358,17 @@ builds the crate and runs the contract, boundary, packaging, and inherited-pipe
 suites.
 
 `tests/e2e/inherited_pipes.rs` carries a fixture of its own rather than
-`world.rs`'s, because it has to run where `world.rs` cannot. Three things about it
-are the point rather than an implementation detail. Its holder — the process still
-owning the write end of a finished command's pipe — is launched by the journey and
-never by the command under test, because a descendant is killed by the very
-teardown the holder exists to outlive. Its stand-in `git` and its script probe are
-one `std`-only program compiled by `rustc` at journey time
+`world.rs`'s, because it has to run where `world.rs` cannot. It holds one rule in
+both directions: **a command's collected output begins and ends with that command**,
+so a run must not wait on a pipe the command no longer owns, and a caller must never
+be shown bytes an unrelated process put in that pipe afterwards. The second half is
+the one that reads as harmless and is not — on the stream carrying a probe's answer,
+one added line is not a stray byte, it is the loss of the version the probe wrote.
+Three things about the module are the point rather than an implementation detail.
+Its unrelated process — the one still owning the write end of a finished command's
+pipe — is launched by the journey and never by the command under test, because a
+descendant is killed by the very teardown it exists to outlive. Its stand-in `git`
+and its script probe are one `std`-only program compiled by `rustc` at journey time
 (`tests/e2e/programs/pipe_holder.rs`), because both have to be executable on every
 host and a shell script is not; that stand-in runs the real git, on the same pipe.
 And it is Linux and Windows only: taking a duplicate of another process's pipe is
