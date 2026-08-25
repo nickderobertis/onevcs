@@ -663,24 +663,25 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         .join("streams")
         .join(format!("{token}.ndjson"));
     let recorded = std::fs::read_to_string(&stream).expect("the session wrote a stream");
-    let envelope = |version: u32, stamp: &str| {
+    let of_kind = |version: u32, stamp: &str, kind: &str| {
         serde_json::json!({
             "v": version,
             "ts": stamp,
             "stream": token,
             "seq": 9998,
             "source": "vcs",
-            "kind": "change-opened",
+            "kind": kind,
             "labels": {},
             "payload": {"url": "https://github.com/acme-corp/hosted/pull/9"},
             "artifacts": [],
         })
         .to_string()
     };
+    let envelope = |version: u32, stamp: &str| of_kind(version, stamp, "change-opened");
     std::fs::write(
         &stream,
         format!(
-            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n{}\n",
+            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n{}\n{}\n{}\n",
             // An envelope of a shape this build does not read, and one stamped in a
             // form nothing can order against the rest: both are gaps in what this
             // could read, and neither is a value to act on.
@@ -689,6 +690,13 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
             // Shaped like a stamp and naming no moment, which orders against the
             // real ones as arbitrarily as prose does.
             envelope(1, "9999-99-99T99:99:99.999Z"),
+            // …and two perfectly good envelopes recording kinds this build has no
+            // word for: `gate-started` and `gate-verdict` went with the host-run
+            // gate, and every stream written before that still carries them. Not a
+            // gap — a record of something this report does not act on — so this
+            // read passes them over and says nothing.
+            of_kind(1, "2024-01-01T00:00:00.000Z", "gate-started"),
+            of_kind(1, "2024-01-01T00:00:01.000Z", "gate-verdict"),
         ),
     )
     .expect("a stream a writer left half a line of, and two a later build wrote");
@@ -712,6 +720,16 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         "could not be read",
     ] {
         assert!(notes.contains(said), "{said} is not in the notes:\n{notes}");
+    }
+    // …and the two kinds this build has no word for cost nothing at all. One note
+    // per such line is what made a status read over a host's own streams unreadable:
+    // 30% of them carry these two, and the answer arrived under hundreds of notes
+    // saying that lines this could see are not in the report.
+    for retired in ["gate-started", "gate-verdict"] {
+        assert!(
+            !notes.contains(retired),
+            "{retired} is a kind this build does not act on, not a gap:\n{notes}"
+        );
     }
     // …and none of them became the answer: the change request this report names is
     // still the one this host actually opened.

@@ -24,7 +24,7 @@ use crate::error::{self, Result};
 // enforced here (an unknown `kind` or `source`, a `seq` that is not a u64, a missing
 // field are all rejected by serde and asserted in tests/contract.rs), and the semantic
 // checks land with the parser seam that reads a stream.
-#[serde(from = "StoredEnvelope")]
+#[serde(try_from = "StoredEnvelope")]
 pub struct Envelope {
     /// Envelope schema version. `1` is the shape `docs/contract.md` declares.
     pub v: u32,
@@ -75,6 +75,23 @@ pub enum Source {
 /// These are the kinds `onevcs` produces. A consumer merging several sources
 /// reads each source's own kinds; nothing here promises to name another
 /// library's.
+///
+/// **A kind is retired by keeping it recognised and inert, never by deleting it.**
+/// A stream is a record, and this enum is what says whether a line of one can be
+/// read at all: delete a variant and every line any earlier build wrote with it
+/// stops parsing, in a build that has no way to know what it lost. That is not
+/// hypothetical — `gate-started` and `gate-verdict` went with the host-run gate in
+/// 0.11.0, and 30% of the streams on the host that consumes this crate turned into
+/// one refusal per line, most expensively in a status read that walks every stream
+/// there is. So a kind nothing emits any more keeps its variant, documented as
+/// retired and produced by nothing, and a reader goes on being able to say what
+/// that line recorded.
+///
+/// [`Line`] is the other half of that rule rather than a substitute for it. It
+/// makes a kind this build has *never had* — one a later build wrote — cheap to
+/// pass over, which is the case no vocabulary here can cover. It cannot give back
+/// the meaning of a kind that was deleted, which is why the two retired above are
+/// a loss this crate carries rather than one it recovered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
@@ -139,7 +156,7 @@ struct StoredEnvelope {
     stream: String,
     seq: u64,
     source: Source,
-    kind: EventKind,
+    kind: StoredKind,
     #[serde(default)]
     phase: Option<Phase>,
     labels: Labels,
@@ -147,28 +164,125 @@ struct StoredEnvelope {
     artifacts: Vec<ArtifactRef>,
 }
 
-impl From<StoredEnvelope> for Envelope {
-    fn from(stored: StoredEnvelope) -> Self {
-        Envelope {
-            v: stored.v,
-            ts: stored.ts,
-            stream: stored.stream,
-            seq: stored.seq,
-            source: stored.source,
-            kind: stored.kind,
+/// The `kind` a line carries: this build's own word for it, or the wire spelling
+/// where this build has no word at all.
+///
+/// The fallback is only ever reached by a spelling [`EventKind`] does not name, so
+/// a kind this build knows can never arrive as one it does not. What is *not* here
+/// is a fallback for anything else on the envelope: a `source` this build cannot
+/// name, a `seq` that is not a number, a missing field are each still a line
+/// nothing can be concluded from, and each is still refused.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredKind {
+    /// A kind in this build's vocabulary.
+    Known(EventKind),
+    /// A kind this build has no word for — a later build's, or one an earlier
+    /// build wrote and this one deleted.
+    Unknown(String),
+}
+
+impl StoredEnvelope {
+    /// The envelope this line is, or the wire spelling of the kind that stopped it
+    /// being one.
+    fn read(self) -> std::result::Result<Envelope, String> {
+        let kind = match self.kind {
+            StoredKind::Known(kind) => kind,
+            StoredKind::Unknown(spelling) => return Err(spelling),
+        };
+        Ok(Envelope {
+            v: self.v,
+            ts: self.ts,
+            stream: self.stream,
+            seq: self.seq,
+            source: self.source,
+            kind,
             // A `push` an older build wrote carries no phase and named no target, so
             // there is nothing to recover the producer's classification from. It reads
             // as the phase a push of the session's own branch is, which is what all but
             // one of the three producers of one emits and the one a session's stream
             // holds — and it is a reading of a record rather than a claim about the
             // push, which is why the phase is stamped from here on.
-            phase: stored
+            phase: self
                 .phase
-                .or_else(|| Phase::of(stored.kind))
+                .or_else(|| Phase::of(kind))
                 .unwrap_or(Phase::Development),
-            labels: stored.labels,
-            payload: stored.payload,
-            artifacts: stored.artifacts,
+            labels: self.labels,
+            payload: self.payload,
+            artifacts: self.artifacts,
+        })
+    }
+}
+
+/// An [`Envelope`] is the *value*, so it is exactly as strict as it has always
+/// been: a kind this build cannot name is a kind it cannot hand over, and pretending
+/// otherwise would put a payload nothing knows how to read behind a type that says
+/// it does. Tolerating one is [`Line`]'s job, one layer out, where the caller can
+/// pass the line over instead of acting on it.
+impl TryFrom<StoredEnvelope> for Envelope {
+    type Error = String;
+
+    fn try_from(stored: StoredEnvelope) -> std::result::Result<Self, Self::Error> {
+        stored
+            .read()
+            .map_err(|kind| format!("unknown variant {kind:?} for an event kind"))
+    }
+}
+
+/// One line of a stream, read as far as this build's vocabulary reaches.
+///
+/// The distinction the readers of a stream are held to. A line that is *not what a
+/// writer left* — torn, of an envelope version this build does not read, stamped in
+/// a way nothing can order — is a gap, and saying so is not negotiable: reporting
+/// "could not look" as "there is none" is how a report about half a record reads as
+/// a report about all of it. A line that is a perfectly good envelope recording
+/// something this build has no word for is not that. There is nothing to conclude
+/// from it and nothing missing from the read either, so it is passed over rather
+/// than announced — which is what a reader of streams a *later* build wrote needs,
+/// and what a reader of streams an earlier one wrote needed and did not have.
+pub(crate) enum Line {
+    /// An envelope of a kind this build knows, and can therefore act on.
+    Known(Envelope),
+    /// A well-formed envelope of a kind this build has no word for.
+    Unknown(UnknownKind),
+}
+
+/// A line whose kind this build cannot name, as much of it as such a reader can use.
+///
+/// Its header and nothing else, deliberately. Whether the line is a *gap* is
+/// decided by the envelope's own fields — the version it declares, the stamp it is
+/// ordered by, the stream it belongs to — and those mean the same thing whatever
+/// happened, so every check a known kind gets this one gets too. The payload is the
+/// part the kind is the key to, so there is nothing here to offer of it.
+pub(crate) struct UnknownKind {
+    /// The envelope schema version the line declares.
+    pub v: u32,
+    /// When it was stamped, unparsed: ordering it is the reader's own check.
+    pub ts: String,
+    /// The stream it names, so attribution is asked of it as of any other line.
+    pub stream: String,
+}
+
+impl Line {
+    /// One line of a stream, tolerant of its kind and of nothing else.
+    pub(crate) fn read(line: &str) -> serde_json::Result<Self> {
+        let stored: StoredEnvelope = serde_json::from_str(line)?;
+        let header = UnknownKind {
+            v: stored.v,
+            ts: stored.ts.clone(),
+            stream: stored.stream.clone(),
+        };
+        Ok(match stored.read() {
+            Ok(envelope) => Line::Known(envelope),
+            Err(_) => Line::Unknown(header),
+        })
+    }
+
+    /// The stream this line names, whether or not its kind has a word here.
+    pub(crate) fn stream(&self) -> &str {
+        match self {
+            Line::Known(envelope) => &envelope.stream,
+            Line::Unknown(header) => &header.stream,
         }
     }
 }

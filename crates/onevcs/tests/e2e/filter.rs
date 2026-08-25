@@ -565,6 +565,87 @@ fn a_line_that_is_not_an_envelope_is_printed_unfiltered_and_refused_under_a_filt
 }
 
 #[test]
+fn a_kind_this_build_has_no_word_for_is_left_out_of_a_filtered_read_rather_than_refusing_it() {
+    // Unfiltered this command hands the line on as the file's own bytes, which is
+    // already what a stream a later build wrote needs. Under a filter it has to read
+    // one, and a kind with no word here cannot be judged by a grammar whose `source`
+    // and `phase` are the envelope's and whose `kind` is this build's own vocabulary.
+    // Left out, then — a record of something this build does not act on — rather than
+    // refused, which is what turned every stream carrying a retired `gate-verdict`
+    // into an error instead of a read.
+    let (fixture, token) = published("feature/retired-kind");
+    let world = &fixture.world;
+    let path = world.home().join("streams").join(format!("{token}.ndjson"));
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test,
+    // as in the torn-line journey above. No interface of this build emits a kind it does
+    // not have, so the line an earlier build wrote and a later one will write can only be
+    // put there directly. Every assertion below still drives the real binary.
+    // What the same two filters answer before the retired line is there at all, so
+    // "nothing was lost with it" is asserted against this run's own record rather
+    // than against a list of kinds a later change to the fixture would falsify.
+    let filtered = |spec: &str| {
+        let run = world
+            .onevcs()
+            .args(["events", &token, "--filter", spec])
+            .output()
+            .expect("the binary runs");
+        assert!(
+            run.status.success(),
+            "a kind with no word here is not a line a filtered read may refuse: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        String::from_utf8_lossy(&run.stdout).into_owned()
+    };
+    const NAMED: &str = r#"{"include": [{"kind": "fetch"}]}"#;
+    const RETIRED_GLOB: &str = r#"{"include": [{"kind": "gate-*"}]}"#;
+    let before = (filtered(NAMED), filtered(RETIRED_GLOB));
+    assert!(!before.0.is_empty(), "this run recorded a fetch");
+    assert!(before.1.is_empty(), "nothing emits a gate-* kind any more");
+
+    let recorded = std::fs::read_to_string(&path).expect("the stream");
+    let retired = serde_json::json!({
+        "v": 1,
+        "ts": "2024-01-01T00:00:00.000Z",
+        "stream": token,
+        "seq": 9999,
+        "source": "vcs",
+        "kind": "gate-verdict",
+        "phase": "development",
+        "labels": {},
+        "payload": {"verdict": "pass"},
+        "artifacts": [],
+    })
+    .to_string();
+    let with_retired = format!("{retired}\n{recorded}");
+    std::fs::write(&path, &with_retired)
+        .expect("a stream an earlier build wrote its own kind into");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    // Unfiltered: byte for byte, the retired line included.
+    let unfiltered = world
+        .onevcs()
+        .args(["events", &token])
+        .output()
+        .expect("the binary runs");
+    assert!(unfiltered.status.success());
+    assert_eq!(String::from_utf8_lossy(&unfiltered.stdout), with_retired);
+
+    // Filtered: the read succeeds, and it answers exactly what it answered before
+    // the retired line was in the file — nothing refused, and nothing of this
+    // build's own lost with it. A filter naming the retired kind itself still
+    // admits nothing: it is not in the vocabulary the grammar judges against, and
+    // an empty answer is not a refusal.
+    assert_eq!(filtered(NAMED), before.0);
+    assert_eq!(filtered(RETIRED_GLOB), before.1);
+    for line in filtered(NAMED).lines() {
+        let event: Value =
+            serde_json::from_str(line).expect("every line handed back is an envelope");
+        assert_eq!(event["kind"], "fetch");
+    }
+}
+
+#[test]
 fn an_event_of_another_session_is_refused_under_a_filter_rather_than_judged_by_it() {
     // Unfiltered, this command reads no values and hands the line on as the file's
     // own bytes. Under a filter it reads every envelope — so an envelope belonging

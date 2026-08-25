@@ -760,7 +760,18 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
                 // that is not an envelope cannot be judged, and one attributed to
                 // another session would be judged against a consumer's statement
                 // about *this* one.
-                if !filter.matches(&stream::attributed(&line, token, line_number)?) {
+                let crate::event::Line::Known(envelope) =
+                    stream::attributed(&line, token, line_number)?
+                else {
+                    // A kind this build has no word for: a filter is a statement
+                    // about the events a consumer wants, and this is not one of
+                    // them however it is spelled — `phase` and `source` are the
+                    // envelope's to answer and the kind is what says how to read
+                    // the rest. Left out rather than refused, so a stream carrying
+                    // a later build's kinds still reads.
+                    continue;
+                };
+                if !filter.matches(&envelope) {
                     continue;
                 }
             }

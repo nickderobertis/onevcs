@@ -613,6 +613,21 @@ question was:
    streams (`onepipeline`) needs either its own superset or an `Other(String)`
    fallback variant here. Worth deciding once, across the three repositories,
    rather than three times.
+
+   **Half-answered, and only for the readers.** An envelope whose `kind` this
+   build has no word for no longer makes that *line* unreadable: the readers pass
+   it over as a kind they do not act on, and every other check the envelope is put
+   to — the version it declares, the stamp it is ordered by, the stream it belongs
+   to — is asked of it exactly as before, so a torn line is still the gap it always
+   was. What decided it was not a merged stream but this crate's own history: two
+   kinds were deleted in 0.11.0 and 30% of the streams on the consuming host became
+   one refusal per line, most expensively in a status read that walks every stream
+   there is. The type is unchanged — `EventKind` still names only what the
+   contract names, and an [`Envelope`] still refuses a kind it cannot name, because
+   its `kind` field is that enum and there is no honest value to put there. So the
+   open half is the one above, unchanged and still a contract question: a consumer
+   that has to know *which* foreign kind it read needs `Other(String)` on the
+   shared type, decided once across the three repositories.
 3. **The bounded-payload constants are documented but not exposed.** The contract
    fixes truncation at 4096 bytes with `"truncated": true`, and the envelope at
    `v: 1`. Neither is a public item the contract names, so neither is exported. An

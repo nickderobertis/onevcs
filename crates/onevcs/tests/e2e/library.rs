@@ -1509,6 +1509,100 @@ fn an_event_stream_refuses_an_envelope_that_belongs_to_another_session() {
 }
 
 #[test]
+fn an_event_stream_passes_over_a_kind_this_build_has_no_word_for() {
+    // A stream is a record, and this build's vocabulary is not the one every line of
+    // one was written with: `gate-started` and `gate-verdict` went with the host-run
+    // gate, and a later build will add kinds this one has never had. Neither is a
+    // torn line. Refusing them turned every stream written before that release into
+    // one refusal per line, which is a reader saying it could not look at a record it
+    // could see perfectly well.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let mine = open(&vcs, "feature/retired-kinds");
+    let theirs = open(&vcs, "feature/retired-kinds-elsewhere");
+
+    let stream_of = |token: &SessionToken| {
+        world
+            .home()
+            .join("streams")
+            .join(format!("{}.ndjson", token.0))
+    };
+    let written = EventStream::open(&mine.token)
+        .expect("the session's stream")
+        .read()
+        .expect("what the session recorded")
+        .into_iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert!(!written.is_empty(), "the session recorded something");
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test,
+    // as in the two journeys above. No interface of this build can emit a kind it does
+    // not have — that is the whole point — so the line an earlier build wrote and a later
+    // one will write can only be put there directly. Every assertion still drives the
+    // real typed reader over the real state root.
+    let retired = |stream: &str, kind: &str| {
+        serde_json::json!({
+            "v": 1,
+            "ts": "2024-01-01T00:00:00.000Z",
+            "stream": stream,
+            "seq": 9999,
+            "source": "vcs",
+            "kind": kind,
+            "phase": "development",
+            "labels": {},
+            "payload": {"verdict": "pass"},
+            "artifacts": [],
+        })
+        .to_string()
+    };
+    let recorded = std::fs::read_to_string(stream_of(&mine.token)).expect("my stream");
+    std::fs::write(
+        stream_of(&mine.token),
+        format!(
+            "{}\n{recorded}{}\n",
+            retired(&mine.token.0, "gate-started"),
+            retired(&mine.token.0, "gate-verdict"),
+        ),
+    )
+    .expect("a stream an earlier build wrote two of its own kinds into");
+
+    // Read whole, with the retired kinds first, last, and this build's own between:
+    // what comes back is exactly what this build has words for, in the order it was
+    // written, and nothing was refused on the way.
+    let read = EventStream::open(&mine.token)
+        .expect("the stream is still readable")
+        .read()
+        .expect("a kind this build does not know is not a line it cannot read");
+    assert_eq!(
+        read.into_iter().map(|event| event.kind).collect::<Vec<_>>(),
+        written,
+        "a retired kind was reported as one of this build's, or one of this build's was lost"
+    );
+
+    // And tolerating the kind tolerates nothing else. Attribution is asked of a line
+    // whose kind has no word here exactly as it is of every other line: a consumer
+    // following several publications cannot detect afterwards that it was handed
+    // somebody else's record.
+    std::fs::write(
+        stream_of(&mine.token),
+        format!("{recorded}{}\n", retired(&theirs.token.0, "gate-verdict")),
+    )
+    .expect("a stream carrying another session's retired event");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let refused = EventStream::open(&mine.token)
+        .expect("the stream is still there")
+        .read()
+        .expect_err("a kind with no word here is still not this session's to hand over");
+    let reason = refused.to_string();
+    assert!(reason.contains(&mine.token.0), "{reason}");
+    assert!(reason.contains(&theirs.token.0), "{reason}");
+    assert!(reason.contains("carries an event of stream"), "{reason}");
+}
+
+#[test]
 fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
     let world = World::new();
     inhabit(&world);
