@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{self, Result};
 use crate::event::{
-    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Phase, Source,
+    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Line, Phase, Source,
 };
 use crate::git::ObjectId;
 use crate::landed::Landed;
@@ -431,7 +431,25 @@ impl EventStream {
         let mut line_number = self.reader.read;
         for line in self.reader.lines()? {
             line_number += 1;
-            let envelope = attributed(&line, &self.session.0, line_number)?;
+            // A kind this build has no word for is passed over rather than handed
+            // on: the value this yields is an [`Envelope`], whose `kind` is this
+            // build's own vocabulary, so there is no honest way to hand one over —
+            // and nothing is lost by not, because a consumer reading through this
+            // type could not have named it either.
+            //
+            // llmlint: ignore[boundary_inputs_validated] the two refusals this reader owes
+            // are `attributed`'s, called below, and both have been asked of this line
+            // before the `else` arm can discard it: a line that is not an envelope, and
+            // one belonging to another stream. The envelope's *version* and its *stamp*
+            // are not checked here and
+            // never have been, for any line — this reader hands back what a writer left
+            // and `status` is the surface that reports a version it cannot read or a
+            // stamp it cannot order, as a gap in its notes. So passing over a kindless
+            // line removes no check a line with a kind gets; it removes a value nothing
+            // downstream could have named.
+            let Line::Known(envelope) = attributed(&line, &self.session.0, line_number)? else {
+                continue;
+            };
             // Filtered last, and only after both refusals above: a filter says which
             // events a consumer wants, never which lines of the file are worth
             // reading. A stream that is not what a writer left is a refusal whichever
@@ -445,7 +463,7 @@ impl EventStream {
             if !self.phases.contains(&envelope.phase) {
                 continue;
             }
-            events.push(envelope);
+            events.push(*envelope);
         }
         if let Some(correlated) = &mut self.releases {
             events.extend(correlated.fresh(&self.session, &self.filter)?);
@@ -677,19 +695,23 @@ fn listed(phases: &BTreeSet<Phase>) -> String {
 /// record nothing can be concluded from, not one to hand on as this session's — and
 /// a *filter* judging one session's event against another session's is the shape a
 /// consumer following several publications can never detect afterwards.
-pub fn attributed(line: &str, session: &str, line_number: usize) -> Result<Envelope> {
-    let envelope: Envelope = serde_json::from_str(line).map_err(|e| {
+///
+/// Both refusals are asked of every line, including one whose kind has no word in
+/// this build: [`Line`] tolerates the kind and nothing else, and it is the caller
+/// that decides what to do with a line it has no word for.
+pub fn attributed(line: &str, session: &str, line_number: usize) -> Result<Line> {
+    let read = Line::read(line).map_err(|e| {
         error::invalid(format!(
             "line {line_number} of the stream for {session:?} is not an event envelope: {e}"
         ))
     })?;
-    if envelope.stream != session {
+    if read.stream() != session {
         return Err(error::invalid(format!(
             "line {line_number} of the stream for {session:?} carries an event of stream {:?}",
-            envelope.stream
+            read.stream()
         )));
     }
-    Ok(envelope)
+    Ok(read)
 }
 
 /// How many events a stream file already holds.

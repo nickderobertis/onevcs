@@ -34,7 +34,7 @@ use time::{Date, Month, Time};
 use url::Url;
 
 use crate::error::{Error, Result};
-use crate::event::EventKind;
+use crate::event::{EventKind, Line};
 use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
@@ -1329,8 +1329,8 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         }
     };
     for (index, line) in raw.lines().enumerate() {
-        let event = match stream::attributed(line, token, index + 1) {
-            Ok(event) => event,
+        let read = match stream::attributed(line, token, index + 1) {
+            Ok(read) => read,
             Err(refusal) => {
                 notes.push(format!(
                     "{refusal}, so whatever it recorded is not in this report ({})",
@@ -1339,31 +1339,48 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                 continue;
             }
         };
+        // Every check below is asked of a line whose kind has no word here too,
+        // because each of them is about the envelope rather than about what it
+        // recorded — which is why the header is what a kindless line hands back.
+        let (v, ts) = match &read {
+            Line::Known(event) => (event.v, event.ts.as_str()),
+            Line::Unknown(header) => (header.v, header.ts.as_str()),
+        };
         // The envelope is versioned and this report orders by its timestamp, so an
         // envelope of a shape this build does not read, or one whose stamp cannot be
         // ordered against the rest, is a gap said out loud rather than a value acted
         // on. Nothing safety-critical rests on either: whether the work *landed* is
         // read off the base's content.
-        if event.v != stream::ENVELOPE_VERSION {
+        if v != stream::ENVELOPE_VERSION {
             notes.push(format!(
                 "line {} of the event stream at {} declares envelope version {}, and this build \
                  reads version {}, so what it recorded is not in this report",
                 index + 1,
                 path.display(),
-                event.v,
+                v,
                 stream::ENVELOPE_VERSION,
             ));
             continue;
         }
-        let Some(at) = Stamp::parse(&event.ts) else {
+        let Some(at) = Stamp::parse(ts) else {
             notes.push(format!(
                 "line {} of the event stream at {} is stamped {:?}, which is not the RFC3339 \
                  millisecond UTC the envelope declares, so what it recorded cannot be ordered \
                  against the rest and is not in this report",
                 index + 1,
                 path.display(),
-                event.ts,
+                ts,
             ));
+            continue;
+        };
+        // …and only here is it passed over, in silence. This read walks *every*
+        // stream under the state root to answer one question about one piece of
+        // work, so a kind it has no word for would cost a note per line across all
+        // of them — which is what a retired `gate-started` did, and the report an
+        // operator is told is the only thing that says where the work is arrived
+        // buried under hundreds of them. Nothing is missing from the answer: this
+        // match acts on six kinds, and a kind with no word here is not one of them.
+        let Line::Known(event) = read else {
             continue;
         };
         if record.identity.is_none() {

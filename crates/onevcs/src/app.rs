@@ -760,7 +760,27 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
                 // that is not an envelope cannot be judged, and one attributed to
                 // another session would be judged against a consumer's statement
                 // about *this* one.
-                if !filter.matches(&stream::attributed(&line, token, line_number)?) {
+                //
+                // llmlint: ignore[boundary_inputs_validated] `attributed`, called below, is
+                // the check, and it has run over this line before the `else` arm can
+                // discard it: a line that is not an envelope and one belonging to another
+                // stream are both refused there. The envelope's version and its stamp are not this
+                // surface's to judge and never have been — `onevcs events` renders one
+                // file, `status` is what reports a version it cannot read as a gap — so
+                // what falls through here is a value no filter in this grammar could have
+                // matched, not a line that went unchecked.
+                let crate::event::Line::Known(envelope) =
+                    stream::attributed(&line, token, line_number)?
+                else {
+                    // A kind this build has no word for: a filter is a statement
+                    // about the events a consumer wants, and this is not one of
+                    // them however it is spelled — `phase` and `source` are the
+                    // envelope's to answer and the kind is what says how to read
+                    // the rest. Left out rather than refused, so a stream carrying
+                    // a later build's kinds still reads.
+                    continue;
+                };
+                if !filter.matches(&envelope) {
                     continue;
                 }
             }

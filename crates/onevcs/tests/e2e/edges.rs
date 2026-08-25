@@ -21,6 +21,7 @@
 // it. Scripting the substituted host is likewise how a test says what GitHub reports;
 // it is the external boundary, not an internal being reached around. Every assertion
 // below still drives the real binary.
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use predicates::prelude::*;
@@ -2386,20 +2387,107 @@ fn a_train_whose_push_the_merge_path_rejects_says_so_after_the_base_advanced() {
     // One push carries the whole train, so the rejection is about the aggregate: the
     // base advanced locally before it, and what the merge path refused is everything
     // the train had landed on that base.
-    fixture
+    let refused = fixture
         .world
         .onevcs()
         .args(["integrate", "claude/one", "--push"])
         .current_dir(&fixture.checkout)
+        .output()
+        .expect("the binary runs");
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(stderr.contains("rejected by the merge path"), "{stderr}");
+    // A train's push is a publishing push, so its refusal is diagnosable on the same
+    // terms as a publication's: what the hook wrote, and where the whole of it is. A
+    // train keeps no copy under a run root — its workspace goes when it returns — so
+    // the artifact is the one place there is, and the refusal names that one.
+    assert!(
+        stderr.contains("the aggregate gate says no"),
+        "the refusal quotes nothing the merge path wrote:\n{stderr}"
+    );
+    let id = stderr
+        .split_once("artifact ")
+        .map(|(_, rest)| rest.split_whitespace().next().unwrap_or("").to_owned())
+        .expect("the refusal names where the whole of it is");
+    fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", &id])
         .assert()
-        .code(1)
-        .stderr(predicate::str::contains("rejected by the merge path"));
+        .success()
+        .stdout(predicate::str::contains("the aggregate gate says no"));
     assert_eq!(fixture.origin_log().len(), 1, "nothing reached the origin");
     assert_ne!(
         fixture.world.git(&fixture.checkout, &["rev-parse", "HEAD"]),
         fixture.world.git(&fixture.origin, &["rev-parse", "main"]),
         "the local base advanced, which is what the push then carried"
     );
+}
+
+#[test]
+fn a_refusal_whose_output_could_not_be_stored_says_so_rather_than_naming_an_empty_place() {
+    // The other half of naming where the evidence is. A refusal that pointed at an
+    // artifact the state root never took would send an operator to `onevcs artifact
+    // cat` an id that answers nothing — which is worse than saying nothing, because
+    // it reads as evidence that exists. A train keeps no copy under a run root, so
+    // with the artifact store refusing the bytes there is nowhere at all, and the
+    // refusal has to say that and hand over what it can still quote.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    fixture.world.install_pre_push(
+        &fixture.checkout,
+        "echo 'the aggregate gate says no' >&2; exit 1",
+    );
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "claude/one", "main"],
+    );
+    fixture
+        .world
+        .commit_file(&fixture.checkout, "one.txt", "one\n", "feat: the candidate");
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    // A state root a host shares, in the state a full disk or somebody else's
+    // permissions leave it in: the directory is there and will not take a file.
+    let artifacts = fixture.world.home().join("artifacts");
+    std::fs::create_dir_all(&artifacts).expect("the artifact store");
+    let original = std::fs::metadata(&artifacts)
+        .expect("the artifact store")
+        .permissions();
+    // Owner read and traverse, and no write to anybody: the process under test owns
+    // this directory, so taking the owner's write bit is the whole of what makes the
+    // store refuse — and nothing here needs a group or another user to reach it.
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o500))
+        .expect("an artifact store nothing may write to");
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["integrate", "claude/one", "--push"])
+        .current_dir(&fixture.checkout)
+        .output()
+        .expect("the binary runs");
+    std::fs::set_permissions(&artifacts, original).expect("the artifact store is restored");
+
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(stderr.contains("rejected by the merge path"), "{stderr}");
+    assert!(
+        stderr.contains("could not be stored anywhere"),
+        "the refusal does not say the evidence was lost:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("`onevcs artifact cat"),
+        "the refusal names an artifact nothing stored:\n{stderr}"
+    );
+    // …and the excerpt is still handed over, because it is now the only account of
+    // the refusal there is.
+    assert!(
+        stderr.contains("the aggregate gate says no"),
+        "the one surviving account of the refusal was dropped too:\n{stderr}"
+    );
+    assert_eq!(fixture.origin_log().len(), 1, "nothing reached the origin");
 }
 
 #[test]
