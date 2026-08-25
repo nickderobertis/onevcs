@@ -593,7 +593,7 @@ impl GitHub {
         // that found the change request while `statusCheckRollup` needs far more —
         // a credential refused for one of them was already refused for the call.
         let value = self.view(&cr.id.0, "headRefOid,statusCheckRollup")?;
-        let head = reported_sha(&value, "headRefOid");
+        let head = reported_sha(&value, "headRefOid")?;
         let reported = value.get("statusCheckRollup").ok_or_else(|| {
             invalid(format!(
                 "gh pr view reported no checks at all on {}",
@@ -687,7 +687,7 @@ impl GitHub {
             // filtered on: what the host says it ran against is the host's answer,
             // and a build that stamped the question onto the answer could not tell a
             // host that disagreed.
-            let head = reported_sha(run, "head_sha");
+            let head = reported_sha(run, "head_sha")?;
             let listing = self.api(&format!(
                 "repos/{}/actions/runs/{id}/jobs?per_page={PAGE}",
                 self.repo
@@ -837,13 +837,24 @@ fn path_segment(value: &str) -> String {
 /// It arrives off a host response and goes on to be one parameter of several, so a
 /// value carrying anything but hex digits could address a query nobody wrote.
 fn commit(sha: &Sha) -> Result<&str> {
-    if sha.0.is_empty() || !sha.0.chars().all(|c| c.is_ascii_hexdigit()) {
+    if !is_commit_hash(&sha.0) {
         return Err(invalid(format!(
             "{:?} is not a commit hash, so the checks reported against it cannot be asked for",
             sha.0
         )));
     }
     Ok(&sha.0)
+}
+
+/// Whether text the host handed over is the shape of a commit hash.
+///
+/// The one shape rule, so the two boundaries that read a commit off this host agree
+/// about what one is: the commit an Actions query is built from ([`commit`]) and the
+/// commit a host says it attached a check to ([`reported_sha`]). Shared as the rule
+/// rather than as the refusal because each of those refusals costs something
+/// different and says so.
+fn is_commit_hash(sha: &str) -> bool {
+    !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// One workflow job, as the Actions API reports it.
@@ -907,18 +918,38 @@ fn job(entry: &serde_json::Value, cr: &ChangeRequest, head: Option<&Sha>) -> Res
 /// The commit a host response names, off whichever field that response spells it
 /// in, or `None` where it named none.
 ///
-/// Lenient where [`head_sha`] refuses, and the difference is what each answer is
-/// *for*: a change request with no head is one this build cannot go on to ask the
-/// Actions API about at all, while a check whose source would not say which commit
-/// it is about is still a check, and reading it is still the answer. Inventing one
-/// is the thing that must not happen — which is why this reads `None` rather than
-/// falling back to the head the caller already holds.
-fn reported_sha(value: &serde_json::Value, field: &str) -> Option<Sha> {
-    value
+/// Lenient about *absence* where [`head_sha`] refuses, and the difference is what
+/// each answer is for: a change request with no head is one this build cannot go on
+/// to ask the Actions API about at all, while a check whose source would not say
+/// which commit it is about is still a check, and reading it is still the answer.
+/// Inventing one is the thing that must not happen — which is why an absent field
+/// reads `None` rather than falling back to the head the caller already holds.
+///
+/// Strict about *shape* exactly where it is lenient about absence, and for the same
+/// reason. This is host-supplied text arriving at a trust boundary, and it is held
+/// to [`is_commit_hash`] like every other commit read off this host. Passed through
+/// unchecked it would be worse than a refusal rather than more forgiving than one:
+/// what a publication does with this value is compare it to the commit it pushed,
+/// so anything that is not a commit hash matches nothing and reads as "the host has
+/// said nothing about your commit yet" — silence — for as long as the watch runs,
+/// and then times out naming a commit the host never had trouble with. A malformed
+/// answer must not be able to wear the one shape this path exists to keep distinct
+/// from an answer.
+fn reported_sha(value: &serde_json::Value, field: &str) -> Result<Option<Sha>> {
+    let Some(reported) = value
         .get(field)
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
-        .map(|sha| Sha(sha.to_owned()))
+    else {
+        return Ok(None);
+    };
+    if !is_commit_hash(reported) {
+        return Err(invalid(format!(
+            "gh reported {reported:?} as the {field} of a check, and that is not a commit hash, \
+             so which commit the check is attached to cannot be decided"
+        )));
+    }
+    Ok(Some(Sha(reported.to_owned())))
 }
 
 /// Where the host says something is, off whichever field that response spells it

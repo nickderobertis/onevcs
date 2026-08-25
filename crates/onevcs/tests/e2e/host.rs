@@ -2111,6 +2111,67 @@ fn a_publication_whose_checks_all_name_another_commit_waits_and_says_so() {
 }
 
 #[test]
+fn a_commit_the_host_says_a_check_is_attached_to_is_not_taken_on_trust() {
+    // The commit a check carries is host-supplied text arriving at a trust boundary,
+    // and what this crate does with it is compare it against the commit a
+    // publication pushed. Taken on trust, anything that is not a commit hash matches
+    // nothing — and so reads as the one state it must never be confused with: "the
+    // host has said nothing about your commit yet". The publication then acts on
+    // silence, and nothing that follows from that is right: run without the refusal
+    // this journey pins, its `change-auto` half armed the host's own auto-merge and
+    // reported the change **merged** while this crate believed nothing had been
+    // reported about the commit it had just pushed.
+    //
+    // Once per source, because each spells the commit in a field of its own and
+    // neither is reachable from the other: the rollup renders `headRefOid`, and a
+    // workflow run carries its own `head_sha`, which is the only one a fine-grained
+    // credential ever sees.
+    for (shape, field) in [
+        ("head-not-a-commit", "headRefOid"),
+        ("actions-only-run-head-not-a-commit", "head_sha"),
+    ] {
+        let hosted = Hosted::new(AUTOMATED);
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }]);
+        hosted.world.answer_malformed(shape);
+        let token = hosted.change(
+            &format!("feature/{shape}"),
+            &format!("feat: add the {shape} thing"),
+        );
+
+        hosted
+            .world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+            .args(["publish", &token])
+            .assert()
+            // 1 rather than 2, for the reason every other unreadable merge path here
+            // is one: the push had already reached the remote.
+            .code(1)
+            .stderr(predicate::str::contains("pushed, merge path unverified"))
+            .stderr(predicate::str::contains(format!(
+                "as the {field} of a check, and that is not a commit hash"
+            )))
+            // Quoting what the host actually said, because "the host answered
+            // wrongly" without the answer sends somebody to read the API by hand.
+            .stderr(predicate::str::contains("the tip of"))
+            // Refused where it arrived rather than waited out: this is the sentence
+            // the bound would have ended with had the value been taken on trust, and
+            // it names the wrong problem.
+            .stderr(predicate::str::contains("is attached to some other commit").not());
+        assert_eq!(
+            hosted.origin_log().len(),
+            1,
+            "nothing may land while {shape} leaves the commit its checks are about undecidable"
+        );
+    }
+}
+
+#[test]
 fn a_failing_required_check_stops_the_publication_and_names_it() {
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[Check {

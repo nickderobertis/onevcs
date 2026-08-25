@@ -483,6 +483,13 @@ impl World {
     /// entries back, `actions-only-rules-not-a-list` answers about the rulesets with
     /// something that is not a list of them, and `actions-only-rules-unsaid` names a
     /// ruleset that requires status checks and will not say which.
+    ///
+    /// Two more are about the commit a check says it is attached to, one per source:
+    /// `head-not-a-commit` answers the rollup's `headRefOid` with something that is
+    /// not a commit hash, and `actions-only-run-head-not-a-commit` does the same to
+    /// a workflow run's own `head_sha`. Both are host-supplied text a publication
+    /// goes on to compare against the commit it pushed, so neither may be taken on
+    /// trust.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -827,6 +834,13 @@ case "$command" in
           printf '{"total_count":0,"workflow_runs":[]}\n'
           exit 0
         fi
+        # A run whose own record says it ran against something that is not a commit
+        # hash. The commit a job's check is attached to is taken off this field
+        # rather than off the query, so this is the one place that answer can arrive
+        # malformed on the Actions path.
+        if [ "$malformed" = "actions-only-run-head-not-a-commit" ]; then
+          head_sha="the tip of feature/x"
+        fi
         printf '{"total_count":1,"workflow_runs":[{"id":1,"head_sha":"%s","status":"completed"}]}\n' "$head_sha"
         exit 0 ;;
       */actions/runs/*/jobs)
@@ -1147,6 +1161,10 @@ case "$subcommand" in
   view)
     . "$STATE/pr-$number.env"
     PR_HEAD_SHA="$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")"
+    # A host that answers with a head that is not a commit hash at all. The rollup
+    # is rendered from this same field, so what a check is attached to arrives
+    # malformed here and nowhere else on that path.
+    if [ "$malformed" = "head-not-a-commit" ]; then PR_HEAD_SHA="the tip of the branch"; fi
     if [ -f "$STATE/closed-$number" ]; then PR_STATE=CLOSED; fi
     # `gh` returns exactly the fields it was asked for, and so does this: a caller
     # that reads a field out of an answer it never requested is a caller that works
