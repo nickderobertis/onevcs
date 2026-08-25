@@ -551,6 +551,43 @@ fn a_script_probe_runs_from_the_publication_checkout_at_its_base_and_never_from_
 }
 
 #[test]
+fn a_probe_finishes_when_it_exits_while_an_inherited_pipe_handle_stays_open() {
+    let body = "(sleep 5; echo finished > \"$HOME/probe-holder.finished\") & \
+                echo $! > \"$HOME/probe-holder.pid\"; echo 3.0.0";
+    let releasing = Releasing::with_criteria("{}", &probing("crate", body));
+
+    let started = std::time::Instant::now();
+    let latest = releasing.json(&["latest", "project", "--target", "crate"]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "probing follows the probe's exit, not a descendant's inherited pipe handle"
+    );
+    assert_eq!(
+        latest,
+        serde_json::json!({"state": "released", "version": "3.0.0"}),
+        "the completed probe's output is still captured"
+    );
+
+    let pid = std::fs::read_to_string(releasing.fixture.world.path("probe-holder.pid"))
+        .expect("the unrelated holder recorded its pid")
+        .trim()
+        .to_owned();
+    let finished = releasing.fixture.world.path("probe-holder.finished");
+    assert!(
+        !pid.is_empty() && !finished.exists(),
+        "holder {pid:?} was started and still outlives the probe"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !finished.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        finished.exists(),
+        "the holder finished and was not left behind"
+    );
+}
+
+#[test]
 fn a_script_probe_with_nowhere_to_run_from_answers_not_answered_rather_than_failing() {
     // Matched by criteria that name nothing, which is the rules file's own "every
     // repository": a `path:` rule could not answer the second half of this, because

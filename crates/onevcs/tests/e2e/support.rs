@@ -62,7 +62,7 @@ pub fn workspace_root() -> PathBuf {
 }
 
 #[cfg(windows)]
-fn plain_path(path: PathBuf) -> PathBuf {
+pub fn plain_path(path: PathBuf) -> PathBuf {
     match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
         Some(plain) => PathBuf::from(plain),
         None => path,
@@ -70,7 +70,7 @@ fn plain_path(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(not(windows))]
-fn plain_path(path: PathBuf) -> PathBuf {
+pub fn plain_path(path: PathBuf) -> PathBuf {
     path
 }
 

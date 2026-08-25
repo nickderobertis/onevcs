@@ -354,7 +354,40 @@ without building its own premise would prove nothing.
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
-builds the crate and runs the contract, boundary, and packaging suites.
+builds the crate and runs the contract, boundary, packaging, and inherited-pipe
+suites.
+
+`tests/e2e/inherited_pipes.rs` carries a fixture of its own rather than
+`world.rs`'s, because it has to run where `world.rs` cannot. It holds one rule in
+both directions: **a command's collected output begins and ends with that command**,
+so a run must not wait on a pipe the command no longer owns, and a caller must never
+be shown bytes an unrelated process put in that pipe afterwards. The second half is
+the one that reads as harmless and is not — on the stream carrying a probe's answer,
+one added line is not a stray byte, it is the loss of the version the probe wrote.
+Three things about the module are the point rather than an implementation detail.
+Its unrelated process — the one still owning the write end of a finished command's
+pipe — is launched by the journey and never by the command under test, because a
+descendant is killed by the very teardown it exists to outlive. Its stand-in `git`
+and its script probe are one `std`-only program compiled by `rustc` at journey time
+(`tests/e2e/programs/pipe_holder.rs`), because both have to be executable on every
+host and a shell script is not; that stand-in runs the real git, on the same pipe.
+And it is Linux and Windows only: taking a duplicate of another process's pipe is
+`/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and macOS offers an
+unrelated process neither.
+
+**A fixture that selects a repository by `path:` must spell it the way the registry
+holds it, which is not the way the fixture built it.** `policy::matches` compares a
+rule's `path:` literally against the registered checkout, and that is
+`canonicalize`'s answer — on Windows the verbatim `\\?\` namespace, which no plain
+path equals. So ask the binary (`onevcs resolve` answers `publication_checkout`)
+rather than composing the path. A fixture that composed one matched no repository on
+Windows and only there, which is not how it reads: no release target existed, the
+command refused before running anything, and the three probe-driven inherited-pipe
+journeys waited out their whole bound and then blamed the stand-in for not
+publishing a pipe nobody had asked it for. `just gate` runs on Linux, where the two
+spellings are the same string, so this is another class of defect only `cross` sees
+— and it is why `published` in that module takes the running command and refuses to
+keep waiting on one that has already ended.
 
 Two journeys go one step narrower and skip on Apple platforms: the ones about a path
 listing this process cannot decode. Their premise is a filename that is not UTF-8,

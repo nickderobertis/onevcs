@@ -19,10 +19,8 @@
 //! constructed environment** rather than the caller's inherited one, and in a
 //! working directory decided here rather than wherever the caller happened to be.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::releases::{Probe, ReleaseAnswer};
@@ -45,7 +43,7 @@ const PASSED_THROUGH: &[&str] = &[
     "USERPROFILE",
 ];
 
-/// How often a probe that has drained is asked whether it has exited.
+/// How often a running probe is asked whether it has exited.
 const POLL: Duration = Duration::from_millis(20);
 
 /// What running one probe produced: its answer, and how long it took.
@@ -185,44 +183,23 @@ fn read(mut command: Command, bound: Duration, label: &str) -> ReleaseAnswer {
         Err(failure) => return not_answered(format!("{label} could not be started: {failure}")),
     };
     let started = Instant::now();
-    let mut stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    let (sender, receiver) = mpsc::channel();
-    let out_sender = sender.clone();
-    let out_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer);
-        let _ = out_sender.send(());
-        buffer
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stderr.read_to_end(&mut buffer);
-        let _ = sender.send(());
-        buffer
-    });
+    let out_reader = git::PipeCapture::start(child.stdout.take().expect("stdout was piped"));
+    let err_reader = git::PipeCapture::start(child.stderr.take().expect("stderr was piped"));
 
-    let drained = drained_within(&receiver, started, bound);
-    let exited = if drained {
-        exited_within(&mut child, started, bound)
-    } else {
-        None
-    };
+    let exited = exited_within(&mut child, started, bound);
     let Some(status) = exited else {
         git::terminate_group(&child);
         let _ = child.kill();
         let _ = child.wait();
-        // Both readers are joined rather than abandoned: each holds a pipe, and a
-        // thread left holding one keeps this process's own descriptor open.
-        let _ = out_reader.join();
-        let _ = err_reader.join();
+        let _ = out_reader.finish();
+        let _ = err_reader.finish();
         return not_answered(format!(
             "{label} timed out after {bound}s",
             bound = bound.as_secs()
         ));
     };
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
+    let stdout = out_reader.finish();
+    let stderr = err_reader.finish();
     let status = match status {
         Ok(status) => status,
         Err(failure) => return not_answered(format!("{label} could not be collected: {failure}")),
@@ -290,24 +267,10 @@ fn diagnosis(stderr: &[u8]) -> String {
     format!(" and said {clipped:?}")
 }
 
-/// Wait for both pipes to reach EOF within the bound, counted from `started`.
-fn drained_within(receiver: &mpsc::Receiver<()>, started: Instant, bound: Duration) -> bool {
-    for _ in 0..2 {
-        if receiver
-            .recv_timeout(bound.saturating_sub(started.elapsed()))
-            .is_err()
-        {
-            return false;
-        }
-    }
-    true
-}
-
 /// Collect the child's exit within the same bound its pipes were read under.
 ///
-/// Draining is not exiting: a probe that closes both streams and then keeps running
-/// has sent every EOF it will ever send while still holding the process, and a
-/// `wait` outside the bound would leave that bound silently not applying.
+/// Output is drained while this polls, but only the probe's status decides that it
+/// finished. A `wait` outside the bound would leave that bound silently not applying.
 fn exited_within(
     child: &mut Child,
     started: Instant,

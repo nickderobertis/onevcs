@@ -3900,10 +3900,10 @@ fn a_payload_larger_than_the_bound_is_cut_and_says_so() {
     assert!(assert.get_output().stdout.len() > 4096);
 }
 
-/// Lines enough to put several pipe buffers through one of a hook's streams. A
-/// Linux pipe holds 64 KiB unless an operator has raised it, and a line here is
-/// around sixty bytes.
-const PIPE_FILLING_LINES: usize = 3000;
+/// Enough lines to leave megabytes queued between a fast pipe reader and its
+/// collector when the command exits. This is deliberately far beyond both a pipe
+/// buffer and the former fixed post-exit scheduling allowance.
+const PIPE_FILLING_LINES: usize = 100_000;
 /// The volume the merge-path failure was measured at: twice a pipe's default
 /// capacity, which is what a verification wedged writing.
 const A_WEDGING_VOLUME: usize = 128 * 1024;
@@ -3925,10 +3925,10 @@ const CAPTURE_BOUND: std::time::Duration = std::time::Duration::from_secs(300);
 fn a_loud_hook(status: i32) -> String {
     format!(
         "echo the hook began its run; \
-         i=0; while [ $i -lt {PIPE_FILLING_LINES} ]; \
-         do echo the hook is reporting line $i of what it did; i=$((i+1)); done; \
-         j=0; while [ $j -lt {PIPE_FILLING_LINES} ]; \
-         do echo the hook is complaining about line $j of what it read >&2; j=$((j+1)); done; \
+         awk 'BEGIN {{ for (i=0; i<{PIPE_FILLING_LINES}; i++) \
+         print \"the hook is reporting line \" i \" of what it did\" }}'; \
+         awk 'BEGIN {{ for (i=0; i<{PIPE_FILLING_LINES}; i++) \
+         print \"the hook is complaining about line \" i \" of what it read\" > \"/dev/stderr\" }}'; \
          echo the hook finished its run; exit {status}"
     )
 }

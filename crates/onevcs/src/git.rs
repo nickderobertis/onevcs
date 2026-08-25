@@ -21,7 +21,8 @@ use std::io::Read;
 use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
@@ -39,11 +40,7 @@ pub const DEFAULT_TIMEOUT_SECONDS: f64 = 600.0;
 /// tens of minutes, and this leaves room for one slowed by everything else on the
 /// host without letting a genuinely hung push sit forever.
 pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
-/// How long a fired bound waits for git's pipes after terminating its group. Only
-/// a descendant this process may not signal can hold them past that, and hanging
-/// there would defeat the bound that just fired.
-const DRAIN: Duration = Duration::from_secs(30);
-/// How often a child that has drained without exiting is asked whether it has gone.
+/// How often a running child is asked whether it has exited.
 /// There is no portable wait that takes a deadline, so this is what stands in for
 /// one; small enough to cost an ordinary run nothing, and large enough that a hook
 /// running out its whole bound is not asked a million times.
@@ -195,53 +192,19 @@ fn bounded(
 
     let mut child = command.spawn().map_err(unspawnable)?;
 
-    // Bytes, decoded by whoever asked for the run, and the read's own result
-    // deliberately dropped: what each thread owes the wait below is the EOF signal,
-    // which it has to send whether the read ended or broke, and a read that broke
-    // still leaves behind everything it had already taken.
-    let mut stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    let (sender, receiver) = mpsc::channel();
-    let out_sender = sender.clone();
-    let out_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer);
-        let _ = out_sender.send(());
-        buffer
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stderr.read_to_end(&mut buffer);
-        let _ = sender.send(());
-        buffer
-    });
+    // Bytes are handed over as they are read, rather than only at EOF. The child
+    // exit below is the lifetime signal; EOF only lets a reader retire early.
+    let out_reader = PipeCapture::start(child.stdout.take().expect("stdout was piped"));
+    let err_reader = PipeCapture::start(child.stderr.take().expect("stderr was piped"));
 
-    // Both pipes reaching EOF is what proves nothing git started is still writing.
-    // Waiting on the child alone would return while a hook's orphaned child still
-    // holds them, which is the leak the group teardown below exists to prevent.
-    let drained = wait_for_both(&receiver, started, bound);
-    // …and draining is not exiting. A hook that closes both streams and then keeps
-    // running has sent every EOF it will ever send while still holding the process,
-    // so the exit is collected under that same deadline rather than after it. Both
-    // halves are the one bound the caller set, and a `wait` outside it would leave
-    // that bound silently not applying to the run they set it for.
-    let exited = if drained {
-        wait_for_exit(&mut child, started, bound)
-    } else {
-        None
-    };
+    let exited = wait_for_exit(&mut child, started, bound);
 
     let Some(collected) = exited else {
         terminate_group(&child);
-        // Only pipes that have not reached EOF are worth waiting for: a hook that
-        // closed both and then hung has nothing left to send, and DRAIN spent on a
-        // second EOF that will never come is DRAIN added to the fired bound.
-        if drained || !wait_for_both(&receiver, Instant::now(), DRAIN) {
-            let _ = child.kill();
-        }
+        let _ = child.kill();
         let _ = child.wait();
-        let _ = out_reader.join();
-        let _ = err_reader.join();
+        let _ = out_reader.finish();
+        let _ = err_reader.finish();
         let elapsed = started.elapsed().as_secs_f64();
         let (knob, _) = class.knob();
         return Err(Error::Invalid {
@@ -253,12 +216,111 @@ fn bounded(
     };
 
     let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
+    // The child's exit is completion. Each non-blocking reader is then asked to
+    // take every byte already buffered and stop at the first empty read, even when
+    // an unrelated process still owns a duplicate write handle. Joining is now a
+    // deterministic hand-off, not a scheduling window and not a wait for EOF.
+    let out = out_reader.finish();
+    let err = err_reader.finish();
     Ok(Ran {
         status: status.code().unwrap_or(128),
-        stdout: out_reader.join().unwrap_or_default(),
-        stderr: err_reader.join().unwrap_or_default(),
+        stdout: out,
+        stderr: err,
     })
 }
+
+pub(crate) struct PipeCapture {
+    stopping: Arc<AtomicBool>,
+    reader: std::thread::JoinHandle<Vec<u8>>,
+}
+
+impl PipeCapture {
+    pub(crate) fn start<R: PipeRead + Send + 'static>(mut pipe: R) -> Self {
+        pipe.nonblocking();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&stopping);
+        let reader = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match pipe.read_available(&mut chunk) {
+                    Ok(0) if requested.load(Ordering::Acquire) => break,
+                    Ok(0) => std::thread::sleep(EXIT_POLL),
+                    Ok(read) => output.extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if requested.load(Ordering::Acquire) {
+                            break;
+                        }
+                        std::thread::sleep(EXIT_POLL);
+                    }
+                    Err(_) => break,
+                }
+            }
+            output
+        });
+        Self { stopping, reader }
+    }
+
+    pub(crate) fn finish(self) -> Vec<u8> {
+        self.stopping.store(true, Ordering::Release);
+        self.reader.join().unwrap_or_default()
+    }
+}
+
+#[cfg(unix)]
+pub(crate) trait PipeRead: Read + std::os::fd::AsRawFd {
+    fn nonblocking(&mut self) {
+        let descriptor = self.as_raw_fd();
+        // SAFETY: this is the live descriptor owned by `self`; both calls only
+        // inspect and add the non-blocking status flag to that descriptor.
+        unsafe {
+            let flags = libc::fcntl(descriptor, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+    }
+
+    fn read_available(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.read(buffer)
+    }
+}
+
+#[cfg(unix)]
+impl<T: Read + std::os::fd::AsRawFd> PipeRead for T {}
+
+#[cfg(windows)]
+pub(crate) trait PipeRead: Read + std::os::windows::io::AsRawHandle {
+    fn nonblocking(&mut self) {}
+
+    fn read_available(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        let mut available = 0_u32;
+        // SAFETY: the handle belongs to `self`; no output buffer is supplied, and
+        // `available` is a valid out pointer for the duration of the call.
+        let succeeded = unsafe {
+            PeekNamedPipe(
+                self.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if succeeded == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if available == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+        }
+        let readable = buffer.len().min(available as usize);
+        self.read(&mut buffer[..readable])
+    }
+}
+
+#[cfg(windows)]
+impl<T: Read + std::os::windows::io::AsRawHandle> PipeRead for T {}
 
 /// One bounded run's own answer: how it ended, and the bytes it wrote.
 ///
@@ -475,32 +537,12 @@ fn runs_repository_hooks(args: &[&str]) -> bool {
         .any(|command| args.len() >= command.len() && &args[..command.len()] == *command)
 }
 
-/// Wait for both pipe readers to report EOF, or give up once `bound` has passed
-/// since `started`.
-///
-/// How much of the bound is left, rather than the instant it runs out at: adding a
-/// `Duration` to an `Instant` panics on overflow, and a bound is external
-/// configuration, so a deadline built from one is a misconfigured knob arriving as
-/// a crash. Nothing in this module advances an `Instant`, so there is no value of
-/// it left that could.
-fn wait_for_both(receiver: &mpsc::Receiver<()>, started: Instant, bound: Duration) -> bool {
-    for _ in 0..2 {
-        let remaining = bound.saturating_sub(started.elapsed());
-        if receiver.recv_timeout(remaining).is_err() {
-            return false;
-        }
-    }
-    true
-}
-
 /// The child's own exit, collected within the same bound its pipes were read
 /// under, or nothing at all once that bound has passed since `started`.
 ///
-/// Both pipes reaching EOF does not prove the process is gone — a hook that closes
-/// stdout and stderr and then keeps running has drained without exiting — and
-/// `wait` carries no bound of its own, so asked there it would sit for as long as
-/// that hook lives. A bound that silently stops applying is worse than none, because
-/// the caller who set it believes they are covered.
+/// Output is drained while this polls, but the process's own status is the only
+/// completion signal. A bound that silently stops applying is worse than none,
+/// because the caller who set it believes they are covered.
 fn wait_for_exit(
     child: &mut Child,
     started: Instant,
