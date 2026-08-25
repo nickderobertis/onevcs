@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/nickderobertis/onevcs/compare/v0.14.1...v0.15.0) - 2026-08-25
+
+### Fixed
+
+- name the evidence behind a rejected push and read a stream an earlier build wrote ([#86](https://github.com/nickderobertis/onevcs/pull/86))
+- bind a merge-path verdict to the commit the publication just pushed ([#84](https://github.com/nickderobertis/onevcs/pull/84))
+
 ## [0.14.1](https://github.com/nickderobertis/onevcs/compare/v0.14.0...v0.14.1) - 2026-08-25
 
 ### Fixed
