@@ -16,6 +16,10 @@
 //!   journey to say it has taken a duplicate of that write end, and only then runs
 //!   the real git. `ONEVCS_JOURNEY_LINGER_SECONDS` makes that one invocation
 //!   outlive the real git it ran, which is how a journey drives a fired bound.
+//! * **`probe`** — the release probe the same journey configures. Everything it
+//!   needs arrives on the command line, because a probe is run with a constructed
+//!   environment rather than an inherited one. It publishes and waits the same way,
+//!   answers, and then outstays the bound the releases document set.
 //! * **anything else** — the holder. Its standard input *is* the duplicate the
 //!   journey took, held open and never written to until the release file appears.
 
@@ -28,8 +32,10 @@ use std::time::{Duration, Instant};
 // two are compiled separately, so a shared constant is not available to them and a
 // second spelling would drift in silence.
 
-/// The name this program answers to as the stand-in rather than as the holder.
+/// The name this program answers to as the stand-in `git`.
 const STAND_IN: &str = "git";
+/// The name it answers to as the repository's own release probe.
+const PROBE: &str = "probe";
 /// The directory the journey and this program meet in.
 const RENDEZVOUS: &str = "ONEVCS_JOURNEY_RENDEZVOUS";
 /// The real git the stand-in runs, resolved by the journey before the stand-in's
@@ -59,10 +65,11 @@ fn main() {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    if name == STAND_IN {
-        stand_in();
+    match name.as_str() {
+        STAND_IN => stand_in(),
+        PROBE => probe(),
+        _ => hold(),
     }
-    hold();
 }
 
 /// The `git` on the journey's `PATH`: publish the pipe once, then be real git.
@@ -88,6 +95,37 @@ fn stand_in() -> ! {
         }
     }
     std::process::exit(status);
+}
+
+/// The repository's own release probe: publish the pipe, answer the one line a
+/// probe is asked for, and then outstay the bound the releases document set.
+///
+/// Its arguments are the releases document's own `args`, which is the only way in:
+/// a probe runs with a constructed environment, so nothing the journey exported
+/// reaches here.
+fn probe() -> ! {
+    let mut arguments = std::env::args().skip(1);
+    let rendezvous = PathBuf::from(
+        arguments
+            .next()
+            .expect("the probe is told where to publish the pipe it holds"),
+    );
+    let answer = arguments.next().expect("the probe is told what to answer");
+    let linger: u64 = arguments
+        .next()
+        .expect("the probe is told how long to outstay its bound")
+        .parse()
+        .expect("the linger is whole seconds");
+    publish(&rendezvous);
+    assert!(
+        awaited(&rendezvous.join(TAKEN), HANDSHAKE_BOUND),
+        "the journey must take a duplicate of this pipe before the probe answers"
+    );
+    // Answered whole before the bound fires, so what the journey is left holding is
+    // a probe that *said its piece* and then would not end.
+    println!("{answer}");
+    std::thread::sleep(Duration::from_secs(linger));
+    std::process::exit(0);
 }
 
 /// The unrelated process: hold the duplicate on standard input, write nothing to

@@ -1,21 +1,22 @@
 //! What a bounded command owes when a process **outside** it still holds the write
 //! end of the pipe that command's output arrived on.
 //!
-//! Every git command `onevcs` runs is read through a pipe, and the pipe's write end
-//! is duplicated the moment anything else takes a handle on it. A reader that waits
-//! for end-of-file is then waiting on the *holder*, not on the command: the command
-//! is over, its output is complete, and nothing more will ever arrive — but the
-//! stream does not close. This is not hypothetical on Windows, where every
-//! inheritable handle is inherited by whatever the process spawns next.
+//! Every git command `onevcs` runs, and every release probe it runs, is read through
+//! a pipe, and the pipe's write end is duplicated the moment anything else takes a
+//! handle on it. A reader that waits for end-of-file is then waiting on the
+//! *holder*, not on the command: the command is over, its output is complete, and
+//! nothing more will ever arrive — but the stream does not close. This is not
+//! hypothetical on Windows, where every inheritable handle is inherited by whatever
+//! the process spawns next.
 //!
 //! So the holder here is deliberately **not** a descendant of the command under
-//! test. The journey launches it itself, concurrently, out of the same process that
-//! is driving `onevcs session open`, and hands it a duplicate of the write end taken
-//! out of the running stand-in `git`. Nothing `onevcs` kills can reach it, and
-//! end-of-file will not arrive while it lives — which is the whole point: the two
-//! journeys below are the difference between a session that opens and a command that
-//! never returns, and between a fired bound that is *reported* and one that hangs
-//! inside its own teardown.
+//! test. Each journey launches it itself, concurrently, out of the same process that
+//! is driving `onevcs`, and hands it a duplicate of the write end taken out of the
+//! running stand-in — nothing `onevcs` kills can reach it, and end-of-file will not
+//! arrive while it lives. Which is the whole point: the three journeys below are the
+//! difference between a session that opens and a command that never returns, and —
+//! for each of the two kinds of bounded command this crate runs — between a fired
+//! bound that is *reported* and one that hangs inside its own teardown.
 //!
 //! Linux and Windows, and the two for different halves of the same reason: taking a
 //! duplicate of another process's pipe is `/proc/<pid>/fd/1` on Linux and
@@ -135,6 +136,37 @@ fn a_fired_bound_is_reported_while_an_unrelated_process_holds_a_duplicate_of_git
     );
 }
 
+#[test]
+fn a_probes_fired_bound_is_reported_while_an_unrelated_process_holds_a_duplicate_of_its_pipe() {
+    let journey = Journey::new();
+    // The same teardown, reached the other way a bounded command is run here: a
+    // release probe the repository carries, which answers and then outstays the
+    // bound the releases document gave it.
+    let mut asking = journey.latest();
+
+    let mut holder = journey.hand_the_pipe_to_an_unrelated_process();
+
+    let status = journey.answered(&mut asking, "the probe's fired bound");
+    assert!(
+        status.success(),
+        "a probe that did not answer is not a failure"
+    );
+    holder.assert_still_holding();
+
+    let answer: serde_json::Value = serde_json::from_str(journey.wrote().trim())
+        .expect("a release command prints one document");
+    assert_eq!(
+        answer["state"], "not-answered",
+        "a probe whose bound fired is not answered rather than answered as having no release: \
+         {answer}"
+    );
+    let reason = answer["reason"].as_str().expect("it says why");
+    assert!(
+        reason.contains("timed out"),
+        "the refusal names the bound that fired: {reason}"
+    );
+}
+
 /// One scratch host with a registered repository, and the stand-in `git` the
 /// journeys drive `onevcs` through.
 struct Journey {
@@ -216,6 +248,41 @@ impl Journey {
             command.env(name, value);
         }
         command.spawn().expect("the binary must be built")
+    }
+
+    /// Declare a release target whose probe is the stand-in program the repository
+    /// carries, and spawn the command that runs it.
+    ///
+    /// The probe is the compiled program rather than a shell one-liner for the
+    /// reason the stand-in `git` is: it has to run on every host this journey does.
+    fn latest(&self) -> Child {
+        let name = probe_name();
+        std::fs::copy(helper(), self.root.join("project").join(&name))
+            .expect("the repository carries its release probe");
+        let document = format!(
+            "version: 1\n\
+             default:\n  adoption: fast\n\
+             repositories:\n  - match: {{path: {checkout:?}}}\n\
+             \x20   adoption: published\n    default_target: crate\n    targets:\n\
+             \x20     - name: crate\n        style: automated\n        probe:\n\
+             \x20         script: {name}\n          args: [{rendezvous:?}, \"9.9.9\", \"{linger}\"]\n\
+             \x20         timeout_seconds: {bound}\n",
+            checkout = self.root.join("project").to_string_lossy(),
+            rendezvous = self.rendezvous.to_string_lossy(),
+            linger = HOLDER_BOUND_SECONDS,
+            bound = FIRED_BOUND_SECONDS,
+        );
+        std::fs::write(self.root.join("state").join("releases.yml"), document)
+            .expect("a release-targets file");
+        self.onevcs()
+            .args([
+                "release", "latest", "project", "--target", "crate", "--json",
+            ])
+            .stdin(Stdio::null())
+            .stdout(self.file("said.out"))
+            .stderr(self.file("said.err"))
+            .spawn()
+            .expect("the binary must be built")
     }
 
     /// Take a duplicate of the write end of the pipe the stand-in `git` is writing
@@ -420,6 +487,16 @@ fn helper_name() -> &'static str {
 /// itself checks for.
 fn stand_in_name() -> String {
     let stem = declared("STAND_IN");
+    match cfg!(windows) {
+        true => format!("{stem}.exe"),
+        false => stem,
+    }
+}
+
+/// The probe under the name it has to answer to, which is the name the program
+/// itself checks for.
+fn probe_name() -> String {
+    let stem = declared("PROBE");
     match cfg!(windows) {
         true => format!("{stem}.exe"),
         false => stem,

@@ -364,10 +364,15 @@ and never on end-of-file: a pipe's write end is duplicated the moment anything e
 takes a handle on it, and on Windows every inheritable handle is inherited by
 whatever the process spawns next. So its holder is deliberately outside the lineage
 `onevcs` spawned — the journey starts it itself, concurrently, and hands it a
-duplicate taken out of the running stand-in `git`, which nothing `onevcs` kills can
-reach. Two consequences to keep. Its stand-in `git` is a `std`-only program compiled
-by `rustc` at journey time (`tests/e2e/programs/pipe_holder.rs`), because on `PATH`
-as `git` it has to be executable on every host and a shell script is not; and it is
+duplicate taken out of the running stand-in, which nothing `onevcs` kills can
+reach. Three journeys, because there are two kinds of bounded command here and a
+fired bound is a second thing to get wrong: a session opens with the write end
+still held, and each of a git command's and a release probe's fired bound is
+*reported* rather than hung inside its own teardown. Two consequences to keep. Its stand-in `git` is a `std`-only program compiled
+by `rustc` at journey time (`tests/e2e/programs/pipe_holder.rs`) — the same program
+the releases document names as the repository's probe — because on `PATH` as `git`,
+and as a script probe, it has to be executable on every host and a shell script is
+not; and it is
 Linux-and-Windows rather than every host, because taking a duplicate of another
 process's pipe is `/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and
 macOS offers an unrelated process neither.
