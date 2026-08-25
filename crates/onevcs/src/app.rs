@@ -761,10 +761,10 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
                 // another session would be judged against a consumer's statement
                 // about *this* one.
                 //
-                // llmlint: ignore[boundary_inputs_validated] `attributed` is the check,
-                // and it runs on the line above before anything here discards it: a line
-                // that is not an envelope and one belonging to another stream are both
-                // refused there. The envelope's version and its stamp are not this
+                // llmlint: ignore[boundary_inputs_validated] `attributed`, called below, is
+                // the check, and it has run over this line before the `else` arm can
+                // discard it: a line that is not an envelope and one belonging to another
+                // stream are both refused there. The envelope's version and its stamp are not this
                 // surface's to judge and never have been — `onevcs events` renders one
                 // file, `status` is what reports a version it cannot read as a gap — so
                 // what falls through here is a value no filter in this grammar could have

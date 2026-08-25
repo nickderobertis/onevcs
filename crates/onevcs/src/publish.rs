@@ -1067,10 +1067,9 @@ fn publishing(branch: &Ref) -> String {
 /// behind: one landing here cost an hour that way, to find four redundant comment
 /// lines. So the failure names both, and each only where it exists.
 ///
-/// **The excerpt is from the end**, for the reason [`excerpt`] states: a judged tier
-/// prints its findings last, and the bounded *head* that travels inline on the `push`
-/// event is systematically the least useful part of the log. It is an excerpt rather
-/// than the whole because the whole is what the pointers above are for.
+/// It quotes an excerpt rather than the whole, because the whole is what the
+/// pointers above are for; [`excerpt`] is where the bound and the end it is taken
+/// from are reasoned about.
 ///
 /// This is also what an *unclassified* rejection is reported as, deliberately: it
 /// names the push and hands over git's own per-ref summary without deciding what

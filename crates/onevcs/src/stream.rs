@@ -438,9 +438,10 @@ impl EventStream {
             // type could not have named it either.
             //
             // llmlint: ignore[boundary_inputs_validated] the two refusals this reader owes
-            // are `attributed`'s, and both are asked of the line above before this
-            // discards it: a line that is not an envelope, and one belonging to another
-            // stream. The envelope's *version* and its *stamp* are not checked here and
+            // are `attributed`'s, called below, and both have been asked of this line
+            // before the `else` arm can discard it: a line that is not an envelope, and
+            // one belonging to another stream. The envelope's *version* and its *stamp*
+            // are not checked here and
             // never have been, for any line — this reader hands back what a writer left
             // and `status` is the surface that reports a version it cannot read or a
             // stamp it cannot order, as a gap in its notes. So passing over a kindless
