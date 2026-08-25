@@ -23,6 +23,14 @@
 //! `DuplicateHandle` on Windows, and macOS offers an unrelated process neither. The
 //! guarantee is one every host shares; this is where it can be driven.
 
+// llmlint: ignore-file[e2e_not_mocked] the stand-in installed on `PATH` as `git` is
+// not a substitute for git: it runs the real git, on the real pipe, with the
+// invocation's own arguments, and everything it adds happens before that. What it
+// stands in for is the one thing no real program does on request — publishing the
+// write end it owns, so a process outside the command can take a duplicate of it.
+// Nothing else here is: real bare origins, real clones, a real registered checkout,
+// a real releases document, and the compiled binary driven as a user drives it.
+
 #![cfg(any(target_os = "linux", windows))]
 
 use std::path::{Path, PathBuf};
@@ -355,12 +363,10 @@ impl Journey {
         }
     }
 
-    /// What the run wrote to standard output.
     fn wrote(&self) -> String {
         std::fs::read_to_string(self.root.join("said.out")).unwrap_or_default()
     }
 
-    /// What the run wrote to standard error.
     fn said(&self) -> String {
         std::fs::read_to_string(self.root.join("said.err")).unwrap_or_default()
     }

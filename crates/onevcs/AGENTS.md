@@ -357,25 +357,18 @@ fired timeout takes a process *group*, which has no portable spelling. Windows C
 builds the crate and runs the contract, boundary, packaging, and inherited-pipe
 suites.
 
-`tests/e2e/inherited_pipes.rs` is the one journey module that carries its own
-fixture rather than `world.rs`'s, and the reason is that it has to run **where
-`world.rs` cannot**. What it holds is that a bounded command ends on git's own exit
-and never on end-of-file: a pipe's write end is duplicated the moment anything else
-takes a handle on it, and on Windows every inheritable handle is inherited by
-whatever the process spawns next. So its holder is deliberately outside the lineage
-`onevcs` spawned — the journey starts it itself, concurrently, and hands it a
-duplicate taken out of the running stand-in, which nothing `onevcs` kills can
-reach. Three journeys, because there are two kinds of bounded command here and a
-fired bound is a second thing to get wrong: a session opens with the write end
-still held, and each of a git command's and a release probe's fired bound is
-*reported* rather than hung inside its own teardown. Two consequences to keep. Its stand-in `git` is a `std`-only program compiled
-by `rustc` at journey time (`tests/e2e/programs/pipe_holder.rs`) — the same program
-the releases document names as the repository's probe — because on `PATH` as `git`,
-and as a script probe, it has to be executable on every host and a shell script is
-not; and it is
-Linux-and-Windows rather than every host, because taking a duplicate of another
-process's pipe is `/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and
-macOS offers an unrelated process neither.
+`tests/e2e/inherited_pipes.rs` carries a fixture of its own rather than
+`world.rs`'s, because it has to run where `world.rs` cannot. Three things about it
+are the point rather than an implementation detail. Its holder — the process still
+owning the write end of a finished command's pipe — is launched by the journey and
+never by the command under test, because a descendant is killed by the very
+teardown the holder exists to outlive. Its stand-in `git` and its script probe are
+one `std`-only program compiled by `rustc` at journey time
+(`tests/e2e/programs/pipe_holder.rs`), because both have to be executable on every
+host and a shell script is not; that stand-in runs the real git, on the same pipe.
+And it is Linux and Windows only: taking a duplicate of another process's pipe is
+`/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and macOS offers an
+unrelated process neither.
 
 Two journeys go one step narrower and skip on Apple platforms: the ones about a path
 listing this process cannot decode. Their premise is a filename that is not UTF-8,

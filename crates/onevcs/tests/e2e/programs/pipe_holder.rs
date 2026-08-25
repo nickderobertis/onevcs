@@ -170,7 +170,6 @@ fn real_git() -> i32 {
         .unwrap_or(128)
 }
 
-/// Whether `path` appeared within `bound`.
 fn awaited(path: &Path, bound: Duration) -> bool {
     let deadline = Instant::now() + bound;
     while !path.exists() {
