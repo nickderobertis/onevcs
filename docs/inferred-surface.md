@@ -623,7 +623,7 @@ question was:
    kinds were deleted in 0.11.0 and 30% of the streams on the consuming host became
    one refusal per line, most expensively in a status read that walks every stream
    there is. The type is unchanged — `EventKind` still names only what the
-   contract names, and an [`Envelope`] still refuses a kind it cannot name, because
+   contract names, and an `Envelope` still refuses a kind it cannot name, because
    its `kind` field is that enum and there is no honest value to put there. So the
    open half is the one above, unchanged and still a contract question: a consumer
    that has to know *which* foreign kind it read needs `Other(String)` on the

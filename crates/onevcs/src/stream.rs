@@ -452,7 +452,7 @@ impl EventStream {
             if !self.phases.contains(&envelope.phase) {
                 continue;
             }
-            events.push(envelope);
+            events.push(*envelope);
         }
         if let Some(correlated) = &mut self.releases {
             events.extend(correlated.fresh(&self.session, &self.filter)?);

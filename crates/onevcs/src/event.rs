@@ -87,11 +87,12 @@ pub enum Source {
 /// retired and produced by nothing, and a reader goes on being able to say what
 /// that line recorded.
 ///
-/// [`Line`] is the other half of that rule rather than a substitute for it. It
-/// makes a kind this build has *never had* — one a later build wrote — cheap to
-/// pass over, which is the case no vocabulary here can cover. It cannot give back
-/// the meaning of a kind that was deleted, which is why the two retired above are
-/// a loss this crate carries rather than one it recovered.
+/// The permissive read this crate's stream readers go through is the other half of
+/// that rule rather than a substitute for it. It makes a kind this build has *never
+/// had* — one a later build wrote — cheap to pass over, which is the case no
+/// vocabulary here can cover. It cannot give back the meaning of a kind that was
+/// deleted, which is why the two retired above are a loss this crate carries rather
+/// than one it recovered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
@@ -242,7 +243,11 @@ impl TryFrom<StoredEnvelope> for Envelope {
 /// and what a reader of streams an earlier one wrote needed and did not have.
 pub(crate) enum Line {
     /// An envelope of a kind this build knows, and can therefore act on.
-    Known(Envelope),
+    ///
+    /// Boxed: an envelope carries three strings, a map and a vector, and the other
+    /// variant is a header — so an unboxed enum would make every line of every
+    /// stream cost the larger of the two.
+    Known(Box<Envelope>),
     /// A well-formed envelope of a kind this build has no word for.
     Unknown(UnknownKind),
 }
@@ -273,7 +278,7 @@ impl Line {
             stream: stored.stream.clone(),
         };
         Ok(match stored.read() {
-            Ok(envelope) => Line::Known(envelope),
+            Ok(envelope) => Line::Known(Box::new(envelope)),
             Err(_) => Line::Unknown(header),
         })
     }
