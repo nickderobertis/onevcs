@@ -228,6 +228,7 @@ fn implicit_tracked_hooks_judge_the_message_and_push_from_the_published_branch()
     fixture
         .world
         .git(&worktree, &["commit", "--amend", "-q", "--no-edit"]);
+    std::fs::write(&record, "").expect("discard setup-time hook evidence");
 
     fixture
         .world
@@ -237,9 +238,7 @@ fn implicit_tracked_hooks_judge_the_message_and_push_from_the_published_branch()
         .success();
 
     let recorded = std::fs::read_to_string(record).expect("both branch hooks recorded their run");
-    assert!(recorded.contains("branch-message"), "{recorded}");
-    assert!(recorded.contains("branch-push"), "{recorded}");
-    assert!(!recorded.contains("lender-"), "{recorded}");
+    assert_eq!(recorded, "branch-message\nbranch-push\n");
 }
 
 #[test]
