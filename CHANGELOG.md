@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.4](https://github.com/nickderobertis/onevcs/compare/v0.15.3...v0.15.4) - 2026-08-26
+
+### Fixed
+
+- *(status)* decide a landing from the change request the record already names ([#94](https://github.com/nickderobertis/onevcs/pull/94))
+
 ## [0.15.3](https://github.com/nickderobertis/onevcs/compare/v0.15.2...v0.15.3) - 2026-08-26
 
 ### Fixed
