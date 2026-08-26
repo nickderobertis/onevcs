@@ -18,13 +18,22 @@
 //! and — for each of the two kinds of bounded command this crate runs — between a
 //! fired bound that is *reported* and one that hangs inside its own teardown.
 //!
-//! The other two are about the bytes rather than about returning at all, and they
-//! are why the exit and not a span of wall-clock has to be what ends a collection.
-//! The unrelated process there **writes** into the pipe once the command that owned
-//! it is over. A collector that keeps reading for a fixed span afterwards hands
-//! those bytes to the caller as the command's own — and on the stream that carries a
-//! probe's answer, one extra line is not a stray byte but the *loss* of the version
-//! the probe did write, because two lines are not an answer at all.
+//! The rest are about the bytes rather than about returning at all, and they are
+//! why the exit, and neither a span of wall-clock nor an end-of-file, has to be what
+//! ends a collection. In two of them the unrelated process **writes** into the pipe
+//! once the command that owned it is over. A collector that keeps reading for a
+//! fixed span afterwards hands those bytes to the caller as the command's own — and
+//! on the stream that carries a probe's answer, one extra line is not a stray byte
+//! but the *loss* of the version the probe did write, because two lines are not an
+//! answer at all.
+//!
+//! In the last three the holder writes nothing, which is the sharpest place to ask
+//! the opposite question. With the write end held, no end-of-file ever arrives, so
+//! what retires the collection is the command's exit and nothing else — and what it
+//! owes the caller is every byte the command wrote before it. Three commands ask it:
+//! one whose answer is written in the instant before it exits, one whose answer is
+//! nothing at all, and one whose answer is wider than the buffer a reader takes it
+//! in, so recovering it whole means recovering it across several reads.
 //!
 //! Linux and Windows, and the two for different halves of the same reason: taking a
 //! duplicate of another process's pipe is `/proc/<pid>/fd/1` on Linux and
@@ -67,6 +76,41 @@ fn declared(name: &str) -> String {
         .unwrap_or_else(|| panic!("the stand-in's source declares {name}"));
     let rest = &STAND_IN_SOURCE[at + opens.len()..];
     rest[..rest.find('"').expect("a declared string literal is closed")].to_owned()
+}
+
+/// The collector's own source, read for the one number a journey's premise rests
+/// on.
+const COLLECTOR_SOURCE: &str = include_str!("../../src/git.rs");
+
+/// A whole number the collector declares, read out of its source rather than
+/// repeated here.
+///
+/// The same move [`declared`] makes, for a reason of the same shape: a number
+/// copied over would go on claiming what it claimed at the moment it was copied,
+/// and the claim here is about the collector rather than about anything this file
+/// controls. Read it from the thing it is a fact about.
+fn declared_size(name: &str) -> usize {
+    let opens = format!("const {name}: usize = ");
+    let at = COLLECTOR_SOURCE
+        .find(&opens)
+        .unwrap_or_else(|| panic!("the collector's source declares {name}"));
+    let rest = &COLLECTOR_SOURCE[at + opens.len()..];
+    let literal = &rest[..rest.find(';').expect("a declared constant is terminated")];
+    literal
+        .replace('_', "")
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} is declared as a whole number"))
+}
+
+/// How wide an answer the journey about a long one asks its probe for: twice what
+/// the collector takes in one read.
+///
+/// Which makes recovering it whole a matter of recovering it across three of them
+/// — two full and the remainder — rather than out of one, so every read but the
+/// last is a chance to stop early. Still far inside what a pipe holds, so the
+/// probe writes the whole answer and goes rather than waiting to be drained.
+fn wider_than_a_read_buffer() -> usize {
+    declared_size("READ_BUFFER") * 2
 }
 
 /// The subcommand the journeys hold the pipe of: a fetch is load-bearing — its
@@ -311,6 +355,97 @@ fn a_callers_answer_carries_the_commands_own_stderr_and_not_a_line_added_after_i
         !reason.contains(NOT_THE_COMMANDS_OUTPUT),
         "and nothing an unrelated process added to that pipe afterwards: {reason}"
     );
+}
+
+#[test]
+fn a_callers_answer_carries_what_the_command_wrote_in_the_instant_before_it_exited() {
+    let journey = Journey::new();
+    // The probe writes its version and goes, and an unrelated process holds the
+    // write end of the pipe it wrote on. So the stream never ends, and the only
+    // thing left to retire the collection is the exit — which is exactly the case a
+    // collector gets wrong by reading "nothing readable right now" as "nothing more
+    // is coming". What the caller is shown is the whole of what the probe said.
+    let mut asking = journey.release_latest(
+        &[THE_COMMANDS_VERSION, NEITHER, "0", "0"],
+        PATIENT_BOUND_SECONDS,
+    );
+    let mut holder = journey.hand_the_pipe_to_an_unrelated_process(&mut asking);
+
+    let status = journey.answered(&mut asking, "release latest");
+    holder.assert_still_holding();
+    assert!(
+        status.success(),
+        "asking is not a failure: {}",
+        journey.said()
+    );
+
+    let answer: serde_json::Value = serde_json::from_str(journey.wrote().trim())
+        .expect("a release command prints one document");
+    assert_eq!(answer["state"], "released");
+    assert_eq!(
+        answer["version"], THE_COMMANDS_VERSION,
+        "the version the probe wrote immediately before exiting must reach the caller, on a \
+         pipe whose end-of-file will never come: {answer}"
+    );
+}
+
+#[test]
+fn a_command_that_wrote_nothing_answers_as_having_no_release_while_its_pipe_is_held() {
+    let journey = Journey::new();
+    // The other end of the same question. Nothing on either stream is a probe's way
+    // of saying there is no release yet, and it has to be distinguishable from a
+    // collection that lost what there was — on the very pipe where nothing readable
+    // is also what a command mid-write looks like.
+    let mut asking = journey.release_latest(&[NEITHER, NEITHER, "0", "0"], PATIENT_BOUND_SECONDS);
+    let mut holder = journey.hand_the_pipe_to_an_unrelated_process(&mut asking);
+
+    let status = journey.answered(&mut asking, "release latest");
+    holder.assert_still_holding();
+    assert!(
+        status.success(),
+        "asking is not a failure: {}",
+        journey.said()
+    );
+
+    let answer: serde_json::Value = serde_json::from_str(journey.wrote().trim())
+        .expect("a release command prints one document");
+    assert_eq!(
+        answer["state"], "no-release",
+        "a probe that printed nothing has answered — there is no release yet — and that is not \
+         the same answer as a probe whose output went missing: {answer}"
+    );
+}
+
+#[test]
+fn a_callers_answer_carries_an_answer_wider_than_the_buffer_it_was_read_in() {
+    let journey = Journey::new();
+    // One read is not a collection: an answer wider than the buffer a reader takes
+    // it in arrives over several of them, and every one of those reads is a chance
+    // to stop early. Held open again, so nothing but the exit ends it.
+    let wide = "9".repeat(wider_than_a_read_buffer());
+    let mut asking = journey.release_latest(&[&wide, NEITHER, "0", "0"], PATIENT_BOUND_SECONDS);
+    let mut holder = journey.hand_the_pipe_to_an_unrelated_process(&mut asking);
+
+    let status = journey.answered(&mut asking, "release latest");
+    holder.assert_still_holding();
+    assert!(
+        status.success(),
+        "asking is not a failure: {}",
+        journey.said()
+    );
+
+    let answer: serde_json::Value = serde_json::from_str(journey.wrote().trim())
+        .expect("a release command prints one document");
+    assert_eq!(answer["state"], "released");
+    let carried = answer["version"].as_str().expect("it carries a version");
+    assert_eq!(
+        carried.len(),
+        wide.len(),
+        "an answer wider than one read buffer must reach the caller whole: {} of {} characters",
+        carried.len(),
+        wide.len()
+    );
+    assert_eq!(carried, wide, "and it is the answer the probe wrote");
 }
 
 /// One scratch host with a registered repository, and the stand-in `git` the

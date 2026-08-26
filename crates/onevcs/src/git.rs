@@ -22,7 +22,7 @@ use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
@@ -40,11 +40,26 @@ pub const DEFAULT_TIMEOUT_SECONDS: f64 = 600.0;
 /// tens of minutes, and this leaves room for one slowed by everything else on the
 /// host without letting a genuinely hung push sit forever.
 pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
-/// How often a running child is asked whether it has exited.
-/// There is no portable wait that takes a deadline, so this is what stands in for
-/// one; small enough to cost an ordinary run nothing, and large enough that a hook
-/// running out its whole bound is not asked a million times.
+/// The longest anything here sleeps before looking again.
+///
+/// It is a ceiling rather than an interval, and the difference is what an ordinary
+/// command costs. Both waits under it wake on the thing they are waiting for — a
+/// reader on its pipe becoming readable, the run on a reader reaching end of
+/// stream, which a child's exit brings about by closing the write ends it owns — so
+/// this is reached only where neither can arrive: a pipe an unrelated process holds
+/// open, and a child that closed its streams and kept running. There is no portable
+/// wait on a child that takes a deadline, so a ceiling has to exist; large enough
+/// that a hook running out its whole bound is not asked a million times.
 const EXIT_POLL: Duration = Duration::from_millis(10);
+/// How much of a pipe one read takes at a time.
+///
+/// Most of what a command writes is smaller than this and arrives in a single
+/// read; what the size decides is how many reads a larger answer is recovered
+/// across, and therefore how many chances there are to stop before the end of one.
+/// `tests/e2e/inherited_pipes.rs` reads this number out of this file, so the
+/// journey that drives an answer wider than one read stays wider than one however
+/// this changes.
+const READ_BUFFER: usize = 8192;
 
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
 /// repository's own, `Ordinary` where it runs none.
@@ -192,12 +207,18 @@ fn bounded(
 
     let mut child = command.spawn().map_err(unspawnable)?;
 
-    // Bytes are handed over as they are read, rather than only at EOF. The child
-    // exit below is the lifetime signal; EOF only lets a reader retire early.
-    let out_reader = PipeCapture::start(child.stdout.take().expect("stdout was piped"));
-    let err_reader = PipeCapture::start(child.stderr.take().expect("stderr was piped"));
+    // Bytes are handed over as they are read, rather than only at EOF. The child's
+    // exit is the lifetime signal; end of stream only lets a reader retire early —
+    // and tell the wait below, which is how an ordinary command's exit is noticed
+    // when it happens rather than at the next tick.
+    let (ended, endings) = mpsc::channel();
+    let out_reader = PipeCapture::start(
+        child.stdout.take().expect("stdout was piped"),
+        ended.clone(),
+    );
+    let err_reader = PipeCapture::start(child.stderr.take().expect("stderr was piped"), ended);
 
-    let exited = wait_for_exit(&mut child, started, bound);
+    let exited = wait_for_exit(&mut child, started, bound, &endings);
 
     let Some(collected) = exited else {
         terminate_group(&child);
@@ -215,13 +236,18 @@ fn bounded(
         });
     };
 
-    let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
-    // The child's exit is completion. Each non-blocking reader is then asked to
-    // take every byte already buffered and stop at the first empty read, even when
-    // an unrelated process still owns a duplicate write handle. Joining is now a
-    // deterministic hand-off, not a scheduling window and not a wait for EOF.
+    // The child's exit is completion. Each reader is then told so, and stops at the
+    // first read it takes *afterwards* that comes back with nothing — which is every
+    // byte already buffered and not one written later, even when an unrelated
+    // process still owns a duplicate write handle. Joining is a deterministic
+    // hand-off, not a scheduling window and not a wait for EOF.
+    //
+    // Before the status is answered for, not after: a child this process could not
+    // collect is still a child whose readers hold pipes, and leaving them running to
+    // report that is two threads that never end.
     let out = out_reader.finish();
     let err = err_reader.finish();
+    let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
     Ok(Ran {
         status: status.code().unwrap_or(128),
         stdout: out,
@@ -229,38 +255,83 @@ fn bounded(
     })
 }
 
+/// One stream of a bounded command, read as it arrives and handed over once the
+/// command is over.
+///
+/// It owes two things that pull against each other, and it is one type because
+/// neither is safe to answer without the other. **Nothing the command wrote may be
+/// lost**, including what it wrote in the instant before it exited. And **nothing
+/// may wait on end-of-file**, because the write end of a command's pipe is
+/// duplicated the moment anything else takes a handle on it, and end-of-file then
+/// belongs to the holder rather than to the command. So the pipe is read without
+/// blocking for as long as the command runs, and [`PipeCapture::finish`] — which
+/// its caller reaches only once the exit has been collected — is what says the
+/// bytes are all there.
+///
+/// It waits on the pipe rather than around it: an idle reader sleeps until the
+/// pipe has something in it, so what a command costs is what it takes, and a
+/// command that writes more than a pipe holds is not metered out one buffer per
+/// tick.
 pub(crate) struct PipeCapture {
     stopping: Arc<AtomicBool>,
     reader: std::thread::JoinHandle<Vec<u8>>,
 }
 
 impl PipeCapture {
-    pub(crate) fn start<R: PipeRead + Send + 'static>(mut pipe: R) -> Self {
+    /// Start reading `pipe`, and report on `ended` when this stream is over.
+    ///
+    /// The report is a hint for whoever is waiting on the child, and it is sent
+    /// however the reader retires. What it is worth is that a child's exit closes
+    /// the write ends it owns, so in the ordinary case it arrives at the instant
+    /// the child goes.
+    pub(crate) fn start<R: PipeRead + Send + 'static>(
+        mut pipe: R,
+        ended: mpsc::Sender<()>,
+    ) -> Self {
         pipe.nonblocking();
         let stopping = Arc::new(AtomicBool::new(false));
         let requested = Arc::clone(&stopping);
         let reader = std::thread::spawn(move || {
             let mut output = Vec::new();
-            let mut chunk = [0_u8; 8192];
+            let mut chunk = [0_u8; READ_BUFFER];
             loop {
+                // Asked *before* the read it decides, and that order is the whole
+                // of the guarantee. `Ok(0)` is end of stream and answers for
+                // itself, but on a non-blocking pipe `WouldBlock` says only that
+                // nothing is readable at this instant — which is equally what a
+                // gap between two of the command's own writes looks like. Read the
+                // flag afterwards and an empty read taken while the command was
+                // still writing is retired as though the stream had ended, and
+                // everything that arrived in between is dropped. Read it first and
+                // a `true` means the exit had already been collected when the read
+                // began, so the command's every byte was in the pipe before it —
+                // and nothing there is nothing left.
+                let collected = requested.load(Ordering::Acquire);
                 match pipe.read_available(&mut chunk) {
-                    Ok(0) if requested.load(Ordering::Acquire) => break,
-                    Ok(0) => std::thread::sleep(EXIT_POLL),
+                    // End of stream, which is final however the command is doing:
+                    // every write end is closed, so nothing can ever arrive again.
+                    Ok(0) => break,
                     Ok(read) => output.extend_from_slice(&chunk[..read]),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if requested.load(Ordering::Acquire) {
+                        if collected {
                             break;
                         }
-                        std::thread::sleep(EXIT_POLL);
+                        pipe.await_readable(EXIT_POLL);
                     }
                     Err(_) => break,
                 }
             }
+            let _ = ended.send(());
             output
         });
         Self { stopping, reader }
     }
 
+    /// Every byte the command wrote, once its exit has been collected.
+    ///
+    /// Call it only then: the reader retires on a read taken after this store is
+    /// visible to it, and what makes that read's emptiness mean *finished* rather
+    /// than *not yet* is that the command was already gone when the store happened.
     pub(crate) fn finish(self) -> Vec<u8> {
         self.stopping.store(true, Ordering::Release);
         self.reader.join().unwrap_or_default()
@@ -283,6 +354,29 @@ pub(crate) trait PipeRead: Read + std::os::fd::AsRawFd {
 
     fn read_available(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         self.read(buffer)
+    }
+
+    /// Sleep until this pipe has something to read, or `bound`, whichever is
+    /// sooner.
+    ///
+    /// Waiting *on* the pipe rather than for a fixed span is what keeps a captured
+    /// command as quick as an uncaptured one: output is picked up when it is
+    /// written, and a command writing more than a pipe holds is not handed over one
+    /// buffer per tick. The bound is still here because the reader has a second
+    /// thing to notice — that its command is over — which no pipe an unrelated
+    /// process holds open will ever tell it.
+    fn await_readable(&self, bound: Duration) {
+        let mut watched = libc::pollfd {
+            fd: self.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let bound = i32::try_from(bound.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: one descriptor, owned by `self` and live for the call, and a
+        // count that says so. `poll` only waits on it; nothing is read here.
+        unsafe {
+            libc::poll(&raw mut watched, 1, bound);
+        }
     }
 }
 
@@ -316,6 +410,17 @@ pub(crate) trait PipeRead: Read + std::os::windows::io::AsRawHandle {
         }
         let readable = buffer.len().min(available as usize);
         self.read(&mut buffer[..readable])
+    }
+
+    /// Sleep for `bound`, because there is nothing here to wait on.
+    ///
+    /// An anonymous pipe's handle is not waitable on this platform — it never
+    /// signals — and the peek above is the only way to ask whether it has anything.
+    /// So this is the one place a fixed span stands in for the wait, and the reader
+    /// is left picking output up at that granularity. End of stream still retires it
+    /// at once, which is what an ordinary command's teardown turns on.
+    fn await_readable(&self, bound: Duration) {
+        std::thread::sleep(bound);
     }
 }
 
@@ -540,13 +645,22 @@ fn runs_repository_hooks(args: &[&str]) -> bool {
 /// The child's own exit, collected within the same bound its pipes were read
 /// under, or nothing at all once that bound has passed since `started`.
 ///
-/// Output is drained while this polls, but the process's own status is the only
+/// Output is drained while this waits, but the process's own status is the only
 /// completion signal. A bound that silently stops applying is worse than none,
 /// because the caller who set it believes they are covered.
+///
+/// Between asks it waits on `endings` rather than on the clock. A child's exit
+/// closes the write ends it owns, so an ordinary command's readers reach end of
+/// stream in the same instant it goes and this wakes then — which is the difference
+/// between a captured command costing what it takes and costing what it takes
+/// rounded up to [`EXIT_POLL`]. A reader ending is only ever a prompt to ask again:
+/// a child that closed both streams and kept running has ended them while still
+/// alive, and a pipe an unrelated process holds open never ends at all.
 fn wait_for_exit(
     child: &mut Child,
     started: Instant,
     bound: Duration,
+    endings: &mpsc::Receiver<()>,
 ) -> Option<std::io::Result<ExitStatus>> {
     loop {
         match child.try_wait() {
@@ -555,8 +669,26 @@ fn wait_for_exit(
             // and what an uncollectable run means is said where it was asked for.
             Err(error) => return Some(Err(error)),
             Ok(None) if started.elapsed() >= bound => return None,
-            Ok(None) => std::thread::sleep(EXIT_POLL),
+            Ok(None) => await_an_ending(endings, EXIT_POLL),
         }
+    }
+}
+
+/// Sleep until a reader reports that its stream is over, or `bound`, whichever is
+/// sooner.
+///
+/// `pub(crate)` because a release probe waits on its own readers the same way, and
+/// a second spelling of "a disconnected channel is not a wakeup" would be a second
+/// answer to what a run does once both its readers have already gone.
+pub(crate) fn await_an_ending(endings: &mpsc::Receiver<()>, bound: Duration) {
+    // Both readers having already reported leaves nothing to wait on, and a
+    // disconnected channel answers instantly — so the sleep is still needed, for
+    // exactly the run that has no reader left to hear from.
+    if matches!(
+        endings.recv_timeout(bound),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ) {
+        std::thread::sleep(bound);
     }
 }
 
@@ -2057,5 +2189,134 @@ mod windows_tests {
         worktree_add_detached(&clone, &detached, "main")
             .expect("a canonical detached-worktree path reaches git");
         worktree_remove(&clone, &detached).expect("the detached worktree is removed");
+    }
+}
+
+/// What a collector owes a command that wrote in the instant before it exited,
+/// held to it by forcing that instant rather than waiting for one.
+///
+/// In this crate because there is no other side of it. What this holds is an
+/// *interleaving* — the reader taking a read that finds the pipe empty, being held
+/// there, and finding the command already collected when it next looks — and
+/// nothing outside this process can decide when a reader looks. On an idle host
+/// that interleaving is nanoseconds wide, so a journey cannot wait for it; here it
+/// is arranged. `tests/e2e/inherited_pipes.rs` drives the same collector through
+/// the real binary, over a real command, and asserts on what a caller is shown.
+///
+/// Unix only, because that is where the hold goes in: on Windows a read that finds
+/// the pipe empty is answered by `PeekNamedPipe` before `Read` is reached at all,
+/// so a wrapper around `Read` never sees the answer it has to delay.
+#[cfg(all(test, unix))]
+mod collecting {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, RawFd};
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::PipeCapture;
+
+    /// How long the reader is held on a read that came back empty.
+    ///
+    /// It has to cover everything the command has left to do — be released, write,
+    /// exit, and be collected one exit poll later — so that when the reader looks
+    /// again the command is unambiguously over. A loaded host inserts a hold of its
+    /// own here at a width nobody chooses; this one is chosen, so the test decides
+    /// the same thing every run.
+    const HELD: Duration = Duration::from_millis(300);
+    /// Padding written before the command's last word, wider than two of the
+    /// collector's 8192-byte read buffers, so what is recovered has to have crossed
+    /// several reads rather than fitting in one.
+    const PADDING: usize = 20_000;
+    /// The end of what the command wrote, which is the part a truncating collector
+    /// loses first.
+    const LAST_WORD: &str = "released 1.2.3\n";
+
+    /// A command's own pipe, with the pause a descheduled reader takes between the
+    /// read that found nothing and its next look at whether the command is over.
+    ///
+    /// Nothing here stands in for the pipe: the read is the real read, on the real
+    /// descriptor, and its answer is passed through untouched. The only thing added
+    /// is when the reader gets to act on it.
+    struct Held<R> {
+        pipe: R,
+        empty_reads: Arc<AtomicUsize>,
+    }
+
+    impl<R: Read> Read for Held<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let answer = self.pipe.read(buffer);
+            if matches!(&answer, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock) {
+                self.empty_reads.fetch_add(1, Ordering::Release);
+                std::thread::sleep(HELD);
+            }
+            answer
+        }
+    }
+
+    impl<R: AsRawFd> AsRawFd for Held<R> {
+        fn as_raw_fd(&self) -> RawFd {
+            self.pipe.as_raw_fd()
+        }
+    }
+
+    #[test]
+    fn a_reader_held_past_the_exit_still_returns_everything_the_command_wrote() {
+        let expected = format!("{}{LAST_WORD}", "0".repeat(PADDING));
+        // A real child on a real pipe, holding its tongue until this test says go —
+        // so the reader is certain to have met the pipe empty before a byte of the
+        // answer exists, which is the instant the hold is placed at.
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "read go; printf '%0{PADDING}d' 0; printf '{LAST_WORD}'"
+            ))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("a shell is on PATH");
+        let empty_reads = Arc::new(AtomicUsize::new(0));
+        let (ended, _endings) = std::sync::mpsc::channel();
+        let reader = PipeCapture::start(
+            Held {
+                pipe: child.stdout.take().expect("stdout was piped"),
+                empty_reads: Arc::clone(&empty_reads),
+            },
+            ended,
+        );
+
+        while empty_reads.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        // The reader is now held, and everything below happens inside that hold:
+        // the command writes its whole answer and exits, and its exit is collected.
+        let mut go = child.stdin.take().expect("stdin was piped");
+        std::io::Write::write_all(&mut go, b"go\n").expect("the command is released");
+        drop(go);
+        let status = loop {
+            match child.try_wait().expect("the command can be asked") {
+                Some(status) => break status,
+                None => std::thread::yield_now(),
+            }
+        };
+        assert!(status.success(), "the command itself succeeded");
+
+        let collected = reader.finish();
+
+        assert_eq!(
+            collected.len(),
+            expected.len(),
+            "a reader that met the pipe empty and was held past the command's exit must still \
+             return every byte the command wrote: {recovered} of {whole} bytes, ending {tail:?}",
+            recovered = collected.len(),
+            whole = expected.len(),
+            tail = String::from_utf8_lossy(&collected[collected.len().saturating_sub(24)..]),
+        );
+        assert!(
+            collected == expected.as_bytes(),
+            "and they are the command's own bytes, in the order it wrote them"
+        );
     }
 }
