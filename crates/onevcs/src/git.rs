@@ -838,27 +838,34 @@ pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<()> {
     Ok(())
 }
 
-/// Give the clone the lender's own hooks.
+/// Give the clone the hook *configuration* its published content expects.
 ///
 /// `git clone` does not copy repository-local config, so without this the
 /// publishing push made from a session's clone would run no `pre-push` hook at
 /// all — and the merge-path gate an identity is covered by would silently not run
 /// on the one push it exists to gate.
+///
+/// A relative `core.hooksPath` belongs to the checkout whose content is being
+/// published: git resolves it from that checkout's top level. Keep it relative so
+/// a branch which changes its own gate is judged by that change in the publication
+/// worktree, and so [`message_policy`] and the later push ask the same repository.
+/// This lets a branch supply the hook that verifies itself, but pointing at the
+/// lender is less safe for `local-direct`: its `pre-push` hook is the whole merge
+/// path, and the sole verifier would otherwise never see changes to itself.
+///
+/// An absolute path is an operator-selected hook installation and retains that
+/// exact meaning. Hooks which depend on installed development tooling remain the
+/// repository's responsibility: publication clones do not install dependencies.
 fn carry_hooks(source: &Path, dest: &Path) -> Result<()> {
     let configured = run(&["config", "--get", "core.hooksPath"], Some(source))?.trimmed();
     let hooks = if configured.is_empty() {
-        let tracked = source.join(".githooks");
-        if !tracked.is_dir() {
+        let repository_hooks = source.join(".githooks");
+        if !repository_hooks.is_dir() {
             return Ok(());
         }
-        tracked
+        PathBuf::from(".githooks")
     } else {
-        let path = PathBuf::from(&configured);
-        if path.is_absolute() {
-            path
-        } else {
-            source.join(path)
-        }
+        PathBuf::from(configured)
     };
     checked(
         &[
