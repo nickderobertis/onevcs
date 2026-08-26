@@ -317,13 +317,20 @@ could reach is a path to *delete*, not one to unit-test — which is also how th
 The `#[cfg(test)]` modules in `src/` are the exceptions to that, and each one is
 there because what it holds is reachable no other way: a process's creation
 identity (`workspace.rs`), a reader overlapping an atomic replace (`home.rs`),
-Windows' verbatim paths crossing every git boundary (`git.rs`), and the *type*
-side of the status report's serialized contract (`status.rs`). The last is the
-one to be careful with, because it looks like it belongs outside: the report's
-types are deliberately private, so proving the checked-in goldens read back as
-reports from `tests/` would mean making a dozen types public for a test's benefit.
-Both halves read the same two files — the CLI's bytes there, the type's round trip
-here — so neither can drift from the other.
+Windows' verbatim paths crossing every git boundary and a captured command's
+collector meeting its pipe empty at the instant the command exits (`git.rs`), and
+the *type* side of the status report's serialized contract (`status.rs`). The
+collector's is the one that looks like a journey and cannot be: what it holds is
+an *interleaving* — a reader taking a read that finds the pipe empty, and finding
+its command already collected when it next looks — and on an idle host that window
+is nanoseconds wide, so it is arranged rather than waited for.
+`tests/e2e/inherited_pipes.rs` drives the same collector through the binary and
+asserts on what a caller is shown, which is the half no injected pipe can prove.
+The status one is the one to be careful with, because it looks like it belongs
+outside: the report's types are deliberately private, so proving the checked-in
+goldens read back as reports from `tests/` would mean making a dozen types public
+for a test's benefit. Both halves read the same two files — the CLI's bytes there,
+the type's round trip here — so neither can drift from the other.
 
 `tests/e2e/honesty.rs`, `tests/e2e/seam.rs`, and `tests/e2e/library.rs` are the
 modules that do not spawn the binary, and the reason is the thing they test: the
@@ -374,6 +381,20 @@ host and a shell script is not; that stand-in runs the real git, on the same pip
 And it is Linux and Windows only: taking a duplicate of another process's pipe is
 `/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and macOS offers an
 unrelated process neither.
+
+**A collection ends on the command's exit, and every wait under it waits on a
+thing rather than on a clock.** Those are two rules and the second is the one that
+gets dropped, because breaking it costs no test. `WouldBlock` on a non-blocking
+pipe reports that nothing is readable *at this instant*, which is equally what a
+command mid-write looks like — so the reader asks whether its command is over
+*before* the read that answer decides, never after, and a build that asked
+afterwards discarded whatever arrived in between. And a collection that sleeps a
+fixed span between looks charges every captured command that granularity: a
+reader waits on its pipe becoming readable, end of stream retires one at once, and
+the run waits on a reader ending — which a child's exit brings about by closing
+the write ends it owns — rather than on a tick. A build that polled at 10ms
+instead ran a workload of 240 small git commands in 6.9s against 2.2s, and this
+crate runs many per node.
 
 **A fixture that selects a repository by `path:` must spell it the way the registry
 holds it, which is not the way the fixture built it.** `policy::matches` compares a

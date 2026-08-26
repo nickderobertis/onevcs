@@ -1901,8 +1901,8 @@ fn spell_source(source: &CheckSource) -> &'static str {
 /// The report is a *type's* serialization contract, and this is the only place it
 /// can be held to one.
 ///
-/// The fourth `#[cfg(test)]` module in this crate, for the reason the other three
-/// exist: what it exercises is reachable no other way. `tests/e2e/accounting.rs`
+/// One of this crate's `#[cfg(test)]` modules, for the reason the others exist:
+/// what it exercises is reachable no other way. `tests/e2e/accounting.rs`
 /// drives the real CLI and holds its bytes to the goldens below, which is the half a
 /// consumer meets — but a consumer also *reads* those bytes back, and the types that
 /// answer for that are deliberately private, so proving they round-trip from outside
