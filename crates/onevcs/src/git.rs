@@ -1626,6 +1626,61 @@ pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) 
     }
 }
 
+/// Whether merging `commit` into `base` is a content no-op.
+///
+/// Unlike [`known_to_carry_changes`], this permits `base` to carry additional
+/// edits on paths `commit` touched. That is the shape of a squash made after its
+/// base advanced: the squash commit contains both sets of edits, and merging the
+/// old branch into it changes no tree even though the two path contents are not
+/// byte-for-byte equal.
+pub(crate) fn already_integrates(cwd: &Path, base: &str, commit: &str) -> Result<bool> {
+    // `merge-tree --write-tree` writes the synthetic result into the object store.
+    // A report is read-only, so isolate those objects in a scratch store and read
+    // the repository's real objects through Git's alternates mechanism.
+    let scratch = tempfile::tempdir().map_err(|failure| Error::Invalid {
+        reason: format!("could not create a scratch object store for landing detection: {failure}"),
+    })?;
+    let objects = git_owned_path(cwd, "objects")?;
+    let env = [
+        (
+            "GIT_OBJECT_DIRECTORY".to_owned(),
+            scratch.path().to_string_lossy().into_owned(),
+        ),
+        (
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES".to_owned(),
+            objects.to_string_lossy().into_owned(),
+        ),
+    ];
+    let merged = run_with_env(
+        &["merge-tree", "--write-tree", base, commit],
+        Some(cwd),
+        &env,
+    )?;
+    match merged.status {
+        // The first line is the tree the merge would write. Messages, when there
+        // are any, follow it; only a successful, no-op merge can establish that
+        // the base already integrates the branch.
+        0 => {
+            let tree = checked_with_env(
+                &["rev-parse", "--verify", &format!("{base}^{{tree}}")],
+                Some(cwd),
+                &env,
+            )?
+            .trimmed();
+            Ok(merged.stdout.lines().next() == Some(tree.as_str()))
+        }
+        // `merge-tree` uses one for a merge with conflicts. A conflict establishes
+        // no landing; it is a domain answer rather than a failed git invocation.
+        1 => Ok(false),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "git merge-tree --write-tree {base} {commit} failed: {}",
+                merged.diagnostic()
+            ),
+        }),
+    }
+}
+
 /// What one attempt to bring a ref into a branch did.
 ///
 /// Named rather than a `bool`, because "it conflicted" is a domain answer every

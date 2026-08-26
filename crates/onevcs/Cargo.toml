@@ -38,6 +38,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 sha2 = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 url = { workspace = true }
@@ -98,7 +99,6 @@ onevcs-testing = { path = "../onevcs-testing" }
 # The release workflow, parsed as the YAML Actions reads rather than grepped, so
 # the paths a release archive names are the ones the suite checks exist.
 serde_yaml_ng = { workspace = true }
-tempfile = { workspace = true }
 
 # The end-to-end journeys: they spawn the compiled binary as a subprocess, so they
 # are their own target (`just test-e2e` runs it alone) while `just check` still

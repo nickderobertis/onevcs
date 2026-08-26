@@ -33,6 +33,7 @@ use serde_json::Value;
 
 use crate::host::{Hosted, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
+use crate::world::{token_of, worktree_of};
 
 /// One piece of work's report, as a consumer parses it.
 fn report(world: &crate::world::World, reference: &str) -> Value {
@@ -81,13 +82,6 @@ fn landed_on_the_host_saying(hosted: &Hosted, branch: &str, message: &str) {
         .git(&elsewhere, &["push", "-q", "origin", "main"]);
 }
 
-/// What GitHub does when somebody presses the button: one commit on the base
-/// carrying the branch's whole content, its subject ending in the change request's
-/// number, and no trace of the branch's own commits.
-fn squash_merged_on_the_host(hosted: &Hosted, branch: &str, subject: &str, number: usize) {
-    landed_on_the_host_saying(hosted, branch, &format!("{subject} (#{number})"));
-}
-
 #[test]
 fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its_own_paths() {
     // The report that motivated all of this: three just-merged branches at the top of
@@ -95,7 +89,37 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     // unpublished is that the base kept moving after they landed — so the base moves
     // here, over the very file the branch changed.
     let hosted = Hosted::new(REVIEWED);
-    let token = hosted.change("feature/merged-on-the-host", "feat: add the thing");
+    hosted.world.commit_file(
+        &hosted.checkout,
+        "one.txt",
+        "base: old\nkept: one\nkept: two\nkept: three\nbranch: old\n",
+        "chore: seed the shared file",
+    );
+    hosted
+        .world
+        .git(&hosted.checkout, &["push", "-q", "origin", "main"]);
+    let opened = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/merged-on-the-host",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let token = token_of(&opened);
+    hosted.world.commit_file(
+        &worktree_of(&opened),
+        "one.txt",
+        "base: old\nkept: one\nkept: two\nkept: three\nbranch: new\n",
+        "feat: add the thing",
+    );
     hosted
         .world
         .onevcs()
@@ -116,8 +140,8 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     let elsewhere = hosted.world.clone_of(&hosted.origin, "after");
     hosted.world.commit_file(
         &elsewhere,
-        "somebody-elses.txt",
-        "theirs\n",
+        "one.txt",
+        "base: new\nkept: one\nkept: two\nkept: three\nbranch: old\n",
         "feat: somebody else's change (#12)",
     );
     hosted
@@ -140,13 +164,47 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
         before["publication"]["landed"]["state"], "no",
         "the base carries a change request's number, and it is not this one's: {before}"
     );
-
-    squash_merged_on_the_host(
-        &hosted,
-        "feature/merged-on-the-host",
-        "feat: add the thing",
-        1,
+    hosted.world.git(
+        &hosted.checkout,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "--delete",
+            "feature/merged-on-the-host",
+        ],
     );
+    hosted
+        .world
+        .git(&hosted.checkout, &["fetch", "-q", "--prune", "origin"]);
+    let recoverable = row(&rows(&hosted.world, &[]), "feature/merged-on-the-host")
+        .expect("the branch that has not landed is in plain `recoverable --json`");
+    assert_eq!(
+        recoverable["branch"]["change_url"], "https://github.com/acme-corp/hosted/pull/1",
+        "plain `recoverable --json` carries the recorded change request without a second command: \
+         {recoverable}"
+    );
+    assert_eq!(
+        recoverable["recover_command"][1], "publish-branch",
+        "the URL is present while this row is still work to resume: {recoverable}"
+    );
+
+    hosted.world.git(
+        &elsewhere,
+        &[
+            "merge",
+            "-q",
+            "--squash",
+            "origin/feature/merged-on-the-host",
+        ],
+    );
+    hosted.world.git(
+        &elsewhere,
+        &["commit", "-q", "-m", "feat: add the thing (#1)"],
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
     hosted
         .world
         .git(&elsewhere, &["pull", "-q", "--ff-only", "origin", "main"]);
@@ -201,16 +259,6 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     // GitHub deletes the head branch when it merges one, and the next fetch prunes
     // the ref that tracked it — which is when a branch whose work is already on the
     // base comes back into this report's view carrying an instruction to publish it.
-    hosted.world.git(
-        &elsewhere,
-        &[
-            "push",
-            "-q",
-            "origin",
-            "--delete",
-            "feature/merged-on-the-host",
-        ],
-    );
     hosted
         .world
         .git(&hosted.checkout, &["fetch", "-q", "--prune", "origin"]);
@@ -241,6 +289,10 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     .expect("`--all` is how a branch this report withholds is seen at all");
     assert_eq!(shown["landed"]["state"], "yes");
     assert_eq!(shown["landed"]["evidence"]["tier"], "change-request");
+    assert_eq!(
+        shown["branch"]["change_url"], "https://github.com/acme-corp/hosted/pull/1",
+        "the listing alone carries the same change request record as status: {shown}"
+    );
     assert_eq!(
         shown["recover_command"],
         serde_json::json!([]),
