@@ -107,6 +107,179 @@ pub fn local_direct() -> String {
     "{publication: local-direct, approvals: none}".to_owned()
 }
 
+fn commit_tracked_hook(fixture: &Fixture, directory: &str, name: &str, body: &str) {
+    let hooks = fixture.checkout.join(directory);
+    std::fs::create_dir_all(&hooks).expect("a tracked hooks directory");
+    let hook = hooks.join(name);
+    std::fs::write(
+        &hook,
+        format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
+    )
+    .expect("a tracked hook");
+    let mut permissions = std::fs::metadata(&hook)
+        .expect("tracked hook metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&hook, permissions).expect("an executable tracked hook");
+    fixture.world.git(&fixture.checkout, &["add", directory]);
+    fixture.world.git(
+        &fixture.checkout,
+        &["commit", "-q", "-m", "build: install repository hooks"],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "-q", "origin", "main"]);
+}
+
+fn replace_branch_hook(worktree: &std::path::Path, directory: &str, name: &str, body: &str) {
+    let hook = worktree.join(directory).join(name);
+    std::fs::write(
+        &hook,
+        format!("#!/usr/bin/env bash\nset -euo pipefail\n{body}\n"),
+    )
+    .expect("the branch's hook");
+}
+
+#[test]
+fn a_relative_hooks_path_runs_the_hooks_the_published_branch_carries() {
+    let fixture = Fixture::local(&local_direct());
+    let record = fixture.world.path("relative-hooks-ran");
+    commit_tracked_hook(
+        &fixture,
+        ".husky",
+        "pre-push",
+        &format!("echo lender >>\"{}\"; exit 1", record.display()),
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["config", "core.hooksPath", ".husky"]);
+    let (token, worktree) = fixture.open(&["--branch", "feature/repair-hook"]);
+
+    replace_branch_hook(
+        &worktree,
+        ".husky",
+        "pre-push",
+        &format!("echo branch >>\"{}\"", record.display()),
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "change.txt",
+        "the hook is repaired\n",
+        "fix: repair the verifier",
+    );
+    fixture.world.git(&worktree, &["add", ".husky/pre-push"]);
+    fixture
+        .world
+        .git(&worktree, &["commit", "--amend", "-q", "--no-edit"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(record).expect("the branch hook recorded its run"),
+        "branch\n"
+    );
+}
+
+#[test]
+fn implicit_tracked_hooks_judge_the_message_and_push_from_the_published_branch() {
+    let fixture = Fixture::local(&local_direct());
+    let record = fixture.world.path("implicit-hooks-ran");
+    commit_tracked_hook(
+        &fixture,
+        ".githooks",
+        "pre-push",
+        &format!("echo lender-push >>\"{}\"; exit 1", record.display()),
+    );
+    commit_tracked_hook(
+        &fixture,
+        ".githooks",
+        "commit-msg",
+        &format!(
+            "grep -q 'Change-Base:' \"$1\" && {{ echo lender-message >>\"{}\"; exit 1; }}; true",
+            record.display()
+        ),
+    );
+    let (token, worktree) = fixture.open(&["--branch", "feature/ship-hooks"]);
+
+    replace_branch_hook(
+        &worktree,
+        ".githooks",
+        "pre-push",
+        &format!("echo branch-push >>\"{}\"", record.display()),
+    );
+    replace_branch_hook(
+        &worktree,
+        ".githooks",
+        "commit-msg",
+        &format!("echo branch-message >>\"{}\"", record.display()),
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "change.txt",
+        "the branch owns both policies\n",
+        "fix: ship the publication policy",
+    );
+    fixture.world.git(&worktree, &["add", ".githooks"]);
+    fixture
+        .world
+        .git(&worktree, &["commit", "--amend", "-q", "--no-edit"]);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let recorded = std::fs::read_to_string(record).expect("both branch hooks recorded their run");
+    assert!(recorded.contains("branch-message"), "{recorded}");
+    assert!(recorded.contains("branch-push"), "{recorded}");
+    assert!(!recorded.contains("lender-"), "{recorded}");
+}
+
+#[test]
+fn an_absolute_hooks_path_keeps_pointing_at_the_operator_installation() {
+    let fixture = Fixture::local(&local_direct());
+    let record = fixture.world.path("absolute-hook-ran");
+    fixture.verified_by(&format!("echo absolute >>\"{}\"", record.display()));
+    let (token, worktree) = fixture.open(&["--branch", "feature/local-hooks"]);
+    fixture.world.commit_file(
+        &worktree,
+        "change.txt",
+        "an ordinary change\n",
+        "fix: retain operator hooks",
+    );
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(record).expect("the absolute hook recorded its run"),
+        "absolute\n"
+    );
+}
+
+#[test]
+fn a_repository_without_hooks_does_not_configure_a_missing_directory() {
+    let fixture = Fixture::local(&local_direct());
+    let (_token, worktree) = fixture.open(&["--branch", "feature/no-hooks"]);
+
+    let output = fixture
+        .world
+        .git_raw(&worktree, &["config", "--get", "core.hooksPath"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+}
+
 #[test]
 fn a_session_cuts_a_borrowing_clone_and_an_isolated_worktree() {
     let fixture = Fixture::local(&local_direct());
