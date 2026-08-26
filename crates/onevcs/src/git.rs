@@ -859,8 +859,8 @@ pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<()> {
 fn carry_hooks(source: &Path, dest: &Path) -> Result<()> {
     let configured = run(&["config", "--get", "core.hooksPath"], Some(source))?.trimmed();
     let hooks = if configured.is_empty() {
-        let tracked = source.join(".githooks");
-        if !tracked.is_dir() {
+        let repository_hooks = source.join(".githooks");
+        if !repository_hooks.is_dir() {
             return Ok(());
         }
         PathBuf::from(".githooks")
