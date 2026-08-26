@@ -51,6 +51,15 @@ pub const DEFAULT_HOOK_TIMEOUT_SECONDS: f64 = 5400.0;
 /// wait on a child that takes a deadline, so a ceiling has to exist; large enough
 /// that a hook running out its whole bound is not asked a million times.
 const EXIT_POLL: Duration = Duration::from_millis(10);
+/// How much of a pipe one read takes at a time.
+///
+/// Most of what a command writes is smaller than this and arrives in a single
+/// read; what the size decides is how many reads a larger answer is recovered
+/// across, and therefore how many chances there are to stop before the end of one.
+/// `tests/e2e/inherited_pipes.rs` reads this number out of this file, so the
+/// journey that drives an answer wider than one read stays wider than one however
+/// this changes.
+const READ_BUFFER: usize = 8192;
 
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
 /// repository's own, `Ordinary` where it runs none.
@@ -284,7 +293,7 @@ impl PipeCapture {
         let requested = Arc::clone(&stopping);
         let reader = std::thread::spawn(move || {
             let mut output = Vec::new();
-            let mut chunk = [0_u8; 8192];
+            let mut chunk = [0_u8; READ_BUFFER];
             loop {
                 // Asked *before* the read it decides, and that order is the whole
                 // of the guarantee. `Ok(0)` is end of stream and answers for

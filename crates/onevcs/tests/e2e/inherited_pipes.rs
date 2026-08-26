@@ -78,6 +78,41 @@ fn declared(name: &str) -> String {
     rest[..rest.find('"').expect("a declared string literal is closed")].to_owned()
 }
 
+/// The collector's own source, read for the one number a journey's premise rests
+/// on.
+const COLLECTOR_SOURCE: &str = include_str!("../../src/git.rs");
+
+/// A whole number the collector declares, read out of its source rather than
+/// repeated here.
+///
+/// The same move [`declared`] makes, for a reason of the same shape: a number
+/// copied over would go on claiming what it claimed at the moment it was copied,
+/// and the claim here is about the collector rather than about anything this file
+/// controls. Read it from the thing it is a fact about.
+fn declared_size(name: &str) -> usize {
+    let opens = format!("const {name}: usize = ");
+    let at = COLLECTOR_SOURCE
+        .find(&opens)
+        .unwrap_or_else(|| panic!("the collector's source declares {name}"));
+    let rest = &COLLECTOR_SOURCE[at + opens.len()..];
+    let literal = &rest[..rest.find(';').expect("a declared constant is terminated")];
+    literal
+        .replace('_', "")
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} is declared as a whole number"))
+}
+
+/// How wide an answer the journey about a long one asks its probe for: twice what
+/// the collector takes in one read.
+///
+/// Which makes recovering it whole a matter of recovering it across three of them
+/// — two full and the remainder — rather than out of one, so every read but the
+/// last is a chance to stop early. Still far inside what a pipe holds, so the
+/// probe writes the whole answer and goes rather than waiting to be drained.
+fn wider_than_a_read_buffer() -> usize {
+    declared_size("READ_BUFFER") * 2
+}
+
 /// The subcommand the journeys hold the pipe of: a fetch is load-bearing — its
 /// output decides what the session is cut from — so a run that lost it, or never
 /// returned from it, is a run that visibly failed rather than one that quietly
@@ -116,13 +151,6 @@ const NOT_THE_COMMANDS_OUTPUT: &str = "0.0.0-written-by-an-unrelated-process";
 const THE_COMMANDS_VERSION: &str = "9.9.9";
 /// …and on standard error, where a journey is asserting about that stream.
 const THE_COMMANDS_DIAGNOSIS: &str = "boom";
-/// How wide an answer the journey about a long one asks its probe for.
-///
-/// Comfortably past two of the 8192-byte buffers a collector reads into, so
-/// recovering it whole is recovering it across several reads rather than out of
-/// one — and well inside what a pipe holds, so the probe writes it and goes rather
-/// than waiting to be drained.
-const WIDER_THAN_A_READ_BUFFER: usize = 20_000;
 /// The stream argument for a probe that leaves that stream alone.
 const NEITHER: &str = "-";
 
@@ -394,7 +422,7 @@ fn a_callers_answer_carries_an_answer_wider_than_the_buffer_it_was_read_in() {
     // One read is not a collection: an answer wider than the buffer a reader takes
     // it in arrives over several of them, and every one of those reads is a chance
     // to stop early. Held open again, so nothing but the exit ends it.
-    let wide = "9".repeat(WIDER_THAN_A_READ_BUFFER);
+    let wide = "9".repeat(wider_than_a_read_buffer());
     let mut asking = journey.release_latest(&[&wide, NEITHER, "0", "0"], PATIENT_BOUND_SECONDS);
     let mut holder = journey.hand_the_pipe_to_an_unrelated_process(&mut asking);
 
