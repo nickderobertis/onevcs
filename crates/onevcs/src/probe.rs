@@ -21,6 +21,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::releases::{Probe, ReleaseAnswer};
@@ -43,7 +44,11 @@ const PASSED_THROUGH: &[&str] = &[
     "USERPROFILE",
 ];
 
-/// How often a running probe is asked whether it has exited.
+/// The longest the wait below sleeps before asking again.
+///
+/// A ceiling rather than an interval: the wait wakes on a reader reaching end of
+/// stream, which a probe's exit brings about by closing the write ends it owns, and
+/// only a pipe an unrelated process holds open leaves it sleeping this out.
 const POLL: Duration = Duration::from_millis(20);
 
 /// What running one probe produced: its answer, and how long it took.
@@ -183,10 +188,14 @@ fn read(mut command: Command, bound: Duration, label: &str) -> ReleaseAnswer {
         Err(failure) => return not_answered(format!("{label} could not be started: {failure}")),
     };
     let started = Instant::now();
-    let out_reader = git::PipeCapture::start(child.stdout.take().expect("stdout was piped"));
-    let err_reader = git::PipeCapture::start(child.stderr.take().expect("stderr was piped"));
+    let (ended, endings) = mpsc::channel();
+    let out_reader = git::PipeCapture::start(
+        child.stdout.take().expect("stdout was piped"),
+        ended.clone(),
+    );
+    let err_reader = git::PipeCapture::start(child.stderr.take().expect("stderr was piped"), ended);
 
-    let exited = exited_within(&mut child, started, bound);
+    let exited = exited_within(&mut child, started, bound, &endings);
     let Some(status) = exited else {
         git::terminate_group(&child);
         let _ = child.kill();
@@ -269,19 +278,24 @@ fn diagnosis(stderr: &[u8]) -> String {
 
 /// Collect the child's exit within the same bound its pipes were read under.
 ///
-/// Output is drained while this polls, but only the probe's status decides that it
+/// Output is drained while this waits, but only the probe's status decides that it
 /// finished. A `wait` outside the bound would leave that bound silently not applying.
+///
+/// Between asks it waits on `endings` rather than on the clock, for the reason
+/// [`git::await_an_ending`] gives: a probe that answers and goes is noticed when it
+/// goes, and only one whose pipe something else holds open sleeps [`POLL`] out.
 fn exited_within(
     child: &mut Child,
     started: Instant,
     bound: Duration,
+    endings: &mpsc::Receiver<()>,
 ) -> Option<std::io::Result<std::process::ExitStatus>> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(Ok(status)),
             Err(failure) => return Some(Err(failure)),
             Ok(None) if started.elapsed() >= bound => return None,
-            Ok(None) => std::thread::sleep(POLL),
+            Ok(None) => git::await_an_ending(endings, POLL),
         }
     }
 }
