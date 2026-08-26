@@ -107,7 +107,7 @@ pub fn local_direct() -> String {
     "{publication: local-direct, approvals: none}".to_owned()
 }
 
-fn commit_tracked_hook(fixture: &Fixture, directory: &str, name: &str, body: &str) {
+fn commit_and_push_tracked_hook(fixture: &Fixture, directory: &str, name: &str, body: &str) {
     let hooks = fixture.checkout.join(directory);
     std::fs::create_dir_all(&hooks).expect("a tracked hooks directory");
     let hook = hooks.join(name);
@@ -144,7 +144,7 @@ fn replace_branch_hook(worktree: &std::path::Path, directory: &str, name: &str, 
 fn a_relative_hooks_path_runs_the_hooks_the_published_branch_carries() {
     let fixture = Fixture::local(&local_direct());
     let record = fixture.world.path("relative-hooks-ran");
-    commit_tracked_hook(
+    commit_and_push_tracked_hook(
         &fixture,
         ".husky",
         "pre-push",
@@ -189,13 +189,13 @@ fn a_relative_hooks_path_runs_the_hooks_the_published_branch_carries() {
 fn implicit_tracked_hooks_judge_the_message_and_push_from_the_published_branch() {
     let fixture = Fixture::local(&local_direct());
     let record = fixture.world.path("implicit-hooks-ran");
-    commit_tracked_hook(
+    commit_and_push_tracked_hook(
         &fixture,
         ".githooks",
         "pre-push",
         &format!("echo lender-push >>\"{}\"; exit 1", record.display()),
     );
-    commit_tracked_hook(
+    commit_and_push_tracked_hook(
         &fixture,
         ".githooks",
         "commit-msg",
