@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.3](https://github.com/nickderobertis/onevcs/compare/v0.15.2...v0.15.3) - 2026-08-26
+
+### Fixed
+
+- *(git)* verify a publication with the branch's own hooks, not the lender's ([#92](https://github.com/nickderobertis/onevcs/pull/92))
+
 ## [0.15.2](https://github.com/nickderobertis/onevcs/compare/v0.15.1...v0.15.2) - 2026-08-26
 
 ### Fixed
