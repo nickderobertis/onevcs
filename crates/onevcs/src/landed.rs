@@ -163,9 +163,7 @@ pub(crate) fn decide(
     // Tier 1. Exact and permanent: a commit somebody recorded as this branch's
     // landing, which the base can reach. Nothing edited afterwards changes it.
     if let Some(commit) = recorded.landing.as_ref().map(ObjectId::as_str) {
-        if git::known_to_reach(repo, commit, compared)?
-            && landed_all_of(repo, &fork, branch, commit)?
-        {
+        if git::known_to_reach(repo, commit, compared)? && landed_all_of(repo, branch, commit)? {
             return Ok(landed(LandingEvidence::RecordedLanding {
                 commit: Sha(commit.to_owned()),
             }));
@@ -177,7 +175,7 @@ pub(crate) fn decide(
     // ours required, and true however far the base has moved since.
     if let Some(url) = recorded.change.as_ref() {
         if let Some(commit) = names_the_change(&base_history, url.as_str()) {
-            if landed_all_of(repo, &fork, branch, &commit)? {
+            if landed_all_of(repo, branch, &commit)? {
                 return Ok(landed(LandingEvidence::ChangeRequest {
                     commit: Sha(commit),
                     change_url: url.clone(),
@@ -192,7 +190,7 @@ pub(crate) fn decide(
     for commit in &base_history {
         for carried in trailer_values(&commit.message, trailers.landed()) {
             if git::known_to_reach(repo, carried.as_str(), branch)?
-                && landed_all_of(repo, &fork, branch, &commit.sha)?
+                && landed_all_of(repo, branch, &commit.sha)?
             {
                 return Ok(landed(LandingEvidence::Trailer {
                     commit: Sha(commit.sha.clone()),
@@ -262,8 +260,8 @@ fn already_took_this_change(
 /// Asked of the *landing* commit rather than of the base as it stands now, which is
 /// what keeps this from being the inference it replaces: the base moves, and the
 /// commit that landed this work does not.
-fn landed_all_of(repo: &Path, fork: &str, branch: &str, landing: &str) -> Result<bool> {
-    git::known_to_carry_changes(repo, landing, fork, branch)
+fn landed_all_of(repo: &Path, branch: &str, landing: &str) -> Result<bool> {
+    git::already_integrates(repo, landing, branch)
 }
 
 fn landed(evidence: LandingEvidence) -> Landed {

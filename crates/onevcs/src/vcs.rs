@@ -367,6 +367,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                         .or_else(|| change_url_of(&repo, &compared, &branch, &trailers)),
                     ..recorded
                 };
+                let change_url = recorded.change.clone();
                 let mut verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
                 // A chain of retries this host cannot follow leaves nothing decided
                 // about the branch — the same answer `onevcs status` gives, through
@@ -401,6 +402,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                         base: &base,
                         compared: &compared,
                         branch: &branch,
+                        change_url,
                         verdict,
                     },
                     &sessions,
@@ -446,6 +448,7 @@ struct Preserved<'a> {
     base: &'a str,
     compared: &'a str,
     branch: &'a str,
+    change_url: Option<Url>,
     verdict: Landed,
 }
 
@@ -462,6 +465,7 @@ fn preserved_row(
         base,
         compared,
         branch,
+        ref change_url,
         ref verdict,
     } = *preserved;
     // A marker under a prefix this host does not read is still a marker:
@@ -556,7 +560,9 @@ fn preserved_row(
                 branch: branch.to_owned(),
                 base: base.to_owned(),
                 provenance: kind,
-                change_url: change_url_of(repo, compared, branch, trailers),
+                change_url: change_url
+                    .clone()
+                    .or_else(|| change_url_of(repo, compared, branch, trailers)),
                 change_base,
             },
             checkout: repo.to_path_buf(),

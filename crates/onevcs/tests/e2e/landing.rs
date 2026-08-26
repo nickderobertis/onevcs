@@ -33,6 +33,7 @@ use serde_json::Value;
 
 use crate::host::{Hosted, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
+use crate::world::{token_of, worktree_of};
 
 /// One piece of work's report, as a consumer parses it.
 fn report(world: &crate::world::World, reference: &str) -> Value {
@@ -95,7 +96,37 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     // unpublished is that the base kept moving after they landed — so the base moves
     // here, over the very file the branch changed.
     let hosted = Hosted::new(REVIEWED);
-    let token = hosted.change("feature/merged-on-the-host", "feat: add the thing");
+    hosted.world.commit_file(
+        &hosted.checkout,
+        "one.txt",
+        "base: old\nkept: one\nkept: two\nkept: three\nbranch: old\n",
+        "chore: seed the shared file",
+    );
+    hosted
+        .world
+        .git(&hosted.checkout, &["push", "-q", "origin", "main"]);
+    let opened = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/merged-on-the-host",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let token = token_of(&opened);
+    hosted.world.commit_file(
+        &worktree_of(&opened),
+        "one.txt",
+        "base: old\nkept: one\nkept: two\nkept: three\nbranch: new\n",
+        "feat: add the thing",
+    );
     hosted
         .world
         .onevcs()
@@ -116,8 +147,8 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     let elsewhere = hosted.world.clone_of(&hosted.origin, "after");
     hosted.world.commit_file(
         &elsewhere,
-        "somebody-elses.txt",
-        "theirs\n",
+        "one.txt",
+        "base: new\nkept: one\nkept: two\nkept: three\nbranch: old\n",
         "feat: somebody else's change (#12)",
     );
     hosted
@@ -241,6 +272,10 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
     .expect("`--all` is how a branch this report withholds is seen at all");
     assert_eq!(shown["landed"]["state"], "yes");
     assert_eq!(shown["landed"]["evidence"]["tier"], "change-request");
+    assert_eq!(
+        shown["branch"]["change_url"], "https://github.com/acme-corp/hosted/pull/1",
+        "the listing alone carries the same change request record as status: {shown}"
+    );
     assert_eq!(
         shown["recover_command"],
         serde_json::json!([]),
