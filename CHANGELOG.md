@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.8](https://github.com/nickderobertis/onevcs/compare/v0.15.7...v0.15.8) - 2026-08-28
+
+### Added
+
+- *(release)* declare this repository's release targets and prove them complete ([#103](https://github.com/nickderobertis/onevcs/pull/103))
+
 ## [0.15.7](https://github.com/nickderobertis/onevcs/compare/v0.15.6...v0.15.7) - 2026-08-28
 
 ### Fixed
