@@ -5665,8 +5665,8 @@ fn a_session_opened_from_the_command_line_survives_the_next_open() {
 ///
 /// The record test is in front of the retention bound as well as in front of the
 /// lease, and this is the difference: a session still open that *had* committed
-/// survived three later opens on its unpublished work and was removed by the
-/// fourth, which is a dispatch losing its worktree on the sibling count rather than
+/// survived a few later opens on its unpublished work and was then removed by one
+/// more, which is a dispatch losing its worktree on the sibling count rather than
 /// on anything about itself.
 #[test]
 fn a_session_still_open_is_not_pushed_out_by_the_retention_bound() {
@@ -5678,22 +5678,44 @@ fn a_session_still_open_is_not_pushed_out_by_the_retention_bound() {
         .world
         .commit_file(&worktree, "one.txt", "one\n", "feat: unpublished work");
 
-    // One more than `RETAINED_DEAD_RUNS`, each holding work of its own so every one
-    // of them competes for the same bounded list.
-    for index in 0..4 {
-        let (_, sibling) = fixture.open(&["--branch", &format!("feature/sibling-{index}")]);
+    // Closed siblings, each holding unpublished work of its own, are what the bound
+    // governs — so they are opened until it has demonstrably removed one. Driving
+    // the bound rather than counting to it: the number that sets it lives in the
+    // crate, and a copy of it here would be a second source that drifts silently
+    // the day the first one moves.
+    let mut siblings: Vec<PathBuf> = Vec::new();
+    let mut reclaimed = None;
+    for index in 0..8 {
+        let (sibling, sibling_worktree) =
+            fixture.open(&["--branch", &format!("feature/sibling-{index}")]);
         fixture.world.commit_file(
-            &sibling,
+            &sibling_worktree,
             "one.txt",
             &format!("{index}\n"),
             &format!("feat: sibling work {index}"),
         );
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "close", &sibling])
+            .assert()
+            .success();
+        siblings.push(sibling_worktree.parent().expect("a run root").to_owned());
         assert!(
             run_root.is_dir(),
             "the session still open is not counted against the bound (sibling {index})"
         );
+        reclaimed = siblings.iter().find(|root| !root.is_dir()).cloned();
+        if reclaimed.is_some() {
+            break;
+        }
     }
+    assert!(
+        reclaimed.is_some(),
+        "the premise: the bound is in force, and it reclaimed a closed sibling"
+    );
 
+    // Surviving the bound as a session, not only as a directory.
     fixture
         .world
         .onevcs()
@@ -5714,8 +5736,13 @@ fn a_run_root_no_session_record_names_is_reclaimed_by_the_next_open() {
 
     let (token, worktree) = fixture.open(&["--branch", "feature/orphaned"]);
     let orphaned = worktree.parent().expect("a run root").to_owned();
-    // The operator's own pruning of the session store, which is what leaves a run
-    // root nothing on this host can name. The directory is untouched.
+    // llmlint: ignore-block[tests_mirror_real_usage] the run root this leaves is the
+    // one an `open` killed between cutting its directory and writing its record
+    // leaves — a crash window no test can ask for deterministically — and the one an
+    // operator pruning their own session store leaves deliberately. Removing the
+    // record reaches exactly that end state and nothing else: the directory is
+    // untouched, and everything asserted below is the real CLI running the real
+    // reclamation over it.
     std::fs::remove_file(
         fixture
             .world
@@ -5724,6 +5751,7 @@ fn a_run_root_no_session_record_names_is_reclaimed_by_the_next_open() {
             .join(format!("{token}.json")),
     )
     .expect("an operator can remove a session record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     assert!(
         orphaned.is_dir(),
         "the premise: the run root outlived the record that named it"
