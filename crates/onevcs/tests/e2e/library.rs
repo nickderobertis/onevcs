@@ -26,10 +26,10 @@
 // journey in this suite uses.
 
 use onevcs::{
-    ChangeId, Check, CheckSource, EventFilter, EventMatcher, EventStream, FailureKind, Git, GitHub,
-    Holding, Hosting, Identity, MergeOutcome, MergePolicy, Phase, Providers, PublishOutcome,
-    PublishRequest, RemoteHost, Retention, Scope, Session, SessionRequest, SessionToken, Source,
-    Vcs,
+    ChangeId, ChangeRequest, Check, CheckSource, EventFilter, EventMatcher, EventStream,
+    FailureKind, Git, GitHub, Holding, Hosting, Identity, MergeOutcome, MergePolicy, Phase,
+    Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope, Session,
+    SessionRequest, SessionToken, Source, Vcs,
 };
 use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -736,6 +736,65 @@ fn the_checks_a_host_reports_say_which_of_its_sources_they_were_read_from() {
         before,
         "a log that was not fetched is no artifact"
     );
+
+    // …and this crate refusing the name is a *different* answer from that one. Both
+    // used to arrive as "the host could not produce a log", so a refusal made here
+    // read as GitHub keeping its logs — which is why refusing every matrix job's name
+    // went unnoticed. The refusal names its own actor and never asks the host.
+    let calls_before = world.host_calls().len();
+    let unnamed = Check {
+        name: String::new(),
+        ..complete.checks[0].clone()
+    };
+    let refused_here = host
+        .check_log(change, &unnamed)
+        .expect_err("a check with no name matches none the host reports")
+        .to_string();
+    assert!(
+        refused_here.contains("This build refused the request; the host was not asked."),
+        "{refused_here}"
+    );
+    assert!(
+        !refused_here.contains("could not produce a log"),
+        "the two answers are told apart: {refused_here}"
+    );
+    assert_eq!(
+        world.host_calls().len(),
+        calls_before,
+        "a name this build will not ask about costs the host no call"
+    );
+
+    // What a value that really *does* become an argument to `gh` is still held to.
+    // A change request's id is a positional on every call this host makes, and `gh`
+    // reads a leading `-` as an option of its own and an empty string as a
+    // present-but-blank value — so either would address something other than what it
+    // names, and neither reaches the program.
+    for made_up in ["", "-x"] {
+        let calls_before = world.host_calls().len();
+        let elsewhere = ChangeRequest {
+            id: ChangeId(made_up.to_owned()),
+            ..change.clone()
+        };
+        let refused = host
+            .merged_at(&elsewhere)
+            .expect_err("an id shaped like this addresses nothing on the host")
+            .to_string();
+        assert!(
+            refused.contains(&format!(
+                "change request id {made_up:?} cannot address anything"
+            )),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("it must be non-empty and must not begin with '-'"),
+            "{refused}"
+        );
+        assert_eq!(
+            world.host_calls().len(),
+            calls_before,
+            "a value refused at this boundary never reaches gh"
+        );
+    }
 }
 
 #[test]
