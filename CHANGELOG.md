@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.7](https://github.com/nickderobertis/onevcs/compare/v0.15.6...v0.15.7) - 2026-08-28
+
+### Fixed
+
+- *(status)* decide a landing against a base fresh enough to answer it ([#101](https://github.com/nickderobertis/onevcs/pull/101))
+
 ## [0.15.6](https://github.com/nickderobertis/onevcs/compare/v0.15.5...v0.15.6) - 2026-08-28
 
 ### Fixed

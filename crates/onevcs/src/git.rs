@@ -536,6 +536,115 @@ pub fn checked_with_env(
     })
 }
 
+/// The variable git reads a borrowed object store out of.
+const ALTERNATE_OBJECTS: &str = "GIT_ALTERNATE_OBJECT_DIRECTORIES";
+
+/// What git separates the stores in that variable with, which is the platform's own
+/// path-list separator rather than this crate's choice.
+#[cfg(windows)]
+const ALTERNATE_SEPARATOR: &str = ";";
+#[cfg(not(windows))]
+const ALTERNATE_SEPARATOR: &str = ":";
+
+/// A repository as a read is put to it: where it is, and any object store it may
+/// read besides its own.
+///
+/// A checkout answers about the base out of the objects it holds, and one that has
+/// not fetched since before a landing holds none of the commit that landed. Rather
+/// than fetch — a report takes no lease and writes nothing, and the repository it
+/// would write to is somebody's working copy — the reads that decide a landing are
+/// pointed at the object store of the checkout that *has* fetched, through git's own
+/// alternates mechanism. Objects and nothing else: refs, config and the worktree stay
+/// the asked repository's own, so what is borrowed is the ability to *read* a commit
+/// this copy never fetched.
+///
+/// Every read takes one of these rather than a path, and a path converts into one
+/// that borrows nothing — so a call site that has no store to lend says so by saying
+/// nothing, and the only sites that differ are the ones that mean to.
+#[derive(Debug, Clone, Copy)]
+pub struct Asked<'a> {
+    at: &'a Path,
+    borrowing: Option<&'a Path>,
+}
+
+impl<'a> From<&'a Path> for Asked<'a> {
+    fn from(at: &'a Path) -> Self {
+        Asked {
+            at,
+            borrowing: None,
+        }
+    }
+}
+
+impl<'a> From<&'a PathBuf> for Asked<'a> {
+    fn from(at: &'a PathBuf) -> Self {
+        Asked::from(at.as_path())
+    }
+}
+
+impl<'a> Asked<'a> {
+    /// A repository asked while it may also read `objects`, or asked about what it
+    /// holds itself when there is no store to lend it.
+    pub fn borrowing(at: &'a Path, objects: Option<&'a Path>) -> Self {
+        Asked {
+            at,
+            borrowing: objects,
+        }
+    }
+
+    /// Where the command runs, for the reads that name a repository rather than
+    /// asking it anything.
+    pub fn path(self) -> &'a Path {
+        self.at
+    }
+
+    /// The environment one read runs under: the borrowed store, and nothing when
+    /// there is none.
+    fn env(self) -> Vec<(String, String)> {
+        self.reading_also(&[])
+    }
+
+    /// The same, with stores this read supplies itself listed ahead of the borrowed
+    /// one — which is how the one read that redirects git's *primary* object
+    /// directory keeps the repository's own objects readable.
+    ///
+    /// A borrowed store whose path git could not read back out of this variable is
+    /// left out rather than mangled into it: the separator is an ordinary path
+    /// character on Unix, and a value git would read as two directories names
+    /// neither. What that costs is the borrow — never the repository's own stores,
+    /// which are spelled exactly as their caller handed them over — and a repository
+    /// left without the borrow is the state the freshness rule in `landed` answers
+    /// `unknown` for rather than `no`.
+    fn reading_also(self, own: &[PathBuf]) -> Vec<(String, String)> {
+        let mut stores: Vec<String> = own
+            .iter()
+            .map(|store| store.to_string_lossy().into_owned())
+            .collect();
+        let borrowed = self
+            .borrowing
+            .map(|store| store.to_string_lossy().into_owned())
+            .filter(|store| !store.contains(ALTERNATE_SEPARATOR));
+        stores.extend(borrowed);
+        if stores.is_empty() {
+            return Vec::new();
+        }
+        vec![(
+            ALTERNATE_OBJECTS.to_owned(),
+            stores.join(ALTERNATE_SEPARATOR),
+        )]
+    }
+}
+
+/// Run one read against a repository, through whatever it is borrowing.
+fn run_in(asked: Asked<'_>, args: &[&str]) -> Result<Output> {
+    run_with_env(args, Some(asked.at), &asked.env())
+}
+
+/// The same, requiring success.
+fn checked_in(asked: Asked<'_>, args: &[&str]) -> Result<Output> {
+    checked_with_env(args, Some(asked.at), &asked.env())
+}
+
 /// The configured bound for one git command, hook-running or not.
 ///
 /// A non-numeric, zero, negative, or infinite value is refused here rather than
@@ -588,10 +697,10 @@ pub fn check_bounds() -> Result<()> {
 /// Which is what lets a run clone be asked about a base no ref of its own names:
 /// its remote-tracking refs are frozen at the moment it was cut, but its lender
 /// keeps fetching, and the objects come with the alternates.
-pub fn has_commit(cwd: &Path, sha: &Sha) -> bool {
-    run(
+pub fn has_commit<'a>(cwd: impl Into<Asked<'a>>, sha: &Sha) -> bool {
+    run_in(
+        cwd.into(),
         &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)],
-        Some(cwd),
     )
     .map(|out| out.ok())
     .unwrap_or(false)
@@ -890,6 +999,12 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The object store a checkout keeps its own history in, which is what another
+/// repository is given to read when it is asked about a commit it never fetched.
+pub fn objects_dir(cwd: &Path) -> Result<PathBuf> {
+    git_owned_path(cwd, "objects")
+}
+
 /// Git's effective hooks directory for a checkout, honouring `core.hooksPath`.
 pub fn hooks_dir(cwd: &Path) -> Result<PathBuf> {
     // Git resolves this one name against `core.hooksPath` rather than against the
@@ -1171,15 +1286,15 @@ pub fn current_branch(cwd: &Path) -> Result<String> {
 /// The committer date rather than the author date: what a wait on a human step is
 /// measured from is when the work reached the base, and a squash lands a commit
 /// authored days earlier.
-pub fn committer_date(cwd: &Path, commit: &str) -> Option<String> {
-    run(
+pub fn committer_date<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Option<String> {
+    run_in(
+        cwd.into(),
         &[
             "show",
             "-s",
             "--format=%cI",
             &format!("{commit}^{{commit}}"),
         ],
-        Some(cwd),
     )
     .ok()
     .filter(Output::ok)
@@ -1326,15 +1441,19 @@ pub struct CommitMessage {
 }
 
 /// Full commit messages in `branch` but not `base`, oldest first.
-pub fn log_messages(cwd: &Path, base: &str, branch: &str) -> Result<Vec<CommitMessage>> {
-    let output = checked(
+pub fn log_messages<'a>(
+    cwd: impl Into<Asked<'a>>,
+    base: &str,
+    branch: &str,
+) -> Result<Vec<CommitMessage>> {
+    let output = checked_in(
+        cwd.into(),
         &[
             "log",
             "--reverse",
             "--format=%H%x00%B%x00%x1e",
             &format!("{base}..{branch}"),
         ],
-        Some(cwd),
     )?;
     Ok(output
         .stdout
@@ -1356,8 +1475,8 @@ pub fn log_messages(cwd: &Path, base: &str, branch: &str) -> Result<Vec<CommitMe
 /// ancestry once publication squashes: a published branch is never an ancestor of
 /// the base afterwards, and asking about ancestry would report finished work as
 /// still waiting forever.
-pub fn trees_differ(cwd: &Path, base: &str, branch: &str) -> Result<bool> {
-    let output = run(&["diff", "--quiet", base, branch], Some(cwd))?;
+pub fn trees_differ<'a>(cwd: impl Into<Asked<'a>>, base: &str, branch: &str) -> Result<bool> {
+    let output = run_in(cwd.into(), &["diff", "--quiet", base, branch])?;
     match output.status {
         0 => Ok(false),
         1 => Ok(true),
@@ -1385,8 +1504,8 @@ pub struct Lines {
 /// nought is a number and this is the absence of one. Renames are not detected, for
 /// the reason every other comparison in this module declines them: a rename reported
 /// under its destination alone hides the lines the source took with it.
-pub fn line_change(cwd: &Path, from: &str, to: &str) -> Result<Lines> {
-    let listed = checked(&["diff", "--numstat", "--no-renames", from, to], Some(cwd))?;
+pub fn line_change<'a>(cwd: impl Into<Asked<'a>>, from: &str, to: &str) -> Result<Lines> {
+    let listed = checked_in(cwd.into(), &["diff", "--numstat", "--no-renames", from, to])?;
     let mut counted = Lines::default();
     for line in listed.stdout.lines().filter(|line| !line.trim().is_empty()) {
         let unreadable = || Error::Invalid {
@@ -1468,10 +1587,14 @@ pub fn shape_of(cwd: &Path, reference: &str) -> Result<Shape> {
 }
 
 /// Whether `ancestor` is reachable from `descendant`.
-pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
-    let output = run(
+pub fn is_ancestor<'a>(
+    cwd: impl Into<Asked<'a>>,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool> {
+    let output = run_in(
+        cwd.into(),
         &["merge-base", "--is-ancestor", ancestor, descendant],
-        Some(cwd),
     )?;
     match output.status {
         0 => Ok(true),
@@ -1491,7 +1614,12 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
 // llmlint: ignore[invalid_states_unrepresentable] see `merge_base` for the same reason —
 // the crate's `Sha` is the contract's wrapper for its public surface and validates
 // nothing, and what this takes is what git just answered.
-pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+pub fn known_to_reach<'a>(
+    cwd: impl Into<Asked<'a>>,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool> {
+    let cwd = cwd.into();
     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this answering `false`
     // for an absent `descendant`, or for a repository it could not read. Its caller passes
     // the tip `locate` resolved out of that same checkout moments earlier, so no journey
@@ -1512,8 +1640,12 @@ pub fn known_to_reach(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bo
 /// contract's wrapper for its public surface and validates nothing, and git's answer to
 /// a command this module just ran is not a caller's input.
 // llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] see above.
-pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String>> {
-    let output = run(&["merge-base", first, second], Some(cwd))?;
+pub fn merge_base<'a>(
+    cwd: impl Into<Asked<'a>>,
+    first: &str,
+    second: &str,
+) -> Result<Option<String>> {
+    let output = run_in(cwd.into(), &["merge-base", first, second])?;
     match output.status {
         // Nothing but a SHA is printed on success, so an empty answer is one that did
         // not survive being read — and "they share no history" is the safe reading of
@@ -1535,12 +1667,8 @@ pub fn merge_base(cwd: &Path, first: &str, second: &str) -> Result<Option<String
 /// files, which is what makes it the check on a listing of those names rather than a
 /// second copy of it. It counts what the listing lists, so it declines rename
 /// detection for the same reason the listing does.
-fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
-    let summary = checked(
-        &["diff", "--shortstat", "--no-renames", from, to],
-        Some(cwd),
-    )?
-    .trimmed();
+fn counted_files(cwd: Asked<'_>, from: &str, to: &str) -> Result<usize> {
+    let summary = checked_in(cwd, &["diff", "--shortstat", "--no-renames", from, to])?.trimmed();
     // Nothing at all is what git prints when no file changed, and it is the only
     // summary that means zero: anything else this cannot read a count out of is an
     // answer to refuse rather than to round down, since rounding it down would say
@@ -1575,14 +1703,20 @@ fn counted_files(cwd: &Path, from: &str, to: &str) -> Result<usize> {
 /// on the base exactly as it reads on the commit — which is the question asked here, and asked over the paths that
 /// commit actually touched so that unrelated work landing on the base beside it
 /// does not change the answer.
-pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) -> Result<bool> {
+pub fn known_to_carry_changes<'a>(
+    cwd: impl Into<Asked<'a>>,
+    base: &str,
+    fork: &str,
+    commit: &str,
+) -> Result<bool> {
+    let cwd = cwd.into();
     // Renames are deliberately not detected: git reports one under its destination
     // alone, and a comparison scoped by that would never ask whether the source is
     // still on the base — which is the half of a rename that says the change below has
     // *not* landed. Without detection both paths are listed and both are compared.
-    let listed = checked(
+    let listed = checked_in(
+        cwd,
         &["diff", "--name-only", "--no-renames", "-z", fork, commit],
-        Some(cwd),
     )?;
     // Pathspecs, not names: a path is a repository's own content and one beginning
     // with `:` would otherwise be read as pathspec magic rather than as the file it
@@ -1612,7 +1746,7 @@ pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) 
     }
     let mut args = vec!["diff", "--quiet", commit, base, "--"];
     args.extend(touched.iter().map(String::as_str));
-    let output = run(&args, Some(cwd))?;
+    let output = run_in(cwd, &args)?;
     match output.status {
         0 => Ok(true),
         1 => Ok(false),
@@ -1633,27 +1767,29 @@ pub fn known_to_carry_changes(cwd: &Path, base: &str, fork: &str, commit: &str) 
 /// base advanced: the squash commit contains both sets of edits, and merging the
 /// old branch into it changes no tree even though the two path contents are not
 /// byte-for-byte equal.
-pub(crate) fn already_integrates(cwd: &Path, base: &str, commit: &str) -> Result<bool> {
+pub(crate) fn already_integrates<'a>(
+    cwd: impl Into<Asked<'a>>,
+    base: &str,
+    commit: &str,
+) -> Result<bool> {
+    let cwd = cwd.into();
     // `merge-tree --write-tree` writes the synthetic result into the object store.
     // A report is read-only, so isolate those objects in a scratch store and read
     // the repository's real objects through Git's alternates mechanism.
     let scratch = tempfile::tempdir().map_err(|failure| Error::Invalid {
         reason: format!("could not create a scratch object store for landing detection: {failure}"),
     })?;
-    let objects = git_owned_path(cwd, "objects")?;
-    let env = [
-        (
-            "GIT_OBJECT_DIRECTORY".to_owned(),
-            scratch.path().to_string_lossy().into_owned(),
-        ),
-        (
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES".to_owned(),
-            objects.to_string_lossy().into_owned(),
-        ),
-    ];
+    let mut env = vec![(
+        "GIT_OBJECT_DIRECTORY".to_owned(),
+        scratch.path().to_string_lossy().into_owned(),
+    )];
+    // Redirecting the primary store hides the repository's own, so its objects are
+    // named here beside anything it is borrowing — which is the one read that has to
+    // spell out what every other one gets from the repository it runs in.
+    env.extend(cwd.reading_also(&[objects_dir(cwd.path())?]));
     let merged = run_with_env(
         &["merge-tree", "--write-tree", base, commit],
-        Some(cwd),
+        Some(cwd.path()),
         &env,
     )?;
     match merged.status {
@@ -1663,7 +1799,7 @@ pub(crate) fn already_integrates(cwd: &Path, base: &str, commit: &str) -> Result
         0 => {
             let tree = checked_with_env(
                 &["rev-parse", "--verify", &format!("{base}^{{tree}}")],
-                Some(cwd),
+                Some(cwd.path()),
                 &env,
             )?
             .trimmed();
