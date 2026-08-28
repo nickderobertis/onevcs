@@ -31,7 +31,7 @@
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, REVIEWED};
+use crate::host::{Hosted, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::world::{token_of, worktree_of};
 
@@ -899,5 +899,249 @@ fn a_landing_never_answers_for_work_the_branch_gained_after_it() {
     assert!(
         listed.contains("feature/landed-then-more") && !listed.contains("Nothing to resume"),
         "the branch is listed, and not as one whose work is already on the base: {listed}"
+    );
+}
+
+#[test]
+fn a_landing_the_publication_checkout_can_see_answers_for_a_holder_that_never_fetched_it() {
+    // The report this whole tier exists for, in the state that still produced it: a
+    // branch the host merged fifty-two minutes earlier, read as `landed: no` by
+    // `content comparison`, with a paste-ready republication under it. Nothing was
+    // missing — the landing was recorded, and the checkout every publication
+    // fast-forwards carried it all along. What answered was the copy holding the
+    // branch, whose own `origin/main` predated the merge, so every tier read a base
+    // history with the evidence cut off and the comparison at the bottom closed the
+    // question.
+    let hosted = Hosted::new(DIRECT);
+    let worker = hosted.world.clone_of(&hosted.origin, "worker");
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "register",
+            &worker.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/hosted.git",
+        ])
+        .assert()
+        .success();
+    let opened = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/merged-behind-its-holder",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let token = token_of(&opened);
+    hosted.world.commit_file(
+        &worktree_of(&opened),
+        "one.txt",
+        "one\n",
+        "feat: land this on the host",
+    );
+    // A second session on the same checkout, opened before anything lands, whose work
+    // nothing ever published. It is the control: the base moving under a copy must not
+    // turn every branch in it into a question nobody can answer. Opening it is also
+    // the last thing that fetches into that checkout, so what follows is a landing it
+    // never sees.
+    let unpublished = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/nobody-published-this",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    hosted.world.commit_file(
+        &worktree_of(&unpublished),
+        "two.txt",
+        "two\n",
+        "feat: work nobody published",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token_of(&unpublished)])
+        .assert()
+        .success();
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // Only the publication checkout follows the base. The worker never fetches again,
+    // and the clones cut from it read their history out of it — so the commit the
+    // landing is on is one they cannot see at all.
+    hosted
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+    let behind = hosted
+        .world
+        .git(&worker, &["log", "--format=%s", "origin/main"]);
+    assert!(
+        !behind.contains("land this on the host"),
+        "the premise: the checkout the branch is held out of has not fetched since \
+         before the landing, so its own base history stops short of it: {behind}"
+    );
+
+    let report = report(&hosted.world, "feature/merged-behind-its-holder");
+    assert_eq!(
+        report["publication"]["landed"]["state"], "yes",
+        "the checkout every publication fast-forwards has the landing, so the copy \
+         that never fetched it is asked through that one: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "recorded-landing",
+        "and a record decides it, never the comparison of content: {report}"
+    );
+
+    // Which is the line that mattered: no row, so no instruction to republish a
+    // change that merged.
+    assert!(
+        row(
+            &rows(&hosted.world, &[]),
+            "feature/merged-behind-its-holder"
+        )
+        .is_none(),
+        "a branch whose work is on the base is not work to resume"
+    );
+    let still_open = row(&rows(&hosted.world, &[]), "feature/nobody-published-this")
+        .expect("work nobody published is still work to resume");
+    assert_eq!(
+        still_open["landed"]["state"], "no",
+        "and it is a decided no rather than a question, because the copy holding it \
+         was asked about the base this host knows: {still_open}"
+    );
+    assert_eq!(
+        still_open["recover_command"][1], "publish-branch",
+        "so the row keeps the command that lands it: {still_open}"
+    );
+}
+
+#[test]
+fn a_copy_no_store_can_be_lent_to_answers_unknown_rather_than_no() {
+    // The rule that holds whatever the borrow above achieves. Git separates the stores
+    // in `GIT_ALTERNATE_OBJECT_DIRECTORIES` with `:`, which is an ordinary character in
+    // a Unix path — so a publication checkout whose own path carries one can be lent to
+    // nobody: a value naming it would name two directories and neither exists. What is
+    // left is a copy judged against its own view of the base, and what that copy must
+    // not do is close the question. `no` is the answer that prints an instruction to
+    // publish, and this copy cannot see whether the base already has the work.
+    let world = crate::world::World::new();
+    let origin = world.bare_origin("project");
+    let checkout = world.clone_of(&origin, "acme:project");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    crate::registry::configure_rules(
+        &world,
+        format!(
+            "version: 1\nrules: []\ndefault: {policy}\n",
+            policy = local_direct()
+        ),
+    );
+    let worker = world.clone_of(&origin, "worker");
+    world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+    let opened = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "acme:project",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/nothing-lent-to-it",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    world.commit_file(
+        &worktree_of(&opened),
+        "a.txt",
+        "a\n",
+        "feat: work nobody published",
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &token_of(&opened)])
+        .assert()
+        .success();
+
+    // The base moves, and only the publication checkout follows it.
+    let elsewhere = world.clone_of(&origin, "elsewhere");
+    world.commit_file(
+        &elsewhere,
+        "moved.txt",
+        "moved\n",
+        "feat: the base moves on without them",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&checkout)
+        .assert()
+        .success();
+
+    let report = report(&world, "feature/nothing-lent-to-it");
+    assert_eq!(
+        report["publication"]["landed"]["state"], "unknown",
+        "the copy holding the branch scanned a base history that stops short of the \
+         one this host knows, and a comparison made there decides nothing: {report}"
+    );
+    let listed = world
+        .onevcs()
+        .arg("recoverable")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed = String::from_utf8_lossy(&listed).into_owned();
+    assert!(
+        listed.contains("feature/nothing-lent-to-it") && !listed.contains("Resume:"),
+        "so the branch is still listed as preserved work, and listed without the line \
+         that reads as an instruction to publish it: {listed}"
     );
 }

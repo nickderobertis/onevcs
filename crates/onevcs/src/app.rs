@@ -581,8 +581,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             println!(
                 "    Not decided: nothing records that this branch's work reached {base} — no \
                  landing, no change request's number in {base}'s history, and no landing \
-                 trailer — and {base} already carries everything it changed. Read it with \
-                 `{diff}`; if it really has not landed, `{command}` lands it",
+                 trailer — and comparing content settles nothing here, so {base} may already \
+                 carry this work. Read it with `{diff}`; if it really has not landed, \
+                 `{command}` lands it",
                 base = row.branch.base,
                 diff = guidance::command([
                     "git",

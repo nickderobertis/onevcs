@@ -578,9 +578,14 @@ fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a
 }
 
 /// Ask every copy of the branch this host holds whether the work landed.
+///
+/// Each is asked through `lent` — the object store of the checkout every publication
+/// fast-forwards — so a copy that has not fetched since a landing is still asked
+/// about a base that carries it, rather than about the one it last saw.
 fn judge(
     holders: &[&Holder],
     resolution: &Resolution,
+    lent: Option<&Path>,
     base: &Ref,
     work: &Work,
     recorded: &landed::Recorded,
@@ -589,8 +594,16 @@ fn judge(
     let current = vcs::base_commit(&resolution.publication, base);
     let mut judged = Vec::new();
     for holder in holders {
-        let compared = vcs::judged_against(&holder.path, base, current.as_ref());
-        let verdict = landed::decide(&holder.path, &compared, &work.branch, recorded, trailers)?;
+        let asked = git::Asked::borrowing(&holder.path, lent);
+        let compared = vcs::judged_against(asked, base, current.as_ref());
+        let verdict = landed::decide(
+            asked,
+            &compared,
+            current.as_ref(),
+            &work.branch,
+            recorded,
+            trailers,
+        )?;
         judged.push((holder.path.clone(), compared, verdict));
     }
     Ok(judged)
@@ -641,6 +654,10 @@ pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<Landing
     let trailers = provenance::from_rules(&file);
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
     let holders = holders_of(registry, &resolution, &work.branch)?;
+    // The store every copy is asked through, read once: it is the checkout every
+    // publication fast-forwards, so a landing's evidence is in it whether or not the
+    // copy holding the branch has fetched since.
+    let lent = git::objects_dir(&resolution.publication).ok();
     let answering = answering(&work)?;
     let held_by = answering
         .session
@@ -650,6 +667,7 @@ pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<Landing
     let judged = judge(
         &carrying(&holders, &answering.superseded),
         &resolution,
+        lent.as_deref(),
         &base,
         &work,
         &told.recorded,
@@ -688,6 +706,10 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
 
     let holders = holders_of(registry, &resolution, &work.branch)?;
+    // The store every copy is asked through, read once: it is the checkout every
+    // publication fast-forwards, so a landing's evidence is in it whether or not the
+    // copy holding the branch has fetched since.
+    let lent = git::objects_dir(&resolution.publication).ok();
     let answering = answering(&work)?;
     let session = answering.session.clone().map(|record| SessionReport {
         token: record.token.clone(),
@@ -707,6 +729,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let judged = judge(
         &carrying(&holders, &answering.superseded),
         &resolution,
+        lent.as_deref(),
         &base,
         &work,
         &told.recorded,
@@ -721,6 +744,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     // so nothing here has seen the history that would decide it.
     let mut verdict = None;
     if let Some((repo, compared, decided)) = carrier {
+        let repo = git::Asked::borrowing(repo, lent.as_deref());
         ahead = Some(git::log_messages(repo, compared, &work.branch)?.len());
         branch_provenance = Some(judge_provenance(repo, compared, &work.branch, &trailers)?);
         // Read back out of a commit the repository carries, so it is input: a value
@@ -1107,12 +1131,13 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
 /// A marker under a prefix this host cannot read is an incomplete step whatever
 /// wrote it, for the reason `recoverable` reports one: nothing recognizes it, so
 /// nothing else would refuse it.
-fn judge_provenance(
-    repo: &Path,
+fn judge_provenance<'a>(
+    repo: impl Into<git::Asked<'a>>,
     compared: &str,
     branch: &str,
     trailers: &provenance::Trailers,
 ) -> Result<BranchProvenance> {
+    let repo = repo.into();
     if !provenance::unrecognized(repo, compared, branch, trailers)?.is_empty()
         || !provenance::unattested(repo, compared, branch, trailers)?.is_empty()
     {
