@@ -421,6 +421,10 @@ impl Registry {
         // string cannot carry a newline the script would read as one.
         let served = dir.path().join("served");
         std::fs::write(&served, body).expect("a body the stub registry can serve");
+        // The registry is the boundary: a public service across the network, and
+        // this tier is offline and credential-free by rule — which is what lets
+        // `just check` need neither. tests/smoke/releases.rs drives the real three.
+        // llmlint: ignore[e2e_not_mocked] see the note directly above.
         write_stub(
             &dir.path().join("curl"),
             &format!(
@@ -1028,9 +1032,7 @@ fn no_script_reaches_for_something_the_shell_macos_ships_does_not_have() {
     );
 }
 
-// --- scripts/release-probe.sh -------------------------------------------------
-//
-// The probe answers what a public registry serves for one artifact this
+// `scripts/release-probe.sh` answers what a public registry serves for one artifact this
 // repository publishes, and its three answers are the contract: a version on
 // stdout, an empty stdout, and a non-zero exit carrying its reason. The middle
 // one and the last one are what a consumer must never confuse — it holds
@@ -1056,11 +1058,22 @@ fn no_script_reaches_for_something_the_shell_macos_ships_does_not_have() {
 struct ProbeRun {
     registry: tempfile::TempDir,
     home: tempfile::TempDir,
+    /// A checkout of this repository's probe carrying a declaration of its own,
+    /// where a journey is about what the script does with one. `None` runs the
+    /// real checkout, which is the declaration this repository actually has.
+    checkout: Option<tempfile::TempDir>,
 }
 
 impl ProbeRun {
     /// A probe whose registry answers `status` to whatever URL is asked of it,
     /// serving `body` with it.
+    ///
+    /// The registry is the boundary rather than a step of the script: it is a
+    /// public service on the other side of the network, and this tier is offline
+    /// and credential-free by rule, which is why `just check` needs neither. The
+    /// real crates.io, PyPI, and npm registry are driven by
+    /// `tests/smoke/releases.rs`, the tier that is allowed to reach them.
+    /// Everything the script decides runs for real here.
     fn answering(status: &str, body: &str) -> Self {
         let registry = tempfile::tempdir().expect("a temporary directory for the stub registry");
         let served = registry.path().join("served");
@@ -1068,6 +1081,10 @@ impl ProbeRun {
         // JSON with quoting of its own, and one embedded in a shell string would be
         // a body this suite escaped rather than the one a registry sends.
         std::fs::write(&served, body).expect("a body the stub registry can serve");
+        // The registry is the boundary: a public service across the network, and
+        // this tier is offline and credential-free by rule — which is what lets
+        // `just check` need neither. tests/smoke/releases.rs drives the real three.
+        // llmlint: ignore[e2e_not_mocked] see the note directly above.
         write_stub(
             &registry.path().join("curl"),
             &format!(
@@ -1089,6 +1106,41 @@ impl ProbeRun {
         Self {
             registry,
             home: tempfile::tempdir().expect("a temporary HOME"),
+            checkout: None,
+        }
+    }
+
+    /// The same probe, run out of a checkout carrying `declaration` as its
+    /// `release-targets.txt` — or, for `None`, carrying none at all.
+    ///
+    /// That file is the one declaration and the script resolves it from its own
+    /// location, so giving it another checkout is the only way a journey can ask
+    /// what it does with a declaration this repository would never commit. The
+    /// script is symlinked rather than copied, because what is under test is this
+    /// repository's probe and a copy would be a second one to drift.
+    fn declaring(declaration: Option<&str>) -> Self {
+        let checkout = tempfile::tempdir().expect("a temporary checkout");
+        std::fs::create_dir(checkout.path().join("scripts")).expect("a scripts directory");
+        std::os::unix::fs::symlink(
+            workspace_root().join("scripts/release-probe.sh"),
+            checkout.path().join("scripts/release-probe.sh"),
+        )
+        .expect("this repository's own probe, in another checkout");
+        if let Some(declaration) = declaration {
+            std::fs::write(checkout.path().join("release-targets.txt"), declaration)
+                .expect("a declaration the probe will read");
+        }
+        Self {
+            checkout: Some(checkout),
+            ..Self::answering("200", CRATE_SERVING_9_9_9)
+        }
+    }
+
+    /// The probe this run drives: this repository's, however it is reached.
+    fn script(&self) -> PathBuf {
+        match &self.checkout {
+            Some(checkout) => checkout.path().join("scripts/release-probe.sh"),
+            None => workspace_root().join("scripts/release-probe.sh"),
         }
     }
 
@@ -1096,6 +1148,10 @@ impl ProbeRun {
     /// timeout wears, which is the one that must not read as "no release".
     fn unreachable() -> Self {
         let probe = Self::answering("000", "");
+        // A network that fails is not one this suite can arrange, and the offline
+        // tier may not reach one to try. What is under test is which of the three
+        // answers the script gives when its one request comes back with nothing.
+        // llmlint: ignore[e2e_not_mocked] see the note directly above.
         write_stub(
             &probe.registry.path().join("curl"),
             "#!/usr/bin/env bash\nset -eu\necho 'curl: (28) Operation timed out' >&2\nexit 28\n",
@@ -1115,7 +1171,7 @@ impl ProbeRun {
         let mut path = std::ffi::OsString::from(self.registry.path());
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
-        let mut command = Command::new(workspace_root().join("scripts/release-probe.sh"));
+        let mut command = Command::new(self.script());
         command
             .args(arguments)
             .current_dir(workspace_root())
@@ -1257,7 +1313,7 @@ fn a_registry_that_did_not_answer_is_not_answered_rather_than_empty() {
     // about whether a release happened, so each of these exits non-zero with the
     // reason on stderr — collapsing any of them into the empty answer above is what
     // would report an unreleased change as released.
-    let unreadable: [(&str, &str, &str, &str); 5] = [
+    let unreadable: [(&str, &str, &str, &str); 8] = [
         ("crate:onevcs", "500", "", "answered 500"),
         (
             "crate:onevcs",
@@ -1278,6 +1334,24 @@ fn a_registry_that_did_not_answer_is_not_answered_rather_than_empty() {
             r#"{"version":"1.0.0","dist":{"version":"2.0.0"}}"#,
             "without one readable version",
         ),
+        (
+            "crate:onevcs",
+            "200",
+            concat!(
+                r#"{"crate":{"name":"onevcs","max_stable_version":"1.0.0"},"#,
+                r#""mirror":{"max_stable_version":"2.0.0"}}"#,
+            ),
+            "more than one max_stable_version",
+        ),
+        // Not a status at all, which is what a `curl` that answered something
+        // other than a request looks like from here.
+        (
+            "crate:onevcs",
+            "not-a-status",
+            "",
+            "rather than an HTTP status",
+        ),
+        ("pypi:onevcs-cli", "503", "", "answered 503"),
     ];
     for (identifier, status, body, reason) in unreadable {
         let answered = ProbeRun::answering(status, body).ask(identifier);
@@ -1416,27 +1490,75 @@ fn a_probe_without_the_tools_it_runs_names_the_one_that_is_missing() {
     // thing it can be told is which tool it is short of — a probe that instead
     // failed somewhere inside a pipeline would report a shell diagnostic as a
     // release fact.
-    // A `PATH` carrying everything the script needs except the one that talks to a
-    // registry — `bash` among them, because the shebang resolves through this
-    // `PATH` too and a run that could not start would prove nothing about what the
-    // script says.
-    let partial = tempfile::tempdir().expect("a PATH missing one tool");
-    for tool in ["bash", "grep"] {
-        std::os::unix::fs::symlink(tool_path(tool), partial.path().join(tool))
-            .expect("a tool the probe may have");
-    }
+    // A `PATH` carrying everything the script needs except one — `bash` always
+    // among them, because the shebang resolves through this `PATH` too and a run
+    // that could not start would prove nothing about what the script says. Each
+    // tool it runs is missed on its own, because which one is missing is the whole
+    // of what the message is worth.
     let home = tempfile::tempdir().expect("a temporary HOME");
-    let output = Command::new(workspace_root().join("scripts/release-probe.sh"))
-        .arg("crate:onevcs")
-        .current_dir(workspace_root())
-        .env_clear()
-        .env("PATH", partial.path())
-        .env("HOME", home.path())
-        .output()
-        .expect("scripts/release-probe.sh must be executable to be spawned directly");
-    Reported::from(output)
+    for (missing, present) in [("curl", "grep"), ("grep", "curl")] {
+        let partial = tempfile::tempdir().expect("a PATH missing one tool");
+        for tool in ["bash", present] {
+            std::os::unix::fs::symlink(tool_path(tool), partial.path().join(tool))
+                .expect("a tool the probe may have");
+        }
+        let output = Command::new(workspace_root().join("scripts/release-probe.sh"))
+            .arg("crate:onevcs")
+            .current_dir(workspace_root())
+            .env_clear()
+            .env("PATH", partial.path())
+            .env("HOME", home.path())
+            .output()
+            .expect("scripts/release-probe.sh must be executable to be spawned directly");
+        Reported::from(output)
+            .failed()
+            .said(&format!("{missing} is not on PATH"))
+            .said("ACTION:")
+            .answered("");
+    }
+}
+
+#[test]
+fn a_declaration_this_repository_would_not_commit_stops_the_probe_rather_than_being_read_loosely() {
+    // `release-targets.txt` is the one declaration, and every answer is about
+    // something it names — so a probe that read a broken one would answer about a
+    // target whose spelling nothing had held to anything. Each of these is a
+    // checkout carrying such a file, which is the only way one reaches the script.
+    let unusable = [
+        ("cargo:onevcs\n", "which names no registry"),
+        // A name that is not a name is a path segment of a registry URL, so it is
+        // refused here rather than asked about somewhere else.
+        (
+            "npm:../elsewhere\n",
+            "whose name is not one a registry serves",
+        ),
+        ("crate:\n", "whose name is not one a registry serves"),
+        (
+            "# nothing but a comment\n\n",
+            "declares no release target at all",
+        ),
+    ];
+    for (declaration, reason) in unusable {
+        let probe = ProbeRun::declaring(Some(declaration));
+        probe
+            .ask("crate:onevcs")
+            .failed()
+            .said(reason)
+            .said("ACTION:")
+            .answered("");
+        assert!(
+            probe.asked().is_empty(),
+            "a declaration this script cannot read must stop it before any registry \
+             is asked: {:?}",
+            probe.asked()
+        );
+    }
+
+    // And a checkout with no declaration at all, which declares nothing rather
+    // than declaring everything.
+    ProbeRun::declaring(None)
+        .ask("crate:onevcs")
         .failed()
-        .said("curl is not on PATH")
-        .said("ACTION:")
+        .said("is missing or unreadable, so nothing is declared")
         .answered("");
 }

@@ -23,7 +23,7 @@
 # `every_file_a_release_archive_names_is_in_this_repository` in
 # crates/onevcs/tests/contract.rs.
 #
-# `the_declared_release_targets_cover_everything_this_repository_publishes`, in
+# `the_declared_release_targets_are_exactly_what_this_repository_publishes`, in
 # that same suite, reconciles this file with the *real* release configuration —
 # .github/workflows/release.yml, pyproject.toml, and npm/onevcs/package.json — in
 # both directions, so a name this repository starts publishing fails the gate
