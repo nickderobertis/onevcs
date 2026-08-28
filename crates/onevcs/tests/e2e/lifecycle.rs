@@ -619,16 +619,14 @@ fn a_pin_resumes_only_the_session_it_asked_for() {
         "with sibling the root, a request naming no base is a request for that session"
     );
 
-    // A record outlives the directory it names: a run root holding no unpublished
-    // work is reaped by the next session opened, and what is taken up is the
-    // directory rather than the record of it.
+    // A record outlives the directory it names, and what is taken up is the
+    // directory rather than the record of it. Taken by hand rather than by the next
+    // open's reclamation, which leaves a session still open alone however long ago
+    // the process that opened it exited.
     let (reaped, gone) = fixture.open(&["--branch", "feature/reaped"]);
-    let (_unrelated, _tree) = fixture.open(&[]);
-    assert!(
-        !gone.exists(),
-        "the premise: {} was reclaimed",
-        gone.display()
-    );
+    std::fs::remove_dir_all(gone.parent().expect("a run root"))
+        .expect("an operator with a broom takes the run root");
+    assert!(!gone.exists(), "the premise: {} is gone", gone.display());
     let (after_reaping, cut) = fixture.open(&["--branch", "feature/reaped"]);
     assert_ne!(
         after_reaping, reaped,
