@@ -643,6 +643,11 @@ pub(crate) struct LandingOf {
     pub landed: Landed,
     /// The copy that answered, which is where the landing commit can be read.
     pub carrier: Option<PathBuf>,
+    /// The object store that copy was asked through, which is where the landing
+    /// commit is when the copy itself never fetched it. A caller that goes on to
+    /// *read* that commit has to ask the same way this did, or it reads a landing
+    /// this answer just established as one no repository holds.
+    pub lent: Option<PathBuf>,
 }
 
 pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<LandingOf> {
@@ -688,6 +693,7 @@ pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<Landing
                 .unwrap_or(Landed::Unknown),
         },
         carrier: carrier.map(|(repo, _, _)| repo.clone()),
+        lent,
     })
 }
 

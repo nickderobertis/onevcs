@@ -1286,15 +1286,15 @@ pub fn current_branch(cwd: &Path) -> Result<String> {
 /// The committer date rather than the author date: what a wait on a human step is
 /// measured from is when the work reached the base, and a squash lands a commit
 /// authored days earlier.
-pub fn committer_date(cwd: &Path, commit: &str) -> Option<String> {
-    run(
+pub fn committer_date<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Option<String> {
+    run_in(
+        cwd.into(),
         &[
             "show",
             "-s",
             "--format=%cI",
             &format!("{commit}^{{commit}}"),
         ],
-        Some(cwd),
     )
     .ok()
     .filter(Output::ok)

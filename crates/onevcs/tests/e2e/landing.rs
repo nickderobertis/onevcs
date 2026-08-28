@@ -56,6 +56,21 @@ fn rows(world: &crate::world::World, extra: &[&str]) -> Vec<Value> {
     serde_json::from_slice(&assert.get_output().stdout).expect("`recoverable --json` prints rows")
 }
 
+/// What `release status` answers for one piece of work, as a consumer parses it.
+///
+/// The other reader of the landing tiers: it takes the landing commit and sequences a
+/// release against it, so what it answers about a copy left behind by a landing is the
+/// same question `status` and `recoverable` ask, through a third entry point.
+fn release_status(world: &crate::world::World, reference: &str) -> Value {
+    let assert = world
+        .onevcs()
+        .args(["release", "status", reference, "--json"])
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout)
+        .expect("`release status --json` prints one answer")
+}
+
 /// The row for one branch, when the report holds one.
 fn row(rows: &[Value], branch: &str) -> Option<Value> {
     rows.iter()
@@ -933,6 +948,16 @@ fn a_landing_the_publication_checkout_can_see_answers_for_a_holder_that_never_fe
     // history with the evidence cut off and the comparison at the bottom closed the
     // question.
     let hosted = Hosted::new(DIRECT);
+    // Declared before anything lands, because a target the landing predates has no
+    // baseline to compare against and answers that whatever the tiers decided. What is
+    // under test here is the tier, so the release side is set up to have an answer.
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+         default_target: crate\n    targets:\n      - {name: crate, style: human-step, action: \
+         push the tag}\n",
+    )
+    .expect("a release-targets file");
     let worker = hosted.world.clone_of(&hosted.origin, "worker");
     hosted
         .world
@@ -1067,6 +1092,23 @@ fn a_landing_the_publication_checkout_can_see_answers_for_a_holder_that_never_fe
     assert_eq!(
         still_open["recover_command"][1], "publish-branch",
         "so the row keeps the command that lands it: {still_open}"
+    );
+
+    // The other reader of the same decision. `release status` sequences a release
+    // against the commit the landing is on, so a stale copy answering "not landed"
+    // there is a released change reported as one that never merged — and it is a
+    // different entry point into the tiers from the two above.
+    let awaiting = release_status(&hosted.world, "feature/merged-behind-its-holder");
+    assert_eq!(
+        awaiting["state"], "awaiting-human-step",
+        "the landing is found through the same store here, so the release is waiting \
+         on a person rather than on a merge that already happened: {awaiting}"
+    );
+    let unlanded = release_status(&hosted.world, "feature/nobody-published-this");
+    assert_eq!(
+        unlanded["state"], "not-landed",
+        "and work nobody published still has no landing to sequence a release \
+         against: {unlanded}"
     );
 }
 
