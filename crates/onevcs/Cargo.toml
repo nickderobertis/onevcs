@@ -3,7 +3,7 @@ name = "onevcs"
 # The one version source in this repository. release-plz maintains it; maturin
 # reads it through `dynamic = ["version"]` and scripts/npm-build.mjs parses it out
 # of this file. Never write a version anywhere else.
-version = "0.15.4"
+version = "0.15.6"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
