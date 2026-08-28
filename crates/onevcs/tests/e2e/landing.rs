@@ -635,6 +635,20 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     let shown = row(&rows(&fixture.world, &[]), "feature/landed-by-hand")
         .expect("a branch nothing can decide about may be work nobody published");
     assert_eq!(shown["landed"]["state"], "unknown");
+    // And it says why in terms that are true of every undecided row. This one is the
+    // case the sentence used to get wrong: the base does *not* carry what the branch
+    // changed — it took a change under the same subject — so a row claiming it did
+    // was telling an operator something the comparison never established.
+    let because = shown["stopped_because"]
+        .as_str()
+        .expect("a row says why the work stopped");
+    assert!(
+        because.contains(
+            "and comparing content settles nothing here, so main may already carry this work"
+        ),
+        "the row says the comparison decided nothing rather than claiming what it \
+         did not establish: {because}"
+    );
     // It keeps the argv, unlike a row that landed: nothing here can say the work
     // reached the base, and if it did not then this is still what lands it. What the
     // rendering withholds is the *label* that reads as an instruction.
@@ -655,6 +669,12 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     assert!(
         listed.contains("may have landed") && listed.contains("Not decided:"),
         "the row says which of the three it is: {listed}"
+    );
+    assert!(
+        listed.contains(
+            "and comparing content settles nothing here, so main may already carry this work"
+        ),
+        "and the rendering says it in the same terms the document does: {listed}"
     );
     assert!(
         !listed.contains("Resume:"),
