@@ -352,6 +352,11 @@ interfaces, and `Vcs::preserve` and every direct `RemoteHost` call are reachable
 other way. `just smoke-real` runs it. It never skips and never substitutes `gh`: a
 missing credential or a repository whose name does not end in `-smoke` is a loud
 failure, because a smoke that can pass without talking to GitHub proves nothing.
+One module there needs no credential and touches no scratch repository —
+`tests/smoke/releases.rs`, which drives `scripts/release-probe.sh` against the
+public registries this repository publishes to. It is in this binary because this
+is the tier allowed to reach the network at all, and a check that quietly needed a
+registry would stop `just check` being offline.
 
 **A Linux host running this suite needs `fuse3`**, because one journey mounts a
 filesystem of its own to make a real removal fail. `just bootstrap` provisions the

@@ -46,4 +46,5 @@ mod checks;
 mod guard;
 mod honesty;
 mod lifecycle;
+mod releases;
 mod scratch;

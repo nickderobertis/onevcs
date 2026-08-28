@@ -182,6 +182,23 @@ not tell you:
   the repository root (`changelog_path` in `release-plz.toml`) rather than beside
   the crate: that is where the archive step looks, and where the sibling repos
   keep theirs.
+- **What this repository publishes is declared in `release-targets.txt`, and
+  answered by `scripts/release-probe.sh`.** A consumer sequences its own work
+  behind a release of ours, and it can only do that for a target it can name and
+  probe. Four rules hold it together. The identifier is registry-qualified —
+  `crate:`, `pypi:`, `npm:` — because `onevcs-cli` is *both* a PyPI project and an
+  npm package published from here on two cadences, so the bare name is two
+  artifacts. The probe takes one identifier and answers exactly three ways: exit 0
+  with a version, exit 0 with nothing (no release yet), or non-zero with its reason
+  (**not answered**) — and the last two never collapse, because a consumer holds
+  indefinitely on one and acts on the other. It is spawned as a direct subprocess
+  with only `PATH` and `HOME` and no credential, so it reads public registries and
+  nothing else, and an identifier it does not recognise is *not answered* rather
+  than empty. And the five per-platform npm packages are not targets: they exist
+  only for the launcher to resolve at its own exact version, so `npm:onevcs-cli`
+  is the whole wait. `tests/contract.rs` derives what this repository publishes
+  from the release workflow and the manifests and holds the declaration to it in
+  both directions, so a new artifact fails the gate rather than going undeclared.
 
 `gh-secrets.json` names the secrets a fork or a fresh clone must provision;
 values live in the secret store, never in the tree. One GitHub resource outside
