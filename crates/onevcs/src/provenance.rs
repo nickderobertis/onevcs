@@ -227,8 +227,8 @@ pub(crate) fn incomplete_message(
 }
 
 /// Every incomplete marker in a base-relative history that no attestation covers.
-pub(crate) fn unattested(
-    repo: &Path,
+pub(crate) fn unattested<'a>(
+    repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,
     trailers: &Trailers,
@@ -252,8 +252,8 @@ pub(crate) fn unattested(
 /// buys is the refusal: a branch preserved by something spelling its trailers
 /// differently is interrupted work, and a build that simply could not read the
 /// marker would otherwise publish it as complete.
-pub(crate) fn unrecognized(
-    repo: &Path,
+pub(crate) fn unrecognized<'a>(
+    repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,
     trailers: &Trailers,
@@ -291,8 +291,8 @@ fn marker_prefix(line: &str) -> Option<TrailerPrefix> {
 /// branch's messages are written by whoever worked on it, and a value repeated
 /// verbatim into a publication commit would let any line spelled like a trailer
 /// claim a recovery that never happened.
-pub(crate) fn attestation_trailers(
-    repo: &Path,
+pub(crate) fn attestation_trailers<'a>(
+    repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,
     trailers: &Trailers,
@@ -318,8 +318,8 @@ fn attested_shas(commits: &[git::CommitMessage], trailers: &Trailers) -> Vec<Str
 }
 
 /// The change-request base the newest preserved incomplete commit recorded.
-pub(crate) fn recorded_change_base(
-    repo: &Path,
+pub(crate) fn recorded_change_base<'a>(
+    repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,
     trailers: &Trailers,
@@ -363,8 +363,8 @@ pub(crate) fn attest(repo: &Path, base: &str, trailers: &Trailers) -> Result<Opt
 }
 
 /// Whether a branch's base-relative history carries an incomplete marker at all.
-pub(crate) fn provenance_of(
-    repo: &Path,
+pub(crate) fn provenance_of<'a>(
+    repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,
     trailers: &Trailers,
@@ -414,8 +414,8 @@ pub(crate) fn checked_subject(title: &str) -> std::result::Result<String, String
 /// branch that is the durable record. When no candidate fits, the caller is told to
 /// shorten a subject or pass an explicit title rather than being handed a generic
 /// one, because a subject naming no change is a worse record than a refusal.
-pub(crate) fn publication_subject(
-    repo: &Path,
+pub(crate) fn publication_subject<'a>(
+    repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,
     explicit: Option<&str>,

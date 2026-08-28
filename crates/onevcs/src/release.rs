@@ -375,7 +375,7 @@ pub fn status(
     let mut stream = Stream::releases(&located.releases.identity)?;
     match target.probe() {
         Some(configured) => automated_status(&located, target, configured, &commit, &mut stream),
-        None => human_step_status(&located, target, &commit, landing.carrier),
+        None => human_step_status(&located, target, &commit, &landing),
     }
 }
 
@@ -486,7 +486,7 @@ fn human_step_status(
     located: &Located,
     target: &ReleaseTarget,
     commit: &str,
-    carrier: Option<PathBuf>,
+    landing: &status::LandingOf,
 ) -> Result<ReleaseStatus> {
     let identity = &located.releases.identity;
     if let Some(recorded) = read(identity)?.acknowledgement(&target.name, commit) {
@@ -500,14 +500,19 @@ fn human_step_status(
         .action()
         .expect("a human-step target names what a person has to do")
         .to_owned();
-    let Some(since) = carrier
+    // Asked through the same store the landing was decided through: the copy that
+    // answered reaches the landing commit *there* — for a checkout that never fetched
+    // it, only there — and a read that asked the copy alone would report a landing
+    // this answer has just established as one nothing holds.
+    let Some(since) = landing
+        .carrier
         .as_deref()
+        .map(|repo| git::Asked::borrowing(repo, landing.lent.as_deref()))
         .and_then(|repo| git::committer_date(repo, commit))
     else {
-        // The copy that decided the landing is the copy that reaches the landing
-        // commit, so this is the repository going away underneath the answer. It is
-        // still an answer rather than a failure: nothing here knows how long the
-        // wait has been.
+        // Nothing reaches the landing commit any more, which is the repository going
+        // away underneath the answer. It is still an answer rather than a failure:
+        // nothing here knows how long the wait has been.
         return Ok(ReleaseStatus::NotAnswered {
             reason: format!(
                 "the landing {commit} is not readable in any repository this host holds, so how \

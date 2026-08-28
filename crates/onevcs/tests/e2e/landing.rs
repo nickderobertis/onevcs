@@ -31,7 +31,7 @@
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, REVIEWED};
+use crate::host::{Hosted, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::world::{token_of, worktree_of};
 
@@ -54,6 +54,21 @@ fn rows(world: &crate::world::World, extra: &[&str]) -> Vec<Value> {
         .assert()
         .success();
     serde_json::from_slice(&assert.get_output().stdout).expect("`recoverable --json` prints rows")
+}
+
+/// What `release status` answers for one piece of work, as a consumer parses it.
+///
+/// The other reader of the landing tiers: it takes the landing commit and sequences a
+/// release against it, so what it answers about a copy left behind by a landing is the
+/// same question `status` and `recoverable` ask, through a third entry point.
+fn release_status(world: &crate::world::World, reference: &str) -> Value {
+    let assert = world
+        .onevcs()
+        .args(["release", "status", reference, "--json"])
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout)
+        .expect("`release status --json` prints one answer")
 }
 
 /// The row for one branch, when the report holds one.
@@ -635,6 +650,20 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     let shown = row(&rows(&fixture.world, &[]), "feature/landed-by-hand")
         .expect("a branch nothing can decide about may be work nobody published");
     assert_eq!(shown["landed"]["state"], "unknown");
+    // And it says why in terms that are true of every undecided row. This one is the
+    // case the sentence used to get wrong: the base does *not* carry what the branch
+    // changed — it took a change under the same subject — so a row claiming it did
+    // was telling an operator something the comparison never established.
+    let because = shown["stopped_because"]
+        .as_str()
+        .expect("a row says why the work stopped");
+    assert!(
+        because.contains(
+            "and comparing content settles nothing here, so main may already carry this work"
+        ),
+        "the row says the comparison decided nothing rather than claiming what it \
+         did not establish: {because}"
+    );
     // It keeps the argv, unlike a row that landed: nothing here can say the work
     // reached the base, and if it did not then this is still what lands it. What the
     // rendering withholds is the *label* that reads as an instruction.
@@ -655,6 +684,12 @@ fn a_branch_landed_with_no_change_request_and_not_through_this_host_reads_as_unk
     assert!(
         listed.contains("may have landed") && listed.contains("Not decided:"),
         "the row says which of the three it is: {listed}"
+    );
+    assert!(
+        listed.contains(
+            "and comparing content settles nothing here, so main may already carry this work"
+        ),
+        "and the rendering says it in the same terms the document does: {listed}"
     );
     assert!(
         !listed.contains("Resume:"),
@@ -899,5 +934,328 @@ fn a_landing_never_answers_for_work_the_branch_gained_after_it() {
     assert!(
         listed.contains("feature/landed-then-more") && !listed.contains("Nothing to resume"),
         "the branch is listed, and not as one whose work is already on the base: {listed}"
+    );
+}
+
+#[test]
+fn a_landing_the_publication_checkout_can_see_answers_for_a_holder_that_never_fetched_it() {
+    // The report this whole tier exists for, in the state that still produced it: a
+    // branch the host merged fifty-two minutes earlier, read as `landed: no` by
+    // `content comparison`, with a paste-ready republication under it. Nothing was
+    // missing — the landing was recorded, and the checkout every publication
+    // fast-forwards carried it all along. What answered was the copy holding the
+    // branch, whose own `origin/main` predated the merge, so every tier read a base
+    // history with the evidence cut off and the comparison at the bottom closed the
+    // question.
+    let hosted = Hosted::new(DIRECT);
+    // Declared before anything lands, because a target the landing predates has no
+    // baseline to compare against and answers that whatever the tiers decided. What is
+    // under test here is the tier, so the release side is set up to have an answer.
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+         default_target: crate\n    targets:\n      - {name: crate, style: human-step, action: \
+         push the tag}\n",
+    )
+    .expect("a release-targets file");
+    let worker = hosted.world.clone_of(&hosted.origin, "worker");
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "register",
+            &worker.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/hosted.git",
+        ])
+        .assert()
+        .success();
+    let opened = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/merged-behind-its-holder",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let token = token_of(&opened);
+    hosted.world.commit_file(
+        &worktree_of(&opened),
+        "one.txt",
+        "one\n",
+        "feat: land this on the host",
+    );
+    // A second session on the same checkout, opened before anything lands, whose work
+    // nothing ever published. It is the control: the base moving under a copy must not
+    // turn every branch in it into a question nobody can answer. Opening it is also
+    // the last thing that fetches into that checkout, so what follows is a landing it
+    // never sees.
+    let unpublished = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/nobody-published-this",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    hosted.world.commit_file(
+        &worktree_of(&unpublished),
+        "two.txt",
+        "two\n",
+        "feat: work nobody published",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token_of(&unpublished)])
+        .assert()
+        .success();
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // Only the publication checkout follows the base. The worker never fetches again,
+    // and the clones cut from it read their history out of it — so the commit the
+    // landing is on is one they cannot see at all.
+    hosted
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+    let behind = hosted
+        .world
+        .git(&worker, &["log", "--format=%s", "origin/main"]);
+    assert!(
+        !behind.contains("land this on the host"),
+        "the premise: the checkout the branch is held out of has not fetched since \
+         before the landing, so its own base history stops short of it: {behind}"
+    );
+
+    let report = report(&hosted.world, "feature/merged-behind-its-holder");
+    assert_eq!(
+        report["publication"]["landed"]["state"], "yes",
+        "the checkout every publication fast-forwards has the landing, so the copy \
+         that never fetched it is asked through that one: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "recorded-landing",
+        "and a record decides it, never the comparison of content: {report}"
+    );
+
+    // Which is the line that mattered: no row, so no instruction to republish a
+    // change that merged.
+    assert!(
+        row(
+            &rows(&hosted.world, &[]),
+            "feature/merged-behind-its-holder"
+        )
+        .is_none(),
+        "a branch whose work is on the base is not work to resume"
+    );
+    let still_open = row(&rows(&hosted.world, &[]), "feature/nobody-published-this")
+        .expect("work nobody published is still work to resume");
+    assert_eq!(
+        still_open["landed"]["state"], "no",
+        "and it is a decided no rather than a question, because the copy holding it \
+         was asked about the base this host knows: {still_open}"
+    );
+    assert_eq!(
+        still_open["recover_command"][1], "publish-branch",
+        "so the row keeps the command that lands it: {still_open}"
+    );
+
+    // The other reader of the same decision. `release status` sequences a release
+    // against the commit the landing is on, so a stale copy answering "not landed"
+    // there is a released change reported as one that never merged — and it is a
+    // different entry point into the tiers from the two above.
+    let awaiting = release_status(&hosted.world, "feature/merged-behind-its-holder");
+    assert_eq!(
+        awaiting["state"], "awaiting-human-step",
+        "the landing is found through the same store here, so the release is waiting \
+         on a person rather than on a merge that already happened: {awaiting}"
+    );
+    let unlanded = release_status(&hosted.world, "feature/nobody-published-this");
+    assert_eq!(
+        unlanded["state"], "not-landed",
+        "and work nobody published still has no landing to sequence a release \
+         against: {unlanded}"
+    );
+}
+
+#[test]
+fn a_copy_no_store_can_be_lent_to_answers_unknown_rather_than_no() {
+    // The rule that holds whatever the borrow above achieves. Git separates the stores
+    // in `GIT_ALTERNATE_OBJECT_DIRECTORIES` with `:`, which is an ordinary character in
+    // a Unix path — so a publication checkout whose own path carries one can be lent to
+    // nobody: a value naming it would name two directories and neither exists. What is
+    // left is a copy judged against its own view of the base, and what that copy must
+    // not do is close the question. `no` is the answer that prints an instruction to
+    // publish, and this copy cannot see whether the base already has the work.
+    let world = crate::world::World::new();
+    let origin = world.bare_origin("project");
+    let checkout = world.clone_of(&origin, "acme:project");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    crate::registry::configure_rules(
+        &world,
+        format!(
+            "version: 1\nrules: []\ndefault: {policy}\n",
+            policy = local_direct()
+        ),
+    );
+    let worker = world.clone_of(&origin, "worker");
+    world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+    let opened = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "acme:project",
+            "--execution-checkout",
+            "worker",
+            "--branch",
+            "feature/nothing-lent-to-it",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    world.commit_file(
+        &worktree_of(&opened),
+        "a.txt",
+        "a\n",
+        "feat: work nobody published",
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &token_of(&opened)])
+        .assert()
+        .success();
+
+    // …and one branch in that same checkout whose history has nothing in common with
+    // the base at all, which is what an imported or re-initialised history is. It
+    // reaches the comparison by the other route — there is no fork point to scope one
+    // to — and that route owes the same answer.
+    world.git(
+        &worker,
+        &["checkout", "-q", "--orphan", "feature/unrelated-history"],
+    );
+    world.git(&worker, &["rm", "-q", "-r", "--cached", "."]);
+    std::fs::remove_file(worker.join("README.md")).expect("the seed file");
+    world.commit_file(
+        &worker,
+        "vendored.txt",
+        "an unrelated history\n",
+        "feat: an unrelated history",
+    );
+    world.git(&worker, &["checkout", "-q", "-f", "main"]);
+
+    // The base moves, and only the publication checkout follows it.
+    let elsewhere = world.clone_of(&origin, "elsewhere");
+    world.commit_file(
+        &elsewhere,
+        "moved.txt",
+        "moved\n",
+        "feat: the base moves on without them",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&checkout)
+        .assert()
+        .success();
+
+    let behind = report(&world, "feature/nothing-lent-to-it");
+    assert_eq!(
+        behind["publication"]["landed"]["state"], "unknown",
+        "the copy holding the branch scanned a base history that stops short of the \
+         one this host knows, and a comparison made there decides nothing: {behind}"
+    );
+    let unrelated = report(&world, "feature/unrelated-history");
+    assert_eq!(
+        unrelated["publication"]["landed"]["state"], "unknown",
+        "and the branch with no fork point to scope a comparison to is held to the \
+         same freshness: whole trees differ, and the trees compared are not the base \
+         this host knows: {unrelated}"
+    );
+    // And the third reader of the same decision. A release is sequenced against the
+    // commit a landing is on, so what this must not say is "not landed" — that is the
+    // same closed question, told to whatever waits on a release.
+    std::fs::write(
+        world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{path: \
+             {checkout:?}}}\n    default_target: crate\n    targets:\n      - {{name: crate, \
+             style: human-step, action: push the tag}}\n",
+            checkout = checkout.to_string_lossy(),
+        ),
+    )
+    .expect("a release-targets file");
+    let release = release_status(&world, "feature/nothing-lent-to-it");
+    assert_eq!(
+        release["state"], "not-answered",
+        "there is no landing commit to compare a release against, and no ruling that \
+         there was never one: {release}"
+    );
+    assert!(
+        release["reason"]
+            .as_str()
+            .expect("a reason")
+            .contains("nothing records that"),
+        "and it says which of the two it is: {release}"
+    );
+
+    let listed = world
+        .onevcs()
+        .arg("recoverable")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed = String::from_utf8_lossy(&listed).into_owned();
+    assert!(
+        listed.contains("feature/nothing-lent-to-it") && !listed.contains("Resume:"),
+        "so the branch is still listed as preserved work, and listed without the line \
+         that reads as an instruction to publish it: {listed}"
     );
 }

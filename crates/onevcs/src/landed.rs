@@ -11,15 +11,21 @@
 //!    at all — which is every `local-direct` publication this crate makes.
 //! 4. **The content comparison, last, and never as a `yes`.** What it can say is
 //!    that the base does not carry what the branch changed ([`Landed::No`]), or
-//!    that it does and nothing records why ([`Landed::Unknown`]).
+//!    that it does and nothing records why ([`Landed::Unknown`]) — and it says the
+//!    first only from a base history that reaches the one this host knows the base
+//!    to stand at.
 //!
-//! Two constraints the code cannot show. `git cherry` and patch ids are no help
+//! Three constraints the code cannot show. `git cherry` and patch ids are no help
 //! here: publication squashes many commits into one, so no patch id matches
-//! afterwards. And tier 4 must never answer `yes` — it is a comparison, not a
-//! record, and reporting it as a fact is what put a paste-ready `publish-branch`
-//! under work the base already carried.
-
-use std::path::Path;
+//! afterwards. Tier 4 must never answer `yes` — it is a comparison, not a record,
+//! and reporting it as a fact is what put a paste-ready `publish-branch` under work
+//! the base already carried. And it must never answer `no` from a base history that
+//! stops short of the base this host knows: a checkout that has not fetched since
+//! before a landing scans a history with the evidence cut off, and a `no` from there
+//! is the one copy that could not have seen the landing closing the question about
+//! it. Which is why the repository is asked *through* the object store of the
+//! checkout every publication fast-forwards, and why the tier answers `unknown` when
+//! even that leaves it behind.
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -144,11 +150,19 @@ pub(crate) struct Recorded {
 /// Which of the three answers a branch's history gives, and what decided it.
 ///
 /// `compared` is the comparison target the caller resolved — the base as this
-/// repository can see it — and every tier is asked of the one repository that holds
-/// the branch, so an answer is about a copy that exists rather than about a name.
+/// repository can see it, which is the base as the *host* knows it wherever the
+/// object store this repository is asked through can reach it — and every tier is
+/// asked of the one repository that holds the branch, so an answer is about a copy
+/// that exists rather than about a name.
+///
+/// `known` is where this host knows the base to stand: the base commit of the
+/// checkout every publication fast-forwards. A repository whose comparison target
+/// does not reach it scanned a history that stops short of the evidence, and the
+/// tiers below a record answer `unknown` there rather than `no`.
 pub(crate) fn decide(
-    repo: &Path,
+    repo: git::Asked<'_>,
     compared: &str,
+    known: Option<&Sha>,
     branch: &str,
     recorded: &Recorded,
     trailers: &Trailers,
@@ -158,7 +172,12 @@ pub(crate) fn decide(
     // branch existed — and a branch sharing no history with the base has no such
     // bound, which leaves only the comparison at the bottom.
     let Some(fork) = git::merge_base(repo, compared, branch)? else {
-        return Ok(inferred(!git::trees_differ(repo, compared, branch)?));
+        return inferred(
+            repo,
+            compared,
+            known,
+            !git::trees_differ(repo, compared, branch)?,
+        );
     };
     // Tier 1. Exact and permanent: a commit somebody recorded as this branch's
     // landing, which the base can reach. Nothing edited afterwards changes it.
@@ -215,7 +234,30 @@ pub(crate) fn decide(
     if already_took_this_change(repo, &fork, branch, &base_history, trailers)? {
         return Ok(Landed::Unknown);
     }
-    Ok(Landed::No)
+    unresolved(repo, compared, known)
+}
+
+/// What the content comparison answers when the base does not carry the branch's
+/// changes: `no` from a history that reaches the base this host knows, and `unknown`
+/// from one that stops short of it.
+///
+/// The distinction is the whole difference between a report and an instruction. `no`
+/// is what puts `Resume: onevcs publish-branch …` under a row, and a copy that has
+/// not fetched since before a landing is precisely the copy whose `no` would reopen a
+/// change request for work the base already carries. A host that knows no base tip at
+/// all asks nothing: there is no "behind" without something to be behind of.
+///
+/// Asked here rather than beside the tiers, because it is three commands against git
+/// and a record answers most branches before any of them is needed.
+fn unresolved(repo: git::Asked<'_>, compared: &str, known: Option<&Sha>) -> Result<Landed> {
+    let behind = match known {
+        Some(tip) => !git::known_to_reach(repo, &tip.0, compared)?,
+        None => false,
+    };
+    Ok(match behind {
+        true => Landed::Unknown,
+        false => Landed::No,
+    })
 }
 
 /// Whether the base's own history already took a change under the subject a landing
@@ -233,7 +275,7 @@ pub(crate) fn decide(
 /// branch whose every subject were searched for would match the change below it in a
 /// stack as readily as its own.
 fn already_took_this_change(
-    repo: &Path,
+    repo: git::Asked<'_>,
     fork: &str,
     branch: &str,
     base_history: &[git::CommitMessage],
@@ -260,7 +302,7 @@ fn already_took_this_change(
 /// Asked of the *landing* commit rather than of the base as it stands now, which is
 /// what keeps this from being the inference it replaces: the base moves, and the
 /// commit that landed this work does not.
-fn landed_all_of(repo: &Path, branch: &str, landing: &str) -> Result<bool> {
+fn landed_all_of(repo: git::Asked<'_>, branch: &str, landing: &str) -> Result<bool> {
     git::already_integrates(repo, landing, branch)
 }
 
@@ -269,12 +311,17 @@ fn landed(evidence: LandingEvidence) -> Landed {
 }
 
 /// The two answers a comparison of whole trees may give, for the one branch there is
-/// no fork point to scope one to. Neither is a `yes`.
-fn inferred(carried: bool) -> Landed {
-    if carried {
-        Landed::Unknown
-    } else {
-        Landed::No
+/// no fork point to scope one to. Neither is a `yes`, and the `no` is held to the
+/// same freshness [`unresolved`] holds the scoped comparison to.
+fn inferred(
+    repo: git::Asked<'_>,
+    compared: &str,
+    known: Option<&Sha>,
+    carried: bool,
+) -> Result<Landed> {
+    match carried {
+        true => Ok(Landed::Unknown),
+        false => unresolved(repo, compared, known),
     }
 }
 

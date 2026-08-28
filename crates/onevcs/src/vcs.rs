@@ -238,14 +238,16 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
 /// What a branch held in `repo` is judged against: the identity's base *now*,
 /// named by a commit `repo` can reach.
 ///
-/// A run clone's remote-tracking refs are frozen at the moment it was cut, so its
-/// own `origin/main` can be many merges behind. Judged against that, a branch whose
-/// work landed weeks ago still looks like work nobody published — and a name whose
-/// meaning is spent still looks like a name that means something. The lender keeps
-/// fetching and the clone borrows its objects, so the current base is usually a
-/// commit the clone has even though no ref of its own names it; one that cannot
-/// reach it — a clone whose lender has itself fallen behind — is judged against its
-/// own view, which is the best answer available there.
+/// A checkout's remote-tracking refs are frozen at its last fetch, so its own
+/// `origin/main` can be many merges behind. Judged against that, a branch whose work
+/// landed weeks ago still looks like work nobody published — and a name whose meaning
+/// is spent still looks like a name that means something. Which is why the repository
+/// is asked *through* the object store of the checkout every publication
+/// fast-forwards: the commit the base stands at is one that checkout has by
+/// construction, so a copy that never fetched it can still read it. What is left over
+/// — a repository that cannot reach the base even so — is judged against its own view
+/// and reported as behind, which is what keeps the tiers below a record from closing
+/// the question from a history that stops short of the evidence.
 // The two states this answers with are deliberately one type, as `base_ref` beside it
 // and `Landing::compared_change_base` already are: what comes back is a *comparison
 // target*, and git resolves a ref name and a commit id identically at every call that
@@ -253,10 +255,15 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
 // sites to collapse the distinction again, and the thing that must not be confused
 // with either — a branch name this crate writes — is `Ref`, which neither of these is.
 // llmlint: ignore[invalid_states_unrepresentable] a comparison target git resolves either way
-pub fn judged_against(repo: &Path, base: &str, current: Option<&Sha>) -> String {
+pub fn judged_against<'a>(
+    repo: impl Into<git::Asked<'a>>,
+    base: &str,
+    current: Option<&Sha>,
+) -> String {
+    let repo = repo.into();
     match current {
         Some(sha) if git::has_commit(repo, sha) => sha.0.clone(),
-        _ => base_ref(repo, base),
+        _ => base_ref(repo.path(), base),
     }
 }
 
@@ -328,6 +335,10 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
         let current = git::default_branch(&publication, "origin")
             .ok()
             .and_then(|base| base_commit(&publication, &base));
+        // Every publication fast-forwards this checkout, so it is where a landing's
+        // evidence is — and lending its objects is what lets a checkout that has not
+        // fetched since read the commit that carries them.
+        let lent = git::objects_dir(&publication).ok();
         for repo in workspace::checkouts_of(&registry, &resolution)? {
             if !git::is_repo(&repo) {
                 continue;
@@ -336,7 +347,8 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                 Ok(base) => base,
                 Err(_) => continue,
             };
-            let compared = judged_against(&repo, &base, current.as_ref());
+            let asked = git::Asked::borrowing(&repo, lent.as_deref());
+            let compared = judged_against(asked, &base, current.as_ref());
             for branch in git::unpublished_branches(&repo)? {
                 let key = (identity.to_owned(), branch.clone());
                 if seen.contains(&key) {
@@ -364,11 +376,18 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                 let recorded = landed::Recorded {
                     change: recorded
                         .change
-                        .or_else(|| change_url_of(&repo, &compared, &branch, &trailers)),
+                        .or_else(|| change_url_of(asked, &compared, &branch, &trailers)),
                     ..recorded
                 };
                 let change_url = recorded.change.clone();
-                let mut verdict = landed::decide(&repo, &compared, &branch, &recorded, &trailers)?;
+                let mut verdict = landed::decide(
+                    asked,
+                    &compared,
+                    current.as_ref(),
+                    &branch,
+                    &recorded,
+                    &trailers,
+                )?;
                 // A chain of retries this host cannot follow leaves nothing decided
                 // about the branch — the same answer `onevcs status` gives, through
                 // the same reading of the same records, because a row that said `no`
@@ -397,7 +416,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                 let row = preserved_row(
                     &Preserved {
                         identity,
-                        repo: &repo,
+                        repo: asked,
                         publication: &publication,
                         base: &base,
                         compared: &compared,
@@ -443,7 +462,9 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
 /// repository.
 struct Preserved<'a> {
     identity: &'a str,
-    repo: &'a Path,
+    /// The repository holding the branch, asked through whatever store lends it the
+    /// base — so every read below judges against the base the row names.
+    repo: git::Asked<'a>,
     publication: &'a Path,
     base: &'a str,
     compared: &'a str,
@@ -518,7 +539,8 @@ fn preserved_row(
         stopped.push_str(&format!(
             ". Whether it landed cannot be decided from history: nothing records that it \
              reached {base} — no landing, no change request's number in the base's history, \
-             and no landing trailer — and {base} already carries everything it changed"
+             and no landing trailer — and comparing content settles nothing here, so {base} \
+             may already carry this work"
         ));
     }
     if let Some(prefix) = unrecognized.first() {
@@ -553,7 +575,7 @@ fn preserved_row(
         ],
     };
     Ok((
-        git::committed_at(repo, branch),
+        git::committed_at(repo.path(), branch),
         Recoverable {
             identity: identity.to_owned(),
             branch: PreservedBranch {
@@ -565,7 +587,7 @@ fn preserved_row(
                     .or_else(|| change_url_of(repo, compared, branch, trailers)),
                 change_base,
             },
-            checkout: repo.to_path_buf(),
+            checkout: repo.path().to_path_buf(),
             landed: verdict.clone(),
             stopped_because: stopped,
             recover_command,
@@ -655,7 +677,12 @@ fn held_by(sessions: &[workspace::Record], identity: &str, branch: &str) -> Resu
 /// a base that has moved on every line that base gained would read as a line this
 /// branch removed and never touched. A branch sharing no history with the base is
 /// not measured — there is no point it forked from to measure against.
-fn net_negative(repo: &Path, compared: &str, branch: &str) -> Result<Option<NetNegative>> {
+fn net_negative<'a>(
+    repo: impl Into<git::Asked<'a>>,
+    compared: &str,
+    branch: &str,
+) -> Result<Option<NetNegative>> {
+    let repo = repo.into();
     let Some(fork) = git::merge_base(repo, compared, branch)? else {
         return Ok(None);
     };
@@ -670,8 +697,8 @@ fn net_negative(repo: &Path, compared: &str, branch: &str) -> Result<Option<NetN
 }
 
 /// The change request a preserved branch recorded, when one was opened for it.
-fn change_url_of(
-    repo: &Path,
+fn change_url_of<'a>(
+    repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,
     trailers: &provenance::Trailers,
