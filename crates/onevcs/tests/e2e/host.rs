@@ -2238,6 +2238,77 @@ fn a_failing_required_check_stops_the_publication_and_names_it() {
         .stdout(predicate::str::contains("found a regression"));
 }
 
+#[test]
+fn a_red_matrix_check_whose_name_carries_whitespace_still_yields_its_log() {
+    // Every GitHub matrix job is named with whitespace — `check (macos-latest)`,
+    // `test-os (windows-latest)` — and this build refused such a name before it asked
+    // the host anything, then reported its own refusal as the host declining. So every
+    // matrix check on every change request this crate published was recorded with no
+    // log, and whatever was dispatched next held a check name and a URL and no
+    // diagnosis. The name is not an argument to `gh`: it is matched against the names
+    // the host itself reported, and a job's *id* is what a log is asked for by.
+    let hosted = Hosted::new(AUTOMATED);
+    let name = "check (macos-latest)";
+    hosted.world.host_checks(&[Check {
+        name,
+        status: "completed",
+        conclusion: Some("failure"),
+        required: true,
+    }]);
+    // A real matrix job's log is long, and the diagnosis is the last thing in it. This
+    // one is the line a sibling repository burned three CI rounds not reading.
+    let long: String = (0..400)
+        .map(|line| format!("     Compiling crate-number-{line} v0.1.0 — fine\n"))
+        .collect();
+    hosted.world.host_log(
+        name,
+        &format!("{long}warning: 994/1207 tests were not run due to test failure\n"),
+    );
+    let token = hosted.change("feature/matrixed", "feat: add the matrixed thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(format!(
+            "required check {name:?} concluded failure"
+        )))
+        // The tail of the log, on the refusal whatever is dispatched next reads —
+        // still the end of it, and still bounded.
+        .stderr(predicate::str::contains(
+            "warning: 994/1207 tests were not run due to test failure",
+        ))
+        .stderr(predicate::str::contains("earlier output omitted"))
+        .stderr(predicate::str::contains("crate-number-0 ").not())
+        // And no warning, because nothing refused the name: this is the sentence a
+        // matrix check used to be recorded with.
+        .stderr(predicate::str::contains("is recorded without its log").not());
+    assert_eq!(hosted.origin_log().len(), 1, "nothing may have merged");
+
+    // The whole log is the artifact the check's own event carries.
+    let checks = hosted.world.events_of(&token, "change-check");
+    let settled = checks
+        .iter()
+        .find(|event| event["payload"]["status"] == "completed")
+        .expect("the check settled");
+    assert_eq!(settled["payload"]["name"], name);
+    let id = settled["artifacts"][0]["id"]
+        .as_str()
+        .expect("a settled check whose name carries whitespace carries its log");
+    hosted
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("crate-number-0 "))
+        .stdout(predicate::str::contains(
+            "warning: 994/1207 tests were not run due to test failure",
+        ));
+}
+
 /// One job's log the way a real one arrives: with the colour its steps printed,
 /// which is what `gh` will not hand over unless it is asked to.
 const COLOURED_LOG: &str = "\u{1b}[0;32mthe gate passed\u{1b}[0m\n";
@@ -2976,21 +3047,24 @@ fn a_local_identity_cannot_be_asked_to_open_a_change_request() {
 }
 
 #[test]
-fn a_check_whose_name_cannot_address_a_job_is_recorded_not_run() {
+fn a_check_named_the_way_an_option_is_spelled_still_yields_its_log() {
     let hosted = Hosted::new(AUTOMATED);
-    // A host is free to name a check anything, and `-x` would be read by the program
-    // that fetches its log as an option of that program rather than as a job.
+    // A host is free to name a check anything, `-x` included, and this build used to
+    // read that as a name it could not address — on the premise that the program
+    // fetching the log would take it for an option of its own. It never sees it: a
+    // check's name is matched against the names the host itself reported, and the
+    // job's *id* is what the log is then asked for by.
     hosted.world.host_checks(&[Check {
         name: "-x",
         status: "completed",
         conclusion: Some("success"),
         required: true,
     }]);
+    hosted
+        .world
+        .host_log("-x", "the oddly named job printed this\n");
     let token = hosted.change("feature/oddly-named", "feat: add the oddly gated thing");
 
-    // The publication is not undone over a log it could not read, and the reason
-    // there is no log is said where the operator sees it rather than written into
-    // an artifact that would then read as the check's own output.
     hosted
         .world
         .onevcs()
@@ -2998,23 +3072,25 @@ fn a_check_whose_name_cannot_address_a_job_is_recorded_not_run() {
         .assert()
         .success()
         .stdout(predicate::str::contains("merged at"))
-        .stderr(predicate::str::contains(
-            "could not produce a log for check \"-x\"",
-        ))
-        .stderr(predicate::str::contains("must not begin with '-'"));
+        // Nothing refused the name, so nothing is recorded logless and nothing is
+        // said about it on stderr.
+        .stderr(predicate::str::contains("is recorded without its log").not());
 
     let checks = hosted.world.events_of(&token, "change-check");
     let reported = checks
         .iter()
         .find(|event| event["payload"]["name"] == "-x")
         .expect("the oddly named check is still reported");
-    assert!(
-        reported["artifacts"]
-            .as_array()
-            .expect("an array")
-            .is_empty(),
-        "a log that was never fetched is no artifact: {reported}"
-    );
+    let id = reported["artifacts"][0]["id"]
+        .as_str()
+        .expect("the oddly named check carries its log");
+    hosted
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("the oddly named job printed this"));
 }
 
 #[test]
