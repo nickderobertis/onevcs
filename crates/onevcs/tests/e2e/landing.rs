@@ -1170,6 +1170,24 @@ fn a_copy_no_store_can_be_lent_to_answers_unknown_rather_than_no() {
         .assert()
         .success();
 
+    // …and one branch in that same checkout whose history has nothing in common with
+    // the base at all, which is what an imported or re-initialised history is. It
+    // reaches the comparison by the other route — there is no fork point to scope one
+    // to — and that route owes the same answer.
+    world.git(
+        &worker,
+        &["checkout", "-q", "--orphan", "feature/unrelated-history"],
+    );
+    world.git(&worker, &["rm", "-q", "-r", "--cached", "."]);
+    std::fs::remove_file(worker.join("README.md")).expect("the seed file");
+    world.commit_file(
+        &worker,
+        "vendored.txt",
+        "an unrelated history\n",
+        "feat: an unrelated history",
+    );
+    world.git(&worker, &["checkout", "-q", "-f", "main"]);
+
     // The base moves, and only the publication checkout follows it.
     let elsewhere = world.clone_of(&origin, "elsewhere");
     world.commit_file(
@@ -1186,11 +1204,18 @@ fn a_copy_no_store_can_be_lent_to_answers_unknown_rather_than_no() {
         .assert()
         .success();
 
-    let report = report(&world, "feature/nothing-lent-to-it");
+    let behind = report(&world, "feature/nothing-lent-to-it");
     assert_eq!(
-        report["publication"]["landed"]["state"], "unknown",
+        behind["publication"]["landed"]["state"], "unknown",
         "the copy holding the branch scanned a base history that stops short of the \
-         one this host knows, and a comparison made there decides nothing: {report}"
+         one this host knows, and a comparison made there decides nothing: {behind}"
+    );
+    let unrelated = report(&world, "feature/unrelated-history");
+    assert_eq!(
+        unrelated["publication"]["landed"]["state"], "unknown",
+        "and the branch with no fork point to scope a comparison to is held to the \
+         same freshness: whole trees differ, and the trees compared are not the base \
+         this host knows: {unrelated}"
     );
     let listed = world
         .onevcs()
