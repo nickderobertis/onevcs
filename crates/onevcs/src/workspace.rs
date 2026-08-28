@@ -1606,33 +1606,51 @@ fn counted(commits: u64) -> String {
     }
 }
 
-/// Every run root on this host that a live session is working in.
+/// Every run root on this host that a session still open is working in.
 ///
-/// The same pair of tests [`crate::vcs::held_by`] composes to report a *branch* as
-/// held — the record says `open`, and [`Record::liveness`] says the process that
-/// opened it is that same process, still running — asked here of the directory
-/// instead, so the two cannot come to disagree about which sessions are live.
+/// The record's *lifecycle* alone, deliberately, and not the pair of tests
+/// [`crate::vcs::held_by`] composes to report a **branch** as held. That one asks
+/// [`Record::liveness`] as well — is the process that opened this session that same
+/// process, still running — because a branch's holder is a process that can be
+/// waited for. A run root's occupant is not: a session opened from the command line
+/// is owned by the `onevcs` that printed its token and then exited, so its record
+/// answers stale from that instant while an operator works in the worktree for
+/// hours. Reading stale as *nobody is in here* is what deleted three live dispatches
+/// inside ninety seconds of their launch, and it is why the two questions have
+/// different answers rather than one shared one.
+///
+/// What still ends a run root's protection is the session ending: [`close`] writes
+/// [`Lifecycle::Closed`] onto the record, and from there the run root falls through
+/// to the lease and the retention bound exactly as it always did. A run root **no**
+/// record names is not protected here at all — see [`reclaim`].
 ///
 /// A session directory that cannot be read answers with none rather than refusing.
 /// Reclamation is housekeeping in front of an open, and a host whose records are
 /// unreadable would otherwise be a host where nobody can open a session at all;
 /// what that costs is bounded by the occupancy lease [`reclaim`] still asks
 /// afterwards, which this is layered in front of rather than a replacement for.
-fn run_roots_of_live_sessions() -> Vec<PathBuf> {
+fn run_roots_of_open_sessions() -> Vec<PathBuf> {
     all()
         .unwrap_or_default()
         .into_iter()
-        .filter(|record| record.liveness() == Liveness::Live)
+        .filter(|record| record.state == Lifecycle::Open)
         .map(|record| record.run_root)
         .collect()
 }
 
 /// Reap abandoned run roots, keeping the newest few that still hold work.
 ///
-/// Four things have to hold before a directory is removed: no live session names
-/// it, nobody occupies it, its clone has no commit that never reached origin, and —
-/// for the ones that do hold such a commit — it is not among the newest
+/// Four things have to hold before a directory is removed: no session still open
+/// names it, nobody occupies it, its clone has no commit that never reached origin,
+/// and — for the ones that do hold such a commit — it is not among the newest
 /// [`RETAINED_DEAD_RUNS`].
+///
+/// The first of those is a bar the other three never reach past, and that ordering
+/// is the point rather than an optimisation. Each of the three answers a question
+/// about the *directory* — is a command in it now, has anything been committed in
+/// it yet — and a session that opened a minute ago and has committed nothing
+/// answers no to all of them while somebody is working in it. The record is the one
+/// thing that says a session exists at all.
 fn reclaim(runs: &Path) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(runs) else {
         return Ok(());
@@ -1640,7 +1658,7 @@ fn reclaim(runs: &Path) -> Result<()> {
     // Read once, before the walk: the answer is a fact about this host's session
     // records rather than about any one directory, and asking it per entry would
     // re-read every record on the host once per run root.
-    let live = run_roots_of_live_sessions();
+    let open = run_roots_of_open_sessions();
     // Newest first, by when the directory was last written: a session token is a
     // digest and sorts arbitrarily, so ordering by name would retain an arbitrary
     // three rather than the three somebody is most likely to reach for.
@@ -1667,7 +1685,14 @@ fn reclaim(runs: &Path) -> Result<()> {
         // protecting it instead would make every such leak permanent. The only ones
         // that reach here with a command still inside them are the ones the lease
         // itself skips.
-        if live.iter().any(|held| held == &run_root) {
+        //
+        // What releases a run root that *is* named is `onevcs session close`, and
+        // nothing else: the retention bound below does not reach a session still
+        // open, so an operator who abandons one without closing it keeps its clone
+        // until they say so. That is the trade taken deliberately — a scratch
+        // directory nobody prunes costs disk, and the alternative cost a run its
+        // working tree while it was running in it.
+        if open.iter().any(|held| held == &run_root) {
             continue;
         }
         // An exclusive take succeeds only while no shared occupancy lease is held,

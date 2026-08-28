@@ -5602,53 +5602,139 @@ fn opening_a_session_leaves_a_live_session_of_the_same_identity_alone() {
     );
 }
 
-/// The other half, so the fix cannot be "stop reclaiming". A session record that
-/// says `open` is not by itself protection: what protects a run root is an owner
-/// this host can still see, and a command that exited took its ownership with it.
+/// The incident as it was reported, and the leg the record test left open.
+///
+/// A session opened from the command line is owned by the `onevcs` that printed its
+/// token, and that process has exited by the time an operator has read it — so the
+/// record answers *stale* from that instant, while the agent handed the worktree
+/// works in it for hours. Protecting only the sessions an embedding driver holds
+/// open protected exactly the callers who were not the ones losing work.
 #[test]
-fn an_open_session_whose_owner_has_exited_is_reclaimed_by_the_next_open() {
+fn a_session_opened_from_the_command_line_survives_the_next_open() {
     let fixture = Fixture::local(&local_direct());
 
-    // Left open rather than closed — the shape of a run this host lost — and
-    // holding one commit nothing has published, so it reaches the retention list.
-    let (holding_work, worktree) = fixture.open(&["--branch", "feature/holding"]);
+    let (token, worktree) = fixture.open(&["--branch", "feature/live"]);
+    let run_root = worktree.parent().expect("a run root").to_owned();
+    // Nothing committed, deliberately: "because neither had committed yet" is the
+    // incident's own account of itself, and work an agent has not committed exists
+    // nowhere but in this worktree. It is also the state with the least protection
+    // — a clone holding no unpublished commit reached no retention list at all.
+    std::fs::write(worktree.join("in-progress.txt"), "half-written\n")
+        .expect("the agent is working in the worktree it was handed");
+
+    // The sibling dispatch launching beside it. Nothing holds the first session's
+    // lease: `open` dropped it as it returned.
+    let (_, second) = fixture.open(&["--branch", "feature/second"]);
+    assert_ne!(second.parent(), Some(run_root.as_path()));
+
+    assert!(
+        run_root.is_dir(),
+        "the run root of a session opened from the command line survives another open"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("in-progress.txt")).ok(),
+        Some("half-written\n".to_owned()),
+        "and the uncommitted work in its worktree is exactly where it was left"
+    );
+
+    // Surviving as a directory is not the claim; surviving as a session is. The
+    // work reaches its branch, which is what a dispatch deleted underneath itself
+    // could not do.
+    fixture.world.commit_file(
+        &worktree,
+        "in-progress.txt",
+        "finished\n",
+        "feat: work made while a sibling session opened",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["branch", "--list", "feature/live"])
+            .contains("feature/live"),
+        "and the work it made is handed back on its branch"
+    );
+}
+
+/// The same session, past the bound that governs the run roots nobody is in.
+///
+/// The record test is in front of the retention bound as well as in front of the
+/// lease, and this is the difference: a session still open that *had* committed
+/// survived three later opens on its unpublished work and was removed by the
+/// fourth, which is a dispatch losing its worktree on the sibling count rather than
+/// on anything about itself.
+#[test]
+fn a_session_still_open_is_not_pushed_out_by_the_retention_bound() {
+    let fixture = Fixture::local(&local_direct());
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/live"]);
+    let run_root = worktree.parent().expect("a run root").to_owned();
     fixture
         .world
         .commit_file(&worktree, "one.txt", "one\n", "feat: unpublished work");
-    let retained = worktree.parent().expect("a run root").to_owned();
 
-    // Also left open, and holding nothing: no commit of its own ever happened, so
-    // there is no work its removal could lose.
-    let (empty, empty_worktree) = fixture.open(&["--branch", "feature/empty"]);
-    let removed = empty_worktree.parent().expect("a run root").to_owned();
+    // One more than `RETAINED_DEAD_RUNS`, each holding work of its own so every one
+    // of them competes for the same bounded list.
+    for index in 0..4 {
+        let (_, sibling) = fixture.open(&["--branch", &format!("feature/sibling-{index}")]);
+        fixture.world.commit_file(
+            &sibling,
+            "one.txt",
+            &format!("{index}\n"),
+            &format!("feat: sibling work {index}"),
+        );
+        assert!(
+            run_root.is_dir(),
+            "the session still open is not counted against the bound (sibling {index})"
+        );
+    }
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "adopt", &token])
+        .assert()
+        .success();
+}
+
+/// The other half, so the fix cannot be "stop reclaiming".
+///
+/// What protects a run root is a session record that still says `open`, and a
+/// directory no record names has none: it is one `open` cut and then abandoned when
+/// something refused, or — as here — one whose record an operator removed. Keeping
+/// those would make every such leak permanent, since nothing else ever reaps them.
+#[test]
+fn a_run_root_no_session_record_names_is_reclaimed_by_the_next_open() {
+    let fixture = Fixture::local(&local_direct());
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/orphaned"]);
+    let orphaned = worktree.parent().expect("a run root").to_owned();
+    // The operator's own pruning of the session store, which is what leaves a run
+    // root nothing on this host can name. The directory is untouched.
+    std::fs::remove_file(
+        fixture
+            .world
+            .home()
+            .join("sessions")
+            .join(format!("{token}.json")),
+    )
+    .expect("an operator can remove a session record");
     assert!(
-        retained.is_dir() && removed.is_dir(),
-        "the premise: both run roots are there, and both records say `open`"
+        orphaned.is_dir(),
+        "the premise: the run root outlived the record that named it"
     );
 
     fixture.open(&["--branch", "feature/next"]);
 
     assert!(
-        !removed.is_dir(),
-        "an open session whose owner is gone and whose clone holds nothing is reclaimed"
+        !orphaned.is_dir(),
+        "a run root no record names, and nobody occupies, is still reclaimed"
     );
-    fixture
-        .world
-        .onevcs()
-        .args(["session", "adopt", &empty])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("has been reclaimed"));
-    assert!(
-        retained.is_dir(),
-        "and the bounded retention still keeps the newest few that hold work"
-    );
-    fixture
-        .world
-        .onevcs()
-        .args(["session", "adopt", &holding_work])
-        .assert()
-        .success();
 }
 
 #[test]
