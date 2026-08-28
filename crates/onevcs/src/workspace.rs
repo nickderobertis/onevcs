@@ -1685,13 +1685,6 @@ fn reclaim(runs: &Path) -> Result<()> {
         // protecting it instead would make every such leak permanent. The only ones
         // that reach here with a command still inside them are the ones the lease
         // itself skips.
-        //
-        // What releases a run root that *is* named is `onevcs session close`, and
-        // nothing else: the retention bound below does not reach a session still
-        // open, so an operator who abandons one without closing it keeps its clone
-        // until they say so. That is the trade taken deliberately — a scratch
-        // directory nobody prunes costs disk, and the alternative cost a run its
-        // working tree while it was running in it.
         if open.iter().any(|held| held == &run_root) {
             continue;
         }
