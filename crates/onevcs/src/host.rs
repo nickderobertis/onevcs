@@ -804,11 +804,43 @@ impl GitHub {
 /// option's value. `gh` reads a leading `-` as an option of its own and an empty
 /// string as a present-but-blank value, so a name shaped like either is refused
 /// here rather than silently addressing something other than what it names.
+///
+/// Those two and no others: the vector is handed to `gh` as a vector, so no shell
+/// splits an argument this build wrote as one. Whitespace was refused here too, and
+/// [`matchable`] records what that cost — a value with a space in it reaches `gh`
+/// exactly as it was written, so it is nothing this boundary has to guard against.
 fn addressable(value: &str, what: &str) -> Result<()> {
-    if value.is_empty() || value.starts_with('-') || value.contains(char::is_whitespace) {
+    if value.is_empty() || value.starts_with('-') {
         return Err(invalid(format!(
-            "{what} {value:?} cannot address anything on the host: it must be non-empty, must \
-             not begin with '-', and must carry no whitespace"
+            "{what} {value:?} cannot address anything on the host: it must be non-empty and must \
+             not begin with '-'"
+        )));
+    }
+    Ok(())
+}
+
+/// A check's name, checked before it is matched against the ones the host reports.
+///
+/// Deliberately not [`addressable`], because a check's name never becomes an
+/// argument to `gh`: [`GitHub::job_log`] matches it against the `name` field of the
+/// JSON `gh pr checks` returns, and [`GitHub::actions_log`] against the job names
+/// the Actions API lists — the job's *id* is what either one then asks for a log by.
+/// So `gh`'s argument grammar has no say over this value, and the shapes that
+/// grammar refuses are ordinary job names here. Every GitHub matrix job is named
+/// with whitespace — `check (macos-latest)`, `test-os (windows-latest)` — and
+/// refusing it left every matrix check on every change request this crate published
+/// recorded with no log at all.
+///
+/// What is refused is a name that can match nothing the host reports: the host names
+/// every check it answers about, so an empty name is a value a caller made up rather
+/// than a check anything has.
+fn matchable(name: &str, cr: &ChangeRequest) -> Result<()> {
+    if name.is_empty() {
+        return Err(invalid(format!(
+            "onevcs will not ask for the log of a check with no name on {}: every check the host \
+             reports is named, so an empty name matches none of them. This build refused the \
+             request; the host was not asked.",
+            cr.url
         )));
     }
     Ok(())
@@ -1156,16 +1188,22 @@ impl RemoteHost for GitHub {
     /// over a missing log declines to fail over this error, as [`crate::publish`]
     /// does.
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
-        // A name that cannot address a job and a host that would not produce the log
-        // are the same event to a caller — there is no log — and read the same.
-        let log = addressable(&check.name, "check name")
-            .and_then(|()| self.log_of(cr, &check.name))
-            .map_err(|error| {
-                invalid(format!(
-                    "the host could not produce a log for check {:?} on {}: {error}",
-                    check.name, cr.url
-                ))
-            })?;
+        // The two are told apart, because they are two different things to whoever
+        // reads the refusal: a name this build would not ask about is this build's
+        // own doing and says so, while a host that would not produce the log is the
+        // host's and quotes what it said. They used to arrive as one message
+        // attributing both to the host, which is how a refusal this crate made read
+        // as GitHub keeping its logs — and why it went unnoticed for as long as it
+        // did. The kind stays `Invalid` for both, because the failure vocabulary is
+        // fixed across the libraries that route on it; the message is where the
+        // actor is named.
+        matchable(&check.name, cr)?;
+        let log = self.log_of(cr, &check.name).map_err(|error| {
+            invalid(format!(
+                "the host could not produce a log for check {:?} on {}: {error}",
+                check.name, cr.url
+            ))
+        })?;
         Ok(stream::store_artifact("log", &log)?.id)
     }
 

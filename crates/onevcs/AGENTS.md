@@ -505,6 +505,15 @@ script written beside them that answered to what they asked.
   reads as what the check printed. `publish` says so on stderr and records the check
   without its log rather than failing, because the log is evidence and `conclusion`
   is what decided the merge.
+- **A check's name is matched against the host's own names, never passed to `gh`.**
+  Both log calls find the job by matching it — against `gh pr checks`'s `name` field,
+  or against the job names the Actions API lists — and then ask for the log by the
+  job's *id*. So `addressable`, which guards values that really do enter the argument
+  vector, is not what a check's name is checked by: it refused whitespace, and every
+  GitHub matrix job is named `check (macos-latest)`, so every matrix check on every
+  change request was recorded with no log while the warning blamed the host. Which is
+  the second half: this build refusing a name and the host declining to produce a log
+  are two answers and read as two, because the next move differs.
 
 ## Releases are what follows a landing, and two distinctions carry the whole thing
 
