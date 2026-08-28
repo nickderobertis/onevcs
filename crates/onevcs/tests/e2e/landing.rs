@@ -1217,6 +1217,33 @@ fn a_copy_no_store_can_be_lent_to_answers_unknown_rather_than_no() {
          same freshness: whole trees differ, and the trees compared are not the base \
          this host knows: {unrelated}"
     );
+    // And the third reader of the same decision. A release is sequenced against the
+    // commit a landing is on, so what this must not say is "not landed" — that is the
+    // same closed question, told to whatever waits on a release.
+    std::fs::write(
+        world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{path: \
+             {checkout:?}}}\n    default_target: crate\n    targets:\n      - {{name: crate, \
+             style: human-step, action: push the tag}}\n",
+            checkout = checkout.to_string_lossy(),
+        ),
+    )
+    .expect("a release-targets file");
+    let release = release_status(&world, "feature/nothing-lent-to-it");
+    assert_eq!(
+        release["state"], "not-answered",
+        "there is no landing commit to compare a release against, and no ruling that \
+         there was never one: {release}"
+    );
+    assert!(
+        release["reason"]
+            .as_str()
+            .expect("a reason")
+            .contains("nothing records that"),
+        "and it says which of the two it is: {release}"
+    );
+
     let listed = world
         .onevcs()
         .arg("recoverable")
