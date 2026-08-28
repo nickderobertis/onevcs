@@ -3426,3 +3426,305 @@ fn every_nextest_binary_filter_names_a_test_target_that_exists() {
         "ci.yml restates the nextest filter instead of calling `just smoke-real`"
     );
 }
+
+/// What this repository's release configuration publishes: the artifacts a
+/// dependent can name, and the per-platform npm packages that exist only so a
+/// launcher can resolve one.
+struct Publishes {
+    /// Registry-qualified identifiers — `crate:`, `pypi:`, or `npm:` — for every
+    /// artifact something else could depend on.
+    consumable: BTreeSet<String>,
+    /// The npm launcher's own version, which its platform packages are pinned to.
+    launcher_version: String,
+    /// Each per-platform npm package, and the version the launcher pins it at.
+    platform_pins: BTreeMap<String, String>,
+}
+
+/// Every `run:` script line in a workflow, so what a release job actually invokes
+/// can be read rather than guessed at.
+fn workflow_run_lines(workflow: &str) -> Vec<String> {
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
+    let jobs = doc.get("jobs").and_then(serde_yaml_ng::Value::as_mapping);
+    let mut lines = Vec::new();
+    for job in jobs.into_iter().flat_map(serde_yaml_ng::Mapping::values) {
+        let steps = job.get("steps").and_then(serde_yaml_ng::Value::as_sequence);
+        for step in steps.into_iter().flatten() {
+            let run = step
+                .get("run")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .unwrap_or_default();
+            lines.extend(run.lines().map(|line| line.trim().to_owned()));
+        }
+    }
+    lines
+}
+
+/// Whether any step of this workflow `uses` the named action.
+fn workflow_uses(workflow: &str, action: &str) -> bool {
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
+    let jobs = doc.get("jobs").and_then(serde_yaml_ng::Value::as_mapping);
+    jobs.into_iter()
+        .flat_map(serde_yaml_ng::Mapping::values)
+        .filter_map(|job| job.get("steps").and_then(serde_yaml_ng::Value::as_sequence))
+        .flatten()
+        .filter_map(|step| step.get("uses").and_then(serde_yaml_ng::Value::as_str))
+        .any(|uses| uses.starts_with(action))
+}
+
+/// The value of one key in a TOML section, by the rule scripts/npm-build.mjs
+/// already reads a version by: the first assignment after the section header and
+/// before the next one, so a key of the same name in another table cannot answer
+/// for it. A hand parse rather than a TOML dependency, because this is the only
+/// TOML anything here reads that cargo does not read for it.
+fn toml_string(document: &str, section: &str, key: &str) -> Option<String> {
+    document
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| *line != section)
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .find_map(|line| {
+            line.strip_prefix(key)?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .strip_prefix('"')?
+                .split_once('"')
+                .map(|(value, _)| value.to_owned())
+        })
+}
+
+/// Everything the release configuration publishes, read out of the configuration
+/// itself: the crates the publish step names, the PyPI project the wheels carry,
+/// and the npm launcher with the platform packages beneath it.
+///
+/// Derived rather than listed, because a hand-written inventory is exactly the
+/// thing that goes stale silently — a new artifact has to fail this rather than
+/// pass unnoticed. Each derivation panics naming what it could not read, so a
+/// release step that moves somewhere this cannot follow stops the gate instead of
+/// quietly covering nothing.
+fn publishes(workflow: &str, pyproject: &str, launcher: &str) -> Publishes {
+    let mut consumable = BTreeSet::new();
+
+    // The crates, in the order the publish step names them: its arguments are the
+    // list, and it takes nothing else.
+    let run_lines = workflow_run_lines(workflow);
+    let crates: Vec<&str> = run_lines
+        .iter()
+        .find_map(|line| line.split_once("scripts/publish-crates.sh"))
+        .map(|(_, arguments)| arguments.split_whitespace().collect())
+        .expect("a release publishes crates through scripts/publish-crates.sh");
+    assert!(
+        !crates.is_empty() && crates.iter().all(|name| !name.starts_with('-')),
+        "scripts/publish-crates.sh is invoked with {crates:?}, which names no crate to publish"
+    );
+    consumable.extend(crates.iter().map(|name| format!("crate:{name}")));
+
+    // The PyPI project, named by the manifest maturin builds the wheels from —
+    // there is no name in the workflow, because the upload takes whatever the
+    // wheels declare.
+    if workflow_uses(workflow, "pypa/gh-action-pypi-publish") {
+        let project = toml_string(pyproject, "[project]", "name")
+            .expect("pyproject.toml names the project the wheels publish to");
+        consumable.insert(format!("pypi:{project}"));
+    }
+
+    // The npm packages: the launcher the workflow publishes last, and the
+    // per-platform packages its own manifest pins.
+    let manifest: Value = serde_json::from_str(launcher).expect("the launcher is JSON");
+    let mut launcher_version = String::new();
+    let mut platform_pins = BTreeMap::new();
+    if run_lines
+        .iter()
+        .any(|line| line.contains("scripts/publish-npm.sh"))
+    {
+        let name = manifest["name"]
+            .as_str()
+            .expect("the launcher manifest names the package it publishes");
+        consumable.insert(format!("npm:{name}"));
+        launcher_version = manifest["version"]
+            .as_str()
+            .expect("the launcher manifest carries the version its pins are stamped from")
+            .to_owned();
+        for (package, pin) in manifest["optionalDependencies"]
+            .as_object()
+            .expect("the launcher pins the per-platform packages it resolves")
+        {
+            platform_pins.insert(
+                package.clone(),
+                pin.as_str()
+                    .expect("a launcher pin is a version string")
+                    .to_owned(),
+            );
+        }
+    }
+
+    Publishes {
+        consumable,
+        launcher_version,
+        platform_pins,
+    }
+}
+
+/// The release configuration this repository actually releases from.
+fn publishes_here() -> Publishes {
+    publishes(
+        &repo_file(".github/workflows/release.yml"),
+        &repo_file("pyproject.toml"),
+        &repo_file("npm/onevcs/package.json"),
+    )
+}
+
+/// The release targets this repository declares, one registry-qualified
+/// identifier per line.
+fn declared_release_targets(declaration: &str) -> BTreeSet<String> {
+    declaration
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_declared_release_targets_are_exactly_what_this_repository_publishes() {
+    // A repository that declares no release target releases nothing as far as a
+    // consumer sequencing work behind it is concerned, and a target that goes
+    // undeclared degrades to launching now with nothing said — so the hold quietly
+    // stops happening and nobody learns that it did. Both directions are held here:
+    // a name this repository starts publishing has to arrive declared, and a target
+    // declared for something it does not publish is a wait that would never end.
+    let published = publishes_here();
+    let declared = declared_release_targets(&repo_file("release-targets.txt"));
+    assert_eq!(
+        declared, published.consumable,
+        "release-targets.txt and this repository's release configuration disagree about what it \
+         publishes — declare the new artifact as <registry>:<name>, or stop publishing what is \
+         declared"
+    );
+}
+
+#[test]
+fn every_per_platform_npm_package_is_covered_by_the_launcher_target() {
+    // The one artifact class that is published and is deliberately *not* a target:
+    // a per-platform package exists only so the launcher can resolve it, at the
+    // launcher's own exact version, and nothing else names it. Both halves of that
+    // are checked, because it is what makes `npm:onevcs-cli` the whole wait — a pin
+    // that was a range would resolve to a version the launcher's release never
+    // published, and the hold would be answered about the wrong thing.
+    let published = publishes_here();
+    let declared = declared_release_targets(&repo_file("release-targets.txt"));
+    assert!(
+        !published.platform_pins.is_empty(),
+        "the launcher pins no per-platform package, so this check is covering nothing"
+    );
+    for (package, pin) in &published.platform_pins {
+        assert_eq!(
+            pin, &published.launcher_version,
+            "the launcher resolves {package} at {pin} rather than at its own version, so \
+             npm:onevcs-cli does not cover it"
+        );
+        assert!(
+            !declared.contains(&format!("npm:{package}")),
+            "{package} is a per-platform package the launcher covers, not a release target of \
+             its own — remove npm:{package} from release-targets.txt"
+        );
+    }
+}
+
+#[test]
+fn an_artifact_a_release_starts_publishing_is_caught_rather_than_going_undeclared() {
+    // The two checks above are worth their place only if they fail on the drift
+    // they exist for, so this is that drift: a release configuration publishing a
+    // fourth crate and a differently-named PyPI project, through the same parse the
+    // real files go through.
+    let workflow = "\
+jobs:
+  publish-crate:
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/publish-crates.sh onevcs onevcs-testing onevcs-macros
+  publish-pypi:
+    steps:
+      - uses: pypa/gh-action-pypi-publish@release/v1
+  publish-npm:
+    steps:
+      - run: |
+          for tgz in \"$GITHUB_WORKSPACE\"/npm-artifacts/*.tgz; do
+            bash scripts/publish-npm.sh \"$tgz\"
+          done
+";
+    let drifted = publishes(
+        workflow,
+        "[project]\nname = \"onevcs-tools\"\n",
+        &repo_file("npm/onevcs/package.json"),
+    );
+    assert!(
+        drifted.consumable.contains("crate:onevcs-macros")
+            && drifted.consumable.contains("pypi:onevcs-tools"),
+        "the derivation missed what the configuration publishes: {:?}",
+        drifted.consumable
+    );
+    assert_ne!(
+        declared_release_targets(&repo_file("release-targets.txt")),
+        drifted.consumable,
+        "a release publishing two artifacts nothing declares must not read as declared"
+    );
+
+    // And the other direction, which is the same failure seen from the declaration:
+    // a target named for something this repository does not publish.
+    let stale =
+        declared_release_targets("# a comment\n\ncrate:onevcs\npypi:onevcs-cli\nnpm:gone\n");
+    assert_eq!(
+        stale,
+        BTreeSet::from([
+            "crate:onevcs".to_owned(),
+            "pypi:onevcs-cli".to_owned(),
+            "npm:gone".to_owned(),
+        ])
+    );
+    assert_ne!(stale, publishes_here().consumable);
+}
+
+#[test]
+fn a_release_step_this_check_cannot_follow_stops_it_rather_than_covering_nothing() {
+    // The derivation reads the configuration, so a step that moves somewhere it
+    // cannot follow has to be loud: a check that silently derived an empty set
+    // would agree with any declaration at all, which is the failure it exists to
+    // prevent, one level up.
+    let without_a_publish_step = "\
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@v4
+      - run: just check
+";
+    let caught = std::panic::catch_unwind(|| {
+        publishes(
+            without_a_publish_step,
+            &repo_file("pyproject.toml"),
+            &repo_file("npm/onevcs/package.json"),
+        )
+    });
+    assert!(
+        caught.is_err(),
+        "a release configuration with no crate publish step must stop this check"
+    );
+
+    // The same for a name it cannot read out of the manifest the wheels carry.
+    assert_eq!(
+        toml_string("[project]\nname = \"onevcs-cli\"\n", "[project]", "name").as_deref(),
+        Some("onevcs-cli")
+    );
+    assert_eq!(
+        toml_string(
+            "[tool.maturin]\nname = \"not-the-project\"\n\n[project]\ndynamic = [\"version\"]\n",
+            "[project]",
+            "name"
+        ),
+        None,
+        "a name in another table must not answer for the project's"
+    );
+}
