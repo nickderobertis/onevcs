@@ -11,9 +11,10 @@ use std::path::Path;
 use crate::cli::{
     ArtifactCommand, Command, EventsArgs, ImportArgs, IntegrateArgs, PublishArgs,
     PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
-    ReleaseCommand, ReleaseDeclarationArgs, ReleaseLatestArgs, ReleaseStatusArgs,
-    ReleaseTargetsArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
-    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
+    ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs,
+    ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand,
+    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SweepArgs,
+    SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -23,8 +24,8 @@ use crate::providers::Providers;
 use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::{Registry, RepoType, Workflow};
 use crate::releases::{
-    Acknowledgement, Baseline, Probe, ReleaseAnswer, ReleaseMethod, ReleaseStatus, ReleaseTarget,
-    TargetName,
+    Acknowledgement, Baseline, DeclarationSource, Probe, ReleaseAnswer, ReleaseMethod,
+    ReleaseStatus, ReleaseTarget, RepositoryReleases, TargetName, TargetSource,
 };
 use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
@@ -79,6 +80,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         },
         Command::Release { command } => match command {
             ReleaseCommand::Targets(args) => release_targets(args),
+            ReleaseCommand::Discover(args) => release_discover(args),
             ReleaseCommand::Latest(args) => release_latest(args),
             ReleaseCommand::Status(args) => release_status(args),
             ReleaseCommand::Acknowledge(args) => release_acknowledge(args),
@@ -883,6 +885,16 @@ fn release_targets(args: &ReleaseTargetsArgs) -> Result<u8> {
     if args.json {
         return print_json(&releases);
     }
+    print_releases(&releases);
+    Ok(0)
+}
+
+/// The header every rendering of a repository's targets shares.
+///
+/// The declaration line is part of the answer rather than a footnote: a set of
+/// targets read alongside a declaration this build could not read is a set that may
+/// be short, and an operator who cannot see that reads it as complete.
+fn print_releases(releases: &RepositoryReleases) {
     println!("identity: {}", releases.identity);
     println!("adoption: {}", releases.adoption);
     println!(
@@ -892,20 +904,88 @@ fn release_targets(args: &ReleaseTargetsArgs) -> Result<u8> {
             .as_ref()
             .map_or_else(|| "none".to_owned(), TargetName::to_string)
     );
+    println!("declaration: {}", declaration_state(&releases.declaration));
     if releases.targets.is_empty() {
         println!("targets: none");
-        return Ok(0);
+        return;
     }
     println!("targets:");
     for target in &releases.targets {
         println!(
-            "  {}\t{}\t{}",
+            "  {}\t{}\t{}\t{}",
             target.name,
             target.style(),
-            describe(target)
+            describe(target),
+            source_of(releases, &target.name),
+        );
+    }
+}
+
+/// How the table says what the repository's own declaration contributed.
+///
+/// Three words for three states, and the third never reads as the second: a
+/// declaration nobody wrote and a declaration this build could not read are
+/// different facts, and only one of them means there is nothing more to wait for.
+fn declaration_state(declaration: &DeclarationSource) -> String {
+    match declaration {
+        DeclarationSource::Declared { document, declared } => format!(
+            "declared: {count} target(s) in {document}",
+            count = declared.targets.len(),
+            document = document.display(),
+        ),
+        DeclarationSource::Undeclared { looked_in } => format!(
+            "undeclared: no {file} in {looked_in}",
+            file = crate::declaration::FILE,
+            looked_in = looked_in.display(),
+        ),
+        DeclarationSource::Unreadable { reason } => format!("unreadable: {reason}"),
+    }
+}
+
+/// Which of the three layers put one target in the answer.
+fn source_of(releases: &RepositoryReleases, name: &TargetName) -> String {
+    releases
+        .sources
+        .get(name)
+        .map_or_else(|| "unknown".to_owned(), TargetSource::to_string)
+}
+
+/// Render every target a repository has beside what each has released right now.
+///
+/// One rendering of [`crate::release_discovery`], which is the whole of what it is:
+/// a consumer linking this crate takes the value and this prints it.
+fn release_discover(args: &ReleaseDiscoverArgs) -> Result<u8> {
+    let discovery = crate::release_discovery(&args.repo)?;
+    if args.json {
+        return print_json(&discovery);
+    }
+    print_releases(&discovery.releases);
+    if discovery.released.is_empty() {
+        return Ok(0);
+    }
+    println!("released:");
+    for release in &discovery.released {
+        println!(
+            "  {}\t{}\t{}",
+            release.target,
+            release.style,
+            answered(&release.answer),
         );
     }
     Ok(0)
+}
+
+/// How one target's current release reads on a line.
+///
+/// "not answered" never renders as "no release": a consumer holds indefinitely on
+/// the first and acts on the second, and an operator reading this table is making
+/// the same decision.
+fn answered(answer: &ReleaseAnswer) -> String {
+    match answer {
+        ReleaseAnswer::Released { version } => format!("released: {version}"),
+        ReleaseAnswer::NoRelease => "no release yet".to_owned(),
+        ReleaseAnswer::NotAnswered { reason } => format!("not answered: {reason}"),
+    }
 }
 
 /// How a table names what one target is answered by.

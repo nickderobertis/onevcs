@@ -1360,10 +1360,15 @@ fn a_release_targets_file_this_build_cannot_honour_is_refused_where_it_is_read()
             "version: 1\ndefault:\n  adoption: eventually\nrepositories: []\n",
             "malformed",
         ),
+        // A rule that ignores the producer's declaration is the whole answer for what
+        // it matches, so a default naming nothing it declares is decided here. A rule
+        // that *merges* one cannot be judged from this document at all — the producer
+        // may declare exactly that target — and is judged where it resolves instead,
+        // which `discovery.rs` holds.
         (
             "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
-             default_target: wheel\n    targets:\n      - {name: crate, style: human-step, \
-             action: push}\n",
+             declaration: ignore\n    default_target: wheel\n    targets:\n      - {name: \
+             crate, style: human-step, action: push}\n",
             "does not declare as a target",
         ),
         (

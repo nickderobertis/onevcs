@@ -21,11 +21,13 @@
 //! build has no opinion on: they are the two forms of a probe, and which one a
 //! target carries is the whole of what makes it answerable.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::declaration::Declaration;
 use crate::rules::RuleMatch;
 
 /// The version of the release-targets file this build writes, and the oldest it
@@ -76,9 +78,50 @@ pub struct ReleaseRule {
     /// What a consumer naming no target gets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_target: Option<TargetName>,
-    /// The targets this repository releases.
+    /// What this rule does with the repository's own declaration. Unset is
+    /// [`DeclarationPolicy::Merge`], which is what makes a producer's declaration
+    /// visible to a host that has said nothing about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<DeclarationPolicy>,
+    /// The targets this host waits on for this repository.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<ReleaseTarget>,
+}
+
+/// What one rule does with the declaration the repository itself carries.
+///
+/// The default is [`Merge`](Self::Merge), because a host that has said nothing
+/// about a repository's own declaration has not said it should be ignored — and a
+/// producer that declares what it publishes is discoverable without this host being
+/// told the same thing twice.
+///
+/// [`Ignore`](Self::Ignore) is the one way a host says *a target it does not
+/// consume*: the rule's own targets become the whole answer, which is exactly what
+/// a rule answered before a producer declaration existed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeclarationPolicy {
+    /// This rule's targets are laid over the repository's own, by short name.
+    #[default]
+    Merge,
+    /// The repository's own declaration is not consulted for targets at all.
+    Ignore,
+}
+
+impl DeclarationPolicy {
+    /// How this policy is spelled in the document and in a rendering.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeclarationPolicy::Merge => "merge",
+            DeclarationPolicy::Ignore => "ignore",
+        }
+    }
+}
+
+impl std::fmt::Display for DeclarationPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Whether a node waits for the *work* or for the *release* that carries it.
@@ -533,6 +576,107 @@ pub struct SupersededRelease {
     pub actor: String,
 }
 
+/// What a repository's own declaration said, or why this build has no answer from
+/// it.
+///
+/// Three states, and the third is why this is a value rather than an
+/// `Option<Declaration>`: **a declaration this build could not read is not a
+/// repository that declares nothing.** A consumer waiting on a release holds
+/// indefinitely on the first and acts on the second, so collapsing them here would
+/// be the "not answered is not not released" mistake made one layer up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum DeclarationSource {
+    /// The repository declares what it publishes, and this build read it.
+    Declared {
+        /// The document it was read from.
+        document: PathBuf,
+        /// What that document declares.
+        declared: Declaration,
+    },
+    /// The repository carries no declaration: nothing in it says what it publishes,
+    /// so this host's own document is the whole answer.
+    Undeclared {
+        /// The checkout that was looked in.
+        looked_in: PathBuf,
+    },
+    /// What this repository declares is **unknown** — there is nowhere to read a
+    /// declaration from, or the one that is there is not a declaration this build
+    /// can read.
+    ///
+    /// Never "it declares nothing": whatever targets are answered alongside this may
+    /// be fewer than the repository publishes.
+    Unreadable {
+        /// Why it could not be read, in the words the reader refused it with.
+        reason: String,
+    },
+}
+
+impl DeclarationSource {
+    /// How this state is spelled in a rendering and in the JSON document.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeclarationSource::Declared { .. } => "declared",
+            DeclarationSource::Undeclared { .. } => "undeclared",
+            DeclarationSource::Unreadable { .. } => "unreadable",
+        }
+    }
+
+    /// What the repository declares, where this build read a declaration.
+    pub fn declared(&self) -> Option<&Declaration> {
+        match self {
+            DeclarationSource::Declared { declared, .. } => Some(declared),
+            _ => None,
+        }
+    }
+
+    /// Why what this repository publishes is unknown, where it is.
+    ///
+    /// A caller that has to say "there may be more targets than these" asks this,
+    /// and gets `None` for both states in which the answer is complete.
+    pub fn unreadable(&self) -> Option<&str> {
+        match self {
+            DeclarationSource::Unreadable { reason } => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// Which of the three layers put one target in the answer.
+///
+/// Recorded per target rather than inferred by a reader, because "why did this
+/// repository resolve these targets" has to be answerable from the answer itself —
+/// a merged set in which every target looks alike is a set nobody can audit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetSource {
+    /// The repository's own declaration, which this host did not oppose.
+    Declared,
+    /// This host's own document, naming a target the repository does not declare —
+    /// or does not declare that this build could read.
+    Host,
+    /// This host's own document, replacing a target the repository declared under
+    /// the same short name.
+    Override,
+}
+
+impl TargetSource {
+    /// How this layer is spelled in a rendering and in the JSON document.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TargetSource::Declared => "declared",
+            TargetSource::Host => "host",
+            TargetSource::Override => "override",
+        }
+    }
+}
+
+impl std::fmt::Display for TargetSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What one repository releases, and what it adopts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryReleases {
@@ -543,8 +687,41 @@ pub struct RepositoryReleases {
     /// What a consumer naming no target gets.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_target: Option<TargetName>,
-    /// Every target this repository releases, in the order the rule declares them.
+    /// Every target this repository releases: the ones it declares itself, in its
+    /// own publication order, then the ones this host names that it does not.
     pub targets: Vec<ReleaseTarget>,
+    /// What the repository's own declaration said, or why there is no answer from
+    /// it.
+    pub declaration: DeclarationSource,
+    /// Which layer resolved each target above.
+    pub sources: BTreeMap<TargetName, TargetSource>,
+}
+
+/// Every target one repository has, and what each of them has released right now.
+///
+/// The answer a consumer that waits on releases asks for: [`RepositoryReleases`]
+/// alone says what there is to wait for, and this says what each of those has done.
+/// One call rather than one per target, because a node holding on a dependency has
+/// to ask about all of them and a caller that looped would have this crate resolve
+/// the three layers once per target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Discovery {
+    /// What this repository releases, and where each target came from.
+    pub releases: RepositoryReleases,
+    /// What each of those targets has released, in `releases.targets` order.
+    pub released: Vec<TargetRelease>,
+}
+
+/// One target, and what it has released right now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetRelease {
+    /// Which target this is.
+    pub target: TargetName,
+    /// How it is released, which is how its answer was arrived at.
+    pub style: ReleaseStyle,
+    /// What is released right now — and `NotAnswered` where nothing said, which is
+    /// never `NoRelease`.
+    pub answer: ReleaseAnswer,
 }
 
 impl RepositoryReleases {
@@ -558,8 +735,11 @@ impl RepositoryReleases {
         if self.targets.is_empty() {
             return Err(crate::error::invalid(format!(
                 "the repository {} declares no release targets, so there is nothing to ask \
-                 about; declare some under `repositories:` in the release-targets file",
-                self.identity
+                 about; declare some in its own {file}, or under `repositories:` in the \
+                 release-targets file{unknown}",
+                self.identity,
+                file = crate::declaration::FILE,
+                unknown = self.unknown(),
             )));
         }
         let wanted = match named.or(self.default_target.as_ref()) {
@@ -579,10 +759,11 @@ impl RepositoryReleases {
             .ok_or_else(|| {
                 crate::error::invalid(format!(
                     "the repository {} declares no release target {wanted:?}; it declares \
-                     {declared}. `onevcs release targets {identity}` lists them",
+                     {declared}. `onevcs release targets {identity}` lists them{unknown}",
                     self.identity,
                     declared = self.declared(),
                     identity = self.identity,
+                    unknown = self.unknown(),
                 ))
             })
     }
@@ -594,6 +775,25 @@ impl RepositoryReleases {
             .map(|target| target.name.to_string())
             .collect::<Vec<String>>()
             .join(", ")
+    }
+
+    /// What a refusal about a missing target has to add where this build could not
+    /// read what the repository declares.
+    ///
+    /// Without it a refusal states as a fact — "it declares these" — something this
+    /// build only knows half of, and sends somebody to add a target to the host
+    /// document that the repository already publishes. Empty in both states where
+    /// the answer is complete, so no refusal grows a clause about a document that
+    /// read fine.
+    fn unknown(&self) -> String {
+        self.declaration
+            .unreadable()
+            .map_or_else(String::new, |reason| {
+                format!(
+                    ". This repository's own declaration could not be read, so it may declare \
+                 targets this does not name: {reason}"
+                )
+            })
     }
 }
 

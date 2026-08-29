@@ -493,21 +493,25 @@ CLI gains is the verb and its two options.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] the shared-surface
 record ends here. -->
 
-## The releases a repository publishes, and the five verbs that ask about them
+## The releases a repository publishes, and the six verbs that ask about them
 
-The release surface is two **approved amendments** in `docs/contract.md`. The first
+The release surface is three **approved amendments** in `docs/contract.md`. The first
 is the host's half — the types, the host document, the baseline, the
 acknowledgement, and the three event kinds — held to the code by
 `the_amendment_declares_the_release_surface_it_added` in `tests/contract.rs`. The
 second is the producer's half: the canonical `release-targets.toml` a repository
 carries at its own root, its schema in full, and the three library calls over it,
 held to the code by `the_amendment_declares_the_producer_declaration_it_added` and
-`the_canonical_declaration_the_amendment_spells_is_one_this_build_reads`. What is
+`the_canonical_declaration_the_amendment_spells_is_one_this_build_reads`. The third is
+the consumer's half — the three layers a repository's targets come from, their fixed
+order, and the discovery call over them — held to the code by
+`the_amendment_declares_the_three_layers_a_repositorys_targets_come_from`. What is
 recorded here is the command surface, which the approved usage block does not
-spell, and the handful of shapes the two amendments left to inference.
+spell, and the handful of shapes the three amendments left to inference.
 
 ```
 onevcs release targets REPO [--json]
+onevcs release discover REPO [--json]
 onevcs release latest REPO [--target NAME] [--json]
 onevcs release status REF [--target NAME] [--json]
 onevcs release acknowledge REF --target NAME --version VERSION [--supersede] [--json]
@@ -538,6 +542,11 @@ and `tests/e2e/support.rs`, exactly as the four verbs above it are.
 | a declaration's prose fields | non-blank, no control characters, at most 400 characters | `what`, `published_by` and `why` are operator-written text this crate prints on one line beside the entry they describe. A blank one leaves a reader with the identifier alone where they were promised a sentence, and one carrying a newline renders as something other than what it is wherever it lands. The reasoning behind a target belongs in a comment, which is why the cap is a cap and not a paragraph. |
 | an unrecognized key in a declaration | refused by name at `schema_version = 1`, ignored above it | The leniency every state-root document has, and the one thing a *repository's* document needs beside it. A hand-written file's likeliest defect is a typo, and reading `manifset` as an absent `manifest` publishes an answer nobody declared — so a key is refused at the version this build knows what the keys are. A later schema's keys are not this build's to have an opinion on. |
 | what a rendered declaration keeps | the declaration, and none of the comments | The value read carries no comments, because none were read: a `Declaration` is what the document declares. Stated in the contract and in the rustdoc rather than left to be discovered, since a caller who assumed otherwise loses the most valuable thing in the file. |
+| where a producer declaration is read from | the identity's registered publication checkout, on its base branch — the same checkout, under the same condition, a script probe runs in | The two are one question: what a repository publishes is not a fact a branch under review gets to assert, and a declaration read off the branch a dispatch is authoring is a declaration that dispatch can rewrite. Reusing `probe::Checkout` rather than asking a second way is what stops the two answers drifting. |
+| a repository with no checkout to read a declaration from | `DeclarationSource::Unreadable`, carrying the reason there is nowhere to look | It is the same state a checkout carrying an unparseable declaration leaves this build in: what this repository publishes is unknown. Answering `Undeclared` would say the repository was asked and said nothing, which nobody did. |
+| a host rule's `declaration:` key | optional, `merge` (the default) or `ignore` | The amendment fixes the precedence and names `ignore` as how a host says "a target I do not consume"; `merge` is the default because a host that has said nothing about a producer's declaration has not said to ignore it. An optional key is safe here for the reason the whole document is read leniently: `releases.rs` declares no `deny_unknown_fields`, so an older `onevcs` reads past it rather than refusing the file. |
+| the bound a declared target's probe runs under | `DEFAULT_PROBE_TIMEOUT_SECONDS` | The canonical schema has no place to state one — `probe` is a path and nothing else — so a declared target takes the same default a host document's target takes when it names none. A host that needs a different bound overrides the target, which is layer 3. |
+| a declared target where the declaration names no `probe` | a human step, whose action names `release acknowledge` | The schema says a repository whose targets are answered some other way declares no probe, and "some other way" is the only other way this crate has: somebody records it. `HumanStep` is also what makes the absence observable — no `release-probed` event is emitted for one, which is how a journey proves nothing was run. |
 | rendering as a verb | there is none — it is a library call only | `onevcs release declaration . --toml > release-targets.toml` is the obvious thing a person would type and it deletes every comment in the file. A caller *producing* a declaration has no comments to lose and reaches `render_release_declaration` through the library, so the capability exists where it is safe and not where it is a footgun. |
 
 ### Why the registry has no release-targets key, and must not grow one
