@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use onevcs::declaration;
+
 /// The bound the release-target contract puts on a probe. Nothing here waits
 /// longer for one, because a caller does not.
 const BOUND: Duration = Duration::from_secs(60);
@@ -43,19 +45,41 @@ fn repository_root() -> PathBuf {
 /// contain is held by `tests/contract.rs`, which reconciles it with the release
 /// configuration; this reads it to ask each registry about what it names.
 fn declared_targets() -> BTreeSet<String> {
-    let declaration = std::fs::read_to_string(repository_root().join("release-targets.txt"))
-        .expect("release-targets.txt is this repository's declaration of what it releases");
-    let targets: BTreeSet<String> = declaration
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_owned)
+    let declared = onevcs::read_release_declaration(&repository_root().join(declaration::FILE))
+        .expect("release-targets.toml is this repository's declaration of what it releases");
+    let targets: BTreeSet<String> = declared
+        .targets
+        .iter()
+        .map(|target| target.id.to_string())
         .collect();
     assert!(
         !targets.is_empty(),
-        "release-targets.txt declares nothing, so this tier would drive no probe at all"
+        "release-targets.toml declares nothing, so this tier would drive no probe at all"
     );
     targets
+}
+
+/// Every identifier this repository's declaration names in a `covers` list.
+///
+/// These are the artifacts a target's release also ships and that are **not**
+/// targets of their own — the per-platform npm packages the launcher resolves. npm
+/// really serves each of them, which is exactly why the refusal below has to be
+/// asserted against the real registry: a probe that answered for one would answer a
+/// version, and nothing short of a real registry would notice.
+fn covered_identifiers() -> BTreeSet<String> {
+    let declared = onevcs::read_release_declaration(&repository_root().join(declaration::FILE))
+        .expect("release-targets.toml is this repository's declaration of what it releases");
+    let covered: BTreeSet<String> = declared
+        .targets
+        .iter()
+        .flat_map(|target| target.covers.iter())
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        !covered.is_empty(),
+        "release-targets.toml covers nothing, so this tier would drive no probe at all"
+    );
+    covered
 }
 
 /// What the probe answered, and how long the registry took to say it.
@@ -194,4 +218,34 @@ fn an_identifier_no_declared_target_names_is_not_answered_even_where_the_registr
         "the reason is what a caller acts on, and it said:\n{}",
         answered.stderr
     );
+}
+
+#[test]
+fn an_identifier_a_target_only_covers_is_not_answered_though_its_registry_serves_it() {
+    // The other half of what "covered" means, and the half only this tier can hold:
+    // every one of these is a package npm really publishes, at the launcher's own
+    // version, so a probe that read every `id` out of the declaration would answer a
+    // version here and a consumer would have waited on the wrong artifact. `covers`
+    // says nothing depends on one by name, and `npm:onevcs-cli` is the whole wait —
+    // which is only true if asking about one is *not answered*.
+    for identifier in covered_identifiers() {
+        let answered = probe(&identifier);
+        assert!(
+            !answered.status.success(),
+            "{identifier} is covered rather than declared and must not be answered: {:?}",
+            answered.stdout
+        );
+        assert!(
+            answered.stdout.is_empty(),
+            "{identifier}: not answered carries nothing on stdout, and it carried {:?}",
+            answered.stdout
+        );
+        assert!(
+            answered
+                .stderr
+                .contains("is not a release target this repository declares"),
+            "{identifier}: the reason is what a caller acts on, and it said:\n{}",
+            answered.stderr
+        );
+    }
 }

@@ -186,23 +186,37 @@ not tell you:
   the repository root (`changelog_path` in `release-plz.toml`) rather than beside
   the crate: that is where the archive step looks, and where the sibling repos
   keep theirs.
-- **What this repository publishes is declared in `release-targets.txt`, and
+- **What this repository publishes is declared in `release-targets.toml`, and
   answered by `scripts/release-probe.sh`.** A consumer sequences its own work
   behind a release of ours, and it can only do that for a target it can name and
-  probe. Four rules hold it together. The identifier is registry-qualified —
-  `crate:`, `pypi:`, `npm:` — because `onevcs-cli` is *both* a PyPI project and an
-  npm package published from here on two cadences, so the bare name is two
-  artifacts. The probe takes one identifier and answers exactly three ways: exit 0
-  with a version, exit 0 with nothing (no release yet), or non-zero with its reason
-  (**not answered**) — and the last two never collapse, because a consumer holds
-  indefinitely on one and acts on the other. It is spawned as a direct subprocess
-  with only `PATH` and `HOME` and no credential, so it reads public registries and
-  nothing else, and an identifier it does not recognise is *not answered* rather
-  than empty. And the five per-platform npm packages are not targets: they exist
-  only for the launcher to resolve at its own exact version, so `npm:onevcs-cli`
-  is the whole wait. `tests/contract.rs` derives what this repository publishes
-  from the release workflow and the manifests and holds the declaration to it in
-  both directions, so a new artifact fails the gate rather than going undeclared.
+  probe. The document is the canonical release-target schema in
+  [`docs/contract.md`](docs/contract.md), which six repositories write against, so
+  a host-side reader parses one shape rather than one per repository — `onevcs
+  release declaration .` reads it through the same reader a consumer uses. Four
+  rules hold it together. The identifier is registry-qualified — `crate:`, `pypi:`,
+  `npm:` — because `onevcs-cli` is *both* a PyPI project and an npm package
+  published from here on two cadences, so the bare name is two artifacts. The probe
+  takes one identifier and answers exactly three ways: exit 0 with a version, exit 0
+  with nothing (no release yet), or non-zero with its reason (**not answered**) —
+  and the last two never collapse, because a consumer holds indefinitely on one and
+  acts on the other. It is spawned as a direct subprocess with only `PATH` and
+  `HOME` and no credential, so it reads public registries and nothing else, and an
+  identifier it does not recognise is *not answered* rather than empty — a `covers`
+  entry included, because that is what makes something covered not a wait. And the
+  five per-platform npm packages are not targets: they exist only for the launcher
+  to resolve at its own exact version, so `npm:onevcs-cli` is the whole wait and
+  they are its `covers` list. `tests/contract.rs` derives what this repository
+  publishes from the release workflow and the manifests and holds the declaration to
+  it in both directions, so a new artifact fails the gate rather than going
+  undeclared; `tests/e2e/declaration.rs` holds the document itself to the schema,
+  through the compiled binary.
+
+  **The probe reads that document leniently, and deliberately.** It has no TOML
+  parser — it is bash with `curl` and `grep` — so it takes the `id` of each
+  `[[target]]` and nothing else, which is what keeps a `covers` or a `[[retired]]`
+  identifier out of its answers. What the document *is* — every required field,
+  every short name — is the crate reader's question, asked by the gate. Do not grow
+  a second schema check in shell.
 
 `gh-secrets.json` names the secrets a fork or a fresh clone must provision;
 values live in the secret store, never in the tree. One GitHub resource outside

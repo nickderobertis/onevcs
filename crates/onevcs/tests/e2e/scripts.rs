@@ -1070,6 +1070,11 @@ struct ProbeRun {
     /// where a journey is about what the script does with one. `None` runs the
     /// real checkout, which is the declaration this repository actually has.
     checkout: Option<tempfile::TempDir>,
+    /// Whether anything on this run's `PATH` records the URLs the script read, so
+    /// that [`Self::asked`] is an answer rather than an empty file. A run with no
+    /// registry of its own records nothing, and asserting "nothing was asked" of it
+    /// would assert nothing at all.
+    records_urls: bool,
 }
 
 impl ProbeRun {
@@ -1115,17 +1120,44 @@ impl ProbeRun {
             registry,
             home: tempfile::tempdir().expect("a temporary HOME"),
             checkout: None,
+            records_urls: true,
+        }
+    }
+
+    /// A probe with **nothing standing in for a registry at all** — not a stub, not
+    /// a tripwire, nothing on `PATH` but the real tools the script runs.
+    ///
+    /// For the answers the script settles *before* it reaches a registry, which is
+    /// what most of the journeys below are about. Those need no registry, and the
+    /// refusal they assert is its own proof that none was read: `fetch` is reached
+    /// only after the declaration has matched, so a run that says an identifier is
+    /// not declared cannot have asked anybody about it. The answers that need a
+    /// registry to have answered are `tests/smoke/releases.rs`, against the real
+    /// three.
+    ///
+    /// It still needs a real `curl` and `grep` on `PATH`, because the script names
+    /// its missing tool before it reads anything — which is the one thing this
+    /// spelling cannot cover, and what `answering` is still there for.
+    fn without_a_registry() -> Self {
+        Self {
+            registry: tempfile::tempdir().expect("a temporary directory for an empty PATH entry"),
+            home: tempfile::tempdir().expect("a temporary HOME"),
+            checkout: None,
+            records_urls: false,
         }
     }
 
     /// The same probe, run out of a checkout carrying `declaration` as its
-    /// `release-targets.txt` — or, for `None`, carrying none at all.
+    /// `release-targets.toml` — or, for `None`, carrying none at all.
     ///
     /// That file is the one declaration and the script resolves it from its own
     /// location, so giving it another checkout is the only way a journey can ask
     /// what it does with a declaration this repository would never commit. The
     /// script is symlinked rather than copied, because what is under test is this
-    /// repository's probe and a copy would be a second one to drift.
+    /// repository's probe and a copy would be a second one to drift. Every journey
+    /// that reaches for one is about a refusal the script makes before any registry
+    /// is read, so it runs [`Self::without_a_registry`] and nothing stands in for
+    /// one.
     fn declaring(declaration: Option<&str>) -> Self {
         let checkout = tempfile::tempdir().expect("a temporary checkout");
         std::fs::create_dir(checkout.path().join("scripts")).expect("a scripts directory");
@@ -1135,12 +1167,12 @@ impl ProbeRun {
         )
         .expect("this repository's own probe, in another checkout");
         if let Some(declaration) = declaration {
-            std::fs::write(checkout.path().join("release-targets.txt"), declaration)
+            std::fs::write(checkout.path().join("release-targets.toml"), declaration)
                 .expect("a declaration the probe will read");
         }
         Self {
             checkout: Some(checkout),
-            ..Self::answering("200", CRATE_SERVING_9_9_9)
+            ..Self::without_a_registry()
         }
     }
 
@@ -1196,6 +1228,11 @@ impl ProbeRun {
     /// Every URL the probe read, so a journey can assert that one it refused to
     /// answer for was never asked about.
     fn asked(&self) -> Vec<String> {
+        assert!(
+            self.records_urls,
+            "this run has no registry of its own and records nothing, so asking what it read \
+             would answer an empty list whatever the script did"
+        );
         read_lines(&self.registry.path().join("asked"))
     }
 
@@ -1528,38 +1565,49 @@ fn a_probe_without_the_tools_it_runs_names_the_one_that_is_missing() {
 
 #[test]
 fn a_declaration_this_repository_would_not_commit_stops_the_probe_rather_than_being_read_loosely() {
-    // `release-targets.txt` is the one declaration, and every answer is about
-    // something it names — so a probe that read a broken one would answer about a
-    // target whose spelling nothing had held to anything. Each of these is a
-    // checkout carrying such a file, which is the only way one reaches the script.
+    // `release-targets.toml` is the one declaration, and every answer is about
+    // something a `[[target]]` in it names — so a probe that read a broken one would
+    // answer about a target whose spelling nothing had held to anything. Each of
+    // these is a checkout carrying such a file, which is the only way one reaches
+    // the script.
     let unusable = [
-        ("cargo:onevcs\n", "which names no registry"),
+        (target("cargo:onevcs"), "which names no registry"),
         // A name that is not a name is a path segment of a registry URL, so it is
         // refused here rather than asked about somewhere else.
         (
-            "npm:../elsewhere\n",
+            target("npm:../elsewhere"),
             "whose name is not one a registry serves",
         ),
-        ("crate:\n", "whose name is not one a registry serves"),
+        (target("crate:"), "whose name is not one a registry serves"),
         (
-            "# nothing but a comment\n\n",
+            "schema_version = 1\n\n[[target]]\nid = crate:onevcs\n".to_owned(),
+            "which is not a quoted string",
+        ),
+        (
+            "# nothing but a comment\n\nschema_version = 1\n".to_owned(),
+            "declares no release target at all",
+        ),
+        // A retired artifact is named by the document and is not a target, so a
+        // probe reading one as a target would answer about something this
+        // repository has stopped publishing.
+        (
+            "schema_version = 1\n\n[[retired]]\nid = \"crate:onevcs\"\n\
+             why = \"Not published any more.\"\n"
+                .to_owned(),
             "declares no release target at all",
         ),
     ];
-    for (declaration, reason) in unusable {
-        let probe = ProbeRun::declaring(Some(declaration));
-        probe
+    for (declaration, reason) in &unusable {
+        // Nothing stands in for a registry here, and none is needed: each of these
+        // reasons is one the script can only reach while reading the declaration,
+        // which it does before it fetches anything. Getting it back *is* the
+        // assertion that nothing was asked.
+        ProbeRun::declaring(Some(declaration))
             .ask("crate:onevcs")
             .failed()
             .said(reason)
             .said("ACTION:")
             .answered("");
-        assert!(
-            probe.asked().is_empty(),
-            "a declaration this script cannot read must stop it before any registry \
-             is asked: {:?}",
-            probe.asked()
-        );
     }
 
     // And a checkout with no declaration at all, which declares nothing rather
@@ -1569,6 +1617,70 @@ fn a_declaration_this_repository_would_not_commit_stops_the_probe_rather_than_be
         .failed()
         .said("is missing or unreadable, so nothing is declared")
         .answered("");
+}
+
+/// One `[[target]]` table, as a document on its own: the shape the schema fixes,
+/// with `id` the one field a journey here varies.
+fn target(id: &str) -> String {
+    format!(
+        "schema_version = 1\n\n[[target]]\nid = \"{id}\"\nname = \"crate\"\n\
+         what = \"What a dependent gets.\"\npublished_by = \"release.yml, the publish job.\"\n"
+    )
+}
+
+#[test]
+fn a_covered_identifier_is_not_a_target_the_probe_answers_for() {
+    // The distinction `covers` exists to draw, from the probe's side: the five
+    // per-platform npm packages are shipped by the launcher's release and nothing
+    // waits on one by name, so asking about one is the first answer — not answered.
+    // The reason it answers with is the proof it never went to a registry, because
+    // the script cannot reach that sentence after a fetch. That npm really serves
+    // those packages, so a probe reading every `id` would answer a version for one,
+    // is held next door in tests/smoke/releases.rs against npm itself.
+    let declaration = "schema_version = 1\n\n\
+        [[target]]\n\
+        id = \"npm:onevcs-cli\"\n\
+        name = \"npm\"\n\
+        what = \"The launcher.\"\n\
+        published_by = \"release.yml, the publish-npm job.\"\n\
+        covers = [\n\
+        \x20   \"npm:onevcs-cli-linux-x64\",\n\
+        \x20   \"npm:onevcs-cli-win32-x64\",\n\
+        ]\n";
+    ProbeRun::declaring(Some(declaration))
+        .ask("npm:onevcs-cli-linux-x64")
+        .failed()
+        .said("is not a release target this repository declares")
+        .said("npm:onevcs-cli")
+        .answered("");
+}
+
+#[test]
+fn nothing_this_repositorys_own_document_merely_covers_is_answered_for() {
+    // The same distinction over the declaration this repository actually commits,
+    // through the script that actually reads it. It is the refusal half only: that
+    // every `[[target]]` id *is* answered, and that a covered one is refused even
+    // where npm would have answered, is `tests/smoke/releases.rs`, against the real
+    // registries — the only place that claim can be made honestly.
+    let declared = onevcs::read_release_declaration(&workspace_root().join("release-targets.toml"))
+        .expect("this repository's own declaration");
+    let covered: Vec<String> = declared
+        .targets
+        .iter()
+        .flat_map(|target| target.covers.iter())
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        !covered.is_empty(),
+        "this repository's declaration covers nothing, so this journey would drive nothing"
+    );
+    for identifier in covered {
+        ProbeRun::without_a_registry()
+            .ask(&identifier)
+            .failed()
+            .said("is not a release target this repository declares")
+            .answered("");
+    }
 }
 
 /// The one title every reporter journey below files under, so a journey can plant an issue
