@@ -1034,7 +1034,12 @@ fn this_repositorys_own_declaration_conforms_to_the_canonical_schema() {
         .success();
     let reported: Value =
         serde_json::from_slice(&output.get_output().stdout).expect("the report is JSON");
-    assert_eq!(reported["schema_version"], 1);
+    assert_eq!(
+        reported["schema_version"],
+        serde_json::json!(onevcs::declaration::SCHEMA_VERSION),
+        "this repository defines the canonical schema, so its own declaration is written \
+         in the shape a producer writes today rather than trailing it"
+    );
     assert_eq!(reported["probe"], "scripts/release-probe.sh");
     let targets = reported["target"]
         .as_array()

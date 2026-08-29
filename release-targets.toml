@@ -36,7 +36,14 @@
 # rather than going undeclared, and a target declared here for something it does
 # not publish fails it too.
 
-schema_version = 1
+# `schema_version` is what this document states about its own shape, not a second
+# gate its identifiers are put through. `2` is the shape a producer writes today;
+# what it moved is which identifiers a `target.id` or a `covers` entry may express —
+# npm's scoped `@scope/name` — and no key at all, so a consumer still reading
+# version 1 reads this document as the shape it knows and loses nothing, because
+# nothing here is spelled scoped.
+
+schema_version = 2
 probe = "scripts/release-probe.sh"
 
 # The library and the `onevcs` binary. Its version is the one version source for
