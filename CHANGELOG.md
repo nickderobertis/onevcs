@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.2](https://github.com/nickderobertis/onevcs/compare/v0.16.1...v0.16.2) - 2026-08-29
+
+### Changed
+
+- *(release)* declare release targets in the canonical release-targets.toml ([#115](https://github.com/nickderobertis/onevcs/pull/115))
+
 ## [0.16.1](https://github.com/nickderobertis/onevcs/compare/v0.16.0...v0.16.1) - 2026-08-29
 
 ### Fixed
