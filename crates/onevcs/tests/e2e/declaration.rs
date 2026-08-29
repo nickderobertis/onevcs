@@ -161,6 +161,10 @@ fn the_table_a_person_reads_names_every_target_and_what_publishes_it() {
         .stdout(predicate::str::contains(
             "published by: .github/workflows/release.yml — the publish-npm job",
         ))
+        .stdout(predicate::str::contains("manifest: Cargo.toml"))
+        .stdout(predicate::str::contains(
+            "manifest: npm/onevcs/package.json",
+        ))
         .stdout(predicate::str::contains(
             "covers: npm:onevcs-cli-linux-x64, npm:onevcs-cli-darwin-arm64",
         ))
@@ -451,6 +455,18 @@ const REFUSALS: &[(&str, &str, &str)] = &[
         "path /etc/Cargo.toml is absolute",
     ),
     (
+        "an identifier with nothing before its colon",
+        "schema_version = 1\n\n[[target]]\nid = \":onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\n",
+        "has nothing before its colon",
+    ),
+    (
+        "a registry spelled in an alphabet no registry uses",
+        "schema_version = 1\n\n[[target]]\nid = \"Crate:onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\n",
+        "which is not one word of lowercase letters",
+    ),
+    (
         "an empty path where a file was named",
         "schema_version = 1\nprobe = \"\"\n\n[[target]]\nid = \"crate:onevcs\"\n\
          name = \"crate\"\nwhat = \"The crate.\"\npublished_by = \"release.yml\"\n",
@@ -481,6 +497,76 @@ fn a_sentence_too_long_to_render_beside_its_entry_is_refused_with_the_bound_it_b
     assert!(
         refusal.contains("belongs in a comment"),
         "…and with where the reasoning it was carrying should go instead: {refusal}"
+    );
+}
+
+#[test]
+fn an_identifier_too_long_to_quote_in_a_refusal_is_refused_with_the_bound_it_broke() {
+    // The one identifier refusal whose document is too long for the table above, and
+    // the bound is read out of the refusal rather than repeated here.
+    let sprawling = "a".repeat(200);
+    let refusal = Producer::declaring(&format!(
+        "schema_version = 1\n\n[[target]]\nid = \"crate:{sprawling}\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\n"
+    ))
+    .refusal();
+    assert!(
+        refusal.contains("is longer than") && refusal.contains("characters"),
+        "an overlong identifier is refused with the bound it broke: {refusal}"
+    );
+}
+
+#[test]
+fn a_declaration_this_process_cannot_read_is_refused_as_that_and_not_as_an_absent_one() {
+    // A file that is there and cannot be read is a third state, and it is the one that
+    // must not become "this repository declares nothing": a consumer holds on the
+    // first for ever and acts on the second. Made unreadable by writing bytes that are
+    // not text, which every platform refuses the same way.
+    let producer = Producer::silent();
+    std::fs::write(producer.document(), [0x73, 0x63, 0xff, 0xfe, 0x68]).expect("a declaration");
+    let refusal = producer.refusal();
+    assert!(
+        refusal.contains("cannot read the release declaration at"),
+        "a declaration that is there and unreadable says so: {refusal}"
+    );
+    assert!(
+        !refusal.contains("declares no release targets"),
+        "…and is never reported as a repository that declared nothing: {refusal}"
+    );
+}
+
+#[test]
+fn a_declaration_with_no_probe_and_nothing_retired_says_so_rather_than_heading_an_empty_list() {
+    // The smallest conforming declaration there is: one target, no optional key at
+    // all. A heading over no rows reads as a list that failed to load, so there is
+    // none — and the probe a repository does not have is reported as "none" rather
+    // than left out, because its absence is an answer a reader acts on.
+    let producer = Producer::declaring(
+        "schema_version = 1\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml — the publish-crate job.\"\n",
+    );
+    command()
+        .args(["release", "declaration"])
+        .arg(producer.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("probe: none"))
+        .stdout(predicate::str::contains("crate\tcrate:onevcs\tThe crate."))
+        .stdout(predicate::str::contains("retired:").not())
+        .stdout(predicate::str::contains("manifest:").not())
+        .stdout(predicate::str::contains("covers:").not());
+    assert_eq!(
+        producer.reported(),
+        serde_json::json!({
+            "schema_version": 1,
+            "target": [{
+                "id": "crate:onevcs",
+                "name": "crate",
+                "what": "The crate.",
+                "published_by": "release.yml — the publish-crate job.",
+            }],
+        }),
+        "an optional key nobody declared is omitted rather than written as null"
     );
 }
 
