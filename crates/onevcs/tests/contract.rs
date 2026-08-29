@@ -1206,6 +1206,71 @@ fn the_canonical_declaration_the_amendment_spells_is_one_this_build_reads() {
     );
 }
 
+/// A declaration whose one target is `id`, which is the smallest document that puts
+/// an identifier to the check a consumer's declaration gets.
+fn declaration_naming(id: &str) -> String {
+    format!(
+        "schema_version = 1\n\n[[target]]\nid = \"{id}\"\nname = \"one\"\n\
+         what = \"The artifact.\"\npublished_by = \"release.yml\"\n"
+    )
+}
+
+#[test]
+fn the_amendment_spells_the_scoped_form_and_this_build_reads_exactly_what_it_spells() {
+    // The amendment is the whole of what six repositories write against, so a producer
+    // publishing an npm scoped package has to be able to tell from the text alone that
+    // their identifier is expressible — rather than finding out from a refusal. This
+    // holds the text and the grammar to each other in both directions.
+    let unwrapped = |doc: &str| doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let amendments = unwrapped(&regions().0);
+    for sentence in [
+        "or the scoped form `@scope/name`, whose scope and package are each a letter \
+         or a digit followed by letters, digits, `-`, `_` and `.`",
+        "npm really does serve `@oneharness/cli-linux-x64`",
+        "which is what refuses `@`, `@/cli`, `@scope/`, and a second slash",
+    ] {
+        assert!(
+            amendments.contains(&unwrapped(sentence)),
+            "the producer amendment no longer spells the scoped form: {sentence}"
+        );
+    }
+
+    // Every identifier the amendment names as one a producer may declare, read the way
+    // a consumer validates a declaration.
+    for id in [
+        "crate:onevcs",
+        "npm:onevcs-cli",
+        "npm:@oneharness/cli-linux-x64",
+        "npm:@oneharness/sdk",
+    ] {
+        let declared =
+            onevcs::validate_release_declaration(&declaration_naming(id), "the contract")
+                .unwrap_or_else(|why| panic!("the amendment says {id} is expressible: {why}"));
+        assert_eq!(
+            declared.targets[0].id.to_string(),
+            id,
+            "an identifier is answered as the producer spelled it"
+        );
+    }
+
+    // …and every half-written scope it names as refused, refused for the reason it
+    // gives, naming the identifier the producer wrote.
+    for id in [
+        "npm:@",
+        "npm:@/cli",
+        "npm:@oneharness/",
+        "npm:@oneharness/cli/x64",
+    ] {
+        let why = onevcs::validate_release_declaration(&declaration_naming(id), "the contract")
+            .expect_err("the amendment says this names nothing")
+            .to_string();
+        assert!(
+            why.contains(&format!("{id:?}")) && why.contains("is not a name a registry serves"),
+            "a refused identifier is named and explained: {why}"
+        );
+    }
+}
+
 #[test]
 fn the_amendment_declares_the_producer_declaration_it_added() {
     // Built from outside the crate with every field named, the way every other

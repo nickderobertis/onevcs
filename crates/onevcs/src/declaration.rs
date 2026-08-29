@@ -154,6 +154,15 @@ pub struct RetiredArtifact {
 /// boundary that has no way to grant an exception. What is closed is the *shape*:
 /// exactly one colon, both halves present, and a name spelled in the alphabet every
 /// registry serves.
+///
+/// The name half is **exactly what that registry serves**, which for npm includes a
+/// scoped package: `npm:@oneharness/cli-linux-x64` is a name npm publishes, and a
+/// grammar that refused it would force a producer to choose between declaring an
+/// artifact npm does not serve and hiding one it does. So a name is either a plain
+/// one — a letter or a digit, then the alphabet crates.io, PyPI and npm all serve —
+/// or the scoped form `@scope/name`, whose two halves are each a plain one. That is
+/// the whole of the leading `@`: it takes a scope and exactly one `/`, so `@`, `@/x`,
+/// `@scope/` and `@scope/a/b` are all still refused.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RegistryId {
@@ -211,21 +220,11 @@ impl TryFrom<String> for RegistryId {
                  is not one word of lowercase letters, digits, and '-'"
             ));
         }
-        // The name becomes a path segment of a registry URL wherever one is asked, so
-        // it is held to the alphabet crates.io, PyPI and npm all serve rather than to
-        // whichever of them a reader happens to ask first.
-        if name.is_empty()
-            || !name
-                .chars()
-                .next()
-                .is_some_and(|first| first.is_ascii_alphanumeric())
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | '/'))
-        {
+        if !is_served_name(name) {
             return Err(format!(
                 "the release-target identifier {value:?} names {name:?}, which is not a name a \
-                 registry serves; spell the name exactly as its registry does"
+                 registry serves; spell the name exactly as its registry does, and an npm \
+                 scoped package as @scope/name"
             ));
         }
         Ok(RegistryId {
@@ -233,6 +232,50 @@ impl TryFrom<String> for RegistryId {
             name: name.to_owned(),
         })
     }
+}
+
+/// Whether the name half of an identifier is one a registry serves.
+///
+/// Two forms, because npm serves two: `@scope/name`, and everything else. A leading
+/// `@` commits a name to the scoped form and is decided there in full, so a producer
+/// who wrote half of one is refused rather than having the `@` read as an ordinary
+/// character in the middle of a name it opened.
+fn is_served_name(name: &str) -> bool {
+    match name.strip_prefix('@') {
+        Some(scoped) => scoped
+            .split_once('/')
+            .is_some_and(|(scope, package)| is_name_segment(scope) && is_name_segment(package)),
+        None => is_plain_name(name),
+    }
+}
+
+/// A name with no scope on it.
+///
+/// It opens with a letter or a digit, because it becomes a path segment of a registry
+/// URL wherever one is asked, and it is held to the alphabet crates.io, PyPI and npm
+/// all serve rather than to whichever of them a reader happens to ask first. An empty
+/// name fails on the first clause, which is why nothing above it tests for one.
+fn is_plain_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | '/'))
+}
+
+/// One half of a scoped name: the scope, or the package under it.
+///
+/// The plain alphabet less `@` and `/`, which is what refuses a second slash and a
+/// scope inside a scope rather than reading `@a/b/c` as a package named `b/c`.
+fn is_name_segment(segment: &str) -> bool {
+    segment
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// The conversion an argument parser and a consumer both reach for, which is the
