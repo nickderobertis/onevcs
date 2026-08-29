@@ -2186,6 +2186,9 @@ repositories:
       - name: container
         style: human-step
         action: "Push the image and record the tag."
+      - name: wheel
+        style: human-step
+        action: "Upload the wheel and record its version."
 "#,
     )
     .expect("a release-targets file");
@@ -2304,6 +2307,144 @@ fn a_session_read_gains_the_releases_that_carried_its_own_landing_long_after_it_
     );
     // Reading again adds nothing: a release that carried this work happens once.
     assert!(reader.read().expect("nothing new").is_empty());
+}
+
+/// Which of the two halves of a correlation a reader saw first.
+///
+/// A release is recorded where it happens and a landing becomes readable where the
+/// history is, so a reader is asked in both orders and neither is the odd one out.
+#[derive(Debug, Clone, Copy)]
+enum Visible {
+    /// The reader could decide this session's landing before any release naming it
+    /// was recorded — a session that lands and is released afterwards.
+    LandingFirst,
+    /// The releases were already recorded when the reader was first asked, and the
+    /// landing they name could not be decided yet — the copy that answers where the
+    /// work landed was not there when the question was put to it.
+    RecordsFirst,
+}
+
+#[test]
+fn a_release_reaches_its_session_in_whichever_order_it_and_the_landing_became_visible() {
+    // The join has two halves that become true independently, and a reader that
+    // answered from whichever it saw first would drop a release that was recorded
+    // while the landing could not yet be read — a consumer holding for a human step
+    // that has already been performed, waiting for ever on work that is finished.
+    // Both orders are asked of the same reader over the same records, and both are
+    // held to the same answer.
+    for visible in [Visible::LandingFirst, Visible::RecordsFirst] {
+        let world = World::new();
+        inhabit(&world);
+        let (_origin, _identity) = hosted(&world, LOCAL);
+        releasing(&world);
+
+        let session = landed(&world, "feature/released", "one.txt");
+        let mut reader = EventStream::open(&session.token).expect("the session's stream");
+        assert!(
+            !reader
+                .read()
+                .expect("everything through the close")
+                .is_empty(),
+            "{visible:?}: the session wrote its own events"
+        );
+
+        // Another landing of the same repository is released first, so the record
+        // this read joins already holds a release that is not this session's.
+        let other = landed(&world, "feature/unrelated", "two.txt");
+        let container: onevcs::TargetName = "container".parse().expect("a target name");
+        onevcs::acknowledge_release(&other.token.0, &container, "9.9.9", false)
+            .expect("the other landing's release is recorded");
+
+        // Both of this landing's own targets, because the report this fixes was a
+        // read that handed back one of an identity's targets and dropped the other:
+        // "every release record that names this landing" is what the read owes, and
+        // a single record cannot tell that apart from "the first one that matches".
+        let wheel: onevcs::TargetName = "wheel".parse().expect("a target name");
+        let token = &session.token.0;
+        let record_this_landings_releases = || {
+            let acknowledged = onevcs::acknowledge_release(token, &container, "2.0.0", false)
+                .expect("this landing's container release is recorded");
+            onevcs::acknowledge_release(token, &wheel, "3.0.0", false)
+                .expect("this landing's wheel release is recorded");
+            acknowledged
+        };
+
+        let acknowledged = match visible {
+            Visible::LandingFirst => {
+                assert!(
+                    reader.read().expect("nothing new").is_empty(),
+                    "another landing's release is not this session's"
+                );
+                record_this_landings_releases()
+            }
+            Visible::RecordsFirst => {
+                let acknowledged = record_this_landings_releases();
+                // The checkout every publication fast-forwards is where a landing is
+                // decided from, and it is not always there when a reader asks: a copy
+                // being re-made, or a mount that is not up yet, leaves the landing
+                // undecidable while the releases naming it are already on record.
+                std::fs::rename(world.path("hosted"), world.path("hosted-away"))
+                    .expect("the copy that answers where the work landed goes away");
+                assert!(
+                    reader
+                        .read()
+                        .expect("a read while the landing cannot be decided")
+                        .is_empty(),
+                    "nothing is this session's until something says where its work landed"
+                );
+                std::fs::rename(world.path("hosted-away"), world.path("hosted"))
+                    .expect("the copy comes back");
+                acknowledged
+            }
+        };
+
+        // The first read taken once both are true, whichever of them was true first.
+        let fresh = reader.read().expect("what the release added");
+        assert_eq!(
+            fresh.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            vec![
+                onevcs::EventKind::ReleaseAcknowledged,
+                onevcs::EventKind::ReleaseObserved,
+                onevcs::EventKind::ReleaseAcknowledged,
+                onevcs::EventKind::ReleaseObserved
+            ],
+            "{visible:?}: the releases that carried this work, and nothing else"
+        );
+        assert_eq!(
+            fresh
+                .iter()
+                .map(|event| (
+                    event.payload["target"].as_str().expect("a target name"),
+                    event.payload["version"].as_str().expect("a version")
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("container", "2.0.0"),
+                ("container", "2.0.0"),
+                ("wheel", "3.0.0"),
+                ("wheel", "3.0.0")
+            ],
+            "{visible:?}: every target this landing was released for, not the first of them"
+        );
+        for event in &fresh {
+            assert_eq!(event.phase, Phase::Release, "{visible:?}");
+            assert_eq!(
+                event.payload["landing_commit"],
+                acknowledged.landing_commit.as_str(),
+                "{visible:?}: every correlated event is this session's landing"
+            );
+            assert_ne!(
+                event.payload["version"], "9.9.9",
+                "{visible:?}: another landing's release reached this session"
+            );
+        }
+        // …and once, in either order: a release that carried this work happens once,
+        // and a reader that had to weigh it twice must not hand it over twice.
+        assert!(
+            reader.read().expect("nothing new").is_empty(),
+            "{visible:?}: a release already handed back arrived a second time"
+        );
+    }
 }
 
 #[test]
