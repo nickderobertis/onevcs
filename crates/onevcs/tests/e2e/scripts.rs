@@ -13,15 +13,23 @@
 //! `scripts/release-probe.sh` answers what a public registry serves for one
 //! artifact this repository publishes, and its three answers — a version, no
 //! release yet, and not answered — are what a consumer sequences a release
-//! behind. Its journeys are the last section of this file, and they are the one
-//! set here that spawns a script *directly* rather than through `bash`, because
-//! that is how the release-target contract says a probe is run.
+//! behind. Its journeys are the one set here that spawns a script *directly*
+//! rather than through `bash`, because that is how the release-target contract
+//! says a probe is run.
 //!
-//! In all four, what the script printed *is* the behaviour — a run that widened
-//! its scope, retried an install, skipped a version already live, or found no
-//! release is indistinguishable from one that did not, except for what it
-//! printed. So these journeys assert the message, not merely the exit status,
-//! driving each script the way its caller does.
+//! `scripts/report-workflow-failure.sh` is what a workflow with no pull request
+//! to turn red announces a failure through: one issue in this repository, and a
+//! comment on that same issue at each further failure. Which of those two it does
+//! is a decision with two branches and a wrong answer that is worse than silence
+//! — a second issue nobody reads, or a comment on somebody else's — so both are
+//! driven below against a stubbed `gh`.
+//!
+//! In all five, what the script printed *is* the behaviour — a run that widened
+//! its scope, retried an install, skipped a version already live, found no
+//! release, or filed a failure is indistinguishable from one that did not, except
+//! for what it printed and, for the reporter, the argv it invoked. So these
+//! journeys assert the message rather than merely the exit status, driving each
+//! script the way its caller does.
 //!
 //! Unix only, like `smoke.rs` beside it: `nx-affected.sh` runs on the Linux
 //! `changes` and `gate` jobs alone, and the platform-specific half of
@@ -1561,4 +1569,311 @@ fn a_declaration_this_repository_would_not_commit_stops_the_probe_rather_than_be
         .failed()
         .said("is missing or unreadable, so nothing is declared")
         .answered("");
+}
+
+// ---------------------------------------------------------------------------
+// scripts/report-workflow-failure.sh — the reporter that gives an unattended
+// failure somewhere to be seen.
+// ---------------------------------------------------------------------------
+
+/// The one title every journey below files under, so a journey can plant an issue
+/// that matches it exactly and one that only looks like it.
+const FAILURE_TITLE: &str = "Published smoke is failing";
+
+/// The red run a filed issue has to point back at: whatever else goes wrong while
+/// reporting, the finding must stay findable.
+const FAILING_RUN_URL: &str = "https://github.invalid/o/r/actions/runs/1";
+
+/// `report-workflow-failure.sh` with a `gh` that records what it was asked to do
+/// rather than filing anything.
+///
+/// `gh` is this script's boundary and it cannot be the real one here: the real one
+/// files issues into this repository, so a journey that crossed it would open an
+/// issue every time the suite ran. The stub is driven as the real thing — the
+/// script runs as a subprocess, and what is asserted is the argv it actually
+/// invoked together with what it told its reader — which is as close as a check
+/// gets without making the repository the fixture.
+struct Reporter {
+    dir: tempfile::TempDir,
+}
+
+impl Reporter {
+    /// A `gh` whose `issue list` answers with `listed` — the `number<TAB>title`
+    /// lines the reporter's own `--jq` program renders — and whose writes succeed,
+    /// answering with the URL the real one answers with.
+    fn finding(listed: &str) -> Self {
+        Self::new(listed, "", false)
+    }
+
+    /// A `gh` that writes `error` and exits 1: on the write it is asked for, and
+    /// on `issue list` too when `from_the_start`.
+    fn failing_with(listed: &str, error: &str, from_the_start: bool) -> Self {
+        Self::new(listed, error, from_the_start)
+    }
+
+    fn new(listed: &str, error: &str, list_fails: bool) -> Self {
+        let dir = tempfile::tempdir().expect("a temporary directory for the stubs");
+        let calls = dir.path().join("calls");
+        // The listing goes through a file rather than into the stub's text: it is
+        // one issue per *line*, and a line embedded in a shell string cannot carry
+        // the newline that separates two of them.
+        let served = dir.path().join("listed");
+        std::fs::write(&served, listed).expect("the issues the stub lists");
+        // llmlint: ignore[e2e_not_mocked] see the note above this struct: the real
+        // `gh` here files issues into this repository, so crossing this boundary is
+        // the one thing a suite that runs on every commit must not do.
+        write_stub(
+            &dir.path().join("gh"),
+            &format!(
+                "#!/usr/bin/env bash\n\
+                 set -eu\n\
+                 printf '%s\\n' \"$*\" >>\"{calls}\"\n\
+                 if [ \"${{1:-}}\" = \"issue\" ] && [ \"${{2:-}}\" = \"list\" ] \
+                 && [ -z \"{list_fails}\" ]; then\n\
+                 \x20 cat \"{served}\"\n\
+                 \x20 exit 0\n\
+                 fi\n\
+                 if [ -n {error:?} ]; then\n\
+                 \x20 printf '%s\\n' {error:?} >&2\n\
+                 \x20 exit 1\n\
+                 fi\n\
+                 case \"${{2:-}}\" in\n\
+                 \x20 create) printf '%s\\n' \"{created}\" ;;\n\
+                 \x20 comment) printf '%s\\n' \"{commented}${{3}}\" ;;\n\
+                 esac\n",
+                calls = calls.display(),
+                served = served.display(),
+                list_fails = if list_fails { "yes" } else { "" },
+                created = ISSUE_OPENED,
+                commented = COMMENT_ON,
+            ),
+        );
+        Self { dir }
+    }
+
+    /// The reporter as its workflow step calls it: the three inputs it requires,
+    /// and the run URL that step passes.
+    fn run(&self) -> Run {
+        Run::script("scripts/report-workflow-failure.sh")
+            .path_prefix(self.dir.path())
+            .env("REPO", "nickderobertis/onevcs")
+            .env("TITLE", FAILURE_TITLE)
+            .env("BODY", "the published smoke failed")
+            .env("RUN_URL", FAILING_RUN_URL)
+    }
+
+    /// Every `gh` invocation, one argv per line — a body with a blank line in it
+    /// therefore spans several, which is why the assertions match line prefixes
+    /// and search the whole list for the run URL.
+    fn asked(&self) -> Vec<String> {
+        read_lines(&self.dir.path().join("calls"))
+    }
+
+    /// How many `gh` calls began with `verb`, e.g. `issue create`.
+    fn calls_to(&self, verb: &str) -> usize {
+        self.asked()
+            .iter()
+            .filter(|line| line.starts_with(&format!("{verb} ")))
+            .count()
+    }
+}
+
+/// What the stubbed `gh` answers a successful `issue create` with, the way the
+/// real one does: the URL it wrote to.
+const ISSUE_OPENED: &str = "https://github.invalid/o/r/issues/7";
+
+/// The same for a comment, with the issue number it was addressed at appended, so
+/// a journey can tell which issue was commented on from the answer alone.
+const COMMENT_ON: &str = "https://github.invalid/o/r/issues/";
+
+#[test]
+fn a_failure_with_no_open_issue_opens_one_pointing_at_the_run() {
+    // Nothing open: the first failure has to file, and it has to file something a
+    // reader can act on — the title the thread is found by again, and the run.
+    let reporter = Reporter::finding("");
+    reporter
+        .run()
+        .output()
+        .succeeded()
+        .printed("opened a new issue")
+        .printed(ISSUE_OPENED);
+
+    assert_eq!(
+        reporter.calls_to("issue create"),
+        1,
+        "one failure files one issue: {:?}",
+        reporter.asked()
+    );
+    assert_eq!(
+        reporter.calls_to("issue comment"),
+        0,
+        "there was nothing open to comment on: {:?}",
+        reporter.asked()
+    );
+    let asked = reporter.asked();
+    assert!(
+        asked.iter().any(|line| line.contains(FAILURE_TITLE)),
+        "the issue must be filed under the title the next failure finds it by: {asked:?}"
+    );
+    assert!(
+        asked.iter().any(|line| line.contains(FAILING_RUN_URL)),
+        "an issue nobody can trace back to the red run reports nothing: {asked:?}"
+    );
+}
+
+#[test]
+fn a_further_failure_comments_on_the_issue_the_first_one_opened() {
+    // The whole point of the thread: a bad release followed by a bad fix is one
+    // issue somebody reads, not a pile of them nobody does.
+    let reporter = Reporter::finding(&format!("41\t{FAILURE_TITLE}\n"));
+    reporter
+        .run()
+        .output()
+        .succeeded()
+        .printed("commented on #41")
+        .printed(&format!("{COMMENT_ON}41"));
+
+    assert_eq!(
+        reporter.calls_to("issue create"),
+        0,
+        "an open issue must not be joined by a second one: {:?}",
+        reporter.asked()
+    );
+    let asked = reporter.asked();
+    assert!(
+        asked
+            .iter()
+            .any(|line| line.starts_with("issue comment 41 ")),
+        "the comment must be addressed at the open issue: {asked:?}"
+    );
+    assert!(
+        asked.iter().any(|line| line.contains(FAILING_RUN_URL)),
+        "each comment names its own run, or the thread cannot be read: {asked:?}"
+    );
+}
+
+#[test]
+fn an_issue_that_merely_resembles_this_one_is_not_commented_on() {
+    // `--search "<title> in:title"` is fuzzy, so it answers with issues whose
+    // titles merely resemble this one. Commenting a publication failure onto
+    // somebody else's issue is worse than opening a second, so a near miss files.
+    let reporter = Reporter::finding(&format!("41\t{FAILURE_TITLE} (macOS)\n"));
+    reporter.run().output().succeeded().printed("opened a new");
+
+    assert_eq!(
+        reporter.calls_to("issue comment"),
+        0,
+        "an issue that is not this one must not be commented on: {:?}",
+        reporter.asked()
+    );
+    assert_eq!(
+        reporter.calls_to("issue create"),
+        1,
+        "a near miss is not the thread, so the failure still has to be filed: {:?}",
+        reporter.asked()
+    );
+}
+
+#[test]
+fn an_issue_id_that_is_not_a_number_is_refused_rather_than_addressed() {
+    // An id that is not an issue number means `gh issue list` no longer answers
+    // what this reads, and addressing a comment at it would be a request against
+    // whatever it happens to name.
+    let reporter = Reporter::finding(&format!("not-a-number\t{FAILURE_TITLE}\n"));
+    reporter
+        .run()
+        .output()
+        .failed()
+        .said("is not a number")
+        .said("ACTION:");
+
+    assert_eq!(
+        reporter.calls_to("issue comment") + reporter.calls_to("issue create"),
+        0,
+        "an answer this cannot read must stop it before it writes anything: {:?}",
+        reporter.asked()
+    );
+}
+
+#[test]
+fn a_reporter_missing_an_input_names_it_rather_than_filing_an_empty_issue() {
+    // The caller is a workflow step, so the one useful thing to say is which
+    // variable that step failed to give it.
+    for missing in ["REPO", "TITLE", "BODY"] {
+        let reporter = Reporter::finding("");
+        reporter
+            .run()
+            .env(missing, "")
+            .output()
+            .failed()
+            .said(missing)
+            .said("ACTION:");
+        assert!(
+            reporter.asked().is_empty(),
+            "a refused run must not reach gh at all: {:?}",
+            reporter.asked()
+        );
+    }
+}
+
+#[test]
+fn a_gh_that_will_not_answer_names_the_call_that_failed_and_what_to_do_about_it() {
+    // This is the path the reporter exists to survive being on: it runs only when
+    // something is already broken, so a `gh` failure it swallowed would take a real
+    // finding down with it. Authentication, permissions and a rejected query are
+    // three different problems with three different next actions.
+    // (what gh writes, whether `issue list` fails too, whether an issue is open,
+    // what the reporter must say about it)
+    let cases: [(&str, bool, bool, &[&str]); 6] = [
+        (
+            "gh: To get started with GitHub CLI, please run: gh auth login",
+            true,
+            false,
+            &["looking for an open issue", "gh auth login", "GH_TOKEN"],
+        ),
+        (
+            "HTTP 403: Resource not accessible by integration",
+            true,
+            false,
+            &["HTTP 403", "issues: write"],
+        ),
+        ("HTTP 404: Not Found", true, false, &["HTTP 404", "$REPO"]),
+        (
+            "HTTP 422: Validation Failed",
+            true,
+            false,
+            &["HTTP 422", "$TITLE"],
+        ),
+        // An answer nobody predicted still gets what gh said and something to try.
+        (
+            "something nobody predicted",
+            false,
+            false,
+            &["opening an issue", "something nobody predicted", "ACTION:"],
+        ),
+        // And the comment branch fails its own way, naming the issue it was on.
+        (
+            "HTTP 500: Server Error",
+            false,
+            true,
+            &["commenting on #41", "ACTION:"],
+        ),
+    ];
+
+    for (error, from_the_start, one_is_open, expected) in cases {
+        let listed = if one_is_open {
+            format!("41\t{FAILURE_TITLE}\n")
+        } else {
+            String::new()
+        };
+        let reporter = Reporter::failing_with(&listed, error, from_the_start);
+        let reported = reporter.run().output();
+        let reported = reported.failed();
+        for fragment in expected {
+            reported.said(fragment);
+        }
+        // Whatever went wrong while reporting, the failure being reported is not
+        // lost — the reader is pointed at the red run itself.
+        reported.said(FAILING_RUN_URL);
+    }
 }
