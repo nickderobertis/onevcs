@@ -370,10 +370,19 @@ impl TryFrom<PathBuf> for RepositoryPath {
     type Error = String;
 
     fn try_from(value: PathBuf) -> std::result::Result<Self, Self::Error> {
-        if value.as_os_str().is_empty() {
+        // Decided on how the path is *spelled*, never on what `Path` makes of it,
+        // because `Path` answers for the platform doing the reading and a declaration
+        // is not written for one. `Path::is_absolute` is true of `/etc/Cargo.toml` on
+        // Unix and false of it on Windows, where absolute means a drive or a UNC share
+        // as well as a root; and `..\elsewhere` is a parent-directory escape on
+        // Windows and a single filename on Unix. Six repositories share one document
+        // and a consumer resolves it on whichever machine it runs on, so a path either
+        // names a place in a checkout everywhere or is refused everywhere.
+        let spelling = value.to_string_lossy();
+        if spelling.is_empty() {
             return Err("a release declaration names an empty path".to_owned());
         }
-        if value.is_absolute() {
+        if spelling.starts_with(SEPARATORS) {
             return Err(format!(
                 "the release declaration path {path} is absolute; it is a path relative to the \
                  repository root, because it names something the repository being released \
@@ -381,9 +390,17 @@ impl TryFrom<PathBuf> for RepositoryPath {
                 path = value.display()
             ));
         }
-        if value
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+        if drive_qualified(&spelling) {
+            return Err(format!(
+                "the release declaration path {path} names a drive on the reader's own machine; \
+                 it is a path relative to the repository root, because it names something the \
+                 repository being released carries",
+                path = value.display()
+            ));
+        }
+        if spelling
+            .split(SEPARATORS)
+            .any(|component| component == "..")
         {
             return Err(format!(
                 "the release declaration path {path} leaves the repository root; it names \
@@ -393,6 +410,23 @@ impl TryFrom<PathBuf> for RepositoryPath {
         }
         Ok(RepositoryPath(value))
     }
+}
+
+/// Both separators, because one of the platforms reading a declaration separates
+/// with `\` and a document that meant different things on the two would be worse
+/// than one that is refused on either.
+const SEPARATORS: [char; 2] = ['/', '\\'];
+
+/// Whether a path opens with a Windows drive letter — `C:\Cargo.toml`, and the
+/// drive-relative `C:Cargo.toml` with it, both of which name a location on whichever
+/// machine resolves them rather than one in a checkout. A UNC share opens with a
+/// separator and is refused as absolute before this is asked.
+fn drive_qualified(spelling: &str) -> bool {
+    let mut characters = spelling.chars();
+    matches!(
+        (characters.next(), characters.next()),
+        (Some(drive), Some(':')) if drive.is_ascii_alphabetic()
+    )
 }
 
 /// The conversion a caller building a declaration reaches for, which is the same

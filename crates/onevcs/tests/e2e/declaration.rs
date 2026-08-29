@@ -449,10 +449,32 @@ const REFUSALS: &[(&str, &str, &str)] = &[
         "leaves the repository root",
     ),
     (
+        // Spelled with the separator the other platform uses, because a declaration
+        // six repositories share is read on whichever machine a consumer runs on: this
+        // is one filename to `Path` here and a parent-directory escape to `Path` there,
+        // and it has to be refused on both.
+        "a probe that leaves the repository root by the other platform's separator",
+        "schema_version = 1\nprobe = '..\\elsewhere\\release-probe.sh'\n\n[[target]]\n\
+         id = \"crate:onevcs\"\nname = \"crate\"\nwhat = \"The crate.\"\n\
+         published_by = \"release.yml\"\n",
+        "path ..\\elsewhere\\release-probe.sh leaves the repository root",
+    ),
+    (
         "a manifest somewhere on the reader's own machine",
         "schema_version = 1\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
          what = \"The crate.\"\npublished_by = \"release.yml\"\nmanifest = \"/etc/Cargo.toml\"\n",
         "path /etc/Cargo.toml is absolute",
+    ),
+    (
+        // The same mistake spelled the other platform's way, and the reason the rooted
+        // one above is decided on the spelling rather than on `Path::is_absolute`: a
+        // drive is absolute to `Path` on one platform and one more filename on the
+        // other, exactly as a leading `/` is — in the opposite direction.
+        "a manifest on a drive on the reader's own machine",
+        "schema_version = 1\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\n\
+         manifest = 'C:\\Cargo.toml'\n",
+        "path C:\\Cargo.toml names a drive on the reader's own machine",
     ),
     (
         "an identifier with nothing before its colon",

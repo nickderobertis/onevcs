@@ -1250,7 +1250,18 @@ declaration with no `[[target]]` at all — because a consumer cannot tell that 
 nobody having said anything; a `covers` entry that is also a declared target, or that
 two targets both cover; a `[[retired]]` entry that a `[[target]]` publishes, or that
 another retires; a blank or multi-line `what`, `published_by`, or `why`; and a `probe`
-or `manifest` that is absolute or leaves the repository root.
+or `manifest` that is absolute, names a drive, or leaves the repository root.
+
+**A path is refused on how it is spelled, and every platform refuses the same one.**
+`probe` and `manifest` both name something a *checkout* carries, and the checkout may
+be on any machine a consumer runs on, so what a path may be is decided on the text
+rather than by asking that machine's own path type. Both separators are separators —
+`../elsewhere` and `..\elsewhere` are one refusal, not one refusal and one filename —
+a leading separator is absolute whether or not the reader's platform calls it that,
+and a leading drive letter (`C:\…`, and the drive-relative `C:…`) names a location on
+whoever resolves it. Six repositories share one document; a path that meant a place in
+a checkout on one reader's platform and something else on another's would be worse
+than one that is refused on either.
 
 **The registry half of an identifier is an open vocabulary.** `crate`, `pypi` and
 `npm` are what this repository's own probe answers for, but six repositories write
