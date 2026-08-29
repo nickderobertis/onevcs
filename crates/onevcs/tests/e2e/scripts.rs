@@ -1534,6 +1534,12 @@ fn a_probe_without_the_tools_it_runs_names_the_one_that_is_missing() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] the registry is this script's boundary and it is a
+// public service across the network, which this tier is forbidden to reach: `just
+// check` is offline and credential-free by rule. What is under test here is the
+// declaration the script reads, which is real, and every step the script takes is
+// real; tests/smoke/releases.rs drives crates.io, PyPI, and the npm registry
+// themselves.
 fn a_declaration_this_repository_would_not_commit_stops_the_probe_rather_than_being_read_loosely() {
     // `release-targets.toml` is the one declaration, and every answer is about
     // something a `[[target]]` in it names — so a probe that read a broken one would
@@ -1602,6 +1608,10 @@ fn target(id: &str) -> String {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] the stub registry is the boundary, for the reason
+// spelled above `a_declaration_this_repository_would_not_commit_...`; what this
+// journey drives for real is which identifiers the script answers for at all, which
+// it settles before any registry is read.
 fn a_covered_identifier_is_not_a_target_the_probe_answers_for() {
     // The distinction `covers` exists to draw, from the probe's side: the five
     // per-platform npm packages are shipped by the launcher's release and nothing
@@ -1640,6 +1650,10 @@ fn a_covered_identifier_is_not_a_target_the_probe_answers_for() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] the stub registry is the boundary, for the reason
+// spelled above `a_declaration_this_repository_would_not_commit_...`; this
+// repository's own declaration and its own probe are both the real ones, and
+// tests/smoke/releases.rs drives these same targets against the real registries.
 fn the_probe_answers_for_exactly_the_targets_this_repositorys_own_document_declares() {
     // The declaration this repository actually commits, driven through the script
     // that reads it: every `[[target]]` id is answered for, and the identifiers the
