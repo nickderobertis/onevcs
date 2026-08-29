@@ -344,14 +344,6 @@ struct Correlated {
     /// after some of those lines were written, so a cursor that had advanced past
     /// them while there was nothing to match would lose them for good.
     handed: BTreeSet<u64>,
-    /// The candidates the last read weighed, so a reader polled in a loop asks
-    /// history about its landing when the *stream* has moved rather than when it
-    /// has been asked.
-    ///
-    /// Deciding a landing opens repositories and runs git; a session that never
-    /// lands, in an identity that releases often, would otherwise pay for that on
-    /// every poll for ever.
-    weighed: BTreeSet<u64>,
 }
 
 impl EventStream {
@@ -403,7 +395,6 @@ impl EventStream {
                 identity,
                 landing: None,
                 handed: BTreeSet::new(),
-                weighed: BTreeSet::new(),
             }),
             _ => None,
         };
@@ -515,25 +506,31 @@ impl Correlated {
             }
             candidates.push((index + 1, envelope));
         }
-        let weighing: BTreeSet<u64> = candidates
-            .iter()
-            .map(|(_, envelope)| envelope.seq)
-            .collect();
-        // Nothing to correlate, or nothing new to correlate: this stream has not
-        // moved since the last read weighed it, and history is not asked again for
-        // an answer it has already been asked for.
-        if weighing.is_empty() || (self.landing.is_none() && weighing == self.weighed) {
+        // Nothing to correlate. The one thing this read is allowed to answer without
+        // asking history, because it is a fact about the record rather than about the
+        // landing: an identity with nothing un-handed on it has nothing that could
+        // become this session's, however the landing is decided.
+        if candidates.is_empty() {
             return Ok(Vec::new());
         }
-        self.weighed = weighing;
         let landing = match &self.landing {
             Some(landing) => landing.clone(),
+            // Asked again on every read that has a candidate, and deliberately not
+            // memoized on the candidates it has already weighed. The two halves of
+            // this correlation become true independently — a release is recorded
+            // where it happens and a landing becomes readable where the history is —
+            // so a reader that remembered "these events did not match" would answer
+            // from the last time the *stream* moved rather than from what is now
+            // true, and a release recorded before the landing could be read would
+            // never be handed over at all. Deciding a landing opens repositories and
+            // runs git, and this is what that costs: one decision per read, only
+            // while something un-handed is waiting to be correlated and only until
+            // the landing is known, after which it is answered from here.
             None => match landed_at(session) {
-                // Nothing records that this session's work reached its base, so
-                // nothing here is this session's. Not handed back and not accounted
-                // for, so the same events are weighed again once something is
-                // appended beside them — or once history records a landing, which is
-                // what the next read this reader is asked for finds out.
+                // Nothing records that this session's work reached its base yet, so
+                // nothing here can be said to be this session's. Not handed back and
+                // not accounted for, so the same events are weighed again on the next
+                // read — which is what finds out that history now records a landing.
                 None => return Ok(Vec::new()),
                 Some(landing) => {
                     self.landing = Some(landing.clone());
