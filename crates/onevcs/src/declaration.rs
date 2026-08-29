@@ -82,9 +82,21 @@ pub struct Declaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe: Option<RepositoryPath>,
     /// The consumable artifacts this repository publishes, in publication order.
+    // llmlint: ignore[invalid_states_unrepresentable] what is wrong with a target on its
+    // own is unrepresentable — every field of one is a validated type. What is left is
+    // *relational*: that there is at least one entry, and that no two of them take one
+    // short name or one identifier. A list cannot hold those in its element type, and the
+    // contract fixes this field as `Vec<DeclaredTarget>` verbatim (`tests/contract.rs`
+    // holds it there), so a collection newtype would be public surface the contract does
+    // not name. `validate` is where they are decided instead, and `render` runs it too, so
+    // a `Declaration` a caller *built* is refused rather than written out unreadable.
     #[serde(rename = "target", default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<DeclaredTarget>,
     /// What this repository once published and does not any more.
+    // llmlint: ignore[invalid_states_unrepresentable] a relational invariant for the same
+    // reason as `targets` above, and one of them reaches across both lists: what a
+    // `[[retired]]` entry may not be is something a `[[target]]` publishes, which no type
+    // over this field alone can see.
     #[serde(rename = "retired", default, skip_serializing_if = "Vec::is_empty")]
     pub retired: Vec<RetiredArtifact>,
 }
@@ -124,6 +136,11 @@ pub struct DeclaredTarget {
     ///
     /// A list of identifiers rather than a pointer at a manifest field, so a reader
     /// parses one shape.
+    // llmlint: ignore[invalid_states_unrepresentable] every entry is a validated
+    // `RegistryId`; what covering may not be is decided against the *document* — its own
+    // target's id, another target's id, or an artifact a second target already covers —
+    // and none of those three is visible from inside this field. `covered` decides them,
+    // for a document and for a declaration a caller built alike.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub covers: Vec<RegistryId>,
 }
