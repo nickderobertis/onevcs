@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/nickderobertis/onevcs/compare/v0.15.10...v0.16.0) - 2026-08-29
+
+### Added
+
+- *(release)* answer a repository's targets from its own declaration and the host's ([#112](https://github.com/nickderobertis/onevcs/pull/112))
+- *(release)* read what a repository declares it publishes ([#110](https://github.com/nickderobertis/onevcs/pull/110))
+
 ## [0.15.10](https://github.com/nickderobertis/onevcs/compare/v0.15.9...v0.15.10) - 2026-08-29
 
 ### Fixed
