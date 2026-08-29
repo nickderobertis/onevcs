@@ -398,6 +398,8 @@ pub struct RulesCheckArgs {
 pub enum ReleaseCommand {
     /// Report which release targets a repository has, and what it adopts.
     Targets(ReleaseTargetsArgs),
+    /// Report every target a repository has and what each has released right now.
+    Discover(ReleaseDiscoverArgs),
     /// Report what version of a target is released right now.
     Latest(ReleaseLatestArgs),
     /// Report whether the release carrying a landed change is out yet.
@@ -436,6 +438,16 @@ pub struct ReleaseDeclarationArgs {
 /// Arguments for `onevcs release targets`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct ReleaseTargetsArgs {
+    /// An identity key, a registered alias, an origin URL, or a path.
+    pub repo: String,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs release discover`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseDiscoverArgs {
     /// An identity key, a registered alias, an origin URL, or a path.
     pub repo: String,
     /// Report as JSON rather than as a human table.

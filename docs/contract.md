@@ -1347,6 +1347,130 @@ No event kind is added: reading a file is not something that happens to a change
 Nothing about the host document, publication, recovery, integration, or the rules file
 changes.
 
+**A repository's targets come from three layers, and their order is fixed rather
+than a consequence of read order.** The amendment above deferred one question: what a
+repository's targets *are* when a producer declaration and the host document both
+have an opinion. This answers it. The host document stops being the only source of
+targets and becomes the layer that stands in for, and overrides, what a repository
+declares — so a repository that declares what it publishes is discoverable without
+this host being told the same thing twice, and a host that disagrees still wins.
+
+`release_targets` resolves the three in exactly this order, and every other release
+answer — `release_latest`, `release_status`, `release_discovery`, and the baselines a
+publication captures — is taken over the set it resolves:
+
+1. **The producer's declaration.** The `release-targets.toml` at the repository's own
+   root contributes one target per `[[target]]`, in the document's own publication
+   order. It is read from the identity's registered publication checkout **on its base
+   branch** — the one checkout a script probe may be read from, and for the same
+   reason: a declaration read off the branch a dispatch is authoring is a declaration
+   that dispatch can rewrite, and what a repository publishes is not a fact a change
+   under review gets to assert.
+2. **A consumer's declaration, standing in.** A target this host's `releases.yml`
+   names that the producer does not declare is **added** to the set, after the
+   producer's own. That is
+   what a host has always been able to say and still says: a repository that ships no
+   declaration, or one this build cannot read, is described by the host exactly as it
+   was before a producer declaration existed.
+3. **A consumer's override.** A target both name — matched on the short name, which is
+   the one vocabulary a `TargetName` already is — is the **host's**, whole, and it
+   keeps the producer's position in the order. An override replaces rather than merges
+   field by field: a target is `{name, style, body}` and a half-host, half-producer
+   target is a probe nobody wrote. Overriding is how a host runs a probe differently
+   from the way the repository publishes it.
+
+A producer target this host does not name **survives**, which is the whole of what
+makes layer 1 worth having. A host that does not consume what a repository declares
+says so, once, per rule:
+
+```yaml
+version: 1
+default:
+  adoption: published
+repositories:
+  - match: {host: github.com, owner: nickderobertis, name: onevcs}
+    declaration: ignore               # merge (the default) | ignore
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cargo search onevcs --limit 1'
+          timeout_seconds: 60
+```
+
+`declaration: ignore` drops layer 1 for that rule, so its own targets are the whole
+answer — which is exactly what a rule answered before there was a producer half. It
+is per rule and not global, because a host consumes one repository's declaration and
+distrusts another's.
+
+**A declaration this build could not read is not a repository that declares
+nothing**, and the answer carries which of the three it was. That is the same
+distinction `ReleaseAnswer::NotAnswered` keeps one layer up, at the layer where
+targets are discovered rather than probed: a consumer that read "no targets" from a
+repository whose declaration failed to parse would stop waiting for a release that is
+coming. So every refusal about a target that is not there says the declaration could
+not be read and why, `release targets` and `release discover` both render the state,
+and it is a value in the library answer rather than a line of prose.
+
+**A declared target is answered by the declaration's own `probe`, given the target's
+`id`.** That is the contract the canonical schema already fixes — one script, one
+registry-qualified identifier, one answer — so a declared target becomes an
+`Automated` one whose probe is `Script { script: <the declaration's probe>, args:
+[<the target's id>] }` under the default bound. A declaration naming **no** `probe`
+leaves this build nothing to run, so its targets are `HumanStep`: the release is
+learned about the only way it can be, by somebody recording it with `release
+acknowledge`.
+
+```rust
+pub struct ReleaseRule { /* …as above… */ pub declaration: Option<DeclarationPolicy> }
+pub enum DeclarationPolicy { Merge, Ignore }          // merge | ignore
+impl DeclarationPolicy { pub fn as_str(&self) -> &'static str; }
+
+/// What the repository's own declaration said, or why there is no answer from it.
+pub enum DeclarationSource {
+    Declared { document: PathBuf, declared: declaration::Declaration },
+    Undeclared { looked_in: PathBuf },
+    /// Never "it declares nothing": the targets beside this may be fewer than the
+    /// repository publishes.
+    Unreadable { reason: String },
+}
+impl DeclarationSource {
+    pub fn as_str(&self) -> &'static str;             // declared | undeclared | unreadable
+    pub fn declared(&self) -> Option<&declaration::Declaration>;
+    pub fn unreadable(&self) -> Option<&str>;
+}
+pub enum TargetSource { Declared, Host, Override }    // declared | host | override
+impl TargetSource { pub fn as_str(&self) -> &'static str; }
+
+// `RepositoryReleases` gains the two fields that say where its targets came from,
+// and nothing else about it moves:
+//   RepositoryReleases   pub declaration: DeclarationSource
+//                        pub sources: BTreeMap<TargetName, TargetSource>
+
+pub struct Discovery { pub releases: RepositoryReleases,
+                       pub released: Vec<TargetRelease> }
+pub struct TargetRelease { pub target: TargetName, pub style: ReleaseStyle,
+                           pub answer: ReleaseAnswer }
+
+pub fn release_discovery(repo: &str) -> Result<Discovery>;
+```
+
+`release_discovery` is one call rather than one per target, because a node holding on
+a dependency has to ask about every target that dependency publishes and a caller
+that looped would have the three layers resolved once per target. Each target is
+answered exactly as `release_latest` answers it, so the two cannot disagree about
+one. It takes no `Providers`, for the reason the six above it do not.
+
+One verb renders it: `onevcs release discover REPO [--json]` — the same table
+`release targets` prints, with what each target has released beneath it. It adds no
+capability a linking consumer cannot reach, which is the rule the whole surface is
+built to.
+
+A host that has configured no release targets and whose repositories declare none
+answers exactly what it always did: no targets, the global adoption rung, and
+`declaration` saying which of *undeclared* and *unreadable* that host is in.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

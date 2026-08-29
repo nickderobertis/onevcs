@@ -5,10 +5,13 @@
 //! exit code, stdout, and stderr, the way a user or a CI job meets it. Nothing
 //! here calls into the library.
 //!
-//! Three modules are the exception, and they are the ones *about* the library:
-//! `honesty`, `seam`, and `library` drive it in-process, because supplying an
+//! Five modules are the exception, and they are the ones *about* the library:
+//! `honesty`, `seam`, and `library` drive it in-process because supplying an
 //! implementation is something only a caller embedding the crate can do — the
-//! binary deliberately has no flag for it. Each says so at its head.
+//! binary deliberately has no flag for it — and `declaration` and `discovery` do
+//! because what they hold *is* the promise that a linking consumer reaches these
+//! answers without spawning anything, which no binary can show. Each says so at its
+//! head.
 
 // Unix only: `accounting` publishes through the same substituted `gh` as `host.rs`,
 // and cuts real sessions and real run clones. Its own header carries the reason in
@@ -21,6 +24,12 @@ mod cli;
 // the promise a binary cannot show, the library beside it — see its own header.
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod declaration;
+// Unix only: it commits declarations and probe scripts into a real checkout and lands
+// real publications, all through `world.rs`'s POSIX fixture. It drives the binary and,
+// for the promise a binary cannot show, the library beside it — see its own header.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod discovery;
 // The terms two backends' event streams are compared on. Shared with the
 // real-backend tier in `tests/smoke`, so one leg cannot accept a difference the
 // other rejects.

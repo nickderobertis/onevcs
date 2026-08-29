@@ -668,11 +668,13 @@ fn a_repository_that_declares_nothing_is_told_so_rather_than_answered_with_nothi
 // producer half above it runs on every platform.
 #[cfg(unix)]
 #[test]
-fn the_host_document_answers_exactly_as_it_did_before_a_producer_declaration_existed() {
-    // The producer's half is additive and the host's half is untouched, held by
-    // asking the host verb the same question either side of a declaration appearing in
-    // the checkout. `release targets` reads `$ONEVCS_HOME/releases.yml` and nothing in
-    // the repository, and this is what stops that quietly becoming untrue.
+fn a_host_that_says_what_the_producer_says_answers_the_host_and_says_it_overrode_one() {
+    // The producer's half was additive when it landed, and the consumer half then gave
+    // the deferred question its answer: what a repository's targets *are* when both
+    // documents have an opinion. This holds the join at the one place the two meet —
+    // a host rule naming exactly what the producer declares — because the answer that
+    // matters is that the host's is obeyed and the answer says so, rather than that
+    // nothing changed. The whole precedence lives in `discovery.rs`.
     let fixture = crate::lifecycle::Fixture::local(&crate::lifecycle::local_direct());
     let criteria = format!("{{path: {:?}}}", fixture.checkout.to_string_lossy());
     // The host's own document, matched on this checkout's path, exactly as the release
@@ -704,15 +706,34 @@ repositories:
             .arg("--json")
             .assert()
             .success();
-        String::from_utf8(output.get_output().stdout.clone()).expect("the report is text")
+        let report: Value = serde_json::from_slice(&output.get_output().stdout)
+            .expect("the report is one JSON document");
+        report
     };
+
+    // Before any declaration exists, the host document is the whole answer — and the
+    // report says which of the three states the producer half is in rather than
+    // leaving a reader to assume.
     let before = host_answer();
+    assert_eq!(before["targets"][0]["name"], "crate");
+    assert_eq!(before["sources"], serde_json::json!({"crate": "host"}));
+    assert_eq!(before["declaration"]["state"], "undeclared");
+
     std::fs::write(fixture.checkout.join(onevcs::declaration::FILE), CONFORMING)
         .expect("a producer declaration in the checkout");
+    let after = host_answer();
     assert_eq!(
-        host_answer(),
-        before,
-        "what this host waits on is the host document's answer, and a repository's own \
-         declaration appearing beside it changes nothing about it"
+        after["targets"][0], before["targets"][0],
+        "the host and the producer both name `crate`, and the host's is what is waited \
+         on: {after}"
     );
+    assert_eq!(
+        after["sources"]["crate"], "override",
+        "…and the answer says the host replaced what the repository declared: {after}"
+    );
+    assert_eq!(
+        after["sources"]["npm"], "declared",
+        "…while the target only the repository declares is the repository's own: {after}"
+    );
+    assert_eq!(after["declaration"]["state"], "declared");
 }

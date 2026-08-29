@@ -26,14 +26,16 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::declaration::{self, Declaration, DeclaredTarget};
 use crate::error::{self, Result};
 use crate::event::EventKind;
 use crate::landed::Landed;
 use crate::registry::Registry;
 use crate::releases::{
-    Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
-    ReleaseRule, ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease,
-    TargetName, VERSION,
+    Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
+    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
+    ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName, TargetRelease,
+    TargetSource, DEFAULT_PROBE_TIMEOUT_SECONDS, VERSION,
 };
 use crate::remainder::Remainder;
 use crate::stream::Stream;
@@ -150,17 +152,50 @@ fn validate(path: &Path, file: &ReleasesFile) -> Result<()> {
             }
             seen.push(&target.name);
         }
-        if let Some(default) = rule.default_target.as_ref() {
-            if !rule.targets.iter().any(|target| target.name == *default) {
-                return Err(error::invalid(format!(
-                    "the release-targets file at {} has {named} naming default_target \
-                     {default:?}, which it does not declare as a target",
-                    path.display(),
-                )));
-            }
+        // Only where this rule is the whole answer. A rule that merges the producer's
+        // declaration may legitimately name the producer's own `crate` as its default
+        // and declare nothing itself, and this document cannot tell that from a typo —
+        // so for those rules the same question is asked of the *resolved* set, where it
+        // can be answered.
+        if rule.declaration == Some(DeclarationPolicy::Ignore) {
+            honours_default(path, &named, rule.default_target.as_ref(), &rule.targets)?;
         }
     }
     Ok(())
+}
+
+/// Refuse a `default_target` that names nothing the thing it belongs to releases.
+///
+/// One question and one sentence, asked in the two places it can be answered: of a
+/// rule that ignores the producer's declaration, where the document itself decides,
+/// and of every repository's resolved targets, where the three layers do. It cannot
+/// be only the first, because with a producer declaration in the answer a rule's own
+/// targets are no longer the whole of what a repository releases.
+fn honours_default(
+    path: &Path,
+    named: &str,
+    default: Option<&TargetName>,
+    targets: &[ReleaseTarget],
+) -> Result<()> {
+    let Some(default) = default else {
+        return Ok(());
+    };
+    if targets.iter().any(|target| target.name == *default) {
+        return Ok(());
+    }
+    Err(error::invalid(format!(
+        "the release-targets file at {path} has {named} naming default_target {default:?}, \
+         which it does not declare as a target; it releases {declared}",
+        path = path.display(),
+        declared = match targets.is_empty() {
+            true => "nothing".to_owned(),
+            false => targets
+                .iter()
+                .map(|target| target.name.to_string())
+                .collect::<Vec<String>>()
+                .join(", "),
+        },
+    )))
 }
 
 /// One repository, located: its identity, what it releases, and where a script
@@ -187,18 +222,143 @@ pub fn for_repository(registry: &Registry, repo: &str) -> Result<Located> {
         .as_deref()
         .map(|checkout| first_match(&file, &normalized, checkout))
         .unwrap_or_else(|| first_match(&file, &normalized, Path::new("")));
+    let checkout = probe_checkout(publication);
+    let declaration = declared_in(&checkout);
+    let (targets, sources) = resolve(matched, &declaration);
     let releases = RepositoryReleases {
         identity: key,
         adoption: matched
             .and_then(|rule| rule.adoption)
             .unwrap_or(file.default.adoption),
         default_target: matched.and_then(|rule| rule.default_target.clone()),
-        targets: matched.map(|rule| rule.targets.clone()).unwrap_or_default(),
+        targets,
+        declaration,
+        sources,
     };
-    Ok(Located {
-        releases,
-        checkout: probe_checkout(publication),
-    })
+    honours_default(
+        &default_path()?,
+        &format!("the repository {}", releases.identity),
+        releases.default_target.as_ref(),
+        &releases.targets,
+    )?;
+    Ok(Located { releases, checkout })
+}
+
+/// What the repository itself declares, read out of the one checkout a declaration
+/// may be read from.
+///
+/// The publication checkout on its base branch, which is where a script probe runs
+/// and for the same reason: a declaration read off the branch a dispatch is
+/// authoring is a declaration that dispatch can rewrite, and what a repository
+/// publishes is not a fact a change under review gets to assert. So every reason
+/// there is no such checkout is a reason what this repository publishes is
+/// **unknown** — never a reason it publishes nothing.
+fn declared_in(checkout: &probe::Checkout) -> DeclarationSource {
+    let root = match checkout {
+        probe::Checkout::At(root) => root,
+        probe::Checkout::None(reason) => {
+            return DeclarationSource::Unreadable {
+                reason: reason.clone(),
+            }
+        }
+    };
+    let document = root.join(declaration::FILE);
+    if !document.is_file() {
+        return DeclarationSource::Undeclared {
+            looked_in: root.clone(),
+        };
+    }
+    match declaration::read(&document) {
+        Ok(declared) => DeclarationSource::Declared { document, declared },
+        // The refusal itself, which names the document and where in it the problem
+        // is. A malformed declaration is the state a consumer most needs told apart
+        // from an absent one: the repository *has* said what it publishes and this
+        // build could not read it, so answering "no targets" would have a consumer
+        // proceed as if there were nothing to wait for.
+        Err(failure) => DeclarationSource::Unreadable {
+            reason: failure.to_string(),
+        },
+    }
+}
+
+/// Resolve the three layers that can name a repository's targets, in one place.
+///
+/// The order is stated in `docs/contract.md` and enforced here rather than emerging
+/// from which document was read last:
+///
+/// 1. the **producer's** declaration is the base set, in its own publication order;
+/// 2. a **host** target whose short name the producer does not declare is appended
+///    — a consumer standing in for a target nobody declared;
+/// 3. a **host** target whose short name the producer *does* declare replaces it,
+///    in the producer's own position — an override.
+///
+/// A producer target this host does not name survives, which is the whole of what
+/// makes a declaring repository discoverable without being described twice. A rule
+/// that says [`DeclarationPolicy::Ignore`] has no layer 1 at all, which is how a
+/// host says "a target I do not consume".
+fn resolve(
+    rule: Option<&ReleaseRule>,
+    declaration: &DeclarationSource,
+) -> (Vec<ReleaseTarget>, BTreeMap<TargetName, TargetSource>) {
+    let policy = rule.and_then(|rule| rule.declaration).unwrap_or_default();
+    let mut targets: Vec<ReleaseTarget> = match (policy, declaration.declared()) {
+        (DeclarationPolicy::Merge, Some(declared)) => declared
+            .targets
+            .iter()
+            .map(|target| from_declaration(declared, target))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut sources: BTreeMap<TargetName, TargetSource> = targets
+        .iter()
+        .map(|target| (target.name.clone(), TargetSource::Declared))
+        .collect();
+    for named in rule.map(|rule| rule.targets.as_slice()).unwrap_or_default() {
+        match targets.iter().position(|target| target.name == named.name) {
+            // The producer's position is kept, so an override does not reorder a
+            // publication order the producer is the only one who knows.
+            Some(at) => {
+                targets[at] = named.clone();
+                sources.insert(named.name.clone(), TargetSource::Override);
+            }
+            None => {
+                targets.push(named.clone());
+                sources.insert(named.name.clone(), TargetSource::Host);
+            }
+        }
+    }
+    (targets, sources)
+}
+
+/// One declared target, as the thing this host can then ask about.
+///
+/// The declaration's own `probe` is what makes a declared target answerable, and it
+/// takes the target's registry-qualified identifier — one script, one identifier,
+/// one answer, which is the contract the canonical schema fixes. A declaration
+/// naming no probe leaves this build with nothing to run, so the target is a human
+/// step: the release is learned about the only way it can be, by somebody recording
+/// it.
+fn from_declaration(declared: &Declaration, target: &DeclaredTarget) -> ReleaseTarget {
+    let release = match declared.probe.as_ref() {
+        Some(script) => ReleaseMethod::Automated {
+            probe: Probe::Script {
+                script: script.as_path().to_path_buf(),
+                args: vec![target.id.to_string()],
+                timeout_seconds: DEFAULT_PROBE_TIMEOUT_SECONDS,
+            },
+        },
+        None => ReleaseMethod::HumanStep {
+            action: format!(
+                "this repository's declaration names no probe, so record its release with \
+                 `onevcs release acknowledge --target {name}`",
+                name = target.name,
+            ),
+        },
+    };
+    ReleaseTarget {
+        name: target.name.clone(),
+        release,
+    }
 }
 
 /// The first rule that matches, in the rules file's own vocabulary.
@@ -299,6 +459,50 @@ pub fn latest(
                 .unwrap_or(ReleaseAnswer::NoRelease),
         ),
     }
+}
+
+/// Every target one repository has, and what each of them has released right now.
+///
+/// The consumer-side question in one call: `onepipeline` holds a node until a
+/// dependency's release exists, and it has to ask about every target that
+/// dependency publishes rather than about one it was told to name. Each target is
+/// answered exactly as [`latest`] answers it — an automated one by running its
+/// probe, a human-step one from the newest acknowledgement — so the two cannot come
+/// to disagree about one target.
+///
+/// A repository with no targets is not an error here, unlike naming one: "there is
+/// nothing to wait for" is an answer a consumer acts on, and what it is worth
+/// depends on [`RepositoryReleases::declaration`], which travels with it.
+pub fn discover(registry: &Registry, repo: &str) -> Result<Discovery> {
+    let located = for_repository(registry, repo)?;
+    // Opened only where something is going to be recorded on it: a repository whose
+    // every target is a human step starts no process and writes no stream, which is
+    // the same absence that proves no probe ran for one.
+    let mut stream: Option<Stream> = None;
+    let mut released = Vec::with_capacity(located.releases.targets.len());
+    for target in &located.releases.targets {
+        let answer = match target.probe() {
+            Some(configured) => {
+                let stream = match stream.as_mut() {
+                    Some(open) => open,
+                    None => stream.insert(Stream::releases(&located.releases.identity)?),
+                };
+                ask(&located, target, configured, stream).answer
+            }
+            None => newest_acknowledgement(&located.releases.identity, &target.name)?
+                .map(|version| ReleaseAnswer::Released { version })
+                .unwrap_or(ReleaseAnswer::NoRelease),
+        };
+        released.push(TargetRelease {
+            target: target.name.clone(),
+            style: target.style(),
+            answer,
+        });
+    }
+    Ok(Discovery {
+        releases: located.releases,
+        released,
+    })
 }
 
 /// Run one automated target's probe and record that it was run.

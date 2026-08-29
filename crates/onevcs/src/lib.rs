@@ -90,9 +90,10 @@ pub use providers::Providers;
 pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject};
 pub use registry::Identity;
 pub use releases::{
-    Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
-    ReleaseMethod, ReleaseRule, ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile,
-    RepositoryReleases, SupersededRelease, TargetName,
+    Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
+    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
+    ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName,
+    TargetRelease, TargetSource,
 };
 pub use rules::MergePolicy;
 pub use session::{
@@ -181,15 +182,57 @@ pub fn session(providers: &Providers<'_>, token: &SessionToken) -> Result<Sessio
 ///
 /// The library form of `onevcs release targets`. `repo` is the identity key, a
 /// registered alias, an origin URL, or a path, exactly as every other command takes
-/// one. A repository the release-targets file names no rule for has no targets and
-/// the global adoption rung, which is what a host with no such file answers for
-/// every repository it knows.
+/// one.
+///
+/// # Three layers, in one stated order
+///
+/// The answer is resolved from the repository's own declaration and this host's
+/// document together, and which of them decides is fixed rather than a consequence
+/// of read order:
+///
+/// 1. the **producer's** `release-targets.toml`, read from its publication
+///    checkout, contributes its targets in its own publication order;
+/// 2. a target this host's `releases.yml` names and the producer does not is
+///    **added** — a consumer standing in where nobody declared one;
+/// 3. a target both name is the **host's**, in the producer's position — an
+///    override, which is how a host runs a probe differently from the way the
+///    repository publishes it.
+///
+/// A rule saying [`DeclarationPolicy::Ignore`] drops layer 1 entirely, which is how
+/// a host says it does not consume what a repository declares. A host with no rules
+/// and repositories declaring nothing answers exactly what it always did.
+///
+/// [`RepositoryReleases::sources`] says which layer answered for each target, and
+/// [`RepositoryReleases::declaration`] says what the producer's half contributed —
+/// including the state that is neither a declaration nor its absence, a declaration
+/// this build could **not read**, which is never "this repository publishes
+/// nothing".
 ///
 /// It takes no [`Providers`] for the reason [`session_holders`] does not: what a
-/// repository releases is this host's own configuration and its own record, and
-/// there is nothing here for an implementation of either interface to answer.
+/// repository releases is this host's own configuration, the repository's own
+/// declaration, and this host's own record, and there is nothing here for an
+/// implementation of either interface to answer.
 pub fn release_targets(repo: &str) -> Result<RepositoryReleases> {
     release::targets(&store::load()?, repo)
+}
+
+/// Every target one repository has, and what each of them has released right now.
+///
+/// The library form of `onevcs release discover`, and the answer a consumer that
+/// waits on a release actually needs: [`release_targets`] says what there is to wait
+/// for and this says what each of those has done, over the same three layers and in
+/// one resolution rather than one per target.
+///
+/// Each target is answered exactly as [`release_latest`] answers it, so the two
+/// cannot disagree — and [`ReleaseAnswer::NotAnswered`] stays distinct from
+/// [`ReleaseAnswer::NoRelease`] here as everywhere: a consumer holds on the first
+/// and acts on the second.
+///
+/// A repository with no targets answers with none rather than refusing, because
+/// "there is nothing to wait for" is a thing a consumer acts on — but what it is
+/// worth depends on [`RepositoryReleases::declaration`], which travels with it.
+pub fn release_discovery(repo: &str) -> Result<Discovery> {
+    release::discover(&store::load()?, repo)
 }
 
 /// What version of one target is released right now.

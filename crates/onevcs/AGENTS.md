@@ -75,10 +75,13 @@ and the filter grammar matches it. Four things about that are easy to undo.
   proves against a released `onevcs` from the registry rather than against this
   build's own reader.
 - **Which phases a session *has* is derived, never configured.** `stream::supported`
-  answers it from the session record, the resolved merge policy, and whether
-  `$ONEVCS_HOME/releases.yml` configures targets. Every way it can fail to reach an
-  answer **widens** the set, because a read that quietly left events out is
-  indistinguishable from a session that never wrote them. Naming an unsupported phase
+  answers it from the session record, the resolved merge policy, and whether anything
+  — `$ONEVCS_HOME/releases.yml` or the repository's own declaration — resolves a
+  release target. Every way it can fail to reach an answer **widens** the set,
+  because a read that quietly left events out is indistinguishable from a session
+  that never wrote them; a declaration this build could not read is one of those
+  ways, and is why the emptiness of the target list alone does not rule the phase
+  out. Naming an unsupported phase
   is refused where it is named; naming none drops it in silence.
 - **The release correlation is a join `onevcs` makes so a consumer never has to.**
   Where the release phase is supported, `EventStream` also hands back that identity's
@@ -586,10 +589,10 @@ Three things are easy to undo.
   and a repository publishes things no host waits on, so reconciling the two into one
   format makes one of those facts unstateable. `the_two_release_documents_stay_two_formats_and_the_contract_says_why`
   in `tests/contract.rs` is what keeps the argument in the file.
-- **Deciding between them is not here.** Nothing in `declaration.rs` reads the host
-  document, and nothing in `release.rs` reads a producer's. What a repository's targets
-  *are* when both have an opinion is a later question, and a call that consulted both
-  would answer it by accident.
+- **Deciding between them is *only* in `release::resolve`.** Nothing in
+  `declaration.rs` reads the host document, and `release.rs` reads a producer's in one
+  function and nowhere else — see the three layers below. A second call site that
+  consulted both would answer the precedence question by accident.
 - **A short name is `TargetName` and not a second name type.** It is what the host
   document calls a target, what a `--target` operand takes, what a release record is
   keyed by, and what a consumer's plan names — one vocabulary, validated in one
@@ -602,6 +605,44 @@ because the likeliest defect in a hand-written file is a typo and reading `manif
 an absent `manifest` publishes an answer nobody declared. And a rendering answers the
 declaration alone — a producer's comments were never read, so writing one back over
 their file deletes the reasoning that is the most valuable thing in it.
+
+## A repository's targets come from three layers, and `resolve` is the only place
+
+`release::for_repository` is where the producer's declaration and the host document
+meet, and `release::resolve` is the whole of the precedence: the producer's targets in
+its own publication order, a host target the producer does not name appended, and a
+host target it does name replacing it *in the producer's position*. The order is stated
+in `docs/contract.md` and held there by
+`the_precedence_among_the_three_layers_is_stated_rather_than_left_to_read_order`;
+`tests/e2e/discovery.rs` drives every ordering through the binary and the library.
+Five things are easy to undo.
+
+- **Where a declaration is read from is the same question as where a script probe
+  runs**, so it is the same answer: `probe::Checkout`, the registered publication
+  checkout on its base. A declaration read off the branch a dispatch is authoring is a
+  declaration that dispatch can rewrite. Asking a second way would let the two drift.
+- **Every reason there is no such checkout is `Unreadable`, never `Undeclared`.** A
+  repository whose declaration this build could not read must not answer as a
+  repository with no targets: a consumer that read "no targets" from a document that
+  failed to parse stops waiting for a release that is coming. That is the same
+  distinction `NotAnswered` keeps against `NoRelease`, at the layer where targets are
+  discovered rather than probed, and it is why `DeclarationSource` has three variants
+  rather than being an `Option`. Every refusal about a target that is not there says
+  so — `RepositoryReleases::unknown` is that clause, and it is empty in both states
+  where the answer is complete.
+- **An override replaces a target whole and never merges its fields.** A target is
+  `{name, style, body}`, and a half-host half-producer one is a probe nobody wrote.
+- **A declared target's probe is the declaration's own `probe` given that target's
+  `id`** — one script, one registry-qualified identifier, one answer, which is the
+  contract the canonical schema fixes. A declaration naming no probe leaves nothing to
+  run, so its targets are human steps whose action names `release acknowledge`; the
+  absence of a `release-probed` event is what a journey proves that by.
+- **`default_target` stopped being decidable from the document alone**, because a host
+  naming the producer's `crate` and declaring nothing itself is correct. So
+  `honours_default` is asked twice through one function: at load for a rule that says
+  `declaration: ignore` — where the rule *is* the whole answer — and of every
+  resolved repository. Restoring the load-time check for every rule would refuse
+  correct documents.
 
 ## The disk is a resource, and one retention rule frees it
 

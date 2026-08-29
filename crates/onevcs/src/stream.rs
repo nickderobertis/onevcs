@@ -639,9 +639,13 @@ fn supported(session: &SessionToken) -> (BTreeSet<Phase>, Option<String>) {
     // state every host is in until it configures one — and it is the *only* answer
     // that rules the phase out. A release-targets document this build cannot read
     // rules nothing out, so it widens like every other answer this cannot reach; the
-    // release verbs are where such a document is refused by name.
-    let releases_nothing = release::for_repository(&registry, &identity)
-        .is_ok_and(|located| located.releases.targets.is_empty());
+    // release verbs are where such a document is refused by name. A repository whose
+    // *own* declaration could not be read is the same state one step further in: no
+    // target resolved, and no reason to believe there is none — so it widens too,
+    // rather than reading an unanswered question as an answer.
+    let releases_nothing = release::for_repository(&registry, &identity).is_ok_and(|located| {
+        located.releases.targets.is_empty() && located.releases.declaration.unreadable().is_none()
+    });
     if !releases_nothing {
         phases.insert(Phase::Release);
     }

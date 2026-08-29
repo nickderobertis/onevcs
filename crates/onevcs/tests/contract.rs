@@ -26,9 +26,10 @@ use onevcs::cli::Cli;
 use onevcs::declaration::RepositoryPath;
 use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::releases::{
-    Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
-    ReleaseMethod, ReleaseRule, ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile,
-    RepositoryReleases, SupersededRelease, TargetName,
+    Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
+    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
+    ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName,
+    TargetRelease, TargetSource,
 };
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
@@ -1008,11 +1009,19 @@ fn the_amendment_declares_the_release_surface_it_added() {
                 },
             },
         }],
+        declaration: DeclarationSource::Undeclared {
+            looked_in: PathBuf::from("/checkouts/onevcs"),
+        },
+        sources: BTreeMap::from([(
+            TargetName::try_from("crate".to_owned()).expect("a name"),
+            TargetSource::Host,
+        )]),
     };
     let rule = ReleaseRule {
         r#match: RuleMatch::default(),
         adoption: Some(Adoption::Fast),
         default_target: None,
+        declaration: Some(DeclarationPolicy::Ignore),
         targets: Vec::new(),
     };
     let file = ReleasesFile {
@@ -1287,6 +1296,200 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
                 "why": "What the wrappers released up to v0.1.0.",
             }],
         })
+    );
+}
+
+#[test]
+fn the_amendment_declares_the_three_layers_a_repositorys_targets_come_from() {
+    // Built from outside the crate with every field named, the way every other
+    // amendment is reconciled, and then held to the text that declares it.
+    let name = |spelled: &str| TargetName::try_from(spelled.to_owned()).expect("a name");
+    let releases = RepositoryReleases {
+        identity: "github.com/nickderobertis/onevcs".to_owned(),
+        adoption: Adoption::Published,
+        default_target: Some(name("crate")),
+        targets: vec![
+            ReleaseTarget {
+                name: name("crate"),
+                release: ReleaseMethod::Automated {
+                    probe: Probe::Script {
+                        script: PathBuf::from("scripts/release-probe.sh"),
+                        args: vec!["crate:onevcs".to_owned()],
+                        timeout_seconds: 60,
+                    },
+                },
+            },
+            ReleaseTarget {
+                name: name("container"),
+                release: ReleaseMethod::HumanStep {
+                    action: "Push the image and record the tag.".to_owned(),
+                },
+            },
+        ],
+        declaration: DeclarationSource::Declared {
+            document: PathBuf::from("/checkouts/onevcs/release-targets.toml"),
+            declared: onevcs::validate_release_declaration(
+                &documented_declaration(),
+                "the amendment's own fixture",
+            )
+            .expect("the canonical declaration reads"),
+        },
+        sources: BTreeMap::from([
+            (name("crate"), TargetSource::Declared),
+            (name("container"), TargetSource::Host),
+        ]),
+    };
+    let discovery = Discovery {
+        released: vec![TargetRelease {
+            target: name("crate"),
+            style: ReleaseStyle::Automated,
+            answer: ReleaseAnswer::NotAnswered {
+                reason: "the probe timed out after 60s".to_owned(),
+            },
+        }],
+        releases,
+    };
+
+    // The three states of the producer half are three, and the third is never the
+    // second: `unreadable()` answers for exactly one of them, which is what a caller
+    // deciding "there may be more targets than these" routes on.
+    assert_eq!(discovery.releases.declaration.as_str(), "declared");
+    assert_eq!(discovery.releases.declaration.unreadable(), None);
+    assert_eq!(
+        discovery
+            .releases
+            .declaration
+            .declared()
+            .map(|declared| declared.targets.len()),
+        Some(1),
+        "a read declaration travels whole, so a consumer never parses the file itself"
+    );
+    let undeclared = DeclarationSource::Undeclared {
+        looked_in: PathBuf::from("/checkouts/onevcs"),
+    };
+    let unreadable = DeclarationSource::Unreadable {
+        reason: "line 4: unknown key `manifset`".to_owned(),
+    };
+    assert_eq!(undeclared.as_str(), "undeclared");
+    assert_eq!(unreadable.as_str(), "unreadable");
+    assert_eq!(
+        undeclared.unreadable(),
+        None,
+        "a repository that declares nothing said so; nothing is unknown about it"
+    );
+    assert_eq!(
+        unreadable.unreadable(),
+        Some("line 4: unknown key `manifset`"),
+        "…and one this build could not read is the state that carries its reason"
+    );
+    assert_ne!(
+        undeclared, unreadable,
+        "the two never compare equal, which is the whole of why they are two variants"
+    );
+    assert_eq!(DeclarationPolicy::default(), DeclarationPolicy::Merge);
+    assert_eq!(DeclarationPolicy::Ignore.as_str(), "ignore");
+    assert_eq!(TargetSource::Override.as_str(), "override");
+
+    let declarations = amendment_declaring("pub enum DeclarationSource");
+    for spelled in [
+        "pub struct ReleaseRule { /* …as above… */ pub declaration: Option<DeclarationPolicy> }",
+        "pub enum DeclarationPolicy { Merge, Ignore }",
+        "impl DeclarationPolicy { pub fn as_str(&self) -> &'static str; }",
+        "pub enum DeclarationSource {",
+        "Declared { document: PathBuf, declared: declaration::Declaration },",
+        "Undeclared { looked_in: PathBuf },",
+        "Unreadable { reason: String },",
+        "pub fn as_str(&self) -> &'static str;             // declared | undeclared | unreadable",
+        "pub fn declared(&self) -> Option<&declaration::Declaration>;",
+        "pub fn unreadable(&self) -> Option<&str>;",
+        "pub enum TargetSource { Declared, Host, Override }",
+        "impl TargetSource { pub fn as_str(&self) -> &'static str; }",
+        "pub declaration: DeclarationSource",
+        "pub sources: BTreeMap<TargetName, TargetSource>",
+        "pub struct Discovery { pub releases: RepositoryReleases,",
+        "pub released: Vec<TargetRelease> }",
+        "pub struct TargetRelease { pub target: TargetName, pub style: ReleaseStyle,",
+        "pub answer: ReleaseAnswer }",
+        "pub fn release_discovery(repo: &str) -> Result<Discovery>;",
+    ] {
+        assert!(
+            declarations.contains(spelled),
+            "the consumer amendment no longer declares: {spelled}"
+        );
+    }
+
+    // The keys a `--json` reader routes on, which are what a consumer that renders
+    // this answer rather than linking it reads.
+    let document = serde_json::to_value(&discovery).expect("a discovery serializes");
+    assert_eq!(
+        document["releases"]["declaration"]["state"],
+        json!("declared")
+    );
+    assert_eq!(
+        document["releases"]["sources"],
+        json!({"container": "host", "crate": "declared"})
+    );
+    assert_eq!(
+        document["released"][0]["answer"],
+        json!({"state": "not-answered", "reason": "the probe timed out after 60s"}),
+        "`not answered` carries its reason and is never `no-release`, here as everywhere"
+    );
+}
+
+#[test]
+fn the_precedence_among_the_three_layers_is_stated_rather_than_left_to_read_order() {
+    // The order is the design, and a reader has to be able to answer "why did this
+    // repository resolve these targets" from the text alone. This is what stops the
+    // sentences that state it being dropped while the resolution keeps obeying them.
+    let unwrapped = |doc: &str| doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let amendments = unwrapped(&regions().0);
+    for sentence in [
+        "**A repository's targets come from three layers, and their order is fixed rather \
+         than a consequence of read order.**",
+        "A target this host's `releases.yml` names that the producer does not declare is \
+         **added** to the set, after the producer's own.",
+        "A target both name — matched on the short name, which is the one vocabulary a \
+         `TargetName` already is — is the **host's**, whole, and it keeps the producer's \
+         position in the order.",
+        "A producer target this host does not name **survives**",
+        "`declaration: ignore` drops layer 1 for that rule, so its own targets are the whole \
+         answer",
+        "**A declaration this build could not read is not a repository that declares \
+         nothing**",
+        "A host that has configured no release targets and whose repositories declare none \
+         answers exactly what it always did",
+    ] {
+        assert!(
+            amendments.contains(&unwrapped(sentence)),
+            "the consumer amendment no longer states: {sentence}"
+        );
+    }
+
+    // …and the rule that says a host does not consume what a repository declares is a
+    // document an operator writes, so it is extracted and read rather than described.
+    let fixture = amendment_yaml_spelling("declaration: ignore");
+    let file: ReleasesFile =
+        serde_yaml_ng::from_str(&fixture).expect("the documented fixture must deserialize");
+    assert_eq!(
+        file.repositories[0].declaration,
+        Some(DeclarationPolicy::Ignore),
+        "the fixture spells the one key that drops the producer layer"
+    );
+    assert_eq!(
+        file.repositories[0].targets.len(),
+        1,
+        "…over a rule that then answers with its own targets alone"
+    );
+    // The same document without the key is the merging default, which is what every
+    // rule written before this amendment existed now means.
+    let merging: ReleasesFile =
+        serde_yaml_ng::from_str(&fixture.replace("declaration: ignore", "adoption: published"))
+            .expect("a rule naming no policy still reads");
+    assert_eq!(merging.repositories[0].declaration, None);
+    assert_eq!(
+        merging.repositories[0].declaration.unwrap_or_default(),
+        DeclarationPolicy::Merge,
+        "a rule that says nothing about a producer's declaration merges it"
     );
 }
 
