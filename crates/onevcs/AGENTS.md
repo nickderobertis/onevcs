@@ -93,8 +93,7 @@ and the filter grammar matches it. Four things about that are easy to undo.
   that has an un-handed candidate, rather than only when that record has moved: the two
   halves become true independently, so a reader that remembered "these did not match"
   would answer from the last time the record moved and drop a release recorded while
-  the landing could not yet be read. That memo existed and cost a human-step release
-  its session on every host where the landing became readable second.
+  the landing could not yet be read.
 
 ## A branch outlives its session, so a retried session says who continued it
 
