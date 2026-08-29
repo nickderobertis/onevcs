@@ -2186,6 +2186,9 @@ repositories:
       - name: container
         style: human-step
         action: "Push the image and record the tag."
+      - name: wheel
+        style: human-step
+        action: "Upload the wheel and record its version."
 "#,
     )
     .expect("a release-targets file");
@@ -2352,19 +2355,30 @@ fn a_release_reaches_its_session_in_whichever_order_it_and_the_landing_became_vi
         onevcs::acknowledge_release(&other.token.0, &container, "9.9.9", false)
             .expect("the other landing's release is recorded");
 
+        // Both of this landing's own targets, because the report this fixes was a
+        // read that handed back one of an identity's targets and dropped the other:
+        // "every release record that names this landing" is what the read owes, and
+        // a single record cannot tell that apart from "the first one that matches".
+        let wheel: onevcs::TargetName = "wheel".parse().expect("a target name");
+        let token = &session.token.0;
+        let mine = || {
+            let acknowledged = onevcs::acknowledge_release(token, &container, "2.0.0", false)
+                .expect("this landing's container release is recorded");
+            onevcs::acknowledge_release(token, &wheel, "3.0.0", false)
+                .expect("this landing's wheel release is recorded");
+            acknowledged
+        };
+
         let acknowledged = match visible {
             Visible::LandingFirst => {
                 assert!(
                     reader.read().expect("nothing new").is_empty(),
                     "another landing's release is not this session's"
                 );
-                onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
-                    .expect("this landing's release is recorded")
+                mine()
             }
             Visible::RecordsFirst => {
-                let acknowledged =
-                    onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
-                        .expect("this landing's release is recorded");
+                let acknowledged = mine();
                 // The checkout every publication fast-forwards is where a landing is
                 // decided from, and it is not always there when a reader asks: a copy
                 // being re-made, or a mount that is not up yet, leaves the landing
@@ -2390,9 +2404,27 @@ fn a_release_reaches_its_session_in_whichever_order_it_and_the_landing_became_vi
             fresh.iter().map(|event| event.kind).collect::<Vec<_>>(),
             vec![
                 onevcs::EventKind::ReleaseAcknowledged,
+                onevcs::EventKind::ReleaseObserved,
+                onevcs::EventKind::ReleaseAcknowledged,
                 onevcs::EventKind::ReleaseObserved
             ],
-            "{visible:?}: the release that carried this work, and nothing else"
+            "{visible:?}: the releases that carried this work, and nothing else"
+        );
+        assert_eq!(
+            fresh
+                .iter()
+                .map(|event| (
+                    event.payload["target"].as_str().expect("a target name"),
+                    event.payload["version"].as_str().expect("a version")
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("container", "2.0.0"),
+                ("container", "2.0.0"),
+                ("wheel", "3.0.0"),
+                ("wheel", "3.0.0")
+            ],
+            "{visible:?}: every target this landing was released for, not the first of them"
         );
         for event in &fresh {
             assert_eq!(event.phase, Phase::Release, "{visible:?}");
