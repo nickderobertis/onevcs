@@ -266,16 +266,359 @@ fn a_declaration_that_names_a_document_from_the_future_is_read_as_far_as_this_bu
     // The leniency every document here promises, held where it matters most: a
     // consumer one release behind still learns what a repository one release ahead
     // publishes, and the key it has no opinion on is ignored rather than refused.
-    let producer = Producer::declaring(
-        "schema_version = 2\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
-         what = \"The crate.\"\npublished_by = \"release.yml\"\nsigned_by = \"a later schema\"\n",
-    );
+    let later = |version: u32| {
+        format!(
+            "schema_version = {version}\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+             what = \"The crate.\"\npublished_by = \"release.yml\"\nsigned_by = \"a later schema\"\n"
+        )
+    };
+    let producer = Producer::declaring(&later(3));
     assert_eq!(
         producer.reported()["schema_version"],
-        serde_json::json!(2),
+        serde_json::json!(3),
         "the version it declared is the version reported, never lowered to this build's"
     );
     assert_eq!(producer.reported()["target"][0]["name"], "crate");
+
+    // …and the other side of the same rule: the key is only ignorable because the
+    // schema declaring it is one this build has never seen. At a version this build
+    // knows the keys of, the very same key is refused by name — and the refusal names
+    // the version the *document* declared, which is the schema its author wrote
+    // against, rather than the newest one this build happens to write.
+    for known in [
+        onevcs::declaration::OLDEST_SCHEMA_VERSION,
+        onevcs::declaration::SCHEMA_VERSION,
+    ] {
+        let refusal = Producer::declaring(&later(known)).refusal();
+        assert!(
+            refusal.contains("\"signed_by\" in [[target]] 1")
+                && refusal.contains(&format!("which schema_version {known} does not declare")),
+            "a key schema_version {known} does not declare is refused naming that version: \
+             {refusal}"
+        );
+    }
+}
+
+/// The scoped half of the declaration `nickderobertis/oneharness` carries today,
+/// spelled exactly as npm serves it: a launcher covering its five per-platform
+/// `@oneharness/cli-*` packages, and `@oneharness/sdk`, which is a target of its own
+/// because a dependent names it. Six scoped identifiers, and a grammar that refused
+/// them would leave that repository declaring artifacts npm does not publish or
+/// hiding ones it does.
+const SCOPED: &str = r#"schema_version = 1
+
+# The npm launcher, and the one target here that covers anything. The per-platform
+# packages it resolves at its own exact version are not targets: nothing names one.
+[[target]]
+id = "npm:oneharness-cli"
+name = "cli-npm"
+what = "The launcher that resolves and execs the prebuilt binary."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness/package.json's name."
+covers = [
+  "npm:@oneharness/cli-linux-x64",
+  "npm:@oneharness/cli-linux-arm64",
+  "npm:@oneharness/cli-darwin-x64",
+  "npm:@oneharness/cli-darwin-arm64",
+  "npm:@oneharness/cli-win32-x64",
+]
+
+[[target]]
+id = "npm:@oneharness/sdk"
+name = "node-sdk"
+what = "The typed Node.js client, imported as `@oneharness/sdk`."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness-sdk/package.json's name."
+"#;
+
+/// Every scoped identifier that document declares, launcher aside.
+const SCOPED_IDS: &[&str] = &[
+    "npm:@oneharness/cli-linux-x64",
+    "npm:@oneharness/cli-linux-arm64",
+    "npm:@oneharness/cli-darwin-x64",
+    "npm:@oneharness/cli-darwin-arm64",
+    "npm:@oneharness/cli-win32-x64",
+    "npm:@oneharness/sdk",
+];
+
+#[test]
+fn an_npm_scoped_package_is_a_name_a_registry_serves_and_a_declaration_may_say_so() {
+    let producer = Producer::declaring(SCOPED);
+    assert_eq!(
+        producer.reported(),
+        serde_json::json!({
+            "schema_version": 1,
+            "target": [
+                {
+                    "id": "npm:oneharness-cli",
+                    "name": "cli-npm",
+                    "what": "The launcher that resolves and execs the prebuilt binary.",
+                    "published_by": ".github/workflows/release.yml — the publish-npm job, \
+                                     from npm/oneharness/package.json's name.",
+                    "covers": &SCOPED_IDS[..5],
+                },
+                {
+                    "id": "npm:@oneharness/sdk",
+                    "name": "node-sdk",
+                    "what": "The typed Node.js client, imported as `@oneharness/sdk`.",
+                    "published_by": ".github/workflows/release.yml — the publish-npm job, \
+                                     from npm/oneharness-sdk/package.json's name.",
+                },
+            ],
+        }),
+        "a scoped name is answered exactly as it was declared, in `covers` and as an \
+         `id` of its own"
+    );
+
+    // …and the table a person reads carries them, so a producer checking their own
+    // declaration sees the names npm serves rather than something rewritten.
+    command()
+        .args(["release", "declaration"])
+        .arg(producer.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("node-sdk\tnpm:@oneharness/sdk\t"))
+        .stdout(predicate::str::contains(
+            "covers: npm:@oneharness/cli-linux-x64, npm:@oneharness/cli-linux-arm64",
+        ));
+
+    // The library half a linking consumer reaches, holding the same document to the
+    // same checks: the scope stays part of the name, and the registry stays the
+    // registry — `npm:@oneharness/sdk` is not an artifact called `sdk` on a registry
+    // called `@oneharness`.
+    let validated = onevcs::validate_release_declaration(SCOPED, "the oneharness declaration")
+        .expect("it reads");
+    let name = "node-sdk".parse().expect("a target name");
+    let sdk = validated.target(&name).expect("the scoped target");
+    assert_eq!(sdk.id.registry(), "npm");
+    assert_eq!(sdk.id.name(), "@oneharness/sdk");
+    let launcher = validated
+        .target(&"cli-npm".parse().expect("a target name"))
+        .expect("the launcher");
+    assert_eq!(
+        launcher
+            .covers
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        &SCOPED_IDS[..5],
+        "every covered scoped package keeps the spelling npm serves it under"
+    );
+
+    // …and it round-trips, so a caller producing this declaration writes one that
+    // reads back rather than one this build would refuse its own rendering of.
+    let rendered = onevcs::render_release_declaration(&validated).expect("it renders");
+    assert_eq!(
+        Producer::declaring(&rendered).reported(),
+        producer.reported(),
+        "a rendered scoped declaration reads back as the declaration it came from"
+    );
+}
+
+/// The committed declarations that hold both readable schema versions.
+///
+/// Two documents rather than one, because the two version constants are two different
+/// promises: a producer writes `SCHEMA_VERSION`, and a consumer reads everything from
+/// `OLDEST_SCHEMA_VERSION` up. Nothing but a version 1 document still in the tree
+/// proves the second one, and six repositories carry a committed declaration each
+/// that nobody is going to rewrite on this crate's clock. Both are hand-written
+/// producer files, comments and all, because that is what is committed out there.
+const DECLARATION_V1: &str = include_str!("../golden/release-declaration-v1.toml");
+const DECLARATION_V2: &str = include_str!("../golden/release-declaration-v2.toml");
+
+/// What rendering the version 2 golden writes, byte for byte.
+///
+/// The serialized half of the contract: a caller *producing* a declaration writes
+/// these bytes into a repository, so a change to them is a change every consumer of
+/// that file sees. Re-make it from the run this test names when the shape moves, in
+/// the same change that moves it.
+const RENDERED_V2: &str = include_str!("../golden/release-declaration-v2-rendered.toml");
+
+#[test]
+fn both_committed_schema_versions_read_and_declare_the_same_artifacts() {
+    // The bump's whole promise, driven through the verb a consumer asks with: version
+    // 2 is what a producer writes now, version 1 is what is already committed in
+    // repositories this crate does not own, and both answer the same artifacts.
+    let mut without_version = Vec::new();
+    for (document, version) in [
+        (DECLARATION_V1, onevcs::declaration::OLDEST_SCHEMA_VERSION),
+        (DECLARATION_V2, onevcs::declaration::SCHEMA_VERSION),
+    ] {
+        let mut reported = Producer::declaring(document).reported();
+        assert_eq!(
+            reported["schema_version"],
+            serde_json::json!(version),
+            "a declaration is answered at the version it declares, never lifted to \
+             this build's"
+        );
+        let target = reported.as_object_mut().expect("the report is an object");
+        target.remove("schema_version");
+        without_version.push(reported);
+    }
+    let [v1, v2] = &without_version[..] else {
+        panic!("two goldens, two reports");
+    };
+    assert_eq!(
+        v1, v2,
+        "version 2 moved which identifiers a producer can express and no key at all, \
+         so the two goldens declare the same thing"
+    );
+
+    // …and the version 1 golden is the one that would have been refused: it names the
+    // six scoped packages its producer committed before version 2 existed, and reading
+    // it as anything less than all six would withdraw a name npm genuinely serves.
+    let covered = v1["target"][0]["covers"]
+        .as_array()
+        .expect("the launcher covers its per-platform packages");
+    assert_eq!(covered, &SCOPED_IDS[..5], "at schema_version 1, unchanged");
+    assert_eq!(v1["target"][1]["id"], "npm:@oneharness/sdk");
+}
+
+#[test]
+fn a_declaration_below_the_oldest_version_this_build_reads_is_refused_by_number() {
+    // The floor is a number a consumer can act on: a document this build cannot read
+    // is answered as that, rather than as whichever of its keys was unrecognized first.
+    let oldest = onevcs::declaration::OLDEST_SCHEMA_VERSION;
+    let refusal = Producer::declaring(&DECLARATION_V1.replace(
+        &format!("schema_version = {oldest}"),
+        &format!("schema_version = {}", oldest - 1),
+    ))
+    .refusal();
+    assert!(
+        refusal.contains(&format!("declares schema_version {}", oldest - 1))
+            && refusal.contains(&format!(
+                "this build reads schema_version {oldest} and newer"
+            )),
+        "a version below the floor is refused naming both numbers: {refusal}"
+    );
+}
+
+#[test]
+fn a_rendering_omits_every_optional_field_nobody_declared_and_keeps_the_version_it_read() {
+    let declared = onevcs::validate_release_declaration(DECLARATION_V2, "the version 2 golden")
+        .expect("it reads");
+    let rendered = onevcs::render_release_declaration(&declared).expect("it renders");
+    assert_eq!(
+        rendered, RENDERED_V2,
+        "what a caller producing a declaration writes is its checked-in golden; \
+         re-make crates/onevcs/tests/golden/release-declaration-v2-rendered.toml from \
+         this run, in the change that moved the shape"
+    );
+
+    // The omission half, on the bytes rather than on a value: the second target
+    // declares neither `manifest` nor `covers`, and neither is written as an empty
+    // one — an older consumer parsing this file must not meet a key nobody declared.
+    assert_eq!(
+        RENDERED_V2.matches("manifest = ").count(),
+        1,
+        "only the target that declared a manifest carries one: {RENDERED_V2}"
+    );
+    assert_eq!(
+        RENDERED_V2.matches("covers = ").count(),
+        1,
+        "only the target that covers something carries the key: {RENDERED_V2}"
+    );
+
+    // …and it round-trips: the bytes read back as the declaration they were written
+    // from, which is the promise that makes the golden worth checking in.
+    assert_eq!(
+        onevcs::validate_release_declaration(RENDERED_V2, "a rendering").expect("it reads back"),
+        declared,
+        "a rendered declaration reads back as the declaration it came from"
+    );
+
+    // A rendering answers the version the *producer* declared. Lifting a version 1
+    // document to version 2 on the way through would restate what somebody else's
+    // repository says about its own file.
+    let older = onevcs::validate_release_declaration(DECLARATION_V1, "the version 1 golden")
+        .expect("it reads");
+    let rendered_older = onevcs::render_release_declaration(&older).expect("it renders");
+    assert!(
+        rendered_older.contains(&format!(
+            "schema_version = {}",
+            onevcs::declaration::OLDEST_SCHEMA_VERSION
+        )),
+        "rendering keeps the version it read: {rendered_older}"
+    );
+    assert_eq!(
+        onevcs::validate_release_declaration(&rendered_older, "a rendering")
+            .expect("it reads back"),
+        older
+    );
+
+    // And the two top-level optional keys, held the same way: a declaration naming no
+    // probe and retiring nothing writes neither key rather than heading an empty list.
+    let minimal =
+        onevcs::validate_release_declaration(SCOPED, "a minimal declaration").expect("it reads");
+    let rendered_minimal = onevcs::render_release_declaration(&minimal).expect("it renders");
+    for absent in ["probe", "retired"] {
+        assert!(
+            !rendered_minimal.contains(absent),
+            "an optional key nobody declared is omitted, and {absent} was written: \
+             {rendered_minimal}"
+        );
+    }
+}
+
+/// Every way a leading `@` can be written and still not name a scoped package, and
+/// the one thing that has to be true of each refusal: it quotes the identifier the
+/// producer wrote. All were refused before this grammar took the scoped form and all
+/// are refused after it.
+const HALF_WRITTEN_SCOPES: &[(&str, &str)] = &[
+    ("a bare `@` with no scope and no package", "npm:@"),
+    ("a scope with no package under it", "npm:@oneharness/"),
+    ("a package under no scope", "npm:@/cli-linux-x64"),
+    ("a `@` and nothing else at all", "npm:@/"),
+    (
+        "a second slash under one scope",
+        "npm:@oneharness/cli/linux-x64",
+    ),
+    ("whitespace in the scope", "npm:@one harness/cli"),
+    ("whitespace in the package", "npm:@oneharness/cli linux"),
+    ("a scope inside a scope", "npm:@one@harness/cli"),
+];
+
+#[test]
+fn a_leading_at_that_does_not_spell_a_scoped_package_is_refused_and_says_which_one() {
+    for (why, id) in HALF_WRITTEN_SCOPES {
+        let document = format!(
+            "schema_version = 1\n\n[[target]]\nid = \"{id}\"\nname = \"npm\"\n\
+             what = \"The launcher.\"\npublished_by = \"release.yml\"\n"
+        );
+        let refusal = Producer::declaring(&document).refusal();
+        for expected in [
+            // Which identifier was refused, quoted as the producer wrote it…
+            format!("{id:?}"),
+            // …and why, in the terms the contract uses.
+            "is not a name a registry serves".to_owned(),
+            "an npm scoped package as @scope/name".to_owned(),
+        ] {
+            assert!(
+                refusal.contains(&expected),
+                "the refusal for {why} must say {expected:?}, and said: {refusal}"
+            );
+        }
+
+        // The same document through the library call a consumer validates with, so a
+        // caller that never spawns the binary is told the same thing.
+        let reason = onevcs::validate_release_declaration(&document, "a fetched declaration")
+            .expect_err("a half-written scope is not a name a registry serves")
+            .to_string();
+        assert!(
+            reason.contains("is not a name a registry serves"),
+            "the library refuses {why} for the same reason the binary does: {reason}"
+        );
+    }
+
+    // A scoped name in `covers` is held to exactly the same grammar as one in `id`:
+    // the identifiers a release ships are read by the same conversion.
+    let covering = "schema_version = 1\n\n[[target]]\nid = \"npm:oneharness-cli\"\n\
+                    name = \"npm\"\nwhat = \"The launcher.\"\npublished_by = \"release.yml\"\n\
+                    covers = [\"npm:@oneharness/cli/linux-x64\"]\n";
+    assert!(
+        Producer::declaring(covering)
+            .refusal()
+            .contains("is not a name a registry serves"),
+        "a covered artifact is an identifier, and is refused as one"
+    );
 }
 
 #[test]

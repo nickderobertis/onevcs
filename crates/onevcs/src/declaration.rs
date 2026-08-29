@@ -39,14 +39,39 @@ use crate::releases::TargetName;
 /// a location it would have to be told is a location it cannot discover.
 pub const FILE: &str = "release-targets.toml";
 
-/// The schema version this build writes, and the oldest it reads.
+/// The schema version this build writes.
 ///
-/// The oldest rather than the newest, exactly as the host document does it: a
-/// declaration written against a *later* schema is read as this shape, with
-/// whatever it names beyond it ignored, because refusing it would make a consumer
-/// that is one release behind unable to learn anything about a repository that is
-/// one release ahead.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version 2 is the schema that spells the npm scoped form, `@scope/name`, as a name
+/// a [`DeclaredTarget::id`] may take. The keys are version 1's, key for key — what
+/// moved is which identifiers a producer can express — so a declaration that names
+/// one is telling a reader "there may be a spelling in here that a build one release
+/// behind cannot read", which is the whole thing a version number is for.
+///
+/// A producer writes this one. Reading spans [`OLDEST_SCHEMA_VERSION`] to here and
+/// then past it: a declaration written against a *later* schema is read as this
+/// shape with whatever it names beyond it ignored, because refusing it would make a
+/// consumer one release behind unable to learn anything about a repository one
+/// release ahead.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// The oldest schema version this build reads.
+///
+/// Version 1 does not stop being readable when version 2 is written, and this is the
+/// pair rather than the one number because those are two different promises: a
+/// producer writes [`SCHEMA_VERSION`], and a consumer reads everything from here up.
+/// Six repositories carry a declaration each, none of them rewritten on this crate's
+/// clock, so the range is the only thing that keeps a consumer able to read all six.
+pub const OLDEST_SCHEMA_VERSION: u32 = 1;
+
+/// Whether this build knows what keys a declared version has — which is every
+/// version it reads, up to the one it writes.
+///
+/// Versions 1 and 2 declare one key set, so knowing the keys is knowing them for
+/// both. Above [`SCHEMA_VERSION`] the answer is no, and the keys of a schema this
+/// build has never seen are not its to have an opinion on.
+fn keys_are_known_at(declared: i64) -> bool {
+    (i64::from(OLDEST_SCHEMA_VERSION)..=i64::from(SCHEMA_VERSION)).contains(&declared)
+}
 
 /// How long the prose fields may be.
 ///
@@ -154,6 +179,15 @@ pub struct RetiredArtifact {
 /// boundary that has no way to grant an exception. What is closed is the *shape*:
 /// exactly one colon, both halves present, and a name spelled in the alphabet every
 /// registry serves.
+///
+/// The name half is **exactly what that registry serves**, which for npm includes a
+/// scoped package: `npm:@oneharness/cli-linux-x64` is a name npm publishes, and a
+/// grammar that refused it would force a producer to choose between declaring an
+/// artifact npm does not serve and hiding one it does. So a name is either a plain
+/// one — a letter or a digit, then the alphabet crates.io, PyPI and npm all serve —
+/// or the scoped form `@scope/name`, whose two halves are each a plain one. That is
+/// the whole of the leading `@`: it takes a scope and exactly one `/`, so `@`, `@/x`,
+/// `@scope/` and `@scope/a/b` are all still refused.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RegistryId {
@@ -211,21 +245,11 @@ impl TryFrom<String> for RegistryId {
                  is not one word of lowercase letters, digits, and '-'"
             ));
         }
-        // The name becomes a path segment of a registry URL wherever one is asked, so
-        // it is held to the alphabet crates.io, PyPI and npm all serve rather than to
-        // whichever of them a reader happens to ask first.
-        if name.is_empty()
-            || !name
-                .chars()
-                .next()
-                .is_some_and(|first| first.is_ascii_alphanumeric())
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | '/'))
-        {
+        if !is_served_name(name) {
             return Err(format!(
                 "the release-target identifier {value:?} names {name:?}, which is not a name a \
-                 registry serves; spell the name exactly as its registry does"
+                 registry serves; spell the name exactly as its registry does, and an npm \
+                 scoped package as @scope/name"
             ));
         }
         Ok(RegistryId {
@@ -233,6 +257,50 @@ impl TryFrom<String> for RegistryId {
             name: name.to_owned(),
         })
     }
+}
+
+/// Whether the name half of an identifier is one a registry serves.
+///
+/// Two forms, because npm serves two: `@scope/name`, and everything else. A leading
+/// `@` commits a name to the scoped form and is decided there in full, so a producer
+/// who wrote half of one is refused rather than having the `@` read as an ordinary
+/// character in the middle of a name it opened.
+fn is_served_name(name: &str) -> bool {
+    match name.strip_prefix('@') {
+        Some(scoped) => scoped
+            .split_once('/')
+            .is_some_and(|(scope, package)| is_name_segment(scope) && is_name_segment(package)),
+        None => is_plain_name(name),
+    }
+}
+
+/// A name with no scope on it.
+///
+/// It opens with a letter or a digit, because it becomes a path segment of a registry
+/// URL wherever one is asked, and it is held to the alphabet crates.io, PyPI and npm
+/// all serve rather than to whichever of them a reader happens to ask first. An empty
+/// name fails on the first clause, which is why nothing above it tests for one.
+fn is_plain_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | '/'))
+}
+
+/// One half of a scoped name: the scope, or the package under it.
+///
+/// The plain alphabet less `@` and `/`, which is what refuses a second slash and a
+/// scope inside a scope rather than reading `@a/b/c` as a package named `b/c`.
+fn is_name_segment(segment: &str) -> bool {
+    segment
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// The conversion an argument parser and a consumer both reach for, which is the
@@ -521,18 +589,19 @@ pub(crate) fn parse(raw: &str, origin: &str) -> Result<Declaration> {
              opens with `schema_version = {SCHEMA_VERSION}`, before any table"
         )));
     };
-    if declared < i64::from(SCHEMA_VERSION) {
+    if declared < i64::from(OLDEST_SCHEMA_VERSION) {
         return Err(error::invalid(format!(
             "the release declaration at {origin} declares schema_version {declared}; this build \
-             reads schema_version {SCHEMA_VERSION} and newer"
+             reads schema_version {OLDEST_SCHEMA_VERSION} and newer"
         )));
     }
-    if declared == i64::from(SCHEMA_VERSION) {
-        // Only at the version this build *knows*. A typo is the likeliest defect in a
-        // hand-written document and silently ignoring it would publish an answer nobody
-        // declared, so at this schema an unrecognized key is refused by name. A later
-        // schema's keys are not this build's to have an opinion on, and are ignored.
-        refuse_unknown_keys(&document, origin)?;
+    if keys_are_known_at(declared) {
+        // Only at a version this build *knows the keys of*, which is every version it
+        // reads up to the one it writes. A typo is the likeliest defect in a hand-written
+        // document and silently ignoring it would publish an answer nobody declared, so at
+        // those schemas an unrecognized key is refused by name. A later schema's keys are
+        // not this build's to have an opinion on, and are ignored.
+        refuse_unknown_keys(&document, origin, declared)?;
     }
     // Deserialized from the text a second time rather than from the value just
     // parsed: `toml` carries the line and column of every field through a string it
@@ -542,28 +611,33 @@ pub(crate) fn parse(raw: &str, origin: &str) -> Result<Declaration> {
     let declaration: Declaration = toml::from_str(raw).map_err(|failure| {
         error::invalid(format!(
             "the release declaration at {origin} is not the shape schema_version \
-             {SCHEMA_VERSION} declares: {failure}"
+             {declared} declares: {failure}"
         ))
     })?;
     validate(&declaration, origin)?;
     Ok(declaration)
 }
 
-/// The keys schema version 1 declares, by the table they belong to.
+/// The keys schema versions 1 and 2 declare, by the table they belong to.
 ///
-/// Spelled here rather than derived from `deny_unknown_fields`, because that
-/// attribute would refuse a *later* schema's keys too — and the whole of the
-/// leniency this document promises is that it does not.
+/// One key set for both, because version 2 moved which identifiers a producer can
+/// express and no key at all. Spelled here rather than derived from
+/// `deny_unknown_fields`, because that attribute would refuse a *later* schema's keys
+/// too — and the whole of the leniency this document promises is that it does not.
 const TOP_LEVEL_KEYS: [&str; 4] = ["schema_version", "probe", "target", "retired"];
 const TARGET_KEYS: [&str; 6] = ["id", "name", "what", "published_by", "manifest", "covers"];
 const RETIRED_KEYS: [&str; 2] = ["id", "why"];
 
 /// Refuse a key this schema does not declare, naming it and the table it is in.
-fn refuse_unknown_keys(document: &toml::Value, origin: &str) -> Result<()> {
+///
+/// `declared` is the version the *document* named rather than the one this build
+/// writes: a version 1 declaration carrying a typo is told which schema refused it,
+/// and that is the schema its author wrote against.
+fn refuse_unknown_keys(document: &toml::Value, origin: &str, declared: i64) -> Result<()> {
     let unknown = |table: &str, key: &str| {
         error::invalid(format!(
             "the release declaration at {origin} names {key:?} in {table}, which schema_version \
-             {SCHEMA_VERSION} does not declare; a misspelled key would otherwise be read as an \
+             {declared} does not declare; a misspelled key would otherwise be read as an \
              absent one"
         ))
     };

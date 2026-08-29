@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/nickderobertis/onevcs/compare/v0.16.0...v0.16.1) - 2026-08-29
+
+### Fixed
+
+- *(release)* accept an npm scoped name as a registry identifier ([#113](https://github.com/nickderobertis/onevcs/pull/113))
+
 ## [0.16.0](https://github.com/nickderobertis/onevcs/compare/v0.15.10...v0.16.0) - 2026-08-29
 
 ### Added
