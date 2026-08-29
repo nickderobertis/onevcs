@@ -219,7 +219,7 @@ fn the_library_answers_what_the_command_renders_without_spawning_anything() {
     assert_eq!(target.id.registry(), "npm");
     assert_eq!(target.id.name(), "onevcs-cli");
     assert_eq!(
-        onevcs::render_release_declaration(&validated),
+        onevcs::render_release_declaration(&validated).expect("it renders"),
         String::from_utf8(
             command()
                 .args(["release", "declaration"])
@@ -408,7 +408,7 @@ const REFUSALS: &[(&str, &str, &str)] = &[
         "a blank sentence where a reader was promised one",
         "schema_version = 1\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
          what = \"   \"\npublished_by = \"release.yml\"\n",
-        "whose what is blank",
+        "none of them may be blank",
     ),
     (
         "a sentence that is not one line",
@@ -421,13 +421,19 @@ const REFUSALS: &[(&str, &str, &str)] = &[
         "schema_version = 1\nprobe = \"../elsewhere/release-probe.sh\"\n\n[[target]]\n\
          id = \"crate:onevcs\"\nname = \"crate\"\nwhat = \"The crate.\"\n\
          published_by = \"release.yml\"\n",
-        "which leaves the repository root",
+        "leaves the repository root",
     ),
     (
         "a manifest somewhere on the reader's own machine",
         "schema_version = 1\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
          what = \"The crate.\"\npublished_by = \"release.yml\"\nmanifest = \"/etc/Cargo.toml\"\n",
-        "is the absolute path /etc/Cargo.toml",
+        "path /etc/Cargo.toml is absolute",
+    ),
+    (
+        "an empty path where a file was named",
+        "schema_version = 1\nprobe = \"\"\n\n[[target]]\nid = \"crate:onevcs\"\n\
+         name = \"crate\"\nwhat = \"The crate.\"\npublished_by = \"release.yml\"\n",
+        "names an empty path",
     ),
     (
         "a document that is not TOML at all",
@@ -435,6 +441,72 @@ const REFUSALS: &[(&str, &str, &str)] = &[
         "is not TOML",
     ),
 ];
+
+#[test]
+fn a_sentence_too_long_to_render_beside_its_entry_is_refused_with_the_bound_it_broke() {
+    // The one refusal whose document is too long to sit in the table above, and the
+    // bound is read out of the refusal rather than repeated here — the crate is what
+    // decides how much prose fits on one line.
+    let overlong = "x".repeat(1_000);
+    let refusal = Producer::declaring(&format!(
+        "schema_version = 1\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+         what = \"{overlong}\"\npublished_by = \"release.yml\"\n"
+    ))
+    .refusal();
+    assert!(
+        refusal.contains("is longer than") && refusal.contains("characters"),
+        "an overlong sentence is refused with the bound it broke: {refusal}"
+    );
+    assert!(
+        refusal.contains("belongs in a comment"),
+        "…and with where the reasoning it was carrying should go instead: {refusal}"
+    );
+}
+
+#[test]
+fn a_declaration_a_caller_built_is_refused_rather_than_written_out_unreadable() {
+    // The asymmetry a library surface opens and a file never does: a caller can build
+    // a `Declaration` that no document could be. Rendering holds it to a document's own
+    // checks first, so what it answers is always something reading it would accept.
+    let target = |id: &str, name: &str| onevcs::DeclaredTarget {
+        id: id.parse().expect("an identifier"),
+        name: name.parse().expect("a target name"),
+        what: "The crate.".parse().expect("a sentence"),
+        published_by: "release.yml".parse().expect("a sentence"),
+        manifest: None,
+        covers: Vec::new(),
+    };
+    let clashing = onevcs::Declaration {
+        schema_version: 1,
+        probe: None,
+        targets: vec![
+            target("crate:onevcs", "cli"),
+            target("pypi:onevcs-cli", "cli"),
+        ],
+        retired: Vec::new(),
+    };
+    let failure = onevcs::render_release_declaration(&clashing)
+        .expect_err("a declaration two targets could not both be in does not render");
+    assert!(
+        format!("{failure}").contains("already takes"),
+        "the refusal is the one a document would have met: {failure}"
+    );
+
+    // …and the same declaration with the clash resolved renders and reads straight
+    // back, which is the promise the refusal above is protecting.
+    let sound = onevcs::Declaration {
+        targets: vec![
+            target("crate:onevcs", "cli"),
+            target("pypi:onevcs-cli", "wheel"),
+        ],
+        ..clashing
+    };
+    let rendered = onevcs::render_release_declaration(&sound).expect("it renders");
+    assert_eq!(
+        onevcs::validate_release_declaration(&rendered, "a rendering").expect("it reads back"),
+        sound
+    );
+}
 
 #[test]
 fn a_repository_that_declares_nothing_is_told_so_rather_than_answered_with_nothing() {

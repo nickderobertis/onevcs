@@ -68,14 +68,19 @@ pub struct Declaration {
     // `parse`'s question rather than this type's, and it answers it before the shape is
     // enforced: a declaration below this one is refused by number, and a later one is
     // read as this shape with whatever it names beyond it ignored.
+    // llmlint: ignore[invalid_states_unrepresentable] a bare number for the same reason,
+    // and the same way `ReleasesFile::version` is one next door: this field has to hold a
+    // version *this build does not know*, because reading a later schema leniently is the
+    // promise the whole document makes to a consumer one release behind. A newtype that
+    // refused what this build refuses would make that promise unrepresentable.
     pub schema_version: u32,
     /// The script that answers what a registry currently serves for one
-    /// [`DeclaredTarget::id`], relative to the repository root.
+    /// [`DeclaredTarget::id`].
     ///
     /// Optional: a repository whose every target is answered some other way declares
     /// none, and a consumer then has nothing here to run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub probe: Option<PathBuf>,
+    pub probe: Option<RepositoryPath>,
     /// The consumable artifacts this repository publishes, in publication order.
     #[serde(rename = "target", default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<DeclaredTarget>,
@@ -107,14 +112,13 @@ pub struct DeclaredTarget {
     /// identifier names neither uniquely.
     pub name: TargetName,
     /// One sentence saying what a dependent gets.
-    pub what: String,
+    pub what: Prose,
     /// The workflow and job that publish it, and the manifest its name and version
     /// come from.
-    pub published_by: String,
-    /// The manifest this target's version is read from, relative to the repository
-    /// root.
+    pub published_by: Prose,
+    /// The manifest this target's version is read from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<PathBuf>,
+    pub manifest: Option<RepositoryPath>,
     /// Identifiers this target's release also ships, which are not targets of their
     /// own because nothing depends on one by name.
     ///
@@ -133,7 +137,7 @@ pub struct RetiredArtifact {
     /// The identifier that is no longer published.
     pub id: RegistryId,
     /// Why it is not published any more, and what replaced it if anything did.
-    pub why: String,
+    pub why: Prose,
 }
 
 /// A registry-qualified identifier, `<registry>:<name>`, checked where it is read.
@@ -260,6 +264,164 @@ impl std::fmt::Debug for RegistryId {
 impl std::fmt::Display for RegistryId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.registry, self.name)
+    }
+}
+
+/// One line of operator-written text, checked where it is read.
+///
+/// `what`, `published_by` and `why` are each a sentence a reader acts on, and each
+/// is rendered on one line beside the entry it describes — in a table, in a refusal,
+/// and in whatever a consumer prints. So a blank one leaves a reader with the
+/// identifier alone where they were promised a sentence, and one carrying a control
+/// character renders as something other than what it is wherever it lands. Both are
+/// decided in the conversion, which is what makes them unrepresentable rather than
+/// refused by whichever renderer met one first — and what gets a refusal the TOML
+/// reader's own line and column.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Prose(String);
+
+impl TryFrom<String> for Prose {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        if value.trim().is_empty() {
+            return Err(
+                "a release declaration's `what`, `published_by`, and `why` are each what a \
+                 reader learns from the entry they describe, so none of them may be blank"
+                    .to_owned(),
+            );
+        }
+        if value.len() > MAX_PROSE {
+            return Err(format!(
+                "a release declaration's prose is longer than {MAX_PROSE} characters; it is \
+                 rendered on one line beside the entry it describes, and the reasoning behind \
+                 it belongs in a comment"
+            ));
+        }
+        if value.chars().any(char::is_control) {
+            return Err(format!(
+                "the release declaration prose {value:?} carries a control character; it is \
+                 rendered on one line, so it must be one"
+            ));
+        }
+        Ok(Prose(value))
+    }
+}
+
+/// The conversion a caller building a declaration reaches for, which is the same
+/// check the document gets.
+impl std::str::FromStr for Prose {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Prose::try_from(value.to_owned())
+    }
+}
+
+impl From<Prose> for String {
+    fn from(prose: Prose) -> Self {
+        prose.0
+    }
+}
+
+/// The sentence itself, quoted — never the wrapper, for the reason [`TargetName`]
+/// spells its own.
+impl std::fmt::Debug for Prose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for Prose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::ops::Deref for Prose {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A path to something the repository being released carries, checked where it is
+/// read.
+///
+/// Both paths a declaration names — the probe and a target's manifest — exist to
+/// point at a file that repository *has*, and are resolved by a consumer against a
+/// checkout of it. So a path that leaves the root, or names a location on the
+/// reader's own machine, is not a state a declaration can hold: it is refused in the
+/// conversion rather than at the moment somebody resolves it.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "PathBuf", into = "PathBuf")]
+pub struct RepositoryPath(PathBuf);
+
+impl RepositoryPath {
+    /// The path itself, to join onto a checkout of the repository it belongs to.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl TryFrom<PathBuf> for RepositoryPath {
+    type Error = String;
+
+    fn try_from(value: PathBuf) -> std::result::Result<Self, Self::Error> {
+        if value.as_os_str().is_empty() {
+            return Err("a release declaration names an empty path".to_owned());
+        }
+        if value.is_absolute() {
+            return Err(format!(
+                "the release declaration path {path} is absolute; it is a path relative to the \
+                 repository root, because it names something the repository being released \
+                 carries",
+                path = value.display()
+            ));
+        }
+        if value
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(format!(
+                "the release declaration path {path} leaves the repository root; it names \
+                 something the repository being released carries",
+                path = value.display()
+            ));
+        }
+        Ok(RepositoryPath(value))
+    }
+}
+
+/// The conversion a caller building a declaration reaches for, which is the same
+/// check the document gets.
+impl std::str::FromStr for RepositoryPath {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        RepositoryPath::try_from(PathBuf::from(value))
+    }
+}
+
+impl From<RepositoryPath> for PathBuf {
+    fn from(path: RepositoryPath) -> Self {
+        path.0
+    }
+}
+
+/// The path itself, quoted — never the wrapper, for the reason [`TargetName`]
+/// spells its own.
+impl std::fmt::Debug for RepositoryPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for RepositoryPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.display().fmt(f)
     }
 }
 
@@ -415,22 +577,8 @@ fn validate(declaration: &Declaration, origin: &str) -> Result<()> {
              tell whether this repository publishes nothing or nobody has said what it publishes"
         )));
     }
-    if let Some(probe) = declaration.probe.as_ref() {
-        inside_the_repository(probe, "probe").map_err(|problem| {
-            error::invalid(format!("the release declaration at {origin} {problem}"))
-        })?;
-    }
     for (index, target) in declaration.targets.iter().enumerate() {
         let at = format!("[[target]] {} ({:?})", index + 1, target.id);
-        prose(&target.what, "what", origin, &at)?;
-        prose(&target.published_by, "published_by", origin, &at)?;
-        if let Some(manifest) = target.manifest.as_ref() {
-            inside_the_repository(manifest, "manifest").map_err(|problem| {
-                error::invalid(format!(
-                    "the release declaration at {origin} has {at} whose {problem}"
-                ))
-            })?;
-        }
         if let Some(earlier) = declaration.targets[..index]
             .iter()
             .position(|other| other.name == target.name)
@@ -509,7 +657,6 @@ fn covered(declaration: &Declaration, origin: &str) -> Result<()> {
 fn retired(declaration: &Declaration, origin: &str) -> Result<()> {
     for (index, entry) in declaration.retired.iter().enumerate() {
         let at = format!("[[retired]] {} ({:?})", index + 1, entry.id);
-        prose(&entry.why, "why", origin, &at)?;
         if let Some(target) = declaration
             .targets
             .iter()
@@ -535,82 +682,28 @@ fn retired(declaration: &Declaration, origin: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether a prose field says something, on the one line it is rendered on.
-///
-/// `what` and `published_by` and `why` are operator-written text this crate prints —
-/// in a table, in a refusal, and in whatever a consumer renders — so a blank one
-/// says nothing where a reader was promised a sentence, and one carrying a control
-/// character renders as something other than what it is wherever it lands.
-fn prose(value: &str, field: &str, origin: &str, at: &str) -> Result<()> {
-    if value.trim().is_empty() {
-        return Err(error::invalid(format!(
-            "the release declaration at {origin} has {at} whose {field} is blank; it is what a \
-             reader learns from this entry, so an empty one leaves them with the identifier alone"
-        )));
-    }
-    if value.len() > MAX_PROSE {
-        return Err(error::invalid(format!(
-            "the release declaration at {origin} has {at} whose {field} is longer than \
-             {MAX_PROSE} characters; it is rendered on one line beside the entry it describes, \
-             and the reasoning behind it belongs in a comment"
-        )));
-    }
-    if value.chars().any(char::is_control) {
-        return Err(error::invalid(format!(
-            "the release declaration at {origin} has {at} whose {field} carries a control \
-             character; it is rendered on one line, so it must be one"
-        )));
-    }
-    Ok(())
-}
-
-/// Refuse a path that does not name a file the repository itself carries.
-///
-/// Both paths a declaration names — the probe and a target's manifest — exist to
-/// point at something the repository being released *has*, and are resolved by a
-/// consumer against a checkout of it. A path that leaves the root, or names a
-/// location on the reader's own machine, is refused where the document is read
-/// rather than at the moment somebody resolves it.
-fn inside_the_repository(path: &Path, field: &str) -> std::result::Result<(), String> {
-    if path.as_os_str().is_empty() {
-        return Err(format!("{field} is an empty path"));
-    }
-    if path.is_absolute() {
-        return Err(format!(
-            "{field} is the absolute path {path}; it is a path relative to the repository root, \
-             because it names something the repository being released carries",
-            path = path.display()
-        ));
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(format!(
-            "{field} is the path {path}, which leaves the repository root; it names something the \
-             repository being released carries",
-            path = path.display()
-        ));
-    }
-    Ok(())
-}
-
 /// Render a declaration back as the TOML document it declares.
 ///
 /// **Comments are not preserved, because they were never read.** A producer's file
 /// is mostly prose — the reasoning about what is a target and what is not — and this
-/// answers with the declaration alone. Writing the result over a producer's own file
-/// therefore deletes that reasoning: this is for *producing* a declaration, and
-/// editing one is a job for a person or for a format-preserving editor.
+/// answers with the declaration alone, so a caller that round-trips a producer's file
+/// over the top of itself deletes that reasoning. Round-tripping is for producing a
+/// document, not for editing one.
 ///
-/// What it does promise is that the result reads as the same declaration:
-/// reading back what this rendered answers the declaration it was handed, for every
-/// declaration a read answered.
-pub(crate) fn render(declaration: &Declaration) -> String {
-    // Infallible in practice — every field is a string, an integer, or a list of
-    // them — but `toml` cannot say so in its type, and a panic here would be a
-    // rendering failing on a value the parser had already accepted.
-    toml::to_string_pretty(declaration).unwrap_or_else(|failure| {
-        unreachable!("a validated declaration renders as TOML: {failure}")
+/// What it does promise is that the result reads as the same declaration, and it
+/// keeps that promise by holding what it was handed to the checks a document gets
+/// first: a `Declaration` a caller *built* rather than read is refused here if it is
+/// one no repository could mean, rather than written out as a document nothing can
+/// read back.
+pub(crate) fn render(declaration: &Declaration) -> Result<String> {
+    validate(declaration, "the declaration handed to be rendered")?;
+    // The one way a validated declaration still does not serialize: a `PathBuf` whose
+    // bytes are not UTF-8, which serde refuses and which only a caller that built one
+    // from an `OsString` can hold. Reported rather than panicked on, because it
+    // arrives from a caller and not from this crate.
+    toml::to_string_pretty(declaration).map_err(|failure| {
+        error::invalid(format!(
+            "the declaration handed to be rendered cannot be written as TOML: {failure}"
+        ))
     })
 }

@@ -272,9 +272,12 @@ pub fn validate_release_declaration(document: &str, origin: &str) -> Result<Decl
 /// producer's own file deletes that reasoning. It is for *producing* a declaration;
 /// editing one is a job for a person.
 ///
-/// What it does promise is that the result reads as the same declaration:
-/// validating what this rendered answers the declaration it was handed.
-pub fn render_release_declaration(declared: &Declaration) -> String {
+/// What it does promise is that the result reads as the same declaration, and it
+/// keeps that promise by holding what it was handed to a document's own checks
+/// first: a [`Declaration`] a caller *built* rather than read is refused here if it
+/// is one no repository could mean, rather than written out as a document nothing
+/// can read back.
+pub fn render_release_declaration(declared: &Declaration) -> Result<String> {
     declaration::render(declared)
 }
 

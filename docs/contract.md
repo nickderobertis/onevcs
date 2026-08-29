@@ -1265,17 +1265,29 @@ unrecognized key is refused *by name*, because a typo is the likeliest defect in
 hand-written document and reading `manifset` as an absent `manifest` publishes an
 answer nobody declared.
 
+**What a declaration can hold, it can mean.** Every field that a document is
+refused over is a validated type rather than a bare scalar: `TargetName` for the
+short name, `RegistryId` for an identifier, `Prose` for the three sentences, and
+`RepositoryPath` for the two paths. So a refusal is made in one conversion — which
+is also how it gets the TOML reader's own line and column — and a `Declaration` a
+caller *built* cannot hold a blank `what` or a manifest on the reader's own machine.
+`schema_version` is the one bare number, and deliberately: it has to hold a version
+this build does not know, because reading a later schema leniently is the promise the
+document makes to a consumer one release behind.
+
 **A valid declaration round-trips, and a producer's comments do not.** Rendering
 answers the declaration and nothing that was written around it, so reading and
 rendering yields a document that reads as the same declaration — and writing that
 result over a producer's own file deletes the reasoning in it. Rendering is for
-*producing* a declaration; editing one is a job for a person.
+*producing* a declaration; editing one is a job for a person. It holds what it was
+handed to a document's own checks before writing it, so it answers a document that
+reads back or a refusal, never one that does not.
 
 ```rust
 pub mod declaration {                                 // the producer's half
     pub const FILE: &str = "release-targets.toml";
     pub const SCHEMA_VERSION: u32 = 1;
-    pub struct Declaration { pub schema_version: u32, pub probe: Option<PathBuf>,
+    pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,
                              pub targets: Vec<DeclaredTarget>,
                              pub retired: Vec<RetiredArtifact> }
     impl Declaration {
@@ -1283,17 +1295,20 @@ pub mod declaration {                                 // the producer's half
         pub fn target(&self, name: &TargetName) -> Option<&DeclaredTarget>;
     }
     pub struct DeclaredTarget { pub id: RegistryId, pub name: TargetName,
-                                pub what: String, pub published_by: String,
-                                pub manifest: Option<PathBuf>,
+                                pub what: Prose, pub published_by: Prose,
+                                pub manifest: Option<RepositoryPath>,
                                 pub covers: Vec<RegistryId> }
-    pub struct RetiredArtifact { pub id: RegistryId, pub why: String }
+    pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }
     pub struct RegistryId { /* registry, name */ }    // TryFrom<String>, `<registry>:<name>`
     impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }
+    pub struct Prose(String);                         // TryFrom<String>, one non-blank line
+    pub struct RepositoryPath(PathBuf);               // TryFrom<PathBuf>, inside the repository
+    impl RepositoryPath { pub fn as_path(&self) -> &Path; }
 }
 
 pub fn read_release_declaration(path: &Path) -> Result<Declaration>;
 pub fn validate_release_declaration(document: &str, origin: &str) -> Result<Declaration>;
-pub fn render_release_declaration(declared: &Declaration) -> String;
+pub fn render_release_declaration(declared: &Declaration) -> Result<String>;
 ```
 
 `path` is either a repository's root or the `release-targets.toml` in it — a path

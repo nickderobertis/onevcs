@@ -15,7 +15,7 @@ use crate::cli::{
     ReleaseTargetsArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
     SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
 };
-use crate::declaration::RegistryId;
+use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
 use crate::landed::Landed;
@@ -938,7 +938,7 @@ fn release_declaration(args: &ReleaseDeclarationArgs) -> Result<u8> {
         return print_json(&declared);
     }
     if args.toml {
-        print!("{}", crate::render_release_declaration(&declared));
+        print!("{}", crate::render_release_declaration(&declared)?);
         return Ok(0);
     }
     println!("schema version: {}", declared.schema_version);
@@ -947,14 +947,14 @@ fn release_declaration(args: &ReleaseDeclarationArgs) -> Result<u8> {
         declared
             .probe
             .as_ref()
-            .map_or_else(|| "none".to_owned(), |probe| probe.display().to_string())
+            .map_or_else(|| "none".to_owned(), RepositoryPath::to_string)
     );
     println!("targets:");
     for target in &declared.targets {
         println!("  {}\t{}\t{}", target.name, target.id, target.what);
         println!("    published by: {}", target.published_by);
         if let Some(manifest) = target.manifest.as_ref() {
-            println!("    manifest: {}", manifest.display());
+            println!("    manifest: {manifest}");
         }
         if !target.covers.is_empty() {
             println!(
