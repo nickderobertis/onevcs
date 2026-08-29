@@ -11,10 +11,11 @@ use std::path::Path;
 use crate::cli::{
     ArtifactCommand, Command, EventsArgs, ImportArgs, IntegrateArgs, PublishArgs,
     PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
-    ReleaseCommand, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
+    ReleaseCommand, ReleaseDeclarationArgs, ReleaseLatestArgs, ReleaseStatusArgs,
+    ReleaseTargetsArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand,
+    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
 };
+use crate::declaration::RegistryId;
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
 use crate::landed::Landed;
@@ -81,6 +82,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ReleaseCommand::Latest(args) => release_latest(args),
             ReleaseCommand::Status(args) => release_status(args),
             ReleaseCommand::Acknowledge(args) => release_acknowledge(args),
+            ReleaseCommand::Declaration(args) => release_declaration(args),
         },
     }
 }
@@ -923,6 +925,58 @@ fn describe(target: &ReleaseTarget) -> String {
         } => format!("shell {shell}"),
         ReleaseMethod::HumanStep { action } => format!("action: {action}"),
     }
+}
+
+/// Render what a repository's own declaration says it publishes.
+///
+/// Three renderings of one answer: [`crate::read_release_declaration`] is what the
+/// document declares, and the table, `--json`, and `--toml` are three spellings of
+/// that value rather than three readings of the file.
+fn release_declaration(args: &ReleaseDeclarationArgs) -> Result<u8> {
+    let declared = crate::read_release_declaration(&args.path)?;
+    if args.json {
+        return print_json(&declared);
+    }
+    if args.toml {
+        print!("{}", crate::render_release_declaration(&declared));
+        return Ok(0);
+    }
+    println!("schema version: {}", declared.schema_version);
+    println!(
+        "probe: {}",
+        declared
+            .probe
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), |probe| probe.display().to_string())
+    );
+    println!("targets:");
+    for target in &declared.targets {
+        println!("  {}\t{}\t{}", target.name, target.id, target.what);
+        println!("    published by: {}", target.published_by);
+        if let Some(manifest) = target.manifest.as_ref() {
+            println!("    manifest: {}", manifest.display());
+        }
+        if !target.covers.is_empty() {
+            println!(
+                "    covers: {}",
+                target
+                    .covers
+                    .iter()
+                    .map(RegistryId::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    // Absent rather than empty: a repository that has retired nothing has nothing to
+    // say here, and a heading over no rows reads as a list that failed to load.
+    if !declared.retired.is_empty() {
+        println!("retired:");
+        for entry in &declared.retired {
+            println!("  {}\t{}", entry.id, entry.why);
+        }
+    }
+    Ok(0)
 }
 
 /// Render what is released right now.

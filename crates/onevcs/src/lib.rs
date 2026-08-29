@@ -35,9 +35,12 @@
 
 #![warn(missing_docs)]
 
+use std::path::Path;
+
 mod app;
 mod branch;
 pub mod cli;
+pub mod declaration;
 mod error;
 mod event;
 mod gh;
@@ -73,6 +76,7 @@ mod sweep;
 mod vcs;
 mod workspace;
 
+pub use declaration::{Declaration, DeclaredTarget, RegistryId, RetiredArtifact};
 pub use error::{Error, Result};
 pub use event::{
     ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Phase, Source,
@@ -227,6 +231,51 @@ pub fn acknowledge_release(
     supersede: bool,
 ) -> Result<Acknowledgement> {
     release::acknowledge(&store::load()?, reference, target, version, supersede)
+}
+
+/// What one repository declares that it publishes.
+///
+/// The library form of `onevcs release declaration`, and the producer half of the
+/// release contract: [`release_targets`] answers what *this host* waits on for a
+/// repository, and this answers what the repository itself says it publishes. The
+/// two are different documents on purpose — see [`declaration`] — and deciding
+/// between them is nobody's job here.
+///
+/// `path` is either a repository's root or the `release-targets.toml` in it. A
+/// repository carrying no declaration is refused rather than answered with an empty
+/// one: "this repository publishes nothing" and "nobody has said what this
+/// repository publishes" are different answers, and a consumer that waits on a
+/// release acts differently on each.
+///
+/// It takes no [`Providers`] for the reason [`release_targets`] does not: a
+/// declaration is a file in a checkout, and there is nothing here for an
+/// implementation of either interface to answer.
+pub fn read_release_declaration(path: &Path) -> Result<Declaration> {
+    declaration::read(path)
+}
+
+/// Validate one release declaration's text, and answer what it declares.
+///
+/// The half of [`read_release_declaration`] that touches no filesystem: a caller
+/// that fetched a declaration from a host, or is about to write one, holds it to
+/// exactly the checks a repository's own file gets. `origin` is what the refusals
+/// name the document by — a path, a URL, or whatever the caller knows it as.
+pub fn validate_release_declaration(document: &str, origin: &str) -> Result<Declaration> {
+    declaration::parse(document, origin)
+}
+
+/// Render a declaration back as the TOML document it declares.
+///
+/// **A producer's comments are not preserved, because they were never read.** A
+/// declaration is mostly prose — the reasoning about what is a target and what is
+/// not — and this answers with the declaration alone, so writing the result over a
+/// producer's own file deletes that reasoning. It is for *producing* a declaration;
+/// editing one is a job for a person.
+///
+/// What it does promise is that the result reads as the same declaration:
+/// validating what this rendered answers the declaration it was handed.
+pub fn render_release_declaration(declared: &Declaration) -> String {
+    declaration::render(declared)
 }
 
 /// Which rung of the adoption chain one repository resolves to.

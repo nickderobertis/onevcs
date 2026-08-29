@@ -404,6 +404,31 @@ pub enum ReleaseCommand {
     Status(ReleaseStatusArgs),
     /// Record that somebody performed a human-step release.
     Acknowledge(ReleaseAcknowledgeArgs),
+    /// Report what a repository's own `release-targets.toml` declares it publishes.
+    Declaration(ReleaseDeclarationArgs),
+}
+
+/// Arguments for `onevcs release declaration`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseDeclarationArgs {
+    /// A repository's root, or the `release-targets.toml` in it.
+    ///
+    /// A path rather than the identity spelling every other verb takes: this
+    /// reads a file a *checkout* carries, and a repository this host has never
+    /// registered is exactly the case a consumer asks about.
+    // llmlint: ignore[invalid_states_unrepresentable] whether a path is a directory
+    // or the document itself is decided by looking at the filesystem, which a parser
+    // cannot do, and `declaration::read` is the one boundary that decides it.
+    pub path: PathBuf,
+    /// Report as JSON rather than as a human table.
+    #[arg(long, conflicts_with = "toml")]
+    pub json: bool,
+    /// Render the declaration back as TOML.
+    ///
+    /// The declaration alone: a producer's comments are not this crate's to keep,
+    /// so this writes what was declared and never what was written around it.
+    #[arg(long, conflicts_with = "json")]
+    pub toml: bool,
 }
 
 /// Arguments for `onevcs release targets`.

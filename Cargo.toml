@@ -64,6 +64,11 @@ sha2 = "0.10"
 # semantic version is not a thing to keep a second copy of in the crate whose
 # release decisions rest on it.
 semver = "1"
+# A repository's own release declaration is TOML, and this reads and writes it.
+# TOML rather than a second YAML document because that file is mostly prose — the
+# reasoning a producer wrote about what it publishes — and TOML keeps that as
+# comments; and because every repository declaring one is already parsed by Cargo.
+toml = { version = "1", default-features = false, features = ["std", "parse", "display", "serde"] }
 # The envelope's `ts` is RFC3339 with millisecond precision in UTC. Civil-calendar
 # arithmetic is not a thing to hand-roll into an event stream's ordering key.
 time = { version = "0.3", features = ["formatting", "macros"] }

@@ -493,26 +493,32 @@ CLI gains is the verb and its two options.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] the shared-surface
 record ends here. -->
 
-## The releases that follow a landing, and the four verbs that ask about them
+## The releases a repository publishes, and the five verbs that ask about them
 
-The release surface is an **approved amendment** in `docs/contract.md`: the types,
-the document, the baseline, the acknowledgement, and the three event kinds are
-declared there, and `the_amendment_declares_the_release_surface_it_added` in
-`tests/contract.rs` holds the text to the code. What is recorded here is the
-command surface, which the approved usage block does not spell, and the handful of
-shapes the amendment left to inference.
+The release surface is two **approved amendments** in `docs/contract.md`. The first
+is the host's half — the types, the host document, the baseline, the
+acknowledgement, and the three event kinds — held to the code by
+`the_amendment_declares_the_release_surface_it_added` in `tests/contract.rs`. The
+second is the producer's half: the canonical `release-targets.toml` a repository
+carries at its own root, its schema in full, and the three library calls over it,
+held to the code by `the_amendment_declares_the_producer_declaration_it_added` and
+`the_canonical_declaration_the_amendment_spells_is_one_this_build_reads`. What is
+recorded here is the command surface, which the approved usage block does not
+spell, and the handful of shapes the two amendments left to inference.
 
 ```
 onevcs release targets REPO [--json]
 onevcs release latest REPO [--target NAME] [--json]
 onevcs release status REF [--target NAME] [--json]
 onevcs release acknowledge REF --target NAME --version VERSION [--supersede] [--json]
+onevcs release declaration PATH [--json] [--toml]
 ```
 
 `REPO` is the identity key, registered alias, origin URL, or path every other
-command takes; `REF` is the four-spelling reference `onevcs status` takes. The block
-is read beside the contract's own by `tests/contract.rs` and `tests/e2e/support.rs`,
-exactly as the four verbs above it are.
+command takes; `REF` is the four-spelling reference `onevcs status` takes; `PATH` is
+a repository's root or the declaration in it, and the row below says why that one is
+not an identity. The block is read beside the contract's own by `tests/contract.rs`
+and `tests/e2e/support.rs`, exactly as the four verbs above it are.
 
 | Item | Inferred shape | Why |
 | --- | --- | --- |
@@ -525,6 +531,13 @@ exactly as the four verbs above it are.
 | `TargetName` | non-empty, at most 64 characters, starting with a letter or a digit, then letters, digits, `-`, `_`, and `.` | It names a key in the persisted record, a file-safe token, and a `--target` operand, so what may spell one is decided in the conversion rather than by whichever of the three met it first. |
 | a script probe's path | relative, and with no component that leaves the repository root | The form exists to run what the repository being released **carries**, so a path that leaves it is refused where the document is read rather than resolved at the moment it would be executed. |
 | a probe's environment | `PATH`, `HOME`, and — where this host has them — `SYSTEMROOT` and `USERPROFILE` | The amendment says "an explicitly constructed environment"; these four are what a probe needs to be found and to read its own configuration. Everything else the caller was holding, a credential for something unrelated among it, is not a probe's business. |
+| `release declaration`'s operand | a path — a repository's root, or the `release-targets.toml` in it | Every other verb takes the four-spelling identity, and this one deliberately does not: it reads a file a *checkout* carries, and the case a consumer asks about is a repository this host has never registered. A directory or the document itself, because a caller with a checkout and a caller with a file both have to be able to spell what they have. |
+| `RegistryId`'s registry half | one word of lowercase letters, digits and `-`, open rather than a closed set | `crate`, `pypi` and `npm` are what this repository's probe answers for, and six repositories write these declarations. A closed set at this boundary would refuse an artifact somebody genuinely publishes — a container image, a registry nobody has needed yet — with no way to grant an exception, so what is closed is the shape. |
+| `RegistryId`'s name half | starts with a letter or a digit, then letters, digits, `-`, `_`, `.`, `@`, `/`, at most 128 characters with the registry | The name becomes a path segment of a registry URL wherever one is asked, so it is held to the alphabet crates.io, PyPI and npm all serve rather than to whichever of them a reader asks first. `@` and `/` are in it because an npm scoped package is spelled `@scope/name`. |
+| a declaration with no `[[target]]` | refused | "This repository publishes nothing" and "nobody has said what this repository publishes" are different answers and a consumer holds on one and acts on the other, so a document that declares nothing says *less* than no document at all. `scripts/release-probe.sh` already refuses the same state in this repository's own declaration. |
+| a declaration's prose fields | non-blank, no control characters, at most 400 characters | `what`, `published_by` and `why` are operator-written text this crate prints on one line beside the entry they describe. A blank one leaves a reader with the identifier alone where they were promised a sentence, and one carrying a newline renders as something other than what it is wherever it lands. The reasoning behind a target belongs in a comment, which is why the cap is a cap and not a paragraph. |
+| an unrecognized key in a declaration | refused by name at `schema_version = 1`, ignored above it | The leniency every state-root document has, and the one thing a *repository's* document needs beside it. A hand-written file's likeliest defect is a typo, and reading `manifset` as an absent `manifest` publishes an answer nobody declared — so a key is refused at the version this build knows what the keys are. A later schema's keys are not this build's to have an opinion on. |
+| what a rendered declaration keeps | the declaration, and none of the comments | The value read carries no comments, because none were read: a `Declaration` is what the document declares. Stated in the contract and in the rustdoc rather than left to be discovered, since a caller who assumed otherwise loses the most valuable thing in the file. |
 
 ### Why the registry has no release-targets key, and must not grow one
 
