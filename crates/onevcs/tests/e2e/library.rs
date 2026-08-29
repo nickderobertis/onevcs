@@ -2361,7 +2361,7 @@ fn a_release_reaches_its_session_in_whichever_order_it_and_the_landing_became_vi
         // a single record cannot tell that apart from "the first one that matches".
         let wheel: onevcs::TargetName = "wheel".parse().expect("a target name");
         let token = &session.token.0;
-        let mine = || {
+        let record_this_landings_releases = || {
             let acknowledged = onevcs::acknowledge_release(token, &container, "2.0.0", false)
                 .expect("this landing's container release is recorded");
             onevcs::acknowledge_release(token, &wheel, "3.0.0", false)
@@ -2375,10 +2375,10 @@ fn a_release_reaches_its_session_in_whichever_order_it_and_the_landing_became_vi
                     reader.read().expect("nothing new").is_empty(),
                     "another landing's release is not this session's"
                 );
-                mine()
+                record_this_landings_releases()
             }
             Visible::RecordsFirst => {
-                let acknowledged = mine();
+                let acknowledged = record_this_landings_releases();
                 // The checkout every publication fast-forwards is where a landing is
                 // decided from, and it is not always there when a reader asks: a copy
                 // being re-made, or a mount that is not up yet, leaves the landing
