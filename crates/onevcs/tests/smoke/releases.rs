@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use onevcs::declaration;
+
 /// The bound the release-target contract puts on a probe. Nothing here waits
 /// longer for one, because a caller does not.
 const BOUND: Duration = Duration::from_secs(60);
@@ -43,17 +45,16 @@ fn repository_root() -> PathBuf {
 /// contain is held by `tests/contract.rs`, which reconciles it with the release
 /// configuration; this reads it to ask each registry about what it names.
 fn declared_targets() -> BTreeSet<String> {
-    let declaration = std::fs::read_to_string(repository_root().join("release-targets.txt"))
-        .expect("release-targets.txt is this repository's declaration of what it releases");
-    let targets: BTreeSet<String> = declaration
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_owned)
+    let declared = onevcs::read_release_declaration(&repository_root().join(declaration::FILE))
+        .expect("release-targets.toml is this repository's declaration of what it releases");
+    let targets: BTreeSet<String> = declared
+        .targets
+        .iter()
+        .map(|target| target.id.to_string())
         .collect();
     assert!(
         !targets.is_empty(),
-        "release-targets.txt declares nothing, so this tier would drive no probe at all"
+        "release-targets.toml declares nothing, so this tier would drive no probe at all"
     );
     targets
 }

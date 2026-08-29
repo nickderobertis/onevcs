@@ -23,7 +23,7 @@ use std::path::{Component, Path, PathBuf};
 
 use clap::CommandFactory;
 use onevcs::cli::Cli;
-use onevcs::declaration::RepositoryPath;
+use onevcs::declaration::{self, Declaration, RepositoryPath};
 use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
@@ -3956,14 +3956,31 @@ fn publishes_here() -> Publishes {
     )
 }
 
-/// The release targets this repository declares, one registry-qualified
-/// identifier per line.
-fn declared_release_targets(declaration: &str) -> BTreeSet<String> {
-    declaration
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_owned)
+/// What one release declaration declares, read through the crate's own reader —
+/// the same boundary a consumer reads a producer's document at, so a document this
+/// repository could not answer for is refused here rather than half-parsed by a
+/// second reader living in the suite.
+fn read_declaration(document: &str, origin: &str) -> Declaration {
+    onevcs::validate_release_declaration(document, origin).unwrap_or_else(|failure| {
+        panic!("{origin} is not a conforming release declaration: {failure}")
+    })
+}
+
+/// This repository's own declaration, as the document at its root declares it.
+fn declaration_here() -> Declaration {
+    read_declaration(&repo_file(declaration::FILE), declaration::FILE)
+}
+
+/// The registry-qualified identifiers a declaration's `[[target]]` tables name.
+///
+/// A `covers` identifier is deliberately not one of them: it is shipped by a
+/// target's release and is not a target of its own, which is the whole distinction
+/// the key draws.
+fn declared_release_targets(declared: &Declaration) -> BTreeSet<String> {
+    declared
+        .targets
+        .iter()
+        .map(|target| target.id.to_string())
         .collect()
 }
 
@@ -3976,12 +3993,12 @@ fn the_declared_release_targets_are_exactly_what_this_repository_publishes() {
     // a name this repository starts publishing has to arrive declared, and a target
     // declared for something it does not publish is a wait that would never end.
     let published = publishes_here();
-    let declared = declared_release_targets(&repo_file("release-targets.txt"));
+    let declared = declared_release_targets(&declaration_here());
     assert_eq!(
         declared, published.consumable,
-        "release-targets.txt and this repository's release configuration disagree about what it \
-         publishes — declare the new artifact as <registry>:<name>, or stop publishing what is \
-         declared"
+        "release-targets.toml and this repository's release configuration disagree about what it \
+         publishes — declare the new artifact as a [[target]] with an id of <registry>:<name>, or \
+         stop publishing what is declared"
     );
 }
 
@@ -3994,11 +4011,22 @@ fn every_per_platform_npm_package_is_covered_by_the_launcher_target() {
     // that was a range would resolve to a version the launcher's release never
     // published, and the hold would be answered about the wrong thing.
     let published = publishes_here();
-    let declared = declared_release_targets(&repo_file("release-targets.txt"));
+    let declared = declaration_here();
+    let targets = declared_release_targets(&declared);
     assert!(
         !published.platform_pins.is_empty(),
         "the launcher pins no per-platform package, so this check is covering nothing"
     );
+    let launcher = declared
+        .targets
+        .iter()
+        .find(|target| target.id.to_string() == "npm:onevcs-cli")
+        .expect("release-targets.toml declares the npm launcher this repository publishes");
+    let covered: BTreeSet<String> = launcher
+        .covers
+        .iter()
+        .map(onevcs::declaration::RegistryId::to_string)
+        .collect();
     for (package, pin) in &published.platform_pins {
         assert_eq!(
             pin, &published.launcher_version,
@@ -4006,11 +4034,21 @@ fn every_per_platform_npm_package_is_covered_by_the_launcher_target() {
              npm:onevcs-cli does not cover it"
         );
         assert!(
-            !declared.contains(&format!("npm:{package}")),
+            !targets.contains(&format!("npm:{package}")),
             "{package} is a per-platform package the launcher covers, not a release target of \
-             its own — remove npm:{package} from release-targets.txt"
+             its own — remove the npm:{package} [[target]] from release-targets.toml"
         );
     }
+    assert_eq!(
+        covered,
+        published
+            .platform_pins
+            .keys()
+            .map(|package| format!("npm:{package}"))
+            .collect::<BTreeSet<_>>(),
+        "npm:onevcs-cli's `covers` list and the packages its launcher actually pins disagree — a \
+         package it ships and does not cover is one nothing in this repository accounts for"
+    );
 }
 
 #[test]
@@ -4047,22 +4085,36 @@ jobs:
         drifted.consumable
     );
     assert_ne!(
-        declared_release_targets(&repo_file("release-targets.txt")),
+        declared_release_targets(&declaration_here()),
         drifted.consumable,
         "a release publishing two artifacts nothing declares must not read as declared"
     );
 
     // And the other direction, which is the same failure seen from the declaration:
-    // a target named for something this repository does not publish.
-    let stale =
-        declared_release_targets("# a comment\n\ncrate:onevcs\npypi:onevcs-cli\nnpm:gone\n");
+    // a target named for something this repository does not publish. A whole
+    // document rather than a list of identifiers, read by the same reader the real
+    // one goes through, because that is what the drift would actually arrive as.
+    let stale = declared_release_targets(&read_declaration(
+        r#"# A declaration that has stopped matching what is published.
+schema_version = 1
+
+[[target]]
+id = "crate:onevcs"
+name = "crate"
+what = "The library and the `onevcs` binary."
+published_by = ".github/workflows/release.yml — the publish-crate job."
+
+[[target]]
+id = "npm:gone"
+name = "npm"
+what = "Something this repository stopped publishing without saying so."
+published_by = ".github/workflows/release.yml — a job that no longer publishes it."
+"#,
+        "a stale declaration",
+    ));
     assert_eq!(
         stale,
-        BTreeSet::from([
-            "crate:onevcs".to_owned(),
-            "pypi:onevcs-cli".to_owned(),
-            "npm:gone".to_owned(),
-        ])
+        BTreeSet::from(["crate:onevcs".to_owned(), "npm:gone".to_owned()])
     );
     assert_ne!(stale, publishes_here().consumable);
 }

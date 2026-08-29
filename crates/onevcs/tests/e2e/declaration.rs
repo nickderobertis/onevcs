@@ -663,6 +663,121 @@ fn a_repository_that_declares_nothing_is_told_so_rather_than_answered_with_nothi
     );
 }
 
+/// This repository's own declaration, as it is committed.
+fn this_repositorys_declaration() -> String {
+    let document = crate::support::workspace_root().join(onevcs::declaration::FILE);
+    std::fs::read_to_string(&document).unwrap_or_else(|failure| {
+        panic!(
+            "{} is this repository's declaration of what it publishes: {failure}",
+            document.display()
+        )
+    })
+}
+
+#[test]
+fn this_repositorys_own_declaration_conforms_to_the_canonical_schema() {
+    // The document this repository actually commits, read by the compiled binary the
+    // way a consumer reads a producer's: through `onevcs release declaration`, over
+    // the repository root. It is the one journey here whose subject is not a fixture,
+    // because what it holds is that *this* repository conforms — a required field
+    // dropped, an identifier misspelled, or a short name reused would otherwise be
+    // caught nowhere until a consumer met it.
+    let root = crate::support::workspace_root();
+    let output = command()
+        .args(["release", "declaration"])
+        .arg(&root)
+        .arg("--json")
+        .assert()
+        .success();
+    let reported: Value =
+        serde_json::from_slice(&output.get_output().stdout).expect("the report is JSON");
+    assert_eq!(reported["schema_version"], 1);
+    assert_eq!(reported["probe"], "scripts/release-probe.sh");
+    let targets = reported["target"]
+        .as_array()
+        .expect("a conforming declaration reports its targets");
+    assert!(
+        !targets.is_empty(),
+        "this repository declares no target at all: {reported}"
+    );
+    for target in targets {
+        for field in ["id", "name", "what", "published_by"] {
+            assert!(
+                target[field]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "every declared target carries a {field}: {target}"
+            );
+        }
+    }
+
+    // And a reader with a standard TOML parser and no knowledge of this repository
+    // reaches the same list, which is the promise the format makes to the host-side
+    // generator that will read six of these.
+    let parsed: toml::Value =
+        toml::from_str(&this_repositorys_declaration()).expect("the declaration is TOML");
+    let plainly_read: Vec<(String, String)> = parsed["target"]
+        .as_array()
+        .expect("a `target` array of tables")
+        .iter()
+        .map(|target| {
+            (
+                target["id"].as_str().expect("an id").to_owned(),
+                target["name"].as_str().expect("a name").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        plainly_read,
+        targets
+            .iter()
+            .map(|target| (
+                target["id"].as_str().expect("an id").to_owned(),
+                target["name"].as_str().expect("a name").to_owned(),
+            ))
+            .collect::<Vec<_>>(),
+        "a plain TOML reader and this crate's reader disagree about what is declared"
+    );
+}
+
+#[test]
+fn a_defect_in_this_repositorys_own_declaration_is_refused_rather_than_read() {
+    // The check above is worth its place only if it fails on the defects it exists
+    // for, so these are those defects: this repository's real document with one thing
+    // wrong with it, each read through the same binary. A document that still passed
+    // with a required field gone would be a check asserting nothing.
+    let sound = this_repositorys_declaration();
+    let defects = [
+        (
+            "a required field dropped",
+            sound.replacen("name = \"crate\"\n", "", 1),
+            "missing field `name`",
+        ),
+        (
+            "an identifier misspelled",
+            sound.replacen("id = \"crate:onevcs\"", "id = \"onevcs\"", 1),
+            "names no registry",
+        ),
+        (
+            "a short name repeated",
+            sound.replacen("name = \"testing-crate\"", "name = \"crate\"", 1),
+            "already takes",
+        ),
+    ];
+    for (defect, document, reason) in defects {
+        let producer = Producer::declaring(&document);
+        assert_ne!(
+            document, sound,
+            "{defect}: the mutation changed nothing, so this proves nothing"
+        );
+        let refusal = producer.refusal();
+        assert!(
+            refusal.contains(reason),
+            "{defect} must be refused naming why, and was refused with: {refusal}"
+        );
+    }
+}
+
 // Unix only: it builds a registered repository with `world.rs`'s fixture, whose bare
 // origins and clones are POSIX. What it holds is about the host document, and the
 // producer half above it runs on every platform.

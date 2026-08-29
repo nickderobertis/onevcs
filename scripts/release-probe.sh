@@ -16,11 +16,21 @@
 # saying so — a 404, or crates.io answering `"max_stable_version":null` — never a
 # body this script could not read, and never an identifier it does not recognise.
 #
-# The targets it will answer for are the ones release-targets.txt declares, which
-# is the one declaration; anything else is not answered. It resolves that file
-# from its own location rather than from `$PWD`, because a probe answering about
-# whatever repository it happened to be started in is a probe that answers about
-# the wrong artifact.
+# The targets it will answer for are the ones the `[[target]]` tables of
+# release-targets.toml declare, which is the one declaration; anything else is not
+# answered — a `covers` identifier and a `[[retired]]` one included, because
+# neither is something a consumer waits on. It resolves that file from its own
+# location rather than from `$PWD`, because a probe answering about whatever
+# repository it happened to be started in is a probe that answers about the wrong
+# artifact.
+#
+# It reads the declaration line by line rather than parsing TOML, because bash has
+# no TOML reader and the shape it needs is one key in one kind of table. That is a
+# deliberately lenient read: what the document *is* — every required field, every
+# identifier, every short name — is held by the crate's own reader, through
+# `onevcs release declaration`, which the gate runs over this file. What is strict
+# here is the identifier itself, because that is the one value this script turns
+# into a URL.
 #
 # What it may assume, and nothing beyond it: it is spawned as a direct subprocess
 # with no shell interposed, from the repository root, with an environment
@@ -63,7 +73,7 @@ probe_dir="${BASH_SOURCE[0]%/*}"
 cd -- "$probe_dir/.." 2>/dev/null || refuse \
     "cannot reach the repository root from ${BASH_SOURCE[0]}" \
     "run this script from a checkout of the repository, at scripts/release-probe.sh"
-readonly DECLARATION="release-targets.txt"
+readonly DECLARATION="release-targets.toml"
 
 if [ $# -ne 1 ]; then
     refuse "takes exactly one registry-qualified identifier, and was given $#" \
@@ -88,7 +98,7 @@ declared_shape() {
     case "$1" in
     crate:* | pypi:* | npm:*) ;;
     *) refuse "$DECLARATION declares '$1', which names no registry" \
-        "spell every target as crate:<name>, pypi:<name>, or npm:<name>" ;;
+        "spell every target's id as crate:<name>, pypi:<name>, or npm:<name>" ;;
     esac
     case "${1#*:}" in
     "" | [!A-Za-z0-9]* | *[!A-Za-z0-9._-]*)
@@ -97,30 +107,76 @@ declared_shape() {
     esac
 }
 
+# Everything ahead of a line's first non-space character, and everything after its
+# last, removed — the one thing every line here is looked at through. Written with
+# bash 3.2's own pattern operators, because macOS ships that one and the release
+# legs run there.
+trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    printf '%s' "${value%"${value##*[![:space:]]}"}"
+}
+
 # The declaration, read in full even once a match is found: a file this script
 # cannot read is a declaration nobody has checked, and answering from half of it
 # would answer about a target whose spelling was never held to anything.
 [ -r "$DECLARATION" ] || refuse \
     "$PWD/$DECLARATION is missing or unreadable, so nothing is declared" \
-    "restore release-targets.txt from git; it is this repository's one declaration of what it releases"
+    "restore release-targets.toml from git; it is this repository's one declaration of what it releases"
 matched=1
 targets=""
-while read -r line || [ -n "$line" ]; do
-    case "$line" in "" | "#"*) continue ;; esac
-    declared_shape "$line"
-    targets="$targets $line"
-    [ "$line" = "$identifier" ] && matched=0
+table=""
+while IFS= read -r line || [ -n "$line" ]; do
+    line="$(trim "$line")"
+    case "$line" in
+    "" | "#"*) continue ;;
+    "[["*)
+        # A table header names which array the keys under it belong to, and only
+        # `[[target]]`'s are targets. Taken up to its own closing bracket, so a
+        # trailing comment cannot become part of the name.
+        table="${line%%]]*}]]"
+        continue
+        ;;
+    "["*)
+        table="${line%%]*}]"
+        continue
+        ;;
+    esac
+    [ "$table" = "[[target]]" ] || continue
+    # One key of one table, and the only one this script needs: a target's id. A
+    # `covers` entry sits inside an array value and never opens a line with `id`,
+    # which is what keeps something covered out of the answers.
+    case "$line" in
+    id | id[!A-Za-z0-9_-]*) ;;
+    *) continue ;;
+    esac
+    value="$(trim "${line#id}")"
+    case "$value" in
+    "="*) ;;
+    *) continue ;;
+    esac
+    value="$(trim "${value#=}")"
+    case "$value" in
+    '"'*'"'*) ;;
+    *) refuse "$DECLARATION gives a [[target]] the id $value, which is not a quoted string" \
+        "spell every id as a quoted <registry>:<name>, e.g. id = \"crate:onevcs\"" ;;
+    esac
+    value="${value#\"}"
+    value="${value%%\"*}"
+    declared_shape "$value"
+    targets="$targets $value"
+    [ "$value" = "$identifier" ] && matched=0
 done <"$DECLARATION"
 
 if [ -z "$targets" ]; then
     refuse "$PWD/$DECLARATION declares no release target at all" \
-        "declare what this repository publishes, one <registry>:<name> per line"
+        "declare what this repository publishes as a [[target]] table with an id of <registry>:<name>"
 fi
 if [ "$matched" -ne 0 ]; then
     # Not answered rather than empty, deliberately: an identifier this repository
     # does not release says nothing about whether anything was released.
     refuse "'$identifier' is not a release target this repository declares" \
-        "ask for one of:$targets — or, if this repository has started publishing it, declare it in $DECLARATION"
+        "ask for one of:$targets — or, if this repository has started publishing it, declare it as a [[target]] in $DECLARATION"
 fi
 name="${identifier#*:}"
 
