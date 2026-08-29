@@ -1164,6 +1164,189 @@ impl Phase {
 
 Nothing about publication, recovery, or the rules file changes.
 
+**A repository declares what it publishes, in its own root, and `onevcs` reads it.**
+The release surface above is the *host's* half: `$ONEVCS_HOME/releases.yml` says what
+this host waits on, per repository, and somebody writes it by hand for every
+repository in the plan and rewrites it whenever any of them changes what it ships.
+The other half was never a document this crate had a notion of. Six repositories
+already carry a file at their own root saying what they publish — in five different
+shapes, read by nobody but a person. So `onevcs` gains the producer half: one
+canonical schema, a typed value, and the checks that refuse a declaration nobody
+could act on.
+
+**The two documents stay two formats, and that is the point rather than a debt.** A
+repository declares **what it publishes**; a host declares **what it waits on**. They
+answer different questions from different sides, they are written and reviewed by
+different people at different times, and neither is derivable from the other — a host
+waits on a target a repository has not published yet, and a repository publishes
+things no host in the plan waits on. Reconciling them into one format would make one
+of those two facts unstateable. So `releases.yml` stays YAML and host-side, matched
+across repositories on `RuleMatch`; the declaration is TOML and repository-side, about
+one repository and nothing else. TOML because these files are mostly *prose* — the
+reasoning about what is a target and what deliberately is not is the most valuable
+thing in them and lives as comments — and because every repository that writes one is
+already parsed by Cargo, while a host-side reader in Python has `tomllib` in its
+standard library.
+
+**Deciding between the two is not this.** What a repository's targets *are*, when a
+producer declaration and the host document both have an opinion, is a later question
+and is answered nowhere here. This reads the producer's document, validates it, and
+renders it; a host with no declaration anywhere behaves exactly as it did before there
+was one.
+
+The document is one TOML file at the repository root named `release-targets.toml`.
+The name is fixed, because a consumer reads it across repositories it does not own
+and a location it would have to be told is a location it cannot discover. Top-level
+keys come before any table, which TOML requires:
+
+```toml
+schema_version = 1
+probe = "scripts/release-probe.sh"   # optional; the script that answers what a
+                                     # registry currently serves for one `id` below
+
+# One table per consumable artifact, in publication order.
+[[target]]
+id = "crate:onevcs"
+name = "crate"
+what = "The library and the `onevcs` binary, as a Rust dependent takes them."
+published_by = ".github/workflows/release.yml — the publish-crate job, under Cargo.toml's [package] name."
+manifest = "Cargo.toml"
+covers = []
+
+# Optionally, artifacts this repository once published and does not any more.
+[[retired]]
+id = "pypi:onepipeline-ui-cli"
+why = "What the wrappers released up to v0.1.0. Nothing here publishes it again."
+```
+
+Every field, and nothing beyond them — the schema is exactly what the plan fixed, with
+no field invented beside it:
+
+| Key | Required | What it is for |
+| --- | --- | --- |
+| `schema_version` | yes | The schema this document is written against. `1` is the shape here. It is the first key, before any table, because TOML puts every top-level value ahead of the first `[table]` and a reader has to know the version before it reads the shape. |
+| `probe` | no | The script, relative to the repository root, that answers what a registry currently serves for one `id`. A repository whose targets are answered some other way declares none. |
+| `[[target]]` | at least one | One consumable artifact: something a dependent names in order to depend on it. Their order is publication order. |
+| `target.id` | yes | `<registry>:<name>`, where `<name>` is exactly what that registry serves. The qualification is load-bearing: `onevcs-cli` is both a PyPI project and an npm package published from one repository on two cadences, so the bare name is two artifacts. |
+| `target.name` | yes | The short name, unique in the file. It is what `$ONEVCS_HOME/releases.yml` calls this target and what a plan node's `consumes` map names, and it is `TargetName` — the same validated type every release command and every release record already uses, not a second name type beside it. It cannot be derived from `id`, because one repository publishes both `pypi:onejudge-cli` and `pypi:onejudge`. |
+| `target.what` | yes | One sentence saying what a dependent gets. |
+| `target.published_by` | yes | The workflow and job that publish it, and the manifest its name and version come from. |
+| `target.manifest` | no | The manifest, relative to the repository root, this target's version is read from. |
+| `target.covers` | no | Registry-qualified ids this target's release also ships and that are **not** targets of their own, because nothing depends on one by name — the per-platform packages an npm launcher resolves at its own exact version. A list of ids rather than a pointer at a manifest field, so a reader parses one shape. |
+| `[[retired]]` | no | An artifact this repository once published and does not any more, recorded rather than deleted so a consumer still naming it is told it is gone. |
+| `retired.id` | yes | The identifier that is no longer published. |
+| `retired.why` | yes | Why it is not published any more, and what replaced it if anything did. |
+
+**Refusing well is most of the value.** These documents are written once per
+repository and then read by machinery, so a refusal a person can act on is what stops
+a sixth shape appearing. Every refusal names the document and where in it the problem
+is — the TOML reader's own line and column for a field, and the entry's position and
+identifier for anything only a whole document can be wrong about. Refused: no
+`schema_version`, or one below `1`; a key this schema does not declare, at the version
+this build knows; a missing required field; an `id` or a `covers` entry that is not
+`<registry>:<name>` with a name spelled in the alphabet a registry serves; a `name`
+that is not a `TargetName`; two targets taking one short name, or one identifier; a
+declaration with no `[[target]]` at all — because a consumer cannot tell that from
+nobody having said anything; a `covers` entry that is also a declared target, or that
+two targets both cover; a `[[retired]]` entry that a `[[target]]` publishes, or that
+another retires; a blank or multi-line `what`, `published_by`, or `why`; and a `probe`
+or `manifest` that is absolute, names a drive, or leaves the repository root.
+
+**A path is refused on how it is spelled, and every platform refuses the same one.**
+`probe` and `manifest` both name something a *checkout* carries, and the checkout may
+be on any machine a consumer runs on, so what a path may be is decided on the text
+rather than by asking that machine's own path type. Both separators are separators —
+`../elsewhere` and `..\elsewhere` are one refusal, not one refusal and one filename —
+a leading separator is absolute whether or not the reader's platform calls it that,
+and a leading drive letter (`C:\…`, and the drive-relative `C:…`) names a location on
+whoever resolves it. Six repositories share one document; a path that meant a place in
+a checkout on one reader's platform and something else on another's would be worse
+than one that is refused on either.
+
+**The registry half of an identifier is an open vocabulary.** `crate`, `pypi` and
+`npm` are what this repository's own probe answers for, but six repositories write
+these files and a closed set at this boundary would refuse an artifact somebody
+genuinely publishes with no way to grant an exception. What is closed is the *shape*.
+
+**A declaration is read leniently above the version this build knows, and strictly
+at it.** A document declaring a later `schema_version` is read as this shape with
+whatever it names beyond it ignored, so a consumer one release behind still learns
+what a repository one release ahead publishes. At `schema_version = 1` an
+unrecognized key is refused *by name*, because a typo is the likeliest defect in a
+hand-written document and reading `manifset` as an absent `manifest` publishes an
+answer nobody declared.
+
+**What a declaration can hold, it can mean.** Every field that a document is
+refused over is a validated type rather than a bare scalar: `TargetName` for the
+short name, `RegistryId` for an identifier, `Prose` for the three sentences, and
+`RepositoryPath` for the two paths. So a refusal is made in one conversion — which
+is also how it gets the TOML reader's own line and column — and a `Declaration` a
+caller *built* cannot hold a blank `what` or a manifest on the reader's own machine.
+`schema_version` is the one bare number, and deliberately: it has to hold a version
+this build does not know, because reading a later schema leniently is the promise the
+document makes to a consumer one release behind.
+
+**A valid declaration round-trips, and a producer's comments do not.** Rendering
+answers the declaration and nothing that was written around it, so reading and
+rendering yields a document that reads as the same declaration — and writing that
+result over a producer's own file deletes the reasoning in it. Rendering is for
+*producing* a declaration; editing one is a job for a person. It holds what it was
+handed to a document's own checks before writing it, so it answers a document that
+reads back or a refusal, never one that does not.
+
+```rust
+pub mod declaration {                                 // the producer's half
+    pub const FILE: &str = "release-targets.toml";
+    pub const SCHEMA_VERSION: u32 = 1;
+    pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,
+                             pub targets: Vec<DeclaredTarget>,
+                             pub retired: Vec<RetiredArtifact> }
+    impl Declaration {
+        /// The target one short name selects, if this repository declares it.
+        pub fn target(&self, name: &TargetName) -> Option<&DeclaredTarget>;
+    }
+    pub struct DeclaredTarget { pub id: RegistryId, pub name: TargetName,
+                                pub what: Prose, pub published_by: Prose,
+                                pub manifest: Option<RepositoryPath>,
+                                pub covers: Vec<RegistryId> }
+    pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }
+    pub struct RegistryId { /* registry, name */ }    // TryFrom<String>, `<registry>:<name>`
+    impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }
+    pub struct Prose(String);                         // TryFrom<String>, one non-blank line
+    pub struct RepositoryPath(PathBuf);               // TryFrom<PathBuf>, inside the repository
+    impl RepositoryPath { pub fn as_path(&self) -> &Path; }
+}
+
+pub fn read_release_declaration(path: &Path) -> Result<Declaration>;
+pub fn validate_release_declaration(document: &str, origin: &str) -> Result<Declaration>;
+pub fn render_release_declaration(declared: &Declaration) -> Result<String>;
+```
+
+`path` is either a repository's root or the `release-targets.toml` in it — a path
+rather than the identity spelling every other verb takes, because this reads a file a
+*checkout* carries and a repository this host has never registered is exactly the case
+a consumer asks about. A repository carrying no declaration is refused rather than
+answered with an empty one: "this repository publishes nothing" and "nobody has said
+what this repository publishes" are different answers, and a consumer waiting on a
+release acts differently on each. `validate_release_declaration` is the half that
+touches no filesystem, for a caller that fetched a declaration or is about to write
+one; `origin` is what its refusals name the document by. None of the three takes
+`Providers`, for the reason the five above them do not.
+
+One verb renders it: `onevcs release declaration PATH [--json]` — the table and the
+value. Rendering a declaration back *as TOML* is deliberately a library call and not
+a third flag, because a producer's comments are not this crate's to keep and a verb
+that wrote one over their own file would delete the reasoning in it; a caller
+producing a declaration has no comments to lose. The verb adds no capability a
+linking consumer cannot reach, which is the rule this whole surface is built to:
+`onepipeline` links this crate rather than spawning it, so consumer-side discovery
+reachable only by running a binary is unreachable from the consumer that most needs
+it.
+
+No event kind is added: reading a file is not something that happens to a change.
+Nothing about the host document, publication, recovery, integration, or the rules file
+changes.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

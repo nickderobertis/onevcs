@@ -23,6 +23,7 @@ use std::path::{Component, Path, PathBuf};
 
 use clap::CommandFactory;
 use onevcs::cli::Cli;
+use onevcs::declaration::RepositoryPath;
 use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
 use onevcs::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, Probe, ReleaseAnswer, ReleaseDefault,
@@ -1131,6 +1132,181 @@ fn the_amendment_declares_the_release_surface_it_added() {
             }],
         })
     );
+}
+
+/// The canonical declaration the producer amendment spells, as its own document.
+fn documented_declaration() -> String {
+    amendment_block_declaring("toml", "schema_version")
+}
+
+#[test]
+fn the_canonical_declaration_the_amendment_spells_is_one_this_build_reads() {
+    // The point of the whole amendment: six repositories write a declaration against
+    // that text and nothing else, so the text has to be a document this build accepts.
+    // Read through the public library call a consumer would use, comments and all,
+    // rather than through a shape assembled here.
+    let declared = onevcs::validate_release_declaration(&documented_declaration(), "the contract")
+        .expect("the canonical declaration the contract spells is one this build reads");
+    assert_eq!(declared.schema_version, onevcs::declaration::SCHEMA_VERSION);
+    assert_eq!(
+        declared.probe.as_ref().map(RepositoryPath::as_path),
+        Some(Path::new("scripts/release-probe.sh")),
+        "the amendment's optional probe is read as the path it spells"
+    );
+    let name = TargetName::try_from("crate".to_owned()).expect("a name");
+    let target = declared.target(&name).expect("the amendment's one target");
+    assert_eq!(target.id.to_string(), "crate:onevcs");
+    assert_eq!(target.id.registry(), "crate");
+    assert_eq!(target.id.name(), "onevcs");
+    assert_eq!(
+        target.manifest.as_ref().map(RepositoryPath::as_path),
+        Some(Path::new("Cargo.toml"))
+    );
+    assert!(
+        target.covers.is_empty(),
+        "the amendment's target covers nothing"
+    );
+    assert!(
+        target.what.starts_with("The library"),
+        "the amendment's `what` is the sentence it wrote: {:?}",
+        target.what
+    );
+    assert!(
+        target.published_by.contains("release.yml"),
+        "the amendment's `published_by` names the workflow: {:?}",
+        target.published_by
+    );
+    let [retired] = &declared.retired[..] else {
+        panic!("the amendment spells exactly one [[retired]] entry");
+    };
+    assert_eq!(retired.id.to_string(), "pypi:onepipeline-ui-cli");
+    assert!(!retired.why.is_empty());
+
+    // …and rendering it back reads as the same declaration, which is the promise the
+    // amendment makes. The comments it was written with are gone, which is the other
+    // half of that promise and the reason it is stated where a caller meets it.
+    let rendered = onevcs::render_release_declaration(&declared).expect("it renders");
+    assert!(
+        !rendered.contains('#'),
+        "a rendering answers the declaration and none of the prose around it: {rendered}"
+    );
+    assert_eq!(
+        onevcs::validate_release_declaration(&rendered, "a rendering").expect("it reads back"),
+        declared,
+        "reading a rendered declaration answers the declaration it was handed"
+    );
+}
+
+#[test]
+fn the_amendment_declares_the_producer_declaration_it_added() {
+    // Built from outside the crate with every field named, the way every other
+    // amendment is reconciled: the compiler checks the shape, and the assertions below
+    // check that the text still declares it.
+    let declared = onevcs::Declaration {
+        schema_version: onevcs::declaration::SCHEMA_VERSION,
+        probe: Some(
+            "scripts/release-probe.sh"
+                .parse()
+                .expect("a repository path"),
+        ),
+        targets: vec![onevcs::DeclaredTarget {
+            id: "crate:onevcs".parse().expect("an identifier"),
+            name: TargetName::try_from("crate".to_owned()).expect("a name"),
+            what: "The library and the `onevcs` binary."
+                .parse()
+                .expect("a sentence"),
+            published_by: ".github/workflows/release.yml — the publish-crate job."
+                .parse()
+                .expect("a sentence"),
+            manifest: Some("Cargo.toml".parse().expect("a repository path")),
+            covers: vec!["npm:onevcs-cli-linux-x64".parse().expect("an identifier")],
+        }],
+        retired: vec![onevcs::RetiredArtifact {
+            id: "pypi:onepipeline-ui-cli".parse().expect("an identifier"),
+            why: "What the wrappers released up to v0.1.0."
+                .parse()
+                .expect("a sentence"),
+        }],
+    };
+    assert_eq!(
+        declared.targets[0].covers[0].registry(),
+        "npm",
+        "a covered artifact keeps the registry it was spelled with"
+    );
+
+    let declarations = amendment_declaring("pub struct Declaration");
+    for spelled in [
+        "pub const FILE: &str = \"release-targets.toml\";",
+        "pub const SCHEMA_VERSION: u32 = 1;",
+        "pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,",
+        "pub targets: Vec<DeclaredTarget>,",
+        "pub retired: Vec<RetiredArtifact> }",
+        "pub fn target(&self, name: &TargetName) -> Option<&DeclaredTarget>;",
+        "pub struct DeclaredTarget { pub id: RegistryId, pub name: TargetName,",
+        "pub what: Prose, pub published_by: Prose,",
+        "pub manifest: Option<RepositoryPath>,",
+        "pub covers: Vec<RegistryId> }",
+        "pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }",
+        "impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }",
+        "pub struct Prose(String);",
+        "pub struct RepositoryPath(PathBuf);",
+        "impl RepositoryPath { pub fn as_path(&self) -> &Path; }",
+        "pub fn read_release_declaration(path: &Path) -> Result<Declaration>;",
+        "pub fn validate_release_declaration(document: &str, origin: &str) \
+         -> Result<Declaration>;",
+        "pub fn render_release_declaration(declared: &Declaration) -> Result<String>;",
+    ] {
+        assert!(
+            declarations.contains(spelled),
+            "the producer amendment no longer declares: {spelled}"
+        );
+    }
+    assert_eq!(
+        onevcs::declaration::FILE,
+        "release-targets.toml",
+        "the one name a declaration is found under"
+    );
+
+    // The keys a `--json` reader routes on are the document's own, so a rename that
+    // only touched Rust would break every consumer while still compiling.
+    assert_eq!(
+        serde_json::to_value(&declared).expect("a declaration serializes"),
+        json!({
+            "schema_version": 1,
+            "probe": "scripts/release-probe.sh",
+            "target": [{
+                "id": "crate:onevcs",
+                "name": "crate",
+                "what": "The library and the `onevcs` binary.",
+                "published_by": ".github/workflows/release.yml — the publish-crate job.",
+                "manifest": "Cargo.toml",
+                "covers": ["npm:onevcs-cli-linux-x64"],
+            }],
+            "retired": [{
+                "id": "pypi:onepipeline-ui-cli",
+                "why": "What the wrappers released up to v0.1.0.",
+            }],
+        })
+    );
+}
+
+#[test]
+fn the_two_release_documents_stay_two_formats_and_the_contract_says_why() {
+    // The one thing a later reader is most likely to "fix": two documents about
+    // releases, so reconcile them. The amendment carries the argument against that, and
+    // this is what stops the argument being dropped while the code keeps both readers.
+    let unwrapped = |doc: &str| doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let amendments = unwrapped(&regions().0);
+    for sentence in [
+        "A repository declares **what it publishes**; a host declares **what it waits on**",
+        "Reconciling them into one format would make one of those two facts unstateable.",
+    ] {
+        assert!(
+            amendments.contains(&unwrapped(sentence)),
+            "the producer amendment no longer says why the two documents stay two \
+             formats: {sentence}"
+        );
+    }
 }
 
 #[test]

@@ -17,6 +17,10 @@
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod accounting;
 mod cli;
+// The producer's own release declaration. It drives the binary and, for the half of
+// the promise a binary cannot show, the library beside it — see its own header.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod declaration;
 // The terms two backends' event streams are compared on. Shared with the
 // real-backend tier in `tests/smoke`, so one leg cannot accept a difference the
 // other rejects.

@@ -569,6 +569,40 @@ Baselines are captured by the publication, on its own stream, and best effort li
 the landing record beside them: the change has already merged, and failing it over
 a footnote would send somebody to land work that is landed.
 
+## Two release documents, and neither is the other
+
+`releases.rs` and `release.rs` are the **host's** half: `$ONEVCS_HOME/releases.yml`,
+which says what this host waits on, per repository. `declaration.rs` is the
+**producer's** half: the `release-targets.toml` a repository carries at its own root,
+which says what that repository publishes. The canonical schema for the second is
+`docs/contract.md`'s amendment, and six repositories write against that text and
+nothing else — so it is the one place the schema is stated, and a field added to the
+type without being added there is a field five other repositories will never write.
+
+Three things are easy to undo.
+
+- **They are two formats on purpose.** A repository declares what it publishes and a
+  host declares what it waits on; a host waits on a target nobody has published yet,
+  and a repository publishes things no host waits on, so reconciling the two into one
+  format makes one of those facts unstateable. `the_two_release_documents_stay_two_formats_and_the_contract_says_why`
+  in `tests/contract.rs` is what keeps the argument in the file.
+- **Deciding between them is not here.** Nothing in `declaration.rs` reads the host
+  document, and nothing in `release.rs` reads a producer's. What a repository's targets
+  *are* when both have an opinion is a later question, and a call that consulted both
+  would answer it by accident.
+- **A short name is `TargetName` and not a second name type.** It is what the host
+  document calls a target, what a `--target` operand takes, what a release record is
+  keyed by, and what a consumer's plan names — one vocabulary, validated in one
+  conversion. The registry-qualified `id` beside it is a different thing and cannot
+  stand in for it: one repository publishes both `pypi:onejudge-cli` and `pypi:onejudge`.
+
+Reading is lenient above `SCHEMA_VERSION` and strict at it: a later schema's keys are
+ignored, and an unrecognized key at the version this build knows is refused **by name**,
+because the likeliest defect in a hand-written file is a typo and reading `manifset` as
+an absent `manifest` publishes an answer nobody declared. And a rendering answers the
+declaration alone — a producer's comments were never read, so writing one back over
+their file deletes the reasoning that is the most valuable thing in it.
+
 ## The disk is a resource, and one retention rule frees it
 
 Every branch-keyed landing cuts a run root, and `sweep.rs` holds the only rule that
