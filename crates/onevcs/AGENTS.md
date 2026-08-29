@@ -599,10 +599,18 @@ Three things are easy to undo.
   conversion. The registry-qualified `id` beside it is a different thing and cannot
   stand in for it: one repository publishes both `pypi:onejudge-cli` and `pypi:onejudge`.
 
-Reading is lenient above `SCHEMA_VERSION` and strict at it: a later schema's keys are
-ignored, and an unrecognized key at the version this build knows is refused **by name**,
-because the likeliest defect in a hand-written file is a typo and reading `manifset` as
-an absent `manifest` publishes an answer nobody declared. And a rendering answers the
+Reading spans `OLDEST_SCHEMA_VERSION..=SCHEMA_VERSION` and stays lenient above it: a
+later schema's keys are ignored, and an unrecognized key at a version this build knows
+the keys of is refused **by name**, naming the version the *document* declared, because
+the likeliest defect in a hand-written file is a typo and reading `manifset` as an
+absent `manifest` publishes an answer nobody declared. **The two constants are two
+promises and neither implies the other** — a producer writes `SCHEMA_VERSION`, a
+consumer reads from `OLDEST_SCHEMA_VERSION` up — and version 2 is the npm scoped
+identifier form rather than a key. A version 1 declaration naming a scoped package is
+read rather than refused: six committed declarations already do, and the version says
+what a producer *states* about their file, not a second gate the identifiers pass
+through. `tests/golden/release-declaration-v*.toml` are the committed documents that
+hold both versions readable. And a rendering answers the
 declaration alone — a producer's comments were never read, so writing one back over
 their file deletes the reasoning that is the most valuable thing in it.
 

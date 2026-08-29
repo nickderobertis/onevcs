@@ -1216,6 +1216,37 @@ fn declaration_naming(id: &str) -> String {
 }
 
 #[test]
+fn the_amendment_states_the_version_a_producer_writes_and_the_oldest_a_consumer_reads() {
+    // Two constants, two promises, and one place they are stated for the six
+    // repositories that write against this text. A bump that moved a constant without
+    // moving the amendment would leave five of them writing a version nobody declared.
+    let unwrapped = |doc: &str| doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let amendments = unwrapped(&regions().0);
+    let writes = onevcs::declaration::SCHEMA_VERSION;
+    let oldest = onevcs::declaration::OLDEST_SCHEMA_VERSION;
+    for sentence in [
+        format!("`{writes}` is what a producer writes today; `{oldest}` is still read"),
+        format!("**Version {writes} is the npm scoped form, and version {oldest} does not stop being readable.**"),
+    ] {
+        assert!(
+            amendments.contains(&unwrapped(&sentence)),
+            "the producer amendment no longer states the readable version range: {sentence}"
+        );
+    }
+    assert!(
+        oldest <= writes,
+        "a build writes a version it can read: {oldest} to {writes}"
+    );
+
+    // …and the canonical example is written at the version a producer writes, so the
+    // document six repositories copy is not one release behind the text beside it.
+    assert!(
+        documented_declaration().contains(&format!("schema_version = {writes}")),
+        "the amendment's own example declares the version a producer writes"
+    );
+}
+
+#[test]
 fn the_amendment_spells_the_scoped_form_and_this_build_reads_exactly_what_it_spells() {
     // The amendment is the whole of what six repositories write against, so a producer
     // publishing an npm scoped package has to be able to tell from the text alone that
@@ -1311,7 +1342,8 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
     let declarations = amendment_declaring("pub struct Declaration");
     for spelled in [
         "pub const FILE: &str = \"release-targets.toml\";",
-        "pub const SCHEMA_VERSION: u32 = 1;",
+        "pub const SCHEMA_VERSION: u32 = 2;",
+        "pub const OLDEST_SCHEMA_VERSION: u32 = 1;",
         "pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,",
         "pub targets: Vec<DeclaredTarget>,",
         "pub retired: Vec<RetiredArtifact> }",
@@ -1346,7 +1378,9 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
     assert_eq!(
         serde_json::to_value(&declared).expect("a declaration serializes"),
         json!({
-            "schema_version": 1,
+            // The version this build writes, spelled as the number a consumer would
+            // read off the wire rather than as the constant that produced it.
+            "schema_version": 2,
             "probe": "scripts/release-probe.sh",
             "target": [{
                 "id": "crate:onevcs",
