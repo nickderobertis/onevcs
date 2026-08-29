@@ -137,8 +137,12 @@ not tell you:
   subject is the PR title. Queue with `gh pr merge --auto --squash`; head
   branches auto-delete. Admins may bypass in a break-glass.
 - **All gating checks are required**: `gate`, `cross`, `msrv`, `deny`, `install`,
-  `pr-title`, and `llmlint`. `published-smoke.yml` is a schedule, never a PR
-  check, so it cannot be required. `smoke` is deliberately not on that list: it
+  `pr-title`, and `llmlint`. `published-smoke.yml` runs on `release.yml`
+  completing and on manual dispatch, never on a pull request, so it cannot be
+  required — branch protection lists contexts a pull request reports. Its own
+  `report` job is what a failure of it announces itself through, since no PR turns
+  red for it: `scripts/report-workflow-failure.sh` opens one issue here and
+  comments on that same issue at each further failure. `smoke` is deliberately not on that list: it
   runs on `pull_request` only and takes `secrets.RELEASE_PLZ_TOKEN` as `GH_TOKEN`,
   and that token is not allowed to read the scratch repository's checks — so one
   of its journeys cannot pass, and requiring it would block every pull request on

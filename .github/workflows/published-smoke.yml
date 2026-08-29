@@ -10,9 +10,10 @@ name: Published smoke
 #
 # So this runs the identical `scripts/smoke-published.sh` those jobs run, against
 # `latest` rather than a tag, on Linux, both macOS architectures, and Windows,
-# once a week. The registry's own idea of the version (`pip show`, `npm view`) is
-# what the binary is held to, so a package whose metadata and payload disagree
-# fails here rather than confusing someone reading `--version`.
+# every time `release.yml` finishes. The registry's own idea of the version (`pip
+# show`, `npm view`) is what the binary is held to, so a package whose metadata
+# and payload disagree fails here rather than confusing someone reading
+# `--version`.
 #
 # The third install surface is `cargo install onevcs`, which resolves from
 # crates.io and is proven on all three platforms by ci.yml's `install` job on every
@@ -24,34 +25,54 @@ name: Published smoke
 # — a sweep that took ten minutes a platform would be the first thing switched off,
 # and this one has to keep running while nobody is looking.
 #
+# A failure here has nowhere of its own to appear: there is no pull request to
+# turn red and nobody waiting on the run. So the `report` job below files it,
+# through `scripts/report-workflow-failure.sh` — one open issue, commented on at
+# each further failure. Without it this sweep detected a live npm publication
+# defect for months and told no one, which is what a red square in a tab nobody
+# opens is worth.
+#
 # NOT a required check, and it cannot become one: branch protection lists contexts
 # a *pull request* reports, and nothing here runs on one. See AGENTS.md.
 #
-# llmlint: ignore-file[changed_behavior_has_e2e] this workflow is a schedule, two
-# registry installs, and a call to scripts/smoke-published.sh. The script is what holds
-# the behaviour, and it is driven for real by crates/onevcs/tests/e2e/smoke.rs over the
-# compiled binary — same file, same assertions. What is left here is the trigger and the
-# two installs, which only a hosted runner and a live registry can exercise; simulating
-# either would put the simulation under test.
+# llmlint: ignore-file[changed_behavior_has_e2e] this workflow is a trigger, two registry
+# installs, and calls to two committed scripts. The scripts are what hold the behaviour,
+# and both are driven for real: scripts/smoke-published.sh by
+# crates/onevcs/tests/e2e/smoke.rs over the compiled binary, and
+# scripts/report-workflow-failure.sh by crates/onevcs/tests/e2e/scripts.rs over both of
+# its create-or-comment branches — same files, same assertions. What is left here is the
+# trigger and the two installs, which only a hosted runner and a live registry can
+# exercise; simulating either would put the simulation under test.
 #
-# llmlint: ignore-file[live_tier_compiles_and_requires_credential] there is no credential
-# to require: every step reads a public registry anonymously, and the jobs are switched by
+# llmlint: ignore-file[live_tier_compiles_and_requires_credential] the smoke legs need no
+# credential: every step reads a public registry anonymously, and the jobs are switched by
 # the same PYPI_PUBLISH / NPM_PUBLISH repository variables that decide whether this
 # project publishes to those registries at all. A repo that publishes nowhere has nothing
-# to smoke, and a weekly red run for an absent package is how a sweep gets switched off.
+# to smoke, and a red run for an absent package is how a sweep gets switched off. The one
+# credential here is the job-scoped GITHUB_TOKEN the `report` job files an issue with,
+# which is issued to the run rather than provisioned, so there is nothing for a leg to
+# refuse the absence of.
 
 on:
-  schedule:
-    # Mondays, early UTC: a break found at the start of the week gets a week to be
-    # fixed in, and an off-the-hour minute keeps this out of the queue every other
-    # cron job on GitHub is in.
-    - cron: "23 6 * * 1"
+  # Every completion of this repository's release workflow. That is precisely when
+  # the registries' answer can have just become wrong, so the sweep asks then
+  # rather than on a timer that cannot know — the difference between a publication
+  # defect found in minutes and one found whenever the timer next came round.
+  #
+  # Not filtered on `release.yml` having succeeded, on purpose: a release that
+  # failed part-way is the *likeliest* producer of the defect this exists to catch.
+  # A dist-tag pointing at a build that never shipped is exactly what a publish
+  # that stopped between its steps leaves behind.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   # The manual entry point — after a registry incident, or to confirm a fix
-  # without waiting for Monday.
+  # without waiting for the next release.
   workflow_dispatch:
 
-# Nothing by default. Each job asks for `contents: read` because it checks out the
-# smoke script; nothing here writes anything.
+# Nothing by default. The smoke jobs ask for `contents: read` because they check
+# out the smoke script and read public registries anonymously; only `report` may
+# write, and only issues.
 permissions: {}
 
 concurrency:
@@ -151,3 +172,51 @@ jobs:
           bash scripts/smoke-published.sh \
             --expect-version "$VERSION" \
             --label "npm onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
+
+  # Somewhere for a failure to be seen. Neither trigger above reports into a pull
+  # request, so a red leg announces itself nowhere unless this job files it — and
+  # what it is announcing is that what users install right now is broken.
+  #
+  # One issue, commented on at each further failure, so a bad release followed by
+  # a bad fix is one thread rather than a pile of issues nobody reads. The
+  # create-or-comment decision lives in the committed script, not here, because it
+  # is real behaviour with two branches: crates/onevcs/tests/e2e/scripts.rs drives
+  # both of them.
+  report:
+    name: report
+    # `failure()` and not `always()`: every smoke leg green has nothing to file,
+    # and both smoke jobs *skipped* — the state of a repository that publishes to
+    # neither registry — is not a failure either.
+    if: ${{ failure() }}
+    needs: [pypi, npm]
+    permissions:
+      # The checkout below is why the script this runs is in the workspace at all;
+      # issues are the only thing this workflow writes, and only from here.
+      contents: read
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: File the failure where somebody will see it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # Constant, because it is also how the script finds the thread it
+          # already opened. Editing it starts a new one.
+          TITLE: "Published smoke is failing"
+          BODY: |
+            `published-smoke` failed: what PyPI and npm are serving as `latest`
+            right now does not install and behave the way the shipped artifact
+            must. Nothing else in this repository installs from a registry between
+            releases, so this is the only place that break shows up before a user
+            hits it.
+
+            ACTION: open the run below and read the red leg — it names the
+            registry, the platform, and the version the registry claims, and the
+            `ACTION:` line under its `::error::` says what to do about that
+            particular break. A release that stopped part-way is the usual cause,
+            and re-cutting it is the usual fix.
+
+            Triggered by: ${{ github.event.workflow_run.html_url || 'a manual dispatch' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/report-workflow-failure.sh

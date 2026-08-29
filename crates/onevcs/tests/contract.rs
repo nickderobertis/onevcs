@@ -3728,3 +3728,145 @@ jobs:
         "a name in another table must not answer for the project's"
     );
 }
+
+/// The `on:` block of a workflow, which YAML's own resolver would happily read as
+/// the boolean `true` — so both spellings are asked for, and a workflow whose
+/// triggers cannot be read stops this rather than passing with none.
+fn workflow_triggers(workflow: &str) -> serde_yaml_ng::Mapping {
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
+    doc.get("on")
+        .or_else(|| doc.get(serde_yaml_ng::Value::Bool(true)))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .cloned()
+        .expect("a workflow declares what triggers it")
+}
+
+#[test]
+fn the_published_smoke_asks_when_the_answer_can_have_changed_and_reports_when_it_is_wrong() {
+    // Two properties, and each is what makes this sweep worth having.
+    //
+    // It fires on `release.yml` completing, because that is the moment what the
+    // registries serve can have just become wrong. A timer asks at a moment
+    // unrelated to the answer, and this repository spent months on one, detecting a
+    // live publication defect it told nobody about.
+    //
+    // And a failure has somewhere to be seen. Neither trigger reports into a pull
+    // request — which is also why this can never be a required check; see AGENTS.md
+    // — so unless a job of its own files the failure, nothing does. Both halves are
+    // pinned here because both rot silently: a sweep that stopped running and a
+    // sweep whose failures nobody reads look identical from outside.
+    let workflow = repo_file(".github/workflows/published-smoke.yml");
+    let triggers = workflow_triggers(&workflow);
+
+    // The release workflow is named rather than spelled, so renaming it fails here
+    // instead of leaving a `workflow_run` that matches nothing and never fires.
+    let release: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&repo_file(".github/workflows/release.yml"))
+            .expect("a workflow file is YAML");
+    let release_name = release
+        .get("name")
+        .and_then(serde_yaml_ng::Value::as_str)
+        .expect("the release workflow names itself");
+    let watched: Vec<&str> = triggers
+        .get("workflow_run")
+        .and_then(|on| on.get("workflows"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(serde_yaml_ng::Value::as_str)
+                .collect()
+        })
+        .expect("the published smoke runs when a workflow completes");
+    assert!(
+        watched.contains(&release_name),
+        "the published smoke watches {watched:?}, which does not include the release \
+         workflow {release_name:?} — so it would never run after a release"
+    );
+
+    // The manual entry point, which is what an operator reaches for after a
+    // registry incident, and nothing that asks on a timer.
+    assert!(
+        triggers.contains_key("workflow_dispatch"),
+        "the manual entry point is gone, so a registry incident has no way to \
+         re-ask: {:?}",
+        triggers.keys().collect::<Vec<_>>()
+    );
+    for absent in ["schedule", "pull_request"] {
+        assert!(
+            !triggers.contains_key(absent),
+            "the published smoke declares a `{absent}` trigger; AGENTS.md and this \
+             workflow's own header both say it has neither"
+        );
+    }
+
+    // The reporting job: it exists, it checks this repository out so the script it
+    // runs is in its workspace, it may write issues, and it waits on every other
+    // job — a smoke leg added without being reported is a leg that fails unheard.
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&workflow).expect("a workflow file is YAML");
+    let jobs = doc
+        .get("jobs")
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .expect("a workflow has jobs");
+    const REPORTER: &str = "scripts/report-workflow-failure.sh";
+    let (name, job) = jobs
+        .iter()
+        .find(|(_, job)| {
+            job.get("steps")
+                .and_then(serde_yaml_ng::Value::as_sequence)
+                .into_iter()
+                .flatten()
+                .filter_map(|step| step.get("run").and_then(serde_yaml_ng::Value::as_str))
+                .any(|run| run.contains(REPORTER))
+        })
+        .expect(
+            "no job of the published smoke runs the reporter, so a failure would \
+             announce itself nowhere",
+        );
+    let name = name.as_str().expect("a job's key is its name").to_owned();
+
+    assert!(
+        repo_root().join(REPORTER).is_file(),
+        "the reporting job runs {REPORTER}, which is not in the checkout it runs from"
+    );
+    assert!(
+        job.get("steps")
+            .and_then(serde_yaml_ng::Value::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|step| step.get("uses").and_then(serde_yaml_ng::Value::as_str))
+            .any(|uses| uses.starts_with("actions/checkout")),
+        "the `{name}` job runs a committed script without checking the repository \
+         out, so its workspace holds no such file"
+    );
+    assert_eq!(
+        job.get("permissions")
+            .and_then(|permissions| permissions.get("issues"))
+            .and_then(serde_yaml_ng::Value::as_str),
+        Some("write"),
+        "the `{name}` job cannot open an issue without being granted one — the \
+         workflow's default is `permissions: {{}}`"
+    );
+    let needs: Vec<&str> = job
+        .get("needs")
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .map(|needs| {
+            needs
+                .iter()
+                .filter_map(serde_yaml_ng::Value::as_str)
+                .collect()
+        })
+        .unwrap_or_default();
+    let unreported: Vec<&str> = jobs
+        .keys()
+        .filter_map(serde_yaml_ng::Value::as_str)
+        .filter(|job| *job != name && !needs.contains(job))
+        .collect();
+    assert!(
+        unreported.is_empty(),
+        "the `{name}` job does not wait on {unreported:?}, so a failure of those \
+         jobs is reported nowhere"
+    );
+}

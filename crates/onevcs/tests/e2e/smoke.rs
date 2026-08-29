@@ -2,8 +2,8 @@
 //! compiled.
 //!
 //! `scripts/smoke-published.sh` is what `release.yml`'s verify jobs and the
-//! weekly `published-smoke.yml` sweep run over a binary installed from PyPI or
-//! npm. Running the identical file here is what stops a workflow's idea of "it
+//! `published-smoke.yml` sweep — which `release.yml` completing triggers — run
+//! over a binary installed from PyPI or npm. Running the identical file here is what stops a workflow's idea of "it
 //! works" from drifting from the binary that actually ships: a `--version | grep`
 //! inlined in a workflow keeps passing after the surface around it changes shape.
 //!
