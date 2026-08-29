@@ -1,0 +1,32 @@
+# The same declaration at schema version 2 — the version a producer writes today.
+#
+# Version 2 is the schema that spells the npm scoped form as a name a `target.id` or
+# a `covers` entry may take. The keys are version 1's, key for key: this file and
+# `release-declaration-v1.toml` beside it declare the same thing, and the number is
+# what the producer states about which spellings a reader should expect.
+schema_version = 2
+probe = "scripts/release-probe.sh"
+
+[[target]]
+id = "npm:oneharness-cli"
+name = "cli-npm"
+what = "The launcher that resolves and execs the prebuilt binary."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness/package.json's name."
+manifest = "npm/oneharness/package.json"
+covers = [
+  "npm:@oneharness/cli-linux-x64",
+  "npm:@oneharness/cli-linux-arm64",
+  "npm:@oneharness/cli-darwin-x64",
+  "npm:@oneharness/cli-darwin-arm64",
+  "npm:@oneharness/cli-win32-x64",
+]
+
+[[target]]
+id = "npm:@oneharness/sdk"
+name = "node-sdk"
+what = "The typed Node.js client, imported as `@oneharness/sdk`."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness-sdk/package.json's name."
+
+[[retired]]
+id = "pypi:oneharness"
+why = "The name was unavailable; `pypi:oneharness-cli` is what ships instead."

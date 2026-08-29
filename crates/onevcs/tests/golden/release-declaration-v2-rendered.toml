@@ -1,0 +1,26 @@
+schema_version = 2
+probe = "scripts/release-probe.sh"
+
+[[target]]
+id = "npm:oneharness-cli"
+name = "cli-npm"
+what = "The launcher that resolves and execs the prebuilt binary."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness/package.json's name."
+manifest = "npm/oneharness/package.json"
+covers = [
+    "npm:@oneharness/cli-linux-x64",
+    "npm:@oneharness/cli-linux-arm64",
+    "npm:@oneharness/cli-darwin-x64",
+    "npm:@oneharness/cli-darwin-arm64",
+    "npm:@oneharness/cli-win32-x64",
+]
+
+[[target]]
+id = "npm:@oneharness/sdk"
+name = "node-sdk"
+what = "The typed Node.js client, imported as `@oneharness/sdk`."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness-sdk/package.json's name."
+
+[[retired]]
+id = "pypi:oneharness"
+why = "The name was unavailable; `pypi:oneharness-cli` is what ships instead."

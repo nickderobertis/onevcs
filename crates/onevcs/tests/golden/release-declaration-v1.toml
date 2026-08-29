@@ -1,0 +1,40 @@
+# A producer's declaration at schema version 1, kept readable forever.
+#
+# This is `nickderobertis/oneharness`'s own document, cut to what a reader has to
+# get right: it declares `schema_version = 1` and it names six npm scoped packages,
+# because it was written and committed before version 2 said the scoped form was
+# part of the schema. A build that refused it would refuse a file that is already in
+# a repository nobody is going to rewrite on this crate's clock.
+#
+# The comments are here on purpose too: a declaration is mostly prose, and a reading
+# of this file answers what it declares and keeps none of this.
+schema_version = 1
+probe = "scripts/release-probe.sh"
+
+# Every optional field present: a manifest to read the version from, and the
+# per-platform packages this release also ships.
+[[target]]
+id = "npm:oneharness-cli"
+name = "cli-npm"
+what = "The launcher that resolves and execs the prebuilt binary."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness/package.json's name."
+manifest = "npm/oneharness/package.json"
+covers = [
+  "npm:@oneharness/cli-linux-x64",
+  "npm:@oneharness/cli-linux-arm64",
+  "npm:@oneharness/cli-darwin-x64",
+  "npm:@oneharness/cli-darwin-arm64",
+  "npm:@oneharness/cli-win32-x64",
+]
+
+# …and every optional field absent, which is the other half of what a reader has to
+# get right: neither key is written as an empty one.
+[[target]]
+id = "npm:@oneharness/sdk"
+name = "node-sdk"
+what = "The typed Node.js client, imported as `@oneharness/sdk`."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness-sdk/package.json's name."
+
+[[retired]]
+id = "pypi:oneharness"
+why = "The name was unavailable; `pypi:oneharness-cli` is what ships instead."

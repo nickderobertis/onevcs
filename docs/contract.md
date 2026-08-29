@@ -1200,7 +1200,7 @@ and a location it would have to be told is a location it cannot discover. Top-le
 keys come before any table, which TOML requires:
 
 ```toml
-schema_version = 1
+schema_version = 2
 probe = "scripts/release-probe.sh"   # optional; the script that answers what a
                                      # registry currently serves for one `id` below
 
@@ -1224,10 +1224,10 @@ no field invented beside it:
 
 | Key | Required | What it is for |
 | --- | --- | --- |
-| `schema_version` | yes | The schema this document is written against. `1` is the shape here. It is the first key, before any table, because TOML puts every top-level value ahead of the first `[table]` and a reader has to know the version before it reads the shape. |
+| `schema_version` | yes | The schema this document is written against. `2` is what a producer writes today; `1` is still read, and the difference between them is the npm scoped form below. It is the first key, before any table, because TOML puts every top-level value ahead of the first `[table]` and a reader has to know the version before it reads the shape. |
 | `probe` | no | The script, relative to the repository root, that answers what a registry currently serves for one `id`. A repository whose targets are answered some other way declares none. |
 | `[[target]]` | at least one | One consumable artifact: something a dependent names in order to depend on it. Their order is publication order. |
-| `target.id` | yes | `<registry>:<name>`, where `<name>` is exactly what that registry serves. The qualification is load-bearing: `onevcs-cli` is both a PyPI project and an npm package published from one repository on two cadences, so the bare name is two artifacts. |
+| `target.id` | yes | `<registry>:<name>`, where `<name>` is exactly what that registry serves — including an npm scoped package, so `npm:@oneharness/cli-linux-x64` is an identifier a producer may declare. The qualification is load-bearing: `onevcs-cli` is both a PyPI project and an npm package published from one repository on two cadences, so the bare name is two artifacts. |
 | `target.name` | yes | The short name, unique in the file. It is what `$ONEVCS_HOME/releases.yml` calls this target and what a plan node's `consumes` map names, and it is `TargetName` — the same validated type every release command and every release record already uses, not a second name type beside it. It cannot be derived from `id`, because one repository publishes both `pypi:onejudge-cli` and `pypi:onejudge`. |
 | `target.what` | yes | One sentence saying what a dependent gets. |
 | `target.published_by` | yes | The workflow and job that publish it, and the manifest its name and version come from. |
@@ -1244,7 +1244,8 @@ is — the TOML reader's own line and column for a field, and the entry's positi
 identifier for anything only a whole document can be wrong about. Refused: no
 `schema_version`, or one below `1`; a key this schema does not declare, at the version
 this build knows; a missing required field; an `id` or a `covers` entry that is not
-`<registry>:<name>` with a name spelled in the alphabet a registry serves; a `name`
+`<registry>:<name>` with a name spelled in the alphabet a registry serves, or that
+opens an npm scope it does not finish; a `name`
 that is not a `TargetName`; two targets taking one short name, or one identifier; a
 declaration with no `[[target]]` at all — because a consumer cannot tell that from
 nobody having said anything; a `covers` entry that is also a declared target, or that
@@ -1268,13 +1269,42 @@ than one that is refused on either.
 these files and a closed set at this boundary would refuse an artifact somebody
 genuinely publishes with no way to grant an exception. What is closed is the *shape*.
 
-**A declaration is read leniently above the version this build knows, and strictly
-at it.** A document declaring a later `schema_version` is read as this shape with
-whatever it names beyond it ignored, so a consumer one release behind still learns
-what a repository one release ahead publishes. At `schema_version = 1` an
-unrecognized key is refused *by name*, because a typo is the likeliest defect in a
-hand-written document and reading `manifset` as an absent `manifest` publishes an
-answer nobody declared.
+**The name half is what the registry serves, and an npm scoped package is one of
+those.** A name is either a plain one — a letter or a digit, then letters, digits,
+`-`, `_`, `.`, `@`, `/` — or the scoped form `@scope/name`, whose scope and package
+are each a letter or a digit followed by letters, digits, `-`, `_` and `.`. It is
+spelled out here rather than left to a reader's sense of what a registry serves
+because a producer has to be able to tell, before writing a declaration, whether the
+identifier they publish under is expressible: npm really does serve
+`@oneharness/cli-linux-x64`, and a grammar refusing it would make a producer choose
+between declaring artifacts npm does not publish and hiding ones it does. A leading
+`@` therefore commits a name to the scoped form and is decided there in full, which
+is what refuses `@`, `@/cli`, `@scope/`, and a second slash — none of them names
+anything, and reading them as a plain name that happens to start with an `@` would
+accept all four.
+
+**A declaration is read leniently above the versions a build knows, and strictly at
+every one of them.** A document declaring a later `schema_version` is read as the
+newest shape the reader knows, with whatever it names beyond it ignored, so a
+consumer one release behind still learns what a repository one release ahead
+publishes. At a version the reader knows the keys of — `1` and `2`, which declare one
+key set — an unrecognized key is refused *by name*, and the refusal names the version
+the **document** declared rather than the newest one, because a typo is the likeliest
+defect in a hand-written document, reading `manifset` as an absent `manifest`
+publishes an answer nobody declared, and the person who has to fix it wrote against
+the schema their own file names.
+
+**Version 2 is the npm scoped form, and version 1 does not stop being readable.**
+The keys are identical; what moved is which identifiers a `target.id` or a `covers`
+entry can express. A producer declaring `2` is saying "there may be a spelling in
+here a build one release behind cannot read", which is the whole of what the number
+is for. A declaration still at `1` is read as it always was — scoped identifiers
+included, because six repositories carry a committed declaration each and several
+already name a scoped package at version 1; refusing those retroactively would
+withdraw a name npm genuinely serves from the producers this form exists for. So the
+version is what a producer *states* about their document, not a second gate the
+identifiers are put through. Move to `2` when you name a scoped package, so a reader
+can tell what it is holding.
 
 **What a declaration can hold, it can mean.** Every field that a document is
 refused over is a validated type rather than a bare scalar: `TargetName` for the
@@ -1297,7 +1327,8 @@ reads back or a refusal, never one that does not.
 ```rust
 pub mod declaration {                                 // the producer's half
     pub const FILE: &str = "release-targets.toml";
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;        // the version a producer writes
+    pub const OLDEST_SCHEMA_VERSION: u32 = 1; // the oldest a consumer reads
     pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,
                              pub targets: Vec<DeclaredTarget>,
                              pub retired: Vec<RetiredArtifact> }
