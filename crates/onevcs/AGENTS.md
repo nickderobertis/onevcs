@@ -89,7 +89,12 @@ and the filter grammar matches it. Four things about that are easy to undo.
   correlated: the session's own stream already carries the probes its publication
   ran. The set grows after `session-closed`, so the reader re-reads that file rather
   than advancing a cursor over it — a landing commit becomes knowable long after the
-  events were written.
+  events were written. Which is also why the *landing* question is asked on every read
+  that has an un-handed candidate, rather than only when that record has moved: the two
+  halves become true independently, so a reader that remembered "these did not match"
+  would answer from the last time the record moved and drop a release recorded while
+  the landing could not yet be read. That memo existed and cost a human-step release
+  its session on every host where the landing became readable second.
 
 ## A branch outlives its session, so a retried session says who continued it
 
