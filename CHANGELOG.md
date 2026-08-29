@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.10](https://github.com/nickderobertis/onevcs/compare/v0.15.9...v0.15.10) - 2026-08-29
+
+### Fixed
+
+- *(events)* hand back every release of a landing, whatever order it became visible ([#107](https://github.com/nickderobertis/onevcs/pull/107))
+
 ## [0.15.8](https://github.com/nickderobertis/onevcs/compare/v0.15.7...v0.15.8) - 2026-08-28
 
 ### Added
