@@ -75,10 +75,13 @@ and the filter grammar matches it. Four things about that are easy to undo.
   proves against a released `onevcs` from the registry rather than against this
   build's own reader.
 - **Which phases a session *has* is derived, never configured.** `stream::supported`
-  answers it from the session record, the resolved merge policy, and whether
-  `$ONEVCS_HOME/releases.yml` configures targets. Every way it can fail to reach an
-  answer **widens** the set, because a read that quietly left events out is
-  indistinguishable from a session that never wrote them. Naming an unsupported phase
+  answers it from the session record, the resolved merge policy, and whether anything
+  — `$ONEVCS_HOME/releases.yml` or the repository's own declaration — resolves a
+  release target. Every way it can fail to reach an answer **widens** the set,
+  because a read that quietly left events out is indistinguishable from a session
+  that never wrote them; a declaration this build could not read is one of those
+  ways, and is why the emptiness of the target list alone does not rule the phase
+  out. Naming an unsupported phase
   is refused where it is named; naming none drops it in silence.
 - **The release correlation is a join `onevcs` makes so a consumer never has to.**
   Where the release phase is supported, `EventStream` also hands back that identity's

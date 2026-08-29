@@ -698,6 +698,46 @@ fn a_default_target_the_three_layers_do_not_resolve_is_refused_where_they_resolv
 }
 
 #[test]
+fn a_declaration_nobody_could_read_widens_the_phases_a_session_has_rather_than_ruling_one_out() {
+    // Which phases a session has is derived, and every way that derivation fails to
+    // reach an answer widens the set — because a read that quietly left events out is
+    // indistinguishable from a session that never wrote them. A declaration this build
+    // could not read is one of those ways: no target resolved, and no reason to
+    // believe there is none.
+    let unreadable = Discovering::new();
+    unreadable.declares("schema_version = 1\n[[target]]\nid = \"nope\"\n");
+    inhabit(&unreadable.fixture.world);
+    let token = unreadable.land("feature/one");
+    let session = onevcs::SessionToken(token);
+    let filter = onevcs::EventFilter {
+        include: vec![onevcs::EventMatcher {
+            phase: Some(onevcs::Phase::Release),
+            ..onevcs::EventMatcher::default()
+        }],
+        exclude: Vec::new(),
+    };
+    onevcs::EventStream::open_filtered(&session, filter)
+        .expect("the release phase is not ruled out by a question nobody answered");
+
+    // A repository that genuinely declares nothing, on a host that configures nothing,
+    // *is* an answer — so naming the phase is refused, exactly as it always was.
+    let silent = Discovering::new();
+    inhabit(&silent.fixture.world);
+    let token = silent.land("feature/one");
+    let session = onevcs::SessionToken(token);
+    let filter = onevcs::EventFilter {
+        include: vec![onevcs::EventMatcher {
+            phase: Some(onevcs::Phase::Release),
+            ..onevcs::EventMatcher::default()
+        }],
+        exclude: Vec::new(),
+    };
+    let refused = onevcs::EventStream::open_filtered(&session, filter)
+        .expect_err("a repository that releases nothing has no release phase");
+    assert!(refused.to_string().contains("release"), "{refused}");
+}
+
+#[test]
 fn a_host_that_configures_nothing_and_repositories_that_declare_nothing_are_unchanged() {
     // The floor: everything above is additive, and a host in neither half behaves
     // exactly as it did. Asserted on the whole rendering rather than on one line,
