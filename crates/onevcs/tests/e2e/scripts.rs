@@ -1571,12 +1571,7 @@ fn a_declaration_this_repository_would_not_commit_stops_the_probe_rather_than_be
         .answered("");
 }
 
-// ---------------------------------------------------------------------------
-// scripts/report-workflow-failure.sh — the reporter that gives an unattended
-// failure somewhere to be seen.
-// ---------------------------------------------------------------------------
-
-/// The one title every journey below files under, so a journey can plant an issue
+/// The one title every reporter journey below files under, so a journey can plant an issue
 /// that matches it exactly and one that only looks like it.
 const FAILURE_TITLE: &str = "Published smoke is failing";
 
@@ -1619,9 +1614,7 @@ impl Reporter {
         // the newline that separates two of them.
         let served = dir.path().join("listed");
         std::fs::write(&served, listed).expect("the issues the stub lists");
-        // llmlint: ignore[e2e_not_mocked] see the note above this struct: the real
-        // `gh` here files issues into this repository, so crossing this boundary is
-        // the one thing a suite that runs on every commit must not do.
+        // llmlint: ignore[e2e_not_mocked] see the note directly above this struct.
         write_stub(
             &dir.path().join("gh"),
             &format!(
