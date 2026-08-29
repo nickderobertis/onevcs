@@ -38,8 +38,9 @@ name: Release
 #   * verify-npm    — the same, on the same matrix, for `npm install -g`.
 #
 # Every verify job runs the version at publish time only. `published-smoke.yml`
-# runs the identical script against whatever the registries serve as `latest`, on
-# a weekly schedule, so rot between releases surfaces without one.
+# runs the identical script against whatever the registries serve as `latest`,
+# triggered by this workflow completing, so a half-finished publish and rot that
+# sets in afterwards both surface without anyone looking.
 #
 # The version is never written here: every artifact takes it from
 # crates/onevcs/Cargo.toml (maturin via `dynamic = ["version"]`, npm via

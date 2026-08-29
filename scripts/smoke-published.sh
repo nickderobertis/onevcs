@@ -17,9 +17,9 @@
 # state root and write back what they migrated there, which is why it works over a
 # scratch one rather than over whichever the caller has.
 #
-# Deliberately toolchain-free: bash and the installed binary. The scheduled sweep
-# runs this every week on every OS, for both registries, and anything it had to
-# install first would be a second thing that can rot.
+# Deliberately toolchain-free: bash and the installed binary. `published-smoke.yml`
+# runs this on every OS, for both registries, each time a release completes, and
+# anything it had to install first would be a second thing that can rot.
 set -euo pipefail
 
 expect_version=""
