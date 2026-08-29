@@ -929,17 +929,14 @@ fn describe(target: &ReleaseTarget) -> String {
 
 /// Render what a repository's own declaration says it publishes.
 ///
-/// Three renderings of one answer: [`crate::read_release_declaration`] is what the
-/// document declares, and the table, `--json`, and `--toml` are three spellings of
-/// that value rather than three readings of the file.
+/// Two renderings of one answer: [`crate::read_release_declaration`] is what the
+/// document declares, and the table and `--json` are two spellings of that value
+/// rather than two readings of the file. Rendering it back *as TOML* is deliberately
+/// not a third — see [`crate::cli::ReleaseDeclarationArgs`].
 fn release_declaration(args: &ReleaseDeclarationArgs) -> Result<u8> {
     let declared = crate::read_release_declaration(&args.path)?;
     if args.json {
         return print_json(&declared);
-    }
-    if args.toml {
-        print!("{}", crate::render_release_declaration(&declared)?);
-        return Ok(0);
     }
     println!("schema version: {}", declared.schema_version);
     println!(

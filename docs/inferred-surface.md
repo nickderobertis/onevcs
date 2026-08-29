@@ -511,7 +511,7 @@ onevcs release targets REPO [--json]
 onevcs release latest REPO [--target NAME] [--json]
 onevcs release status REF [--target NAME] [--json]
 onevcs release acknowledge REF --target NAME --version VERSION [--supersede] [--json]
-onevcs release declaration PATH [--json] [--toml]
+onevcs release declaration PATH [--json]
 ```
 
 `REPO` is the identity key, registered alias, origin URL, or path every other
@@ -538,6 +538,7 @@ and `tests/e2e/support.rs`, exactly as the four verbs above it are.
 | a declaration's prose fields | non-blank, no control characters, at most 400 characters | `what`, `published_by` and `why` are operator-written text this crate prints on one line beside the entry they describe. A blank one leaves a reader with the identifier alone where they were promised a sentence, and one carrying a newline renders as something other than what it is wherever it lands. The reasoning behind a target belongs in a comment, which is why the cap is a cap and not a paragraph. |
 | an unrecognized key in a declaration | refused by name at `schema_version = 1`, ignored above it | The leniency every state-root document has, and the one thing a *repository's* document needs beside it. A hand-written file's likeliest defect is a typo, and reading `manifset` as an absent `manifest` publishes an answer nobody declared — so a key is refused at the version this build knows what the keys are. A later schema's keys are not this build's to have an opinion on. |
 | what a rendered declaration keeps | the declaration, and none of the comments | The value read carries no comments, because none were read: a `Declaration` is what the document declares. Stated in the contract and in the rustdoc rather than left to be discovered, since a caller who assumed otherwise loses the most valuable thing in the file. |
+| rendering as a verb | there is none — it is a library call only | `onevcs release declaration . --toml > release-targets.toml` is the obvious thing a person would type and it deletes every comment in the file. A caller *producing* a declaration has no comments to lose and reaches `render_release_declaration` through the library, so the capability exists where it is safe and not where it is a footgun. |
 
 ### Why the registry has no release-targets key, and must not grow one
 

@@ -421,14 +421,16 @@ pub struct ReleaseDeclarationArgs {
     // cannot do, and `declaration::read` is the one boundary that decides it.
     pub path: PathBuf,
     /// Report as JSON rather than as a human table.
-    #[arg(long, conflicts_with = "toml")]
-    pub json: bool,
-    /// Render the declaration back as TOML.
     ///
-    /// The declaration alone: a producer's comments are not this crate's to keep,
-    /// so this writes what was declared and never what was written around it.
-    #[arg(long, conflicts_with = "json")]
-    pub toml: bool,
+    /// The two renderings this verb has, and deliberately not a third: rendering a
+    /// declaration back *as TOML* is a library call
+    /// (`onevcs::render_release_declaration`) and not a verb, because a producer's
+    /// comments are not this crate's to keep, and a verb that redirected a rendering
+    /// over a repository's own `release-targets.toml` would delete the reasoning that
+    /// is the most valuable thing in it. A caller *producing* a declaration has no
+    /// comments to lose and reaches it through the library.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs release targets`.

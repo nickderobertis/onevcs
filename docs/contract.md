@@ -1322,11 +1322,15 @@ touches no filesystem, for a caller that fetched a declaration or is about to wr
 one; `origin` is what its refusals name the document by. None of the three takes
 `Providers`, for the reason the five above them do not.
 
-One verb renders all three: `onevcs release declaration PATH [--json] [--toml]` — the
-table, the value, and the document. It adds no capability a linking consumer cannot
-reach, which is the rule this whole surface is built to: `onepipeline` links this
-crate rather than spawning it, so consumer-side discovery reachable only by running a
-binary is unreachable from the consumer that most needs it.
+One verb renders it: `onevcs release declaration PATH [--json]` — the table and the
+value. Rendering a declaration back *as TOML* is deliberately a library call and not
+a third flag, because a producer's comments are not this crate's to keep and a verb
+that wrote one over their own file would delete the reasoning in it; a caller
+producing a declaration has no comments to lose. The verb adds no capability a
+linking consumer cannot reach, which is the rule this whole surface is built to:
+`onepipeline` links this crate rather than spawning it, so consumer-side discovery
+reachable only by running a binary is unreachable from the consumer that most needs
+it.
 
 No event kind is added: reading a file is not something that happens to a change.
 Nothing about the host document, publication, recovery, integration, or the rules file

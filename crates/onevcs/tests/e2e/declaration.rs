@@ -50,15 +50,20 @@ impl Producer {
         self.root.path().join(onevcs::declaration::FILE)
     }
 
-    /// What `onevcs release declaration` answers, as JSON.
-    fn reported(&self) -> Value {
+    /// What `onevcs release declaration` answers for one spelling of the operand.
+    fn reported_for(&self, operand: &Path) -> Value {
         let output = command()
             .args(["release", "declaration"])
-            .arg(self.path())
+            .arg(operand)
             .arg("--json")
             .assert()
             .success();
         serde_json::from_slice(&output.get_output().stdout).expect("the report is JSON")
+    }
+
+    /// What it answers for the repository root, which is how a consumer asks.
+    fn reported(&self) -> Value {
+        self.reported_for(self.path())
     }
 
     /// What the binary says when it refuses, with the exit code it refuses under.
@@ -167,28 +172,52 @@ fn the_table_a_person_reads_names_every_target_and_what_publishes_it() {
 #[test]
 fn the_declaration_it_renders_reads_back_as_the_same_declaration_and_keeps_no_comments() {
     let producer = Producer::declaring(CONFORMING);
-    let rendered = command()
-        .args(["release", "declaration"])
-        .arg(producer.path())
-        .arg("--toml")
-        .assert()
-        .success();
-    let rendered =
-        String::from_utf8(rendered.get_output().stdout.clone()).expect("the rendering is text");
+    let declared = onevcs::read_release_declaration(producer.path()).expect("a declaration");
+    let rendered = onevcs::render_release_declaration(&declared).expect("it renders");
     assert!(
         !rendered.contains("The reasoning lives here"),
         "a producer's comments are not this crate's to keep, and the rendering says \
          so by not carrying them: {rendered}"
     );
 
-    // Round-tripped through the filesystem the way a producer would use it: what the
-    // binary rendered is written as a repository's declaration and read again.
+    // Round-tripped through the filesystem the way a caller producing one would use
+    // it: what was rendered is written as a repository's declaration, and the binary
+    // reads it as the declaration it came from.
     let second = Producer::declaring(&rendered);
     assert_eq!(
         second.reported(),
         producer.reported(),
         "reading a rendered declaration answers the declaration it was rendered from"
     );
+}
+
+#[test]
+fn the_operand_is_a_repository_root_or_the_document_in_it_and_both_answer_the_same() {
+    // Both spellings the verb documents, driven through the binary: a consumer with a
+    // checkout points at the checkout, and one that already has the file points at the
+    // file. A verb that took only the first would send the second to construct a path.
+    let producer = Producer::declaring(CONFORMING);
+    assert_eq!(
+        producer.reported_for(&producer.document()),
+        producer.reported(),
+        "the document and the root it sits in are two spellings of one operand"
+    );
+    command()
+        .args(["release", "declaration"])
+        .arg(producer.document())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("crate\tcrate:onevcs\t"));
+
+    // …and a path that is neither is refused by name rather than searched for.
+    let missing = producer.path().join("nowhere.toml");
+    command()
+        .args(["release", "declaration"])
+        .arg(&missing)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("nowhere.toml"))
+        .stderr(predicate::str::contains("declares no release targets"));
 }
 
 #[test]
@@ -218,21 +247,13 @@ fn the_library_answers_what_the_command_renders_without_spawning_anything() {
     let target = validated.target(&name).expect("the launcher target");
     assert_eq!(target.id.registry(), "npm");
     assert_eq!(target.id.name(), "onevcs-cli");
-    assert_eq!(
-        onevcs::render_release_declaration(&validated).expect("it renders"),
-        String::from_utf8(
-            command()
-                .args(["release", "declaration"])
-                .arg(producer.path())
-                .arg("--toml")
-                .assert()
-                .success()
-                .get_output()
-                .stdout
-                .clone()
-        )
-        .expect("the rendering is text"),
-        "`--toml` renders the library's own answer"
+    // Rendering is a library call and deliberately not a verb: a person who typed one
+    // over their own declaration would delete every comment in it.
+    assert!(
+        !onevcs::render_release_declaration(&validated)
+            .expect("it renders")
+            .contains('#'),
+        "a rendering answers the declaration and none of the prose around it"
     );
 }
 
