@@ -1212,6 +1212,13 @@ fn a_close_refuses_while_a_process_is_working_inside_the_session_worktree() {
 
     let dispatch = working_in(&worktree);
     let pid = dispatch.id();
+    // …and what that dispatch started, in the clone beside the worktree: the whole
+    // run root is the session, and a close removes the worktree out from under
+    // anything working anywhere inside it.
+    let clone = run_root_of(&fixture.world, &token).join("clone");
+    let beside = working_in(&clone);
+    let also = beside.id();
+
     let refusal = fixture
         .world
         .onevcs()
@@ -1219,7 +1226,12 @@ fn a_close_refuses_while_a_process_is_working_inside_the_session_worktree() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("2 processes are"))
         .stderr(predicate::str::contains(format!("pid {pid}")))
+        .stderr(predicate::str::contains(format!("pid {also}")))
+        .stderr(predicate::str::contains(
+            clone.to_string_lossy().into_owned(),
+        ))
         .stderr(predicate::str::contains(token.clone()))
         .stderr(predicate::str::contains(
             worktree.to_string_lossy().into_owned(),
@@ -1244,6 +1256,18 @@ fn a_close_refuses_while_a_process_is_working_inside_the_session_worktree() {
         fixture.world.events_of(&token, "session-closed").is_empty(),
         "a session that was not closed is not reported closed"
     );
+
+    // The one still inside is enough on its own, which is what makes this a bar
+    // rather than a count.
+    stop(beside);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("one process is"))
+        .stderr(predicate::str::contains(format!("pid {pid}")));
 
     // …and once nothing is working in there, the same close releases it.
     stop(dispatch);

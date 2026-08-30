@@ -1540,22 +1540,12 @@ pub fn close(token: &str) -> Result<Record> {
 
 /// Every live process this host can show is working inside the session.
 ///
-/// The run root rather than the worktree alone, because everything a session cuts
-/// is under it — the clone a command may be reading, and the scratch tree a
-/// publication builds in — and a close removes the worktree while reclamation
-/// removes the rest. The worktree is asked separately only where a record names one
-/// that is not under its run root, so the answer is the criterion itself rather
-/// than a fact about how a session lays its directories out.
+/// The run root, which is the whole of the session: the worktree a close removes is
+/// cut inside it, and so is the clone a command may be reading and the scratch tree
+/// a publication builds in. Asking the worktree alone would answer *no* for a
+/// dispatch that had stepped into any of the rest.
 fn occupants(record: &Record) -> Vec<processes::Holder> {
-    let mut found = processes::holding(&record.run_root);
-    if !record.worktree.starts_with(&record.run_root) {
-        for holder in processes::holding(&record.worktree) {
-            if !found.iter().any(|held| held.pid() == holder.pid()) {
-                found.push(holder);
-            }
-        }
-    }
-    found
+    processes::holding(&record.run_root)
 }
 
 /// Why a close refused a session something is still working in, and what to do.
