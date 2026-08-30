@@ -954,7 +954,17 @@ esac
 subcommand="${1:-}"; shift || true
 number=""
 case "$subcommand" in
-  view|merge|checks|ready) number="${1:-}"; shift || true ;;
+  view|merge|checks|ready)
+    number="${1:-}"; shift || true
+    # The number is what selects the per-change state this subcommand reads, so it
+    # is argv reaching a path. Refuse anything but digits here, at the one place the
+    # value arrives, rather than letting it name a file further down.
+    case "$number" in
+      ""|*[!0-9]*)
+        printf 'fake gh: pr %s addresses a change by its number, not %s\n' "$subcommand" "$number" >&2
+        exit 1 ;;
+    esac
+    ;;
 esac
 
 repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""; only_required=0
