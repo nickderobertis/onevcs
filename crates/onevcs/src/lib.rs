@@ -166,10 +166,9 @@ pub fn close_session(providers: &Providers<'_>, token: &SessionToken) -> Result<
 /// sessions elsewhere therefore does not appear in this list — the same limit the
 /// command has, since the two are one path.
 ///
-/// A record whose owner has gone *and* whose run root has been reclaimed is
-/// forgotten as this answers rather than reported: it names no directory, no
-/// command can do anything with it, and a list of those is what buries the one
-/// holder a caller had to act on.
+/// A record whose owner process has exited is forgotten as this answers rather than
+/// reported: nobody is left to be asked about it, and a list of those is what
+/// buries the one holder a caller had to act on.
 pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>> {
     workspace::holders(repo)
 }

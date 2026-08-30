@@ -72,6 +72,17 @@ impl World {
 
     /// The `onevcs` binary, pointed at this world.
     pub fn onevcs(&self) -> assert_cmd::Command {
+        assert_cmd::Command::from_std(self.onevcs_std())
+    }
+
+    /// The same invocation as a plain [`std::process::Command`], for the journeys
+    /// that have to own how it is spawned.
+    ///
+    /// `assert_cmd` runs a command to completion and hands back what it wrote, which
+    /// is what nearly every journey here wants. One does not: holding the real
+    /// binary at a point in its life needs its streams and its handle, and both are
+    /// this type's rather than that one's.
+    pub fn onevcs_std(&self) -> std::process::Command {
         let mut command =
             std::process::Command::cargo_bin("onevcs").expect("the binary must be built");
         command
@@ -94,7 +105,7 @@ impl World {
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }
-        assert_cmd::Command::from_std(command)
+        command
     }
 
     /// A shell in this world, for running a command *as it was printed*.

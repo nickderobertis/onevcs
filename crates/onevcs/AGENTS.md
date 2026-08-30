@@ -724,13 +724,18 @@ same destruction reached one verb along. Whatever the worktree still holds
 uncommitted is committed behind the incomplete-step marker first, since `git
 worktree remove` forces past an unclean tree.
 
-**A record is forgotten only when it names nothing.** `workspace::holders` drops one
-whose owner is gone, whose run root has already been reclaimed, and that no
-`retried_by` points at — the tombstone nothing ever removed, seven of which above a
-launch made a real refusal read like an ignorable one. Staleness alone must never be
-the test: a session opened from the command line is stale from the instant the
-command exits, and dropping its record is what would hand a live dispatch's run root
-to the next `session open` to reap.
+**A record is forgotten when its owner process has exited.** `workspace::holders`
+drops one whose recorded owner is no longer that same running process — the record
+nothing ever removed, seven of which above a launch made a real refusal read like an
+ignorable one. The question is the owner *process* and nothing else:
+`Record::owner_is_running` is the one answer, shared with `liveness`, so a closed
+session an embedding process opened is still reported while that process runs, and a
+recycled pid is not an owner. Know what it costs, because it is not free: `onevcs
+session open` prints a token and exits, so a session opened from the command line has
+no owner from that instant — reading the holders forgets its record, and with the
+record goes the run root's protection in `reclaim`, which keeps one only while an
+*open* record names it. An operator who wants a session to outlive the command that
+opened it has to hold it from a process that stays.
 
 ## Everything durable lives under one state root
 

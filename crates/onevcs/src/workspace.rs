@@ -437,13 +437,28 @@ fn process_started(pid: u32) -> Option<ProcessStart> {
 
 impl Record {
     /// Whether the process that opened this session is that same process, still
+    /// running.
+    ///
+    /// The pid alone cannot answer it — the OS reuses pids, so a later process
+    /// wearing a dead session's number would read as its owner — so the recorded
+    /// creation identity has to be the one that process wears now.
+    ///
+    /// One answer, asked by both of the questions that turn on it: whether this
+    /// session's hold on its branch is a live one ([`liveness`], which asks the
+    /// lifecycle as well), and whether there is anybody left to answer for the
+    /// record at all ([`spent`], which does not).
+    ///
+    /// [`liveness`]: Record::liveness
+    pub fn owner_is_running(&self) -> bool {
+        self.owner_started
+            .is_some_and(|started| process_started(self.owner_pid) == Some(started))
+    }
+
+    /// Whether the process that opened this session is that same process, still
     /// running — which is what [`Liveness`] reports and what makes a session's hold
     /// on its branch a live one.
     pub fn liveness(&self) -> Liveness {
-        let same_process = self
-            .owner_started
-            .is_some_and(|started| process_started(self.owner_pid) == Some(started));
-        match self.state == Lifecycle::Open && same_process {
+        match self.state == Lifecycle::Open && self.owner_is_running() {
             true => Liveness::Live,
             false => Liveness::Stale,
         }
@@ -629,32 +644,18 @@ pub fn all() -> Result<Vec<Record>> {
 /// "nobody is in this repository" and "this is not a repository I know" are
 /// different answers to act on.
 ///
-/// **A record that can no longer name anything is forgotten here rather than
-/// listed** — see [`spent`]. Nothing else about the read changes: a stale holder
-/// whose run root is still on this host is reported as stale and left exactly
-/// alone, since reclaiming somebody else's run root is the business of opening a
-/// session rather than of looking at one. What is dropped is the tombstone left
-/// behind after that reclamation, which nothing has ever removed — and seven of
-/// them above a launch is a real refusal arriving in the same shape as seven
-/// ignorable ones.
+/// **A record whose owner process has exited is forgotten here rather than
+/// listed** — see [`spent`]. A record whose owner is still running is reported
+/// exactly as before, closed or open, live or stale.
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, repo)?;
-    let records = all()?;
-    // Read over every record on the host rather than over this repository's, because
-    // that is what a chain is: a link is written onto the older record, and dropping
-    // a record something still points at is what makes the chain unfollowable.
-    let continued: Vec<String> = records
-        .iter()
-        .filter_map(|record| record.retried_by.as_ref())
-        .map(ToString::to_string)
-        .collect();
     let mut holders = Vec::new();
-    for record in records {
+    for record in all()? {
         if record.identity != resolution.key {
             continue;
         }
-        if spent(&record, &continued) {
+        if spent(&record) {
             forget(&record.token);
             continue;
         }
@@ -663,32 +664,23 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     Ok(holders)
 }
 
-/// Whether a record has nothing left to name, which is the whole of what makes one
+/// Whether a record has nobody left to answer for it, which is what makes one
 /// litter.
 ///
-/// Three things have to hold, and each of them is load-bearing on its own.
+/// One question: has the process that opened this session gone. Not the
+/// *lifecycle* beside it — a session an embedding process opened and closed is a
+/// closed session that process can still be asked about — and not what became of
+/// its directories, which is [`reclaim`]'s question about a run root rather than
+/// this one about a record.
 ///
-/// Its **owner process** has to be gone. A record whose owner is that same process,
-/// still running, is a session something can still be done with, whatever became of
-/// its directories.
-///
-/// Its **run root** has to be gone. This is the condition that keeps the answer
-/// safe, and it is not the same question as the lifecycle: a session opened from
-/// the command line is owned by the `onevcs` that printed its token and then
-/// exited, so its record answers stale from that instant while an agent works in
-/// the worktree for hours. Dropping a record on staleness alone would take that
-/// session's protection with it — [`reclaim`] keeps a run root while an *open*
-/// record names it — and hand the directory to the next `session open` to reap,
-/// which is the destruction that check was written for. A directory that is
-/// already gone cannot be reaped twice, and `adopt` refuses such a record anyway.
-///
-/// And **nothing may still point at it**: `retried_by` is written onto the older
-/// record, and a hop that no longer reads is a chain a later reader stops at rather
-/// than following to the session that answers for the branch.
-fn spent(record: &Record, continued: &[String]) -> bool {
-    matches!(record.liveness(), Liveness::Stale)
-        && !record.run_root.exists()
-        && !continued.iter().any(|token| *token == *record.token)
+/// What it costs is stated where it is paid: seven of these above a launch made a
+/// real refusal arrive in the same shape as seven ignorable ones, and nothing has
+/// ever removed one. What it takes with it is the record of a session whose owner
+/// was a command line — `onevcs session open` prints a token and exits, so its
+/// owner is gone from that instant — and with the record goes the run root's
+/// protection in [`reclaim`], which keeps one only while an *open* record names it.
+fn spent(record: &Record) -> bool {
+    !record.owner_is_running()
 }
 
 /// Drop one spent record, saying so rather than failing the read it happened in.
@@ -704,8 +696,8 @@ fn forget(token: &Token) {
     if let Err(kept) = std::fs::remove_file(&path) {
         if kept.kind() != std::io::ErrorKind::NotFound {
             eprintln!(
-                "onevcs: warning: the session {token} names no run root on this host any more \
-                 and its record at {} could not be removed: {kept}",
+                "onevcs: warning: the session {token} has no owner process on this host any \
+                 more and its record at {} could not be removed: {kept}",
                 path.display(),
             );
         }
