@@ -814,6 +814,27 @@ fn a_missing_pinned_runtime_helper_is_actionable() {
 }
 
 #[test]
+fn a_missing_report_marker_helper_is_actionable() {
+    let workspace = Workspace::new();
+    std::fs::remove_file(workspace.root.join("scripts/llmlint-report-marker.sh"))
+        .expect("the report marker helper was there to remove");
+
+    let refused = workspace.lint(&workspace.head(), &[], &[]);
+    let refused_by_the_target =
+        workspace.run_nx_target(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
+
+    // Both ends of the tier take the marker from this one file, so both refuse
+    // without it rather than falling back to a spelling of their own — which is the
+    // drift that would disable the read-back in silence.
+    for run in [&refused, &refused_by_the_target] {
+        run.failed()
+            .says("could not load scripts/llmlint-report-marker.sh")
+            .says("git checkout -- scripts/llmlint-report-marker.sh");
+    }
+    assert_eq!(workspace.judge_runs(), 0);
+}
+
+#[test]
 fn an_unresolvable_base_is_refused_before_the_judge_runs() {
     let workspace = Workspace::new();
 
