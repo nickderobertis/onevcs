@@ -176,6 +176,9 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
         .expect("the command prints the shape the library returns");
     assert_eq!(rows, after);
 
+    // The other process finishes, which is the journey's own housekeeping: what
+    // becomes of its record once it has is
+    // `a_holder_is_reported_while_its_owner_runs_and_forgotten_once_that_process_exits`.
     elsewhere.released();
 }
 
