@@ -109,11 +109,11 @@ pub struct SessionRecord {
 ///
 /// A [`SessionRecord`] answers about a session somebody already has the token for;
 /// this answers the question before that one — *who is in this repository* — for
-/// every session the host has recorded whose owner process is still there. A
-/// record whose owner has exited is forgotten by the enumeration rather than
-/// reported above every launch, so a holder here is always one somebody can still
-/// be asked about — open or closed. It is what `onevcs session holders` prints, so
-/// a caller reading the command's JSON and a caller embedding
+/// every session the host has recorded that anybody is left to answer for: one
+/// whose owner process is still there, and one a live process is still working
+/// inside. A record with neither is forgotten by the enumeration rather than
+/// reported above every launch. It is what `onevcs session holders` prints, so a
+/// caller reading the command's JSON and a caller embedding
 /// [`crate::session_holders`] read the same shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHolder {

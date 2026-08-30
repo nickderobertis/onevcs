@@ -9,7 +9,7 @@ use onevcs::{Git, Lifecycle, Liveness, Providers, SessionHolder, SessionRequest,
 use predicates::prelude::*;
 
 use crate::honesty::inhabit;
-use crate::lifecycle::{local_direct, Fixture};
+use crate::lifecycle::{local_direct, stop, working_in, Fixture};
 use crate::world::{token_of, World};
 
 fn files_beneath(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -557,6 +557,51 @@ fn a_holder_is_reported_while_its_owner_runs_and_forgotten_once_that_process_exi
     assert!(
         !record_path(&fixture, &token).exists(),
         "and its record is forgotten rather than merely filtered out of one report"
+    );
+}
+
+#[test]
+fn a_holder_a_dispatch_is_working_in_is_retained_until_that_process_stops() {
+    // The safety this pruning must not cost. `onevcs session open` prints a token
+    // and exits, so a session opened from the command line has no owner process from
+    // that instant — while the dispatch it was opened for works in the worktree for
+    // hours. Forgetting the record then would take the run root's protection with
+    // it, because `reclaim` keeps one only while an open record names it, and the
+    // next `session open` would reap a directory somebody is inside.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/worked-in"]);
+    // The dispatch, as this crate can ever see one: a real process whose own working
+    // directory is inside the session. Started here so this journey owns its pid, and
+    // started *before* anything reads the holders, because reading them is what
+    // forgets a record — a journey that checked its premise first would be the very
+    // launch this is about.
+    let dispatch = working_in(&worktree);
+    let held = reported(&fixture);
+    let row = held
+        .iter()
+        .find(|holder| holder.token.0 == token)
+        .unwrap_or_else(|| panic!("a session something is working in is still a holder: {held:?}"));
+    assert_eq!(row.state, Lifecycle::Open);
+    assert_eq!(
+        row.liveness,
+        Liveness::Stale,
+        "the premise, and what the row says: the command that opened it has exited"
+    );
+    assert!(record_path(&fixture, &token).exists());
+    // Read again, because forgetting is what this read does: being asked twice must
+    // not wear the record down.
+    assert_eq!(reported(&fixture), held);
+
+    // …and once that exact process has stopped, there is nobody left either way.
+    stop(dispatch);
+    let after = reported(&fixture);
+    assert!(
+        !after.iter().any(|holder| holder.token.0 == token),
+        "a session with no owner and nobody inside it is not a holder: {after:?}"
+    );
+    assert!(
+        !record_path(&fixture, &token).exists(),
+        "and its record is forgotten"
     );
 }
 

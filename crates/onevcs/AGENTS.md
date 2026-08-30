@@ -724,18 +724,20 @@ same destruction reached one verb along. Whatever the worktree still holds
 uncommitted is committed behind the incomplete-step marker first, since `git
 worktree remove` forces past an unclean tree.
 
-**A record is forgotten when its owner process has exited.** `workspace::holders`
-drops one whose recorded owner is no longer that same running process — the record
+**A record is forgotten when nobody is left to answer for it, which takes two
+answers.** `workspace::holders` drops one whose recorded owner is no longer that same
+running process **and** whose run root no live process is working inside — the record
 nothing ever removed, seven of which above a launch made a real refusal read like an
-ignorable one. The question is the owner *process* and nothing else:
-`Record::owner_is_running` is the one answer, shared with `liveness`, so a closed
-session an embedding process opened is still reported while that process runs, and a
-recycled pid is not an owner. Know what it costs, because it is not free: `onevcs
-session open` prints a token and exits, so a session opened from the command line has
-no owner from that instant — reading the holders forgets its record, and with the
-record goes the run root's protection in `reclaim`, which keeps one only while an
-*open* record names it. An operator who wants a session to outlive the command that
-opened it has to hold it from a process that stays.
+ignorable one. `Record::owner_is_running` is the first, shared with `liveness`, so a
+closed session an embedding process opened is still reported while that process runs
+and a recycled pid is not an owner. `processes::holding` is the second, and it is the
+one that makes the first safe to act on: `onevcs session open` prints a token and
+exits, so a session opened from the command line has no owner process from that
+instant while its dispatch works in the worktree for hours — dropping the record then
+would take the run root's protection in `reclaim` with it, which keeps one only while
+an *open* record names it, and hand a live directory to the next `session open` to
+reap. Same answer, same reason, as the close refusal above. Ask the owner first: it is
+two file reads, and the occupancy question walks every process on the host.
 
 ## Everything durable lives under one state root
 

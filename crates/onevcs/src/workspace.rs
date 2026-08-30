@@ -644,9 +644,11 @@ pub fn all() -> Result<Vec<Record>> {
 /// "nobody is in this repository" and "this is not a repository I know" are
 /// different answers to act on.
 ///
-/// **A record whose owner process has exited is forgotten here rather than
-/// listed** — see [`spent`]. A record whose owner is still running is reported
-/// exactly as before, closed or open, live or stale.
+/// **A record whose owner process has exited, with nothing working inside its run
+/// root, is forgotten here rather than listed** — see [`spent`]. A record whose
+/// owner is still running is always reported, closed or open, live or stale; so is
+/// one a dispatch is still working in, whatever became of the command that opened
+/// it.
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, repo)?;
@@ -667,20 +669,31 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// Whether a record has nobody left to answer for it, which is what makes one
 /// litter.
 ///
-/// One question: has the process that opened this session gone. Not the
-/// *lifecycle* beside it — a session an embedding process opened and closed is a
-/// closed session that process can still be asked about — and not what became of
-/// its directories, which is [`reclaim`]'s question about a run root rather than
-/// this one about a record.
+/// Two questions, and both have to say nobody. **Has the process that opened this
+/// session gone** — not the *lifecycle* beside it, since a session an embedding
+/// process opened and closed is a closed session that process can still be asked
+/// about. And, only then, **is anything working inside its run root**, which is the
+/// same [`processes::holding`] answer [`close`] refuses on: a live process's own
+/// working directory.
 ///
-/// What it costs is stated where it is paid: seven of these above a launch made a
-/// real refusal arrive in the same shape as seven ignorable ones, and nothing has
-/// ever removed one. What it takes with it is the record of a session whose owner
-/// was a command line — `onevcs session open` prints a token and exits, so its
-/// owner is gone from that instant — and with the record goes the run root's
-/// protection in [`reclaim`], which keeps one only while an *open* record names it.
+/// The second is what makes the first safe to act on. `onevcs session open` prints
+/// a token and exits, so a session opened from the command line has no owner
+/// process from that instant while an agent works in its worktree for hours —
+/// forgetting the record on the owner alone would take that run root's protection
+/// with it, because [`reclaim`] keeps one only while an *open* record names it, and
+/// the next `session open` would then reap a directory somebody is inside. That is
+/// the destruction this crate has already done once, reached by a different verb.
+///
+/// So what is forgotten is a record with nobody to answer for it *and* nobody in
+/// it, which is the litter the report is about: seven of those above a launch made
+/// a real refusal arrive in the same shape as seven ignorable ones, and nothing has
+/// ever removed one.
+///
+/// Asked in that order deliberately: the owner is two file reads and the occupancy
+/// question walks every process on the host, so the cheap answer that retains is
+/// the one that runs on every record.
 fn spent(record: &Record) -> bool {
-    !record.owner_is_running()
+    !record.owner_is_running() && processes::holding(&record.run_root).is_empty()
 }
 
 /// Drop one spent record, saying so rather than failing the read it happened in.

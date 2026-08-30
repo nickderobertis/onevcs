@@ -1177,7 +1177,7 @@ fn a_session_holding_nothing_but_its_own_branch_closes_exactly_as_it_did_before(
 /// Started by the journey so that the journey owns its pid: everything below stops
 /// exactly the process it started, by the number the OS handed back, and signals
 /// nothing it merely recognises.
-fn working_in(directory: &std::path::Path) -> std::process::Child {
+pub fn working_in(directory: &std::path::Path) -> std::process::Child {
     std::process::Command::new("sleep")
         .arg("300")
         .current_dir(directory)
@@ -1186,7 +1186,7 @@ fn working_in(directory: &std::path::Path) -> std::process::Child {
 }
 
 /// Stop one this journey started, and wait for the OS to be finished with it.
-fn stop(mut process: std::process::Child) {
+pub fn stop(mut process: std::process::Child) {
     process
         .kill()
         .expect("stop the process this journey started");
