@@ -26,18 +26,11 @@ if [ ! -r scripts/llmlint-runtime-env.sh ]; then
   echo "ACTION: restore that file from git ('git checkout -- scripts/llmlint-runtime-env.sh') and retry" >&2
   exit 1
 fi
-if [ ! -r scripts/llmlint-report-marker.sh ]; then
-  echo "lint-llm-diff: could not load scripts/llmlint-report-marker.sh, which spells the marker this tier's two ends match on" >&2
-  echo "ACTION: restore that file from git ('git checkout -- scripts/llmlint-report-marker.sh') and retry" >&2
-  exit 1
-fi
-# The directives below are resolution hints rather than silenced diagnostics:
-# they tell shellcheck which file each path is, so the functions sourced here are
-# checked against their definitions instead of assumed.
+# The directive below is a resolution hint rather than a silenced diagnostic:
+# it tells shellcheck which file this path is, so the function sourced here is
+# checked against its definition instead of assumed.
 # shellcheck source=scripts/llmlint-runtime-env.sh
 . scripts/llmlint-runtime-env.sh
-# shellcheck source=scripts/llmlint-report-marker.sh
-. scripts/llmlint-report-marker.sh
 # The base is external input to this target — an operator driving it through
 # `just nx run workspace:lint-llm-diff`, or a stale environment, can hand it
 # anything — so it is checked for the shape the recipe resolves, and for presence in
@@ -65,11 +58,11 @@ if [ "$status" -ne 0 ]; then
   # everything below can be missing from what the caller reads back while Nx's
   # framing around it survives — `scripts/llmlint-diff.sh` reads the record instead
   # when that happens, and what it finds there has to be the whole of what was said
-  # rather than the findings without the action they call for. The marker that driver
-  # looks for is appended below the judge's own output, at the end of the record: a
-  # truncating relay loses the end of this first.
+  # rather than the findings without the action they call for. The last line is
+  # deliberately the marker that driver looks for: a truncating relay loses the end
+  # of this first.
   {
-    llmlint_report_marker "$base_sha"
+    echo "lint-llm-diff: the judge reported the above against base $base_sha"
     echo "ACTION: clear each finding at the file and line it names, then rerun 'just lint-llm-diff <base>'"
   } >>"$report"
   cat "$report" >&2

@@ -38,20 +38,6 @@ set -euo pipefail
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-# Checked for before it is sourced, for the reason scripts/llmlint-fingerprint.sh
-# spells out: `.` is a special builtin, and on a bash that enforces POSIX here a
-# missing file ends the script before the refusal below could name it. The directive
-# after it is a resolution hint rather than a silenced diagnostic: it tells shellcheck
-# which file this path is, so the function sourced here is checked against its
-# definition instead of assumed.
-if [ ! -r scripts/llmlint-report-marker.sh ]; then
-  echo "lint-llm-diff: could not load scripts/llmlint-report-marker.sh, which spells the marker this tier's two ends match on" >&2
-  echo "ACTION: restore that file from git ('git checkout -- scripts/llmlint-report-marker.sh') and retry" >&2
-  exit 1
-fi
-# shellcheck source=scripts/llmlint-report-marker.sh
-. scripts/llmlint-report-marker.sh
-
 # The base is a caller's ref, so it is resolved — not trusted — before anything is
 # judged: a ref that names no commit is refused here rather than becoming a cache
 # key nothing can invalidate.
@@ -137,15 +123,14 @@ LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
 # duration, "Failed tasks" — survives intact. That reads as a tier that went red and
 # said nothing about what to clear, which is the one thing it exists to say. The
 # judge writes its report to a file for exactly this reason, so when the relay lost
-# it, it is read back from there. The marker the judge appends to that record carries
-# the base commit, so it can only match this run's judged report and not a report some
-# earlier base left behind; both ends take it from scripts/llmlint-report-marker.sh,
-# because a wording that drifted apart would disable this read-back in silence.
+# it, it is read back from there. The marker is the last line the judge appends to
+# that record and it carries the base commit, so it can only match this run's judged
+# report and not a report some earlier base left behind.
 report=.logs/lint-llm-diff.log
 if [ "$status" -ne 0 ]; then
   cat "$verdict" >&2
   cat "$diagnostics" >&2
-  recorded="$(llmlint_report_marker "$base_sha")"
+  recorded="lint-llm-diff: the judge reported the above against base $base_sha"
   if grep -qF -- "$recorded" "$report" 2>/dev/null &&
     ! grep -qF -- "$recorded" "$verdict" "$diagnostics"; then
     echo "lint-llm-diff: Nx relayed none of the judge's report, so it is read back from $report" >&2
