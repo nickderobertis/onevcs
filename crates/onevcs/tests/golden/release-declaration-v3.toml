@@ -1,13 +1,14 @@
 # The same declaration at schema version 3 — the version a producer writes today.
 #
-# Version 3 is the first bump that adds a *key*: `target.instruction`, the template a
-# consumer renders when a release of that target arrives. Everything else is version
-# 2's, key for key and identifier for identifier — this file, `release-declaration-v2.toml`
-# and `release-declaration-v1.toml` beside it declare the same two artifacts and the
-# same retirement, and the one difference is the instruction below.
+# Version 3 is the first bump that adds a *key*: `target.adoption_instructions`, the
+# minijinja template a consumer of that target is instructed by. Everything else is
+# version 2's, key for key and identifier for identifier — this file,
+# `release-declaration-v2.toml` and `release-declaration-v1.toml` beside it declare the
+# same two artifacts and the same retirement, and the instructions below are the one
+# difference.
 #
 # Which is also why this one cannot be left unstated the way version 2 could: a
-# document declaring `1` or `2` and naming `instruction` is refused by name.
+# document declaring `1` or `2` and naming `adoption_instructions` is refused by name.
 schema_version = 3
 probe = "scripts/release-probe.sh"
 
@@ -24,19 +25,26 @@ covers = [
   "npm:@oneharness/cli-darwin-arm64",
   "npm:@oneharness/cli-win32-x64",
 ]
-# Every variable this producer has, and the `{% if version %}` a node that adopted
-# fast renders before there is any release to name. The `{% block %}` is what a
-# consumer's own template extends rather than discards.
-instruction = """
+# The three blocks the schema names, so a consumer's own template can extend this one
+# and override any of them; and the `{% if version %}` a node that adopted fast renders
+# before there is any release to name.
+adoption_instructions = """
 {% block adopt %}\
-Reinstall {{ id }} from {{ repository }}\
+Reinstall the {{ target }} target of {{ repository }}\
 {% if version %} at version {{ version }}{% else %} once a release is out{% endif %}, \
-then move the pin recorded for the {{ target }} target in {{ manifest }}.\
+which {{ dependency }} launched against.\
+{% endblock %}
+{% block verify %}\
+Run the launcher once and check it execs the prebuilt binary.\
+{% endblock %}
+{% block caveat %}\
+The per-platform packages resolve at the launcher's own exact version, so there is \
+nothing else to pin.\
 {% endblock %}
 """
 
 # …and a target that declares none, which is the other half of what a reader has to
-# get right: an absent instruction is absent, never a blank one.
+# get right: absent instructions are absent, never an empty template.
 [[target]]
 id = "npm:@oneharness/sdk"
 name = "node-sdk"

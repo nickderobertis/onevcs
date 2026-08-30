@@ -897,7 +897,9 @@ pub struct ReleaseDefault { pub adoption: Adoption }
 pub struct ReleaseRule { pub r#match: rules::RuleMatch, pub adoption: Option<Adoption>,
                          pub default_target: Option<TargetName>,
                          pub targets: Vec<ReleaseTarget> }
-pub struct ReleaseTarget { pub name: TargetName, pub release: ReleaseMethod }
+pub struct ReleaseTarget { pub name: TargetName, pub release: ReleaseMethod,
+                           pub adoption_instructions:
+                               Option<declaration::InstructionTemplate> }
 pub struct TargetName(String);                        // TryFrom<String>, validated
 pub enum Adoption { Fast, Published }                 // fast | published
 
@@ -1213,7 +1215,7 @@ what = "The library and the `onevcs` binary, as a Rust dependent takes them."
 published_by = ".github/workflows/release.yml — the publish-crate job, under Cargo.toml's [package] name."
 manifest = "Cargo.toml"
 covers = []
-instruction = "{% block adopt %}Move the pin onto {% if version %}version {{ version }}{% else %}the released version, once one is out{% endif %}.{% endblock %}"
+adoption_instructions = "{% block adopt %}Move the pin onto {% if version %}{{ version }}{% else %}the release, once it is out{% endif %}.{% endblock %}"
 
 # Optionally, artifacts this repository once published and does not any more.
 [[retired]]
@@ -1226,7 +1228,7 @@ no field invented beside it:
 
 | Key | Required | What it is for |
 | --- | --- | --- |
-| `schema_version` | yes | The schema this document is written against. `3` is what a producer writes today; `1` is still read, and the two steps between them are the npm scoped form and the per-target instruction below. It is the first key, before any table, because TOML puts every top-level value ahead of the first `[table]` and a reader has to know the version before it reads the shape. |
+| `schema_version` | yes | The schema this document is written against. `3` is what a producer writes today; `1` is still read, and the two steps between them are the npm scoped form and the per-target adoption instructions below. It is the first key, before any table, because TOML puts every top-level value ahead of the first `[table]` and a reader has to know the version before it reads the shape. |
 | `probe` | no | The script, relative to the repository root, that answers what a registry currently serves for one `id`. A repository whose targets are answered some other way declares none. |
 | `[[target]]` | at least one | One consumable artifact: something a dependent names in order to depend on it. Their order is publication order. |
 | `target.id` | yes | `<registry>:<name>`, where `<name>` is exactly what that registry serves — including an npm scoped package, so `npm:@oneharness/cli-linux-x64` is an identifier a producer may declare. The qualification is load-bearing: `onevcs-cli` is both a PyPI project and an npm package published from one repository on two cadences, so the bare name is two artifacts. |
@@ -1235,7 +1237,7 @@ no field invented beside it:
 | `target.published_by` | yes | The workflow and job that publish it, and the manifest its name and version come from. |
 | `target.manifest` | no | The manifest, relative to the repository root, this target's version is read from. |
 | `target.covers` | no | Registry-qualified ids this target's release also ships and that are **not** targets of their own, because nothing depends on one by name — the per-platform packages an npm launcher resolves at its own exact version. A list of ids rather than a pointer at a manifest field, so a reader parses one shape. |
-| `target.instruction` | no | **Schema version 3 and above.** What a consumer does when a release of this target arrives, as a minijinja template. Producer knowledge: what one repository's adoption asks of a dependent is a fact that repository knows and a dependent would otherwise guess. A target declaring none has no rule of its own, and a consumer falls back to whatever it does by default. |
+| `target.adoption_instructions` | no | **Schema version 3 and above.** The minijinja template a consumer of this target is instructed by. Producer knowledge: what one repository's adoption asks of a dependent is a fact that repository knows and a dependent would otherwise guess. Absent means the consumer's own default. |
 | `[[retired]]` | no | An artifact this repository once published and does not any more, recorded rather than deleted so a consumer still naming it is told it is gone. |
 | `retired.id` | yes | The identifier that is no longer published. |
 | `retired.why` | yes | Why it is not published any more, and what replaced it if anything did. |
@@ -1291,8 +1293,8 @@ every one of them.** A document declaring a later `schema_version` is read as th
 newest shape the reader knows, with whatever it names beyond it ignored, so a
 consumer one release behind still learns what a repository one release ahead
 publishes. At a version the reader knows the keys of — `1`, `2` and `3`, of which the
-first two declare one key set and the third adds `target.instruction` to it — an
-unrecognized key is refused *by name*, and the refusal names the version
+first two declare one key set and the third adds `target.adoption_instructions` to it —
+an unrecognized key is refused *by name*, and the refusal names the version
 the **document** declared rather than the newest one, because a typo is the likeliest
 defect in a hand-written document, reading `manifset` as an absent `manifest`
 publishes an answer nobody declared, and the person who has to fix it wrote against
@@ -1310,66 +1312,58 @@ version is what a producer *states* about their document, not a second gate the
 identifiers are put through. Move to `2` when you name a scoped package, so a reader
 can tell what it is holding.
 
-**Version 3 is the per-target instruction template, and versions 1 and 2 do not stop
-being readable.** It is the first bump that adds a *key*, so unlike version 2 it is
-not something a producer may leave unstated: a document declaring `1` or `2` and
-naming `instruction` is refused by name, and the refusal says which version declares
-it. Read the other way round, a document still at `1` or `2` loads exactly as it did
-and gets exactly the behaviour it had — no instruction, and a consumer falling back to
-whatever it does by default. Move to `3` when you declare one.
+**Version 3 is the per-target adoption instructions, and versions 1 and 2 do not stop
+being readable.** It is the first bump that adds a *key*, so unlike version 2 it is not
+something a producer may leave unstated: a declaration at `1` or `2` carrying
+`adoption_instructions` is refused **by name**, and a declaration at `3` read by a
+build that writes `2` is read as the shape that build knows with the field ignored —
+the lenient-forward rule above. Move to `3` when you declare them.
 
 **What a consumer does when a release arrives is producer knowledge, and
-`target.instruction` is where it is said.** A consumer that adopts a dependency early
-launches its work against a git pin, and what it does when the release lands is
-usually "move the pin to the released version" — but a repository whose adoption has a
-rule of its own is exactly the repository a dependent cannot guess about, and guessing
-has been wrong. So the instruction is declared per target, by the producer, beside
-everything else that repository says about what it publishes.
+`target.adoption_instructions` is where it is said.** A consumer that adopts a
+dependency early launches its work against a git pin, and what it does when the release
+lands is usually "move the pin to the released version" — but a repository whose
+adoption has a rule of its own is exactly the repository a dependent cannot guess about,
+and guessing has been wrong. So the instruction is declared per target, by the producer,
+beside everything else that repository says about what it publishes.
 
-**It is a template, in minijinja's dialect of Jinja2, and two properties are what
-make the engine load-bearing rather than decorative.**
+**`InstructionTemplate` is a newtype and deliberately not `Prose`.** Prose is capped at
+400 characters, refuses every control character, and is the one line an entry is
+rendered beside; a template carrying `{% if version %}` and `{% block %}` is multi-line
+by construction. It is validated in its `TryFrom<String>` the way every other newtype
+here is: **non-empty, at most 4000 bytes, and it parses as a minijinja template** — so a
+producer's syntax error is refused where the declaration is read rather than at a
+consumer's render, on a machine the producer will never see. What a template renders
+*against* is not checked here: the variables belong to the consumer that renders it, and
+a build refusing a name it did not recognize would refuse variables a consumer has and
+this crate does not.
 
-The first is that **`{% if version %}` has to work with the version absent.** A node
-that adopts fast launches *before* the release exists — that is what fast adoption is,
-rather than a gap to close — so its first render has no version to name, and a
-template must be able to say something sensible either way:
+**An override composes rather than wholly replacing, and the override rule is
+untouched.** `ReleaseTarget` gains `adoption_instructions` too, carried across from the
+declaration by the same step that turns a declared target into one this host waits on,
+so `release_targets`' `targets[..].adoption_instructions` is the template that survived
+the three layers. Layer 3 still replaces a target **whole** — a half-host, half-producer
+target is a probe nobody wrote — and composition is obtained *inside* minijinja instead,
+which is why a template engine rather than a format string: the producer's template is
+registered in the environment under the name **`producer`**, and a host template may
+begin `{% extends "producer" %}` and override named blocks. The producer's template
+declares them: `{% block adopt %}`, `{% block verify %}`, `{% block caveat %}`. A host
+template naming no `extends` replaces wholly, exactly as today. So composition is the
+consumer's explicit act rather than something the resolution does to every target.
 
-```jinja
-{% block adopt %}Move the pin onto {% if version %}version {{ version }}{% else %}the
-released version, once one is out{% endif %}.{% endblock %}
-```
+**`{% if version %}` has to work with the version absent**, and it is made expressible
+rather than merely documented: a renderer passes minijinja `none` rather than `""` when
+the version is unknown, so `{{ version }}` renders empty and `{% if version %}` is the
+only way a template tells the two apart. At a fast node's first render the version is
+genuinely unknown — the node launched before the release existed, which is the
+definition of fast adoption rather than a gap to close.
 
-The second is that **a consumer's override composes rather than replacing.** Field
-level override is whole replacement everywhere else in this contract — *a half-host,
-half-producer target is a probe nobody wrote* — which is right for a probe and wrong
-for prose. So the producer's template is registered under the fixed name `producer`,
-and a consumer's own template renders in its place while being able to `{% extends
-"producer" %}` it and replace a single `{% block %}`. Nothing else about overriding
-moves: a target's `id`, `name`, `what`, `published_by`, `manifest`, `covers` and probe
-all still override whole.
-
-The variables a template is rendered against are exactly five. Three are the target's
-own, taken from the declaration itself so a caller cannot answer one of them
-differently from the document it read: `target` (the short name), `id` (the
-registry-qualified identifier), and `manifest` (the declared manifest path, undefined
-where the target declares none). Two are the consumer's, supplied at render:
-`repository` (the identity the release came from, undefined where the caller has none)
-and `version` (the released version, **undefined until there is one**). Both are
-`Option`, and a blank one is refused rather than rendered: a caller without the value
-says so with `None`, which is the state a template asks about.
-`InstructionVariables::checked` is public for the reason `DraftReason::checked` is —
-it is a rule about what a value is rather than about one rendering of it, so a caller
-applies *that* rule at its own boundary rather than a restatement that could accept
-what a render refuses. Undefined is
-semi-strict: a template may ask `{% if version %}` about a variable that is not there,
-and printing one that is not there is an error rather than a gap in the middle of a
-sentence somebody acts on.
-
-**A template that does not parse is refused when the declaration is read**, naming the
-target it belongs to and the parse error — not at the moment somebody renders it. A
-consumer reads a declaration long before it acts on one, and a producer who wrote
-`{% if version %}` with a `%` missing hears about it from the document rather than
-from a node that has already started waiting.
+**Rendering is not on this crate's surface.** This crate carries the template through
+the declaration and the three layers and stops there. One function renders, in the
+consumer, so a template cannot render differently in the two places a consumer uses one;
+the variables it renders against are that consumer's, and a second renderer here would
+be a second answer to what a producer wrote. `onevcs release declaration` prints a
+declared template as the producer *wrote* it, for the same reason.
 
 **What a declaration can hold, it can mean.** Every field that a document is
 refused over is a validated type rather than a bare scalar: `TargetName` for the
@@ -1394,7 +1388,6 @@ pub mod declaration {                                 // the producer's half
     pub const FILE: &str = "release-targets.toml";
     pub const SCHEMA_VERSION: u32 = 3;        // the version a producer writes
     pub const OLDEST_SCHEMA_VERSION: u32 = 1; // the oldest a consumer reads
-    pub const PRODUCER_TEMPLATE: &str = "producer";   // what a consumer `{% extends %}`
     pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,
                              pub targets: Vec<DeclaredTarget>,
                              pub retired: Vec<RetiredArtifact> }
@@ -1406,12 +1399,8 @@ pub mod declaration {                                 // the producer's half
                                 pub what: Prose, pub published_by: Prose,
                                 pub manifest: Option<RepositoryPath>,
                                 pub covers: Vec<RegistryId>,
-                                pub instruction: Option<InstructionTemplate> }
+                                pub adoption_instructions: Option<InstructionTemplate> }
     pub struct InstructionTemplate(String);           // TryFrom<String>, one minijinja template
-    impl InstructionTemplate { pub fn source(&self) -> &str; }
-    pub struct InstructionVariables { pub repository: Option<String>,
-                                     pub version: Option<String> }
-    impl InstructionVariables { pub fn checked(&self) -> Result<()>; }
     pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }
     pub struct RegistryId { /* registry, name */ }    // TryFrom<String>, `<registry>:<name>`
     impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }
@@ -1423,9 +1412,6 @@ pub mod declaration {                                 // the producer's half
 pub fn read_release_declaration(path: &Path) -> Result<Declaration>;
 pub fn validate_release_declaration(document: &str, origin: &str) -> Result<Declaration>;
 pub fn render_release_declaration(declared: &Declaration) -> Result<String>;
-pub fn render_release_instruction(target: &DeclaredTarget,
-                                  consumer: Option<&InstructionTemplate>,
-                                  variables: &InstructionVariables) -> Result<Option<String>>;
 ```
 
 `path` is either a repository's root or the `release-targets.toml` in it — a path
@@ -1436,15 +1422,8 @@ answered with an empty one: "this repository publishes nothing" and "nobody has 
 what this repository publishes" are different answers, and a consumer waiting on a
 release acts differently on each. `validate_release_declaration` is the half that
 touches no filesystem, for a caller that fetched a declaration or is about to write
-one; `origin` is what its refusals name the document by. None of the four takes
+one; `origin` is what its refusals name the document by. None of the three takes
 `Providers`, for the reason the five above them do not.
-
-`render_release_instruction` is on the **library** surface and has no verb of its own,
-deliberately: what it answers is read by an engine deciding what a node does next
-rather than by a person at a terminal, and the two things it needs — this consumer's
-override, and the version that was released — are values a caller holds and not
-operands anybody would type. `onevcs release declaration` prints a declared template
-as the producer *wrote* it, since what one renders to depends on both.
 
 One verb renders it: `onevcs release declaration PATH [--json]` — the table and the
 value. Rendering a declaration back *as TOML* is deliberately a library call and not

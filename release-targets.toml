@@ -60,14 +60,22 @@ what = "The library and the `onevcs` binary, as a Rust dependent takes them."
 published_by = ".github/workflows/release.yml — the publish-crate job, first of the two names it passes scripts/publish-crates.sh, under crates/onevcs/Cargo.toml's [package] name."
 manifest = "crates/onevcs/Cargo.toml"
 # What a consumer does when this releases, said here because it is ours to say. The
-# `{% block %}` is what a consumer's own override extends and replaces rather than
-# discarding the sentence around it; the `{% if version %}` is what a node that
-# adopted fast renders before there is any release to name.
-instruction = """
+# three blocks are the ones the schema names — a consumer's own template may
+# `{% extends "producer" %}` and override any of them rather than discarding the prose
+# around it — and the `{% if version %}` is what a node that adopted fast renders
+# before there is any release to name.
+adoption_instructions = """
 {% block adopt %}\
-Move the `onevcs` dependency off its git pin and onto \
+Move the `onevcs` dependency in {{ repository }} off its git pin and onto \
 {% if version %}version `{{ version }}`{% else %}the released version, once one is \
 published{% endif %}, then update the lockfile.\
+{% endblock %}
+{% block verify %}\
+Run `just check`, which is this repository's deterministic tier.\
+{% endblock %}
+{% block caveat %}\
+The `{{ target }}` target carries the library and the binary together, so a change to \
+either is a release of both.\
 {% endblock %}
 """
 
@@ -82,14 +90,20 @@ what = "The in-memory and file-backed Vcs and RemoteHost implementations, for a 
 published_by = ".github/workflows/release.yml — the publish-crate job, second of the two names it passes scripts/publish-crates.sh, under crates/onevcs-testing/Cargo.toml's [package] name."
 manifest = "crates/onevcs-testing/Cargo.toml"
 # The rule a consumer of this repository has no way to know from the outside, and the
-# reason a per-target instruction is worth declaring at all: the two crates here
-# release on two cadences, so a release of this one moves this dev-dependency and
+# reason per-target adoption instructions are worth declaring at all: the two crates
+# here release on two cadences, so a release of this one moves this dev-dependency and
 # nothing beside it.
-instruction = """
+adoption_instructions = """
 {% block adopt %}\
 Move only the `onevcs-testing` dev-dependency\
-{% if version %} to version `{{ version }}`{% endif %} — it versions on its own \
-cadence, so this release does not move the `onevcs` dependency beside it.\
+{% if version %} to version `{{ version }}`{% endif %}.\
+{% endblock %}
+{% block verify %}\
+Run `just check`; the journeys that supply these implementations are what exercise it.\
+{% endblock %}
+{% block caveat %}\
+It versions on its own cadence, so this release does not move the `onevcs` dependency \
+beside it — leave that pin alone.\
 {% endblock %}
 """
 

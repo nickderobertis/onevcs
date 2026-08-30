@@ -440,8 +440,12 @@ fn a_host_target_the_producer_also_declares_replaces_it_and_keeps_its_position()
     assert_eq!(discovering.probed(), vec!["npm:project-cli"]);
 }
 
-/// The same two targets at schema version 3, where the one the host overrides also
-/// declares what a consumer does when it releases.
+/// The same two targets at schema version 3, both declaring the adoption instructions
+/// a consumer of them follows.
+///
+/// The templates declare the three blocks the schema names, because a consumer's own
+/// template overrides a *block* — a producer that declared none would leave a host
+/// with nothing to extend and only the whole paragraph to replace.
 const DECLARING_WITH_INSTRUCTIONS: &str = r#"schema_version = 3
 probe = "scripts/release-probe.sh"
 
@@ -451,21 +455,88 @@ name = "crate"
 what = "The library and the binary, as a Rust dependent takes them."
 published_by = ".github/workflows/release.yml — the publish-crate job."
 manifest = "Cargo.toml"
-instruction = "{% block adopt %}Move the pin.{% endblock %}"
+adoption_instructions = """
+Read the release notes first.
+{% block adopt %}Move the pin onto {% if version %}{{ version }}{% else %}the release, once it is out{% endif %}.{% endblock %}
+{% block verify %}Run the suite.{% endblock %}
+Then say so on the change.
+"""
 
 [[target]]
 id = "npm:project-cli"
 name = "npm"
 what = "The binary as an npx-resolvable launcher."
 published_by = ".github/workflows/release.yml — the publish-npm job."
+adoption_instructions = "{% block adopt %}Reinstall the launcher.{% endblock %}"
 "#;
 
+/// What the producer's template renders to once `template` has been laid over it, the
+/// way a consumer of this crate composes the two layers.
+///
+/// The producer's is registered under the name `producer`, which is the one thing this
+/// crate fixes about composition; everything else — which variables exist, and where a
+/// rendering is used — belongs to the consumer, so this journey supplies them the way
+/// that consumer will.
+fn composed(producer: &str, template: &str, version: Option<&str>) -> String {
+    let mut environment = minijinja::Environment::new();
+    environment
+        .add_template("producer", producer)
+        .expect("the producer's template parsed when the declaration was read");
+    environment
+        .add_template("host", template)
+        .expect("the host's template parsed when its document was read");
+    environment
+        .get_template("host")
+        .expect("it was just added")
+        .render(minijinja::context! { version => version })
+        .expect("a consumer renders the resolved template")
+}
+
+/// The template a target resolved to, out of a `release targets` answer.
+fn instructions(targets: &Value, at: usize) -> String {
+    targets["targets"][at]["adoption_instructions"]
+        .as_str()
+        .expect("the resolved target carries the template it resolved to")
+        .to_owned()
+}
+
 #[test]
-fn an_override_still_replaces_the_target_whole_where_the_producer_declared_an_instruction() {
-    // The rule the instruction template is deliberately the exception to, held where
-    // the exception was made. A target is `{name, style, body}` and a half-host,
-    // half-producer one is a probe nobody wrote — so a producer declaring an
-    // instruction changes nothing about what an override does to the probe beside it.
+fn a_producers_adoption_instructions_reach_a_consumer_through_the_resolved_targets() {
+    // Layer 1, for prose rather than for probes: a target this host says nothing about
+    // resolves to the producer's own template, carried across when the declaration was
+    // read. Without this a consumer would have to read the declaration a second way to
+    // find what a repository asks of it.
+    let discovering = Discovering::new();
+    discovering
+        .declares(DECLARING_WITH_INSTRUCTIONS)
+        .carries_probe();
+
+    let targets = discovering.json(&["targets", &discovering.repo()]);
+    assert_eq!(
+        targets["sources"],
+        serde_json::json!({"crate": "declared", "npm": "declared"}),
+        "{targets}"
+    );
+    let declared = instructions(&targets, 0);
+    assert!(
+        declared.contains("Read the release notes first.")
+            && declared.contains("{% block adopt %}"),
+        "a declared target resolves to the producer's own template: {declared:?}"
+    );
+
+    // …and it renders, with a version and without one, which is what the producer wrote
+    // `{% if version %}` for.
+    assert!(composed(&declared, &declared, None).contains("the release, once it is out"));
+    assert!(composed(&declared, &declared, Some("9.9.9")).contains("Move the pin onto 9.9.9."));
+}
+
+#[test]
+fn a_host_template_composes_with_the_producers_through_the_three_layer_resolution() {
+    // The whole of what the template engine buys, driven through the real resolution
+    // rather than asserted on two values handed to a function. The host overrides
+    // `crate`: the resolved target is the host's, *whole*, probe included — and because
+    // the producer's template is still on the declaration beside it, the host's own can
+    // extend it and replace one block rather than the paragraph around it.
     let discovering = Discovering::new();
     discovering
         .declares(DECLARING_WITH_INSTRUCTIONS)
@@ -473,7 +544,9 @@ fn an_override_still_replaces_the_target_whole_where_the_producer_declared_an_in
         .answers("crate:project", "9.9.9\n")
         .host(
             "    adoption: published\n    targets:\n      - name: crate\n        style: \
-             automated\n        probe:\n          shell: 'echo 5.0.0'\n",
+             automated\n        probe:\n          shell: 'echo 5.0.0'\n        \
+             adoption_instructions: |\n          {% extends \"producer\" %}\n          \
+             {% block adopt %}Take the vendored copy instead.{% endblock %}\n",
         );
 
     let targets = discovering.json(&["targets", &discovering.repo()]);
@@ -482,6 +555,9 @@ fn an_override_still_replaces_the_target_whole_where_the_producer_declared_an_in
         serde_json::json!({"crate": "override", "npm": "declared"}),
         "{targets}"
     );
+
+    // The probe half is untouched: an override replaces the target whole, so the host's
+    // probe is what runs and the producer's committed script is never asked.
     assert_eq!(
         discovering.json(&["latest", &discovering.repo(), "--target", "crate"])["version"],
         "5.0.0",
@@ -493,14 +569,49 @@ fn an_override_still_replaces_the_target_whole_where_the_producer_declared_an_in
         discovering.probed()
     );
 
-    // …while what the producer declared is still *there*, whole, which is what makes
-    // composing an instruction with it possible at all: an override replaces the
-    // target this host waits on, never the document the repository committed.
-    assert_eq!(
-        targets["declaration"]["declared"]["target"][0]["instruction"],
-        "{% block adopt %}Move the pin.{% endblock %}",
-        "the producer's own declaration is answered as it was written: {targets}"
+    // The template half is *also* whole replacement — the resolved target carries the
+    // host's template and nothing of the producer's…
+    let resolved = instructions(&targets, 0);
+    assert!(
+        resolved.starts_with("{% extends \"producer\" %}")
+            && !resolved.contains("Read the release notes first."),
+        "an override replaces the target's template whole, like every other field: \
+         {resolved:?}"
     );
+
+    // …and the producer's own is still there, on the declaration the answer carries,
+    // which is what makes `{% extends \"producer\" %}` resolvable at all.
+    let producer = targets["declaration"]["declared"]["target"][0]["adoption_instructions"]
+        .as_str()
+        .expect("the producer's declaration is answered as it was written");
+
+    // So the two compose: the producer's surrounding prose survives and the consumer's
+    // block replaces its own.
+    let rendered = composed(producer, &resolved, Some("9.9.9"));
+    assert!(
+        rendered.contains("Read the release notes first.")
+            && rendered.contains("Then say so on the change."),
+        "the producer's surrounding text survives composition: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Take the vendored copy instead."),
+        "…and the consumer's block is what replaced the producer's: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains("Move the pin onto"),
+        "…which is the block it overrode, so the producer's own is gone: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Run the suite."),
+        "…while a block the consumer said nothing about is still the producer's: \
+         {rendered:?}"
+    );
+
+    // A host template naming no `extends` replaces wholly, exactly as today — which is
+    // the other half of the rule, and the reason composition is the consumer's explicit
+    // act rather than something the resolution does to every target.
+    let whole = "Do it our way.";
+    assert_eq!(composed(producer, whole, Some("9.9.9")), whole);
 }
 
 #[test]

@@ -41,7 +41,7 @@ pub const FILE: &str = "release-targets.toml";
 
 /// The schema version this build writes.
 ///
-/// Version 3 is the schema that declares [`DeclaredTarget::instruction`], the one
+/// Version 3 is the schema that declares [`DeclaredTarget::adoption_instructions`], the one
 /// key either of the two versions below it does not have. Version 2 before it spells
 /// the npm scoped form, `@scope/name`, as a name a [`DeclaredTarget::id`] may take —
 /// no key at all, only which identifiers a producer can express. Either way, a
@@ -162,15 +162,12 @@ pub struct DeclaredTarget {
     /// parses one shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub covers: Vec<RegistryId>,
-    /// What a consumer does when a release of this target arrives, as the template
-    /// the producer wrote it as.
+    /// The minijinja template a consumer of this target is instructed by.
     ///
-    /// Declared from schema version 3. A target that declares none is a target whose
-    /// adoption has no rule of its own, and a consumer then falls back to whatever it
-    /// does by default — never to a sentence this crate invented on the producer's
-    /// behalf.
+    /// Producer knowledge. Absent means the consumer's own default. Declared from
+    /// schema version 3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction: Option<InstructionTemplate>,
+    pub adoption_instructions: Option<InstructionTemplate>,
 }
 
 /// Something this repository once published and does not publish again.
@@ -435,101 +432,76 @@ impl std::ops::Deref for Prose {
     }
 }
 
-/// What a consumer does when a release of one target arrives, as a template.
+/// The minijinja template a consumer of one target is instructed by.
 ///
-/// **The instruction is producer knowledge**, and this is the field that stops it
-/// being rediscovered. A consumer that adopts a dependency early launches against a
-/// git pin, and what it does when the release lands is usually "move the pin to the
-/// released version" — but a repository whose adoption has a rule of its own is
-/// exactly the repository a consumer cannot guess about, and guessing has been wrong
-/// here before.
+/// **Producer knowledge.** What a repository's own adoption asks of a dependent is a
+/// fact that repository knows and a dependent would otherwise have to guess — and
+/// guessing has been wrong. Absent means the consumer's own default.
 ///
-/// **A template rather than a sentence**, because the two things the sentence has to
-/// name are not knowable when it is written. The version is one: at a fast node's
-/// first render there is no release yet, which is what fast adoption *is* rather than
-/// a gap to close, so `{% if version %}` has to render sensibly without one. The
-/// other is composition: a consumer's own template `{% extends %}` this one under the
-/// name [`PRODUCER_TEMPLATE`] and replaces a `{% block %}` of it, which is how an
-/// override can compose with prose while every other field of a target still
-/// overrides whole.
+/// A newtype and deliberately **not** [`Prose`]: prose is capped at 400 characters,
+/// refuses every control character, and is the one line an entry is rendered beside,
+/// while a template carrying `{% if version %}` and `{% block %}` is multi-line by
+/// construction.
 ///
-/// The dialect is Jinja2 as minijinja implements it. Held to what a template *is*
-/// here — non-blank, bounded, and free of control characters that are not layout —
-/// and to whether it **parses** where the declaration around it is validated, which
-/// is where the target it belongs to is known and a refusal can name it.
+/// It is validated in its conversion the way every other newtype here is: non-empty,
+/// at most 4000 bytes, and it **parses as a minijinja template** — so a
+/// producer's syntax error is refused where the declaration is read rather than at a
+/// consumer's render, on a machine the producer will never see.
+///
+/// What a template renders *against*, and where it is rendered, belong to the
+/// consumer: this crate carries the template through the three layers and nothing
+/// else. The one thing it fixes is how the two layers compose — a host template may
+/// begin `{% extends "producer" %}` and override named blocks, and a host template
+/// naming no `extends` replaces wholly, exactly as every other field of a target does.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct InstructionTemplate(String);
 
-/// The name a producer's template is registered under, and therefore the one a
-/// consumer's `{% extends %}` names.
+/// How long an instruction template may be, in bytes.
 ///
-/// Fixed rather than derived from the target, because a consumer writes `{% extends
-/// "producer" %}` once against a repository it does not own and a name that varied
-/// per target would be a name it has to be told.
-pub const PRODUCER_TEMPLATE: &str = "producer";
-
-/// The name a consumer's own override renders under, beside the producer's.
-///
-/// Private: nothing outside names it, because a consumer hands its template over
-/// rather than referring to it by name — and a template that `{% extends %}` *itself*
-/// is a loop nobody meant.
-const CONSUMER_TEMPLATE: &str = "consumer";
-
-/// How long an instruction template may be.
-///
-/// Longer than [`MAX_PROSE`] by an order of magnitude, because this one is not
-/// rendered on a line beside anything: it is the paragraph a consumer reads and acts
-/// on, and a producer whose adoption has a rule worth stating needs room to state it.
-/// Bounded all the same — a declaration is a document a consumer fetches from a
-/// repository it does not own.
+/// An order of magnitude above `MAX_PROSE`, because this one is not rendered on a
+/// line beside anything: it is the paragraph a consumer acts on. Bounded all the same
+/// — a declaration is a document a consumer fetches from a repository nobody here
+/// owns.
 const MAX_INSTRUCTION: usize = 4000;
-
-impl InstructionTemplate {
-    /// The template as the producer wrote it.
-    pub fn source(&self) -> &str {
-        &self.0
-    }
-}
 
 impl TryFrom<String> for InstructionTemplate {
     type Error = String;
 
     fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
-        if value.trim().is_empty() {
+        if value.is_empty() {
             return Err(
-                "a release target's instruction is what a consumer does when a release of it \
-                 arrives, so a blank one says less than declaring none at all"
+                "a release target's adoption instructions are what a consumer does when a \
+                 release of it arrives, so an empty template says less than declaring none \
+                 at all"
                     .to_owned(),
             );
         }
         if value.len() > MAX_INSTRUCTION {
             return Err(format!(
-                "a release target's instruction template is longer than {MAX_INSTRUCTION} \
-                 characters; it is the paragraph a consumer acts on, and the reasoning behind \
-                 it belongs in a comment"
+                "a release target's adoption instructions are longer than {MAX_INSTRUCTION} \
+                 bytes; they are the paragraph a consumer acts on, and the reasoning behind \
+                 them belongs in a comment"
             ));
         }
-        // Layout is what a paragraph is made of, so a newline and a tab are the
-        // template rather than a defect in it. Everything else — an escape sequence, a
-        // carriage a terminal would act on — renders as something other than what it is
-        // wherever this lands, and a consumer prints it.
-        if let Some(control) = value
-            .chars()
-            .find(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
-        {
-            return Err(format!(
-                "a release target's instruction template carries the control character \
-                 {control:?}; it is text a consumer prints, so it may hold no control character \
-                 but the layout ones"
-            ));
-        }
+        // Parsed here rather than at a consumer's render, which is the whole reason this
+        // is a template type and not a string: a producer's syntax error is theirs to see,
+        // in the document they wrote, rather than a machine they will never look at.
+        // `{% extends %}` is resolved at render and so is not a name this has to know.
+        minijinja::Environment::new()
+            .add_template("adoption_instructions", &value)
+            .map_err(|failure| {
+                format!(
+                    "a release target's adoption instructions are not a minijinja template: \
+                     {failure:#}"
+                )
+            })?;
         Ok(InstructionTemplate(value))
     }
 }
 
-/// The conversion a consumer writing its own override reaches for, which is the same
-/// check a producer's declaration gets.
+/// The conversion a caller building a declaration reaches for, which is the same
+/// check the document gets.
 impl std::str::FromStr for InstructionTemplate {
     type Err = String;
 
@@ -558,149 +530,14 @@ impl std::fmt::Display for InstructionTemplate {
     }
 }
 
-/// What an instruction template is rendered against: the things only the consumer
-/// asking knows.
-///
-/// The target's own — its short name, its identifier, and the manifest it declared —
-/// are taken from the [`DeclaredTarget`] the render is given, so a caller cannot
-/// answer one of them differently from the declaration it read.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct InstructionVariables {
-    /// The repository the release comes from, as this host spells its identity.
-    ///
-    /// `None` where the caller has none to give, which renders `repository` as
-    /// undefined rather than as a gap in the middle of a sentence. An `Option` rather
-    /// than an empty string: "nobody said" and "somebody said nothing" are two
-    /// states, and a sentinel that spelled them alike is a state this type would let
-    /// a caller reach.
-    // llmlint: ignore[invalid_states_unrepresentable] the *string* is bare on purpose, and
-    // [`checked`](Self::checked) is the rule rather than a conversion — the same shape
-    // `DraftReason` next door has, and for the same reason the contract gives there: the
-    // fields are fixed public and settable, so there is no constructor for a check to live
-    // in. A newtype here would also be a second vocabulary for a value this crate already
-    // hands its own caller as a `String`: an identity is `RepositoryReleases::identity`.
-    pub repository: Option<String>,
-    /// The version that was released, where there is one.
-    ///
-    /// `None` is the state that makes the whole field a template: a node that adopts
-    /// fast launches *before* the release exists, so its first render has no version
-    /// and `{% if version %}` is how a producer writes for both.
-    // llmlint: ignore[invalid_states_unrepresentable] for the reason `repository` above
-    // states, and one more that is specific to this field: a released version is a bare
-    // `String` on every approved surface this crate already has — `ReleaseAnswer::Released`,
-    // `Baseline::At`, `ReleaseStatus::Released`, `Acknowledgement::version` — so a newtype
-    // here would make a caller convert a value this crate handed it a moment ago.
-    pub version: Option<String>,
-}
+/// The template as the producer wrote it, which is what a consumer hands its own
+/// engine. `Deref` rather than a named accessor, exactly as [`Prose`] does it.
+impl std::ops::Deref for InstructionTemplate {
+    type Target = str;
 
-impl InstructionVariables {
-    /// Whether each variable renders as itself.
-    ///
-    /// Both values here arrive from the caller rather than from the declaration, and
-    /// both are rendered into text somebody reads, so a control character in either
-    /// would put something other than what it is into the instruction. A blank one is
-    /// refused for the reason the fields are `Option`s at all: a caller that does not
-    /// have the value says so with `None`, which is the state `{% if version %}` is
-    /// written against, and `Some("")` is that state spelled a second way.
-    ///
-    /// Public for the reason [`DraftReason::checked`](crate::DraftReason::checked) is:
-    /// it is a rule about what a value *is* rather than about any one rendering of it,
-    /// so a caller applies **this** rule at its own boundary rather than a restatement
-    /// that could accept what a render refuses. A method rather than a conversion
-    /// because the fields are public and settable, which leaves no constructor for the
-    /// check to live in.
-    pub fn checked(&self) -> Result<()> {
-        for (what, value) in [
-            ("repository", self.repository.as_deref()),
-            ("released version", self.version.as_deref()),
-        ] {
-            let Some(value) = value else { continue };
-            if value.trim().is_empty() {
-                return Err(error::invalid(format!(
-                    "an instruction was given a blank {what}; a caller that does not have one \
-                     gives none, which is the state a template asks about with `{{% if ... %}}`"
-                )));
-            }
-            if value.chars().any(char::is_control) {
-                return Err(error::invalid(format!(
-                    "the {what} {value:?} an instruction would be rendered for carries a \
-                     control character"
-                )));
-            }
-        }
-        Ok(())
+    fn deref(&self) -> &str {
+        &self.0
     }
-}
-
-/// Render what a consumer does when a release of one target arrives.
-///
-/// Two layers, and the composition between them is the point. `target` is the
-/// producer's own declaration, and its [`instruction`](DeclaredTarget::instruction)
-/// is registered under [`PRODUCER_TEMPLATE`]; `consumer` is this consumer's override,
-/// which renders instead — and, because the producer's is *there* under a name, can
-/// `{% extends "producer" %}` and replace one `{% block %}` of it rather than the
-/// whole paragraph. Every other field of a target still overrides whole; that rule is
-/// right for a probe and wrong for prose, and template inheritance is what gives the
-/// second without weakening the first.
-///
-/// `Ok(None)` where neither layer declares one: a target whose adoption has no rule
-/// of its own is not a target with a blank rule, and a consumer falls back to what it
-/// does by default rather than printing nothing.
-pub(crate) fn render_instruction(
-    target: &DeclaredTarget,
-    consumer: Option<&InstructionTemplate>,
-    variables: &InstructionVariables,
-) -> Result<Option<String>> {
-    let producer = target.instruction.as_ref();
-    if producer.is_none() && consumer.is_none() {
-        return Ok(None);
-    }
-    variables.checked()?;
-    let mut environment = minijinja::Environment::new();
-    // Semi-strict: `{% if version %}` answers for a variable that is not there, which
-    // is the whole reason this is a template, while *printing* one that is not there
-    // is an error rather than an empty gap in a sentence a consumer acts on.
-    environment.set_undefined_behavior(minijinja::UndefinedBehavior::SemiStrict);
-    for (name, template) in [(PRODUCER_TEMPLATE, producer), (CONSUMER_TEMPLATE, consumer)] {
-        if let Some(template) = template {
-            environment
-                .add_template(name, template.source())
-                .map_err(|failure| unparseable(name, &target.name, &failure))?;
-        }
-    }
-    let rendering = match consumer {
-        Some(_) => CONSUMER_TEMPLATE,
-        None => PRODUCER_TEMPLATE,
-    };
-    let template = environment
-        .get_template(rendering)
-        .map_err(|failure| unparseable(rendering, &target.name, &failure))?;
-    let mut context = std::collections::BTreeMap::<&str, String>::new();
-    context.insert("target", target.name.to_string());
-    context.insert("id", target.id.to_string());
-    if let Some(manifest) = target.manifest.as_ref() {
-        context.insert("manifest", manifest.to_string());
-    }
-    if let Some(repository) = variables.repository.as_ref() {
-        context.insert("repository", repository.clone());
-    }
-    if let Some(version) = variables.version.as_ref() {
-        context.insert("version", version.clone());
-    }
-    template.render(&context).map(Some).map_err(|failure| {
-        error::invalid(format!(
-            "the {rendering} instruction for the release target {name:?} did not render: \
-             {failure:#}",
-            name = target.name
-        ))
-    })
-}
-
-/// The one refusal a template that is not a template earns, wherever it is met.
-fn unparseable(layer: &str, name: &TargetName, failure: &minijinja::Error) -> crate::error::Error {
-    error::invalid(format!(
-        "the {layer} instruction for the release target {name:?} is not a template: {failure:#}"
-    ))
 }
 
 /// A path to something the repository being released carries, checked where it is
@@ -922,14 +759,15 @@ const TARGET_KEYS_AT_3: [&str; 7] = [
     "published_by",
     "manifest",
     "covers",
-    "instruction",
+    "adoption_instructions",
 ];
 const RETIRED_KEYS: [&str; 2] = ["id", "why"];
 
 /// Which keys a `[[target]]` has at the version the document declared.
 ///
 /// Versions 1 and 2 share one set — version 2 moved which identifiers a producer can
-/// express and no key at all — and version 3 is that set plus `instruction`. Asked of
+/// express and no key at all — and version 3 is that set plus `adoption_instructions`.
+/// Asked of
 /// the *declared* version rather than of the newest this build writes, because a
 /// document is held to the schema its author named.
 fn target_keys_at(declared: i64) -> &'static [&'static str] {
@@ -948,7 +786,7 @@ fn refuse_unknown_keys(document: &toml::Value, origin: &str, declared: i64) -> R
     // A key a *later* schema this build knows declares is a different mistake from a
     // typo, and it has a different fix: the document names the version it wants rather
     // than its author hunting for a misspelling that is not there. Asked per table, so
-    // a top-level `instruction` is still the typo it is.
+    // a top-level `adoption_instructions` is still the typo it is.
     let unknown = |table: &str, key: &str, at_the_newest: &[&str]| {
         let later = match at_the_newest.contains(&key) {
             true => format!(
@@ -1039,26 +877,37 @@ fn validate(declaration: &Declaration, origin: &str) -> Result<()> {
                 earlier + 1,
             )));
         }
-        // A template that does not parse is refused *here*, when the declaration is
-        // loaded, rather than at the moment somebody renders it: a consumer reads this
-        // file long before it acts on one, and a producer who wrote `{% if version %}`
-        // with the `%` missing should hear about it from the document rather than from a
-        // node that has already started waiting. It is in this function and not in the
-        // conversion because a refusal has to name the *target*, and a target is
-        // something only the whole document knows.
-        if let Some(template) = target.instruction.as_ref() {
-            minijinja::Environment::new()
-                .add_template(PRODUCER_TEMPLATE, template.source())
-                .map_err(|failure| {
-                    error::invalid(format!(
-                        "the release declaration at {origin} has {at} declaring an instruction \
-                         that is not a template: {failure:#}"
-                    ))
-                })?;
-        }
     }
+    instructed(declaration, origin)?;
     covered(declaration, origin)?;
     retired(declaration, origin)
+}
+
+/// Hold a declaration carrying adoption instructions to a version that declares them.
+///
+/// A *document* that does this is refused by name before it is ever deserialized, so
+/// this is here for the one caller a document cannot be: somebody who **built** a
+/// `Declaration`. Rendering one at a version that does not declare the key would write
+/// a file the very next reader refuses by name, which is the one thing rendering
+/// promises not to do.
+fn instructed(declaration: &Declaration, origin: &str) -> Result<()> {
+    if declaration.schema_version >= INSTRUCTION_SCHEMA_VERSION {
+        return Ok(());
+    }
+    for (index, target) in declaration.targets.iter().enumerate() {
+        if target.adoption_instructions.is_some() {
+            return Err(error::invalid(format!(
+                "the release declaration at {origin} has [[target]] {at} ({id:?}) carrying \
+                 adoption instructions, which schema_version {declared} does not declare; \
+                 schema_version {INSTRUCTION_SCHEMA_VERSION} does, and a document written at \
+                 {declared} carrying them is one its own reader refuses by name",
+                at = index + 1,
+                id = target.id,
+                declared = declaration.schema_version,
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Hold every `covers` entry to what covering means.

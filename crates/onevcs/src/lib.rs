@@ -77,8 +77,7 @@ mod vcs;
 mod workspace;
 
 pub use declaration::{
-    Declaration, DeclaredTarget, InstructionTemplate, InstructionVariables, RegistryId,
-    RetiredArtifact,
+    Declaration, DeclaredTarget, InstructionTemplate, RegistryId, RetiredArtifact,
 };
 pub use error::{Error, Result};
 pub use event::{
@@ -333,35 +332,6 @@ pub fn validate_release_declaration(document: &str, origin: &str) -> Result<Decl
 /// can read back.
 pub fn render_release_declaration(declared: &Declaration) -> Result<String> {
     declaration::render(declared)
-}
-
-/// Render what a consumer does when a release of one target arrives.
-///
-/// The instruction is **producer knowledge**: what a repository's own adoption asks
-/// of a consumer is a fact that repository knows and a consumer would otherwise have
-/// to guess. So it is declared per target, in the producer's own
-/// `release-targets.toml`, and this is where an engine turns one into the sentence it
-/// hands a node.
-///
-/// A template rather than a sentence because neither of the two things it has to say
-/// is fixed when it is written. The version is one — a node that adopts fast launches
-/// before the release exists, so its first render has none, and
-/// `{% if version %}` is how a producer writes for both. The other is this consumer's
-/// own say: `consumer` renders instead of the producer's template and can
-/// `{% extends "producer" %}` it to replace a single `{% block %}`, which is
-/// composition where every other field of a target still overrides whole — the rule
-/// that is right for a probe and wrong for prose.
-///
-/// The variables are `target`, `id` and `manifest` off the declaration itself, and
-/// `repository` and `version` off [`InstructionVariables`]. `Ok(None)` where neither
-/// layer declares a template at all: a target whose adoption has no rule of its own
-/// is not a target with a blank one.
-pub fn render_release_instruction(
-    target: &DeclaredTarget,
-    consumer: Option<&InstructionTemplate>,
-    variables: &InstructionVariables,
-) -> Result<Option<String>> {
-    declaration::render_instruction(target, consumer, variables)
 }
 
 /// Which rung of the adoption chain one repository resolves to.

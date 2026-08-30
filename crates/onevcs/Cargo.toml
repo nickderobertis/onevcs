@@ -86,6 +86,11 @@ assert_cmd = { workspace = true }
 # The parser the honesty journey drives `run_with` with, which is the same one the
 # binary uses.
 clap = { workspace = true }
+# One discovery journey composes the two templates the three layers resolved, the way
+# the consumer that renders them does. The engine is the real one rather than a
+# stand-in, because what the journey holds is that what this crate hands back is enough
+# to compose — and a substitute for the engine could not answer that.
+minijinja = { workspace = true }
 # The occupancy journeys take a session's advisory lease the way a second process
 # does — the same lock, from outside the binary, rather than a stand-in for one.
 fs4 = { workspace = true }

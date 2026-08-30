@@ -609,40 +609,47 @@ consumer reads from `OLDEST_SCHEMA_VERSION` up — and version 2 is the npm scop
 identifier form rather than a key. A version 1 declaration naming a scoped package is
 read rather than refused: six committed declarations already do, and the version says
 what a producer *states* about their file, not a second gate the identifiers pass
-through. Version 3 is the first bump that adds a **key** — `target.instruction` — so
-unlike version 2 it cannot be left unstated: a document at 1 or 2 naming it is refused
-by name, and the refusal says which version declares it.
-`tests/golden/release-declaration-v*.toml` are the committed documents that hold all
-three versions readable, and they declare the same two artifacts on purpose, so the
-journey comparing them states exactly what each bump moved. And a rendering answers the
+through. Version 3 is the first bump that adds a **key** —
+`target.adoption_instructions` — so unlike version 2 it cannot be left unstated: a
+document at 1 or 2 naming it is refused by name, and the refusal says which version
+declares it. `tests/golden/release-declaration-v*.toml` are the committed documents
+that hold all three versions readable, and they declare the same two artifacts on
+purpose, so the journey comparing them states exactly what each bump moved. And a rendering answers the
 declaration alone — a producer's comments were never read, so writing one back over
 their file deletes the reasoning that is the most valuable thing in it.
 
-## The adoption instruction is producer knowledge, and it is a template
+## Adoption instructions are producer knowledge, and this crate does not render them
 
-`target.instruction` is what a consumer does when a release of that target arrives,
-written by the repository that publishes it because a dependent would otherwise guess —
-and guessing has been wrong here. `render_release_instruction` is the whole surface;
-there is no verb, because the two things a render needs (this consumer's override and
-the released version) are values a caller holds rather than operands anybody types.
+`target.adoption_instructions` is the minijinja template a consumer of that target is
+instructed by, declared by the repository that publishes it because a dependent would
+otherwise guess — and guessing has been wrong here. Four things are easy to undo.
 
-Three things are easy to undo.
-
-- **`{% if version %}` has to work with the version absent.** A node that adopts fast
-  launches *before* the release exists — that is what fast adoption is — so the first
-  render has no version to name. Undefined is semi-strict for exactly that reason:
-  asking about a variable that is not there is the point, printing one is an error.
-- **A consumer's override composes, and nothing else about overriding moves.** The
-  producer's template is registered under `PRODUCER_TEMPLATE`, so a consumer's own can
-  `{% extends "producer" %}` and replace one `{% block %}`. Whole replacement is still
-  the rule for every other field of a target — *a half-host, half-producer target is a
-  probe nobody wrote* — and `an_override_still_replaces_the_target_whole_where_the_producer_declared_an_instruction`
-  in `tests/e2e/discovery.rs` is what keeps that true in the presence of this one.
-- **A template that does not parse is refused in `validate`, not in its conversion.**
-  Every other field is refused where it is converted, which is what gets the TOML
-  reader's line and column. This one has to name the **target**, and a target is
-  something only the whole document knows — so it sits beside the duplicate-name check,
-  and a `Declaration` a caller *built* is refused by `render_release_declaration` too.
+- **This crate carries the template and never renders it.** The variables a template
+  renders against are the consumer's — a plan node id, a branch, a landing commit — and
+  a renderer here would be a second answer to what a producer wrote, differing from the
+  consumer's. So there is no render on the library surface and no verb: `onevcs release
+  declaration` prints the template as the producer *wrote* it. `InstructionTemplate`
+  derefs to `str`, which is how a consumer gets at it, exactly as `Prose` does.
+- **The template parses in its `TryFrom<String>`**, alongside non-empty and the 4000
+  **byte** cap, so a producer's syntax error is refused in the document they wrote
+  rather than at a consumer's render on a machine they will never see. What a template
+  *renders against* is deliberately not checked: a build refusing an unknown name would
+  refuse variables the consumer has and this crate does not.
+- **`ReleaseTarget` carries the field too**, copied across by `from_declaration`, so
+  `release_targets`' `targets[..].adoption_instructions` is the template that survived
+  the three layers. Layer 3 still replaces a target **whole** — *a half-host,
+  half-producer target is a probe nobody wrote*. Composition happens inside minijinja
+  instead: the producer's template is registered under the name `producer`, and a host
+  template may `{% extends "producer" %}` and override `{% block adopt %}`,
+  `{% block verify %}` or `{% block caveat %}`. One naming no `extends` replaces
+  wholly. `a_host_template_composes_with_the_producers_through_the_three_layer_resolution`
+  in `tests/e2e/discovery.rs` drives that through the real resolution and holds the
+  probe half whole at the same time.
+- **A declaration is held to the version it declares, on the way *out* as well.** A
+  document at 1 or 2 naming the key is refused by name before it deserializes; a
+  `Declaration` a caller **built** has no such gate, so `validate` refuses one whose
+  `schema_version` predates the key — otherwise `render_release_declaration` would
+  write a file its own reader refuses.
 
 ## A repository's targets come from three layers, and `resolve` is the only place
 

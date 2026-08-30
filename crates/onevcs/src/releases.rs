@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::declaration::Declaration;
+use crate::declaration::{Declaration, InstructionTemplate};
 use crate::rules::RuleMatch;
 
 /// The version of the release-targets file this build writes, and the oldest it
@@ -162,6 +162,18 @@ pub struct ReleaseTarget {
     pub name: TargetName,
     /// How it is released, and therefore how a release of it is learned about.
     pub release: ReleaseMethod,
+    /// The minijinja template a consumer of this target is instructed by, after the
+    /// three layers have resolved.
+    ///
+    /// A **declared** target carries the producer's own, copied across when the
+    /// declaration is read; a target this host names carries this host's. An override
+    /// replaces the target whole, this field with it — a half-host, half-producer
+    /// target is a probe nobody wrote. Composition is the consumer's explicit act
+    /// instead, inside the template: a host template may begin
+    /// `{% extends "producer" %}` and override named blocks, and one naming no
+    /// `extends` replaces wholly.
+    #[allow(clippy::doc_markdown)]
+    pub adoption_instructions: Option<InstructionTemplate>,
 }
 
 impl ReleaseTarget {
@@ -811,6 +823,8 @@ struct StoredTarget {
     probe: Option<StoredProbe>,
     #[serde(default)]
     action: Option<String>,
+    #[serde(default)]
+    adoption_instructions: Option<InstructionTemplate>,
 }
 
 /// A probe as the document spells it: both forms' keys, exactly one of which a
@@ -836,6 +850,8 @@ struct WrittenTarget<'a> {
     probe: Option<WrittenProbe<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     action: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adoption_instructions: Option<&'a InstructionTemplate>,
 }
 
 #[derive(Serialize)]
@@ -879,6 +895,7 @@ impl Serialize for ReleaseTarget {
                 },
             }),
             action: self.action(),
+            adoption_instructions: self.adoption_instructions.as_ref(),
         };
         written.serialize(serializer)
     }
@@ -951,7 +968,11 @@ impl TryFrom<StoredTarget> for ReleaseTarget {
                 ReleaseMethod::HumanStep { action }
             }
         };
-        Ok(ReleaseTarget { name, release })
+        Ok(ReleaseTarget {
+            name,
+            release,
+            adoption_instructions: stored.adoption_instructions,
+        })
     }
 }
 

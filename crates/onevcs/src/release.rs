@@ -358,6 +358,10 @@ fn from_declaration(declared: &Declaration, target: &DeclaredTarget) -> ReleaseT
     ReleaseTarget {
         name: target.name.clone(),
         release,
+        // Carried across, so a consumer reading the resolved set finds the producer's
+        // own template on a target this host said nothing about — which is the whole of
+        // what makes layer 1 worth having for prose as well as for probes.
+        adoption_instructions: target.adoption_instructions.clone(),
     }
 }
 

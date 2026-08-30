@@ -1063,11 +1063,11 @@ fn release_declaration(args: &ReleaseDeclarationArgs) -> Result<u8> {
             );
         }
         // The template as the producer wrote it, rather than a rendering of it: this
-        // verb answers what the document *declares*, and what one renders to depends on
-        // a version and an override neither of which this command was given.
-        if let Some(instruction) = target.instruction.as_ref() {
-            println!("    instruction:");
-            for line in instruction.source().lines() {
+        // verb answers what the document *declares*, and rendering one belongs to the
+        // consumer that holds the variables.
+        if let Some(instructions) = target.adoption_instructions.as_ref() {
+            println!("    adoption instructions:");
+            for line in instructions.lines() {
                 println!("      {line}");
             }
         }
