@@ -615,6 +615,33 @@ fn a_host_template_composes_with_the_producers_through_the_three_layer_resolutio
 }
 
 #[test]
+fn a_host_template_that_does_not_parse_is_refused_where_its_own_document_is_read() {
+    // The host's half of the same boundary the producer's half has: a template is
+    // checked where it is *written*, so an operator who mistyped one hears about it
+    // from the document they edited rather than from a consumer's render. The refusal
+    // is the release-targets file's own, so every release verb meets it.
+    let discovering = Discovering::new();
+    discovering
+        .declares(DECLARING_WITH_INSTRUCTIONS)
+        .carries_probe()
+        .host(
+            "    adoption: published\n    targets:\n      - name: crate\n        style: \
+         automated\n        probe:\n          shell: 'echo 5.0.0'\n        \
+         adoption_instructions: '{% block adopt %}Take the vendored copy.'\n",
+        );
+
+    let refusal = discovering.refusal(&["targets", &discovering.repo()]);
+    assert!(
+        refusal.contains("not a minijinja template"),
+        "a host template that does not parse is refused as that: {refusal}"
+    );
+    assert!(
+        refusal.contains("adoption_instructions"),
+        "…naming the key the operator wrote: {refusal}"
+    );
+}
+
+#[test]
 fn a_rule_that_ignores_the_declaration_answers_with_its_own_targets_alone() {
     // How a host says "a target I do not consume": one key, per rule, and the answer
     // is exactly what that rule answered before a producer half existed.

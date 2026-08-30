@@ -38,8 +38,9 @@
 
 # `schema_version` is what this document states about its own shape, not a second
 # gate its identifiers are put through. `3` is the shape a producer writes today, and
-# it is what this document declares because two of its targets carry an
-# `instruction` — the one key versions 1 and 2 do not have. Version 2 before it moved
+# it is what this document declares because two of its targets carry
+# `adoption_instructions` — the one key versions 1 and 2 do not have. Version 2 before
+# it moved
 # which identifiers a `target.id` or a `covers` entry may express — npm's scoped
 # `@scope/name` — and no key at all, which is why nothing here needed it: nothing here
 # is spelled scoped.

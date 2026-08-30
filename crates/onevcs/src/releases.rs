@@ -172,7 +172,6 @@ pub struct ReleaseTarget {
     /// instead, inside the template: a host template may begin
     /// `{% extends "producer" %}` and override named blocks, and one naming no
     /// `extends` replaces wholly.
-    #[allow(clippy::doc_markdown)]
     pub adoption_instructions: Option<InstructionTemplate>,
 }
 

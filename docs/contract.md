@@ -1338,8 +1338,8 @@ consumer's render, on a machine the producer will never see. What a template ren
 a build refusing a name it did not recognize would refuse variables a consumer has and
 this crate does not.
 
-**An override composes rather than wholly replacing, and the override rule is
-untouched.** `ReleaseTarget` gains `adoption_instructions` too, carried across from the
+**A target still overrides whole, and composition is obtained inside the template
+instead.** `ReleaseTarget` gains `adoption_instructions` too, carried across from the
 declaration by the same step that turns a declared target into one this host waits on,
 so `release_targets`' `targets[..].adoption_instructions` is the template that survived
 the three layers. Layer 3 still replaces a target **whole** — a half-host, half-producer
