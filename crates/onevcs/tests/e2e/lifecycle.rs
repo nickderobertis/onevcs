@@ -1171,6 +1171,239 @@ fn a_session_holding_nothing_but_its_own_branch_closes_exactly_as_it_did_before(
     assert_eq!(closed[0]["payload"]["branch"], "feature/ordinary");
 }
 
+/// A real process whose working directory is `where`, which is the whole of what
+/// makes one a holder of a session.
+///
+/// Started by the journey so that the journey owns its pid: everything below stops
+/// exactly the process it started, by the number the OS handed back, and signals
+/// nothing it merely recognises.
+pub fn working_in(directory: &std::path::Path) -> std::process::Child {
+    std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(directory)
+        .spawn()
+        .expect("a process that works inside a directory")
+}
+
+/// Stop one this journey started, and wait for the OS to be finished with it.
+pub fn stop(mut process: std::process::Child) {
+    process
+        .kill()
+        .expect("stop the process this journey started");
+    process
+        .wait()
+        .expect("and reap it, so its pid is answered for");
+}
+
+#[test]
+fn a_close_refuses_while_a_process_is_working_anywhere_inside_the_session_run_root() {
+    // The destruction this refuses, as it happened: a `retry` hands the replacement
+    // dispatch its predecessor's token, and the predecessor is killed 300s after
+    // being asked to stop — so the predecessor's `close` runs while the replacement
+    // is working in the worktree, and removes the directory out from under it. The
+    // worker found only the clone, rebuilt the worktree by hand, and `work-status`
+    // reported the session `closed (stale)` with the dispatch still running under it.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/still-being-worked"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: the work so far");
+    std::fs::write(worktree.join("in-flight.txt"), "mid-edit\n").expect("work in flight");
+
+    let dispatch = working_in(&worktree);
+    let pid = dispatch.id();
+    // …and what that dispatch started, in the clone beside the worktree: the whole
+    // run root is the session, and a close removes the worktree out from under
+    // anything working anywhere inside it.
+    let clone = run_root_of(&fixture.world, &token).join("clone");
+    let beside = working_in(&clone);
+    let also = beside.id();
+
+    let refusal = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("2 processes are"))
+        .stderr(predicate::str::contains(format!("pid {pid}")))
+        .stderr(predicate::str::contains(format!("pid {also}")))
+        .stderr(predicate::str::contains(
+            clone.to_string_lossy().into_owned(),
+        ))
+        .stderr(predicate::str::contains(token.clone()))
+        .stderr(predicate::str::contains(
+            worktree.to_string_lossy().into_owned(),
+        ))
+        .stderr(predicate::str::contains(format!(
+            "onevcs session close {token}"
+        )));
+    let said = String::from_utf8(refusal.get_output().stderr.clone()).expect("text");
+    assert!(
+        said.contains("finish, or stop it"),
+        "the refusal leaves both ways forward with the caller:\n{said}"
+    );
+
+    // Nothing was touched: not the worktree, not the edit in flight, not the
+    // lifecycle a later reader decides protection from.
+    assert!(worktree.is_dir(), "a refused close removes nothing");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("in-flight.txt")).expect("the edit is still there"),
+        "mid-edit\n"
+    );
+    assert!(
+        fixture.world.events_of(&token, "session-closed").is_empty(),
+        "a session that was not closed is not reported closed"
+    );
+
+    // The one still inside is enough on its own, which is what makes this a bar
+    // rather than a count.
+    stop(beside);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("one process is"))
+        .stderr(predicate::str::contains(format!("pid {pid}")));
+
+    // …and once nothing is working in there, the same close releases it.
+    stop(dispatch);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("{token} closed")));
+    assert!(!worktree.exists(), "the worktree is released");
+    assert_eq!(fixture.world.events_of(&token, "session-closed").len(), 1);
+}
+
+#[test]
+fn a_close_asks_what_is_working_in_the_tree_rather_than_the_lease_or_a_name() {
+    // Three answers this must not take for occupancy. The session's lease is shared,
+    // so a holder beside this one is the ordinary state and proves nothing either
+    // way; a process's *name* is shared with every other `sleep` on the host; and
+    // neither says whose working directory is where.
+    let fixture = Fixture::local(&local_direct());
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb holds an occupancy lease
+    // across time — each takes it, works, and releases it before the process that
+    // opened the session exits — so there is no command to run that leaves one held
+    // for the length of a journey. The lock is found the only way anything can find
+    // it, by what appeared when the session was opened, it is held in the *shared*
+    // mode a session holds it in, and the real CLI then meets it.
+    let before = fixture.world.locks();
+    let (token, worktree) = fixture.open(&["--branch", "feature/leased"]);
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    let occupant = World::occupy_shared(lease);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    // The lease says what it always says, and the process inside is what decides.
+    let dispatch = working_in(&worktree);
+    let pid = dispatch.id();
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!("pid {pid}")));
+    stop(dispatch);
+
+    // A process of the same name, working somewhere else, holds nothing open — and
+    // the lease is still held while the close goes through, because it was never the
+    // question.
+    let elsewhere = working_in(&fixture.checkout);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(
+        !worktree.exists(),
+        "a shared lease and a same-named process elsewhere do not hold a close open"
+    );
+    stop(elsewhere);
+    drop(occupant);
+}
+
+#[test]
+fn a_close_preserves_what_the_worktree_still_holds_uncommitted() {
+    // The other half of the same loss, and about fifteen minutes of correct work has
+    // already gone this way: the rescue below looked for stray *commits*, and
+    // uncommitted changes are not commits — `git worktree remove --force` deletes
+    // them without either committing or reporting them.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/unsaved"]);
+    fixture
+        .world
+        .commit_file(&worktree, "done.txt", "done\n", "feat: the committed half");
+    std::fs::write(worktree.join("unsaved.txt"), "fifteen minutes of work\n")
+        .expect("work nobody committed");
+    std::fs::write(worktree.join("done.txt"), "done, and then some\n")
+        .expect("and an edit to a file that was");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(!worktree.exists(), "the worktree is released");
+
+    // Read back out of the execution checkout, which is the durable side of a
+    // disposable clone and the only place this work now exists.
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["show", "feature/unsaved:unsaved.txt"]),
+        "fifteen minutes of work",
+        "the file nobody committed reaches the execution checkout"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["show", "feature/unsaved:done.txt"]),
+        "done, and then some",
+        "and so does the edit to the file that was committed"
+    );
+
+    // Through the marker machinery rather than beside it, so the branch says plainly
+    // that a step did not finish and only a recovery may publish it.
+    let preserved = fixture.world.events_of(&token, "commit-preserved");
+    assert_eq!(preserved.len(), 1, "{preserved:#?}");
+    assert_eq!(preserved[0]["payload"]["provenance"], "incomplete-step");
+    let message = fixture.world.git(
+        &fixture.checkout,
+        &["log", "-1", "--format=%B", "feature/unsaved"],
+    );
+    assert!(message.contains("(incomplete step)"), "{message}");
+    assert!(message.contains("Onevcs-Status: incomplete"), "{message}");
+    assert_eq!(
+        fixture.world.events_of(&token, "session-closed")[0]["payload"]["preserved"],
+        "feature/unsaved"
+    );
+
+    // …and the train that lands finished work refuses it by name, which is what the
+    // marker is for.
+    fixture
+        .world
+        .onevcs()
+        .args(["integrate", "feature/unsaved"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("incomplete provenance"))
+        .stdout(predicate::str::contains("onevcs recover feature/unsaved"));
+}
+
 #[test]
 fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_checkout() {
     let fixture = Fixture::local(&local_direct());
@@ -3532,6 +3765,22 @@ fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
     );
     fixture.world.git(&other, &["push", "-q", "origin", "main"]);
 
+    // What it says is which repository it acted on and the commit it moved to: a
+    // host syncs several identities in a row and reads the answers together, and
+    // `main fast-forwarded to origin/main` names neither of those.
+    let landed = fixture.world.git(&fixture.origin, &["rev-parse", "main"]);
+    // Asked of the tool rather than composed here: the identity is what an origin
+    // *normalizes* to, and a fixture that spelled it itself would assert the answer
+    // it made up.
+    let resolved = fixture
+        .world
+        .onevcs()
+        .args(["resolve", "project"])
+        .output()
+        .expect("resolve runs");
+    let identity: serde_json::Value =
+        serde_json::from_slice(&resolved.stdout).expect("resolve prints JSON");
+    let identity = identity["identity"].as_str().expect("an identity key");
     fixture
         .world
         .onevcs()
@@ -3539,13 +3788,28 @@ fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
         .current_dir(&fixture.checkout)
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "main fast-forwarded to origin/main",
-        ));
+        .stdout(predicate::str::contains(format!(
+            "{identity}: main fast-forwarded to origin/main"
+        )))
+        .stdout(predicate::str::contains(landed.clone()));
     assert_eq!(
         fixture.world.git(&fixture.checkout, &["rev-parse", "HEAD"]),
-        fixture.world.git(&fixture.origin, &["rev-parse", "main"])
+        landed
     );
+
+    // …and a checkout nothing moved says so rather than reporting a fast-forward
+    // that did not happen, at the commit it is still on.
+    fixture
+        .world
+        .onevcs()
+        .arg("sync")
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "{identity}: main was already level with origin/main"
+        )))
+        .stdout(predicate::str::contains(landed));
 
     // A name git would not accept is refused before it spells a ref.
     fixture
@@ -3698,6 +3962,86 @@ fn a_push_a_hook_refuses_records_what_the_hook_wrote() {
     assert!(
         fixture.world.events_of(&token, "gate-verdict").is_empty(),
         "no verdict travels beside the push that carries it"
+    );
+}
+
+/// Every absolute path one message names, as a reader would pick them out of it.
+///
+/// Split on the punctuation prose puts around a path rather than on whitespace
+/// alone, because a refusal quotes a verifier's own sentences — where a path sits
+/// in parentheses, ends a clause, or ends the sentence.
+fn absolute_paths_in(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace() || "\"'`(<>".contains(c))
+        .filter(|word| word.starts_with('/'))
+        .map(|word| word.trim_end_matches(['.', ',', ';', ':', ')']).to_owned())
+        .filter(|word| word.len() > 1)
+        .collect()
+}
+
+#[test]
+fn every_path_a_refused_publication_names_can_be_opened_when_the_command_returns() {
+    // What a merge path writes about itself is written where it *runs*, and it says
+    // so: `scripts/nx.sh` in this very repository prints `(full output: …/.logs/nx.log)`.
+    // For a `local-direct` publication that tree is a scratch worktree removed before
+    // the command returns, so the refusal named `…/publish-<id>/worktree/.logs/nx.log`
+    // — the one thing in the message an operator trusts enough to open, and nothing
+    // was there.
+    let fixture = Fixture::local(&local_direct());
+    fixture.world.install_pre_push(
+        &fixture.checkout,
+        "mkdir -p .logs\n\
+         echo 'llmlint: comment_adds_nothing at src/thing.rs:12' > .logs/nx.log\n\
+         cat .logs/nx.log >&2\n\
+         echo \"nx: targets failed (full output: $PWD/.logs/nx.log)\" >&2\n\
+         exit 1",
+    );
+    let (token, worktree) = fixture.open(&["--branch", "feature/openable"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(stderr.contains("rejected by the merge path"), "{stderr}");
+
+    // The whole of the bar: every path it names, opened now that the command has
+    // returned — which is when whoever reads it opens one.
+    let named = absolute_paths_in(&stderr);
+    assert!(
+        named.iter().any(|path| path.contains("gate-logs")),
+        "the refusal names no path at all to check:\n{stderr}"
+    );
+    for path in &named {
+        std::fs::File::open(path).unwrap_or_else(|why| {
+            panic!("the refusal names {path}, which cannot be opened when it returns ({why}):\n{stderr}")
+        });
+    }
+
+    // And what became of the one it used to name is said rather than left blank: the
+    // tree it ran in has gone, and the same output is under the gate logs above.
+    assert!(
+        stderr.contains("gone with the publication worktree this ran in"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(".logs/nx.log"),
+        "a path into the reaped tree is still being offered:\n{stderr}"
+    );
+    let preserved = named
+        .iter()
+        .find(|path| path.contains("gate-logs"))
+        .expect("the preserved gate log");
+    assert!(
+        std::fs::read_to_string(preserved)
+            .expect("the preserved log is readable")
+            .contains("llmlint: comment_adds_nothing at src/thing.rs:12"),
+        "what the reaped path pointed at is in the log the refusal does name"
     );
 }
 
@@ -3898,7 +4242,7 @@ fn a_push_that_is_accepted_records_what_it_wrote_too() {
 }
 
 /// The run root one session works in, read out of the record that names it.
-fn run_root_of(world: &World, token: &str) -> PathBuf {
+pub fn run_root_of(world: &World, token: &str) -> PathBuf {
     let record: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(world.home().join("sessions").join(format!("{token}.json")))
             .expect("a session record"),

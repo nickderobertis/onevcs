@@ -1618,6 +1618,8 @@ fn a_command_run_from_below_a_checkout_still_finds_it() {
     let nested = fixture.checkout.join("deep/inside");
     std::fs::create_dir_all(&nested).expect("a directory inside the checkout");
 
+    // What it names is the checkout above this directory, which is the whole of what
+    // "still finds it" means — the branch had nowhere to move to.
     fixture
         .world
         .onevcs()
@@ -1625,7 +1627,12 @@ fn a_command_run_from_below_a_checkout_still_finds_it() {
         .current_dir(&nested)
         .assert()
         .success()
-        .stdout(predicate::str::contains("fast-forwarded"));
+        .stdout(predicate::str::contains(
+            "main was already level with origin/main",
+        ))
+        .stdout(predicate::str::contains(
+            fixture.checkout.to_string_lossy().into_owned(),
+        ));
 }
 
 #[test]

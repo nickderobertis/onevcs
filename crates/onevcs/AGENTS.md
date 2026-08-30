@@ -712,6 +712,33 @@ command that is inside a run root *now*, which is the state a record does not
 cover; a run root no record names has only that answer, and is reclaimable, since
 protecting it would make a refused open's litter permanent.
 
+**A close is held to the same standard, and refuses rather than skipping.**
+`workspace::close` asks `processes::holding` of the run root — the one answer this
+crate has for *who is in here*, a live process's own working directory — and
+refuses on any holder, naming each and leaving the caller to let the dispatch
+finish or stop it. The shared lease it takes proves nothing: every other shared
+holder succeeds beside it. A silent skip would be worse than the removal, because
+the record would then say `closed` and reclamation protects only an *open* one — so
+the live dispatch would be working in a directory nothing holds for it, which is the
+same destruction reached one verb along. Whatever the worktree still holds
+uncommitted is committed behind the incomplete-step marker first, since `git
+worktree remove` forces past an unclean tree.
+
+**A record is forgotten when nobody is left to answer for it, which takes two
+answers.** `workspace::holders` drops one whose recorded owner is no longer that same
+running process **and** whose run root no live process is working inside, so the list a
+caller reads carries only records somebody can still be asked about and a refusal that
+matters is not buried under litter. `Record::owner_is_running` is the first, shared with `liveness`, so a
+closed session an embedding process opened is still reported while that process runs
+and a recycled pid is not an owner. `processes::holding` is the second, and it is the
+one that makes the first safe to act on: `onevcs session open` prints a token and
+exits, so a session opened from the command line has no owner process from that
+instant while its dispatch works in the worktree for hours — dropping the record then
+would take the run root's protection in `reclaim` with it, which keeps one only while
+an *open* record names it, and hand a live directory to the next `session open` to
+reap. Same answer, same reason, as the close refusal above. Ask the owner first: it is
+two file reads, and the occupancy question walks every process on the host.
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory

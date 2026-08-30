@@ -41,7 +41,9 @@ use crate::support::workspace_root;
 /// then checks.
 const HELPERS: &[(&str, &str)] = &[
     ("crates/onevcs/tests/e2e/support.rs", "onevcs"),
-    ("crates/onevcs/tests/e2e/world.rs", "onevcs"),
+    // `world::onevcs` is a wrapper over this one, which is where the world's whole
+    // environment — the scratch state root included — is put on the command.
+    ("crates/onevcs/tests/e2e/world.rs", "onevcs_std"),
     ("crates/onevcs/tests/e2e/world.rs", "shell"),
     ("crates/onevcs/tests/e2e/inherited_pipes.rs", "onevcs"),
     ("crates/onevcs/tests/e2e/smoke.rs", "smoking"),

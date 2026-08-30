@@ -13,6 +13,11 @@
 //! parent — those would each be this crate guessing which of a host's processes are
 //! its business.
 //!
+//! That one answer serves two verbs. The sweep asks it of a run root it has already
+//! proven finished, and stops what it finds. [`crate::workspace::close`] asks it of
+//! a session and **refuses** on any answer at all: a session somebody is working in
+//! is not finished, and nothing there is this crate's to stop.
+//!
 //! Two are never signalled: this process, and anything it descends from — an
 //! operator who ran a sweep from inside a workspace is not a daemon. Nor is a pid a
 //! signal cannot name one process by, which [`Pid`] makes unrepresentable. And the
@@ -76,6 +81,15 @@ impl Holder {
     /// The process, as a report names it and a signal reaches it.
     pub fn pid(&self) -> Pid {
         self.pid
+    }
+
+    /// The directory it is working in, which is *why* it holds the run root.
+    ///
+    /// Reported as well as the pid, because a refusal that names only a number
+    /// leaves an operator to work out what that process is doing here — and the
+    /// directory is the whole of the answer this module ever had.
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
     }
 }
 

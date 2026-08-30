@@ -334,6 +334,10 @@ fn train(
                 &format!("the push of {base:?}"),
                 &result,
                 &kept,
+                // The train pushes from the publication checkout, which is nobody's
+                // scratch tree: what the hook wrote about where it ran is still
+                // there when this returns.
+                None,
             ));
         }
         ending = Ending::AdvancedAndPushed;

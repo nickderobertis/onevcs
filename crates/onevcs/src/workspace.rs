@@ -37,7 +37,7 @@ use crate::remainder::Remainder;
 use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::{git, guidance, home, ids, lock};
+use crate::{git, guidance, home, ids, lock, processes};
 
 /// How many dead run roots still holding unpublished work are retained.
 ///
@@ -437,13 +437,28 @@ fn process_started(pid: u32) -> Option<ProcessStart> {
 
 impl Record {
     /// Whether the process that opened this session is that same process, still
+    /// running.
+    ///
+    /// The pid alone cannot answer it — the OS reuses pids, so a later process
+    /// wearing a dead session's number would read as its owner — so the recorded
+    /// creation identity has to be the one that process wears now.
+    ///
+    /// One answer, asked by both of the questions that turn on it: whether this
+    /// session's hold on its branch is a live one ([`liveness`], which asks the
+    /// lifecycle as well), and whether there is anybody left to answer for the
+    /// record at all ([`spent`], which does not).
+    ///
+    /// [`liveness`]: Record::liveness
+    pub fn owner_is_running(&self) -> bool {
+        self.owner_started
+            .is_some_and(|started| process_started(self.owner_pid) == Some(started))
+    }
+
+    /// Whether the process that opened this session is that same process, still
     /// running — which is what [`Liveness`] reports and what makes a session's hold
     /// on its branch a live one.
     pub fn liveness(&self) -> Liveness {
-        let same_process = self
-            .owner_started
-            .is_some_and(|started| process_started(self.owner_pid) == Some(started));
-        match self.state == Lifecycle::Open && same_process {
+        match self.state == Lifecycle::Open && self.owner_is_running() {
             true => Liveness::Live,
             false => Liveness::Stale,
         }
@@ -629,17 +644,77 @@ pub fn all() -> Result<Vec<Record>> {
 /// "nobody is in this repository" and "this is not a repository I know" are
 /// different answers to act on.
 ///
-/// Reading is all it does: a stale holder is reported as stale and left alone,
-/// since reclaiming somebody else's run root is the business of opening a session
-/// rather than of looking at one.
+/// **A record whose owner process has exited, with nothing working inside its run
+/// root, is forgotten here rather than listed** — see [`spent`]. A record whose
+/// owner is still running is always reported, closed or open, live or stale; so is
+/// one a dispatch is still working in, whatever became of the command that opened
+/// it.
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, repo)?;
-    Ok(all()?
-        .into_iter()
-        .filter(|record| record.identity == resolution.key)
-        .map(SessionHolder::from)
-        .collect())
+    let mut holders = Vec::new();
+    for record in all()? {
+        if record.identity != resolution.key {
+            continue;
+        }
+        if spent(&record) {
+            forget(&record.token);
+            continue;
+        }
+        holders.push(SessionHolder::from(record));
+    }
+    Ok(holders)
+}
+
+/// Whether a record has nobody left to answer for it, which is what makes one
+/// litter.
+///
+/// Two questions, and both have to say nobody. **Has the process that opened this
+/// session gone** — not the *lifecycle* beside it, since a session an embedding
+/// process opened and closed is a closed session that process can still be asked
+/// about. And, only then, **is anything working inside its run root**, which is the
+/// same [`processes::holding`] answer [`close`] refuses on: a live process's own
+/// working directory.
+///
+/// The second is what makes the first safe to act on. `onevcs session open` prints
+/// a token and exits, so a session opened from the command line has no owner
+/// process from that instant while an agent works in its worktree for hours —
+/// forgetting the record on the owner alone would take that run root's protection
+/// with it, because [`reclaim`] keeps one only while an *open* record names it, and
+/// the next `session open` would then reap a directory somebody is inside. That is
+/// the destruction this crate has already done once, reached by a different verb.
+///
+/// So what is forgotten is a record with nobody to answer for it *and* nobody in
+/// it, which is the litter the report is about: seven of those above a launch made
+/// a real refusal arrive in the same shape as seven ignorable ones, and nothing has
+/// ever removed one.
+///
+/// Asked in that order deliberately: the owner is two file reads and the occupancy
+/// question walks every process on the host, so the cheap answer that retains is
+/// the one that runs on every record.
+fn spent(record: &Record) -> bool {
+    !record.owner_is_running() && processes::holding(&record.run_root).is_empty()
+}
+
+/// Drop one spent record, saying so rather than failing the read it happened in.
+///
+/// Best effort: what the caller asked for is who holds this repository, and a
+/// record this host would not let go of is still an answer to that — reported as
+/// the housekeeping it is, on stderr, the way every other capture beside a decision
+/// already made reports itself.
+fn forget(token: &Token) {
+    let Ok(path) = record_path(token) else {
+        return;
+    };
+    if let Err(kept) = std::fs::remove_file(&path) {
+        if kept.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "onevcs: warning: the session {token} has no owner process on this host any \
+                 more and its record at {} could not be removed: {kept}",
+                path.display(),
+            );
+        }
+    }
 }
 
 /// Every repository one identity's branches can be read out of, in search order:
@@ -1394,8 +1469,22 @@ struct Stray {
 
 /// Release a session's worktree and its lease, keeping the branch.
 ///
+/// **Nothing is released while something is working in the session.** The lease
+/// this takes is shared, so taking it proves only that no exclusive holder has it
+/// — every other shared holder succeeds beside it — and it is per command anyway:
+/// a dispatch working in a worktree for hours holds none. So occupancy is asked of
+/// the host instead, as [`processes::holding`] answers it for the sweep: a live
+/// process whose own working directory is inside the run root. A close that met one
+/// **refuses**, because a `retry` hands the replacement dispatch the predecessor's
+/// token and the predecessor is stopped 300s later — so its close arrives after the
+/// replacement is established, and removing the worktree deletes the directory that
+/// dispatch is working in.
+///
 /// Tearing the worktree down copies the branch into the execution checkout first:
 /// the clone is disposable, and the branch is the only record of what was done.
+/// **Uncommitted work is committed before that copy**, behind the same
+/// incomplete-step marker [`adopt`] writes, because `git worktree remove` forces
+/// past an unclean tree and what it forces past is gone.
 ///
 /// What that branch is not, is the only record of what was *committed*. A worker
 /// that cut a branch of its own inside the worktree — `git checkout -b fix/…` is
@@ -1410,8 +1499,28 @@ pub fn close(token: &str) -> Result<Record> {
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
     })?;
+    // Before anything is read out of the tree, let alone removed: a session
+    // something is working in is not this command's to release, and the answer is a
+    // process's own working directory rather than the lease above.
+    let occupants = occupants(&record);
+    if !occupants.is_empty() {
+        return Err(occupied(&record, &occupants));
+    }
+    let mut stream = Stream::open(token)?;
     let mut closed = json!({"token": record.token, "branch": record.branch});
     if record.clone.is_dir() {
+        // Whatever the worktree still holds uncommitted, before any of it can be
+        // removed. `git worktree remove` forces past an unclean tree, so what is not
+        // committed here is deleted a few lines below without ever having been
+        // reported — which is how about fifteen minutes of finished work went.
+        if record.worktree.is_dir() && git::is_dirty(&record.worktree)? {
+            let preserved = crate::vcs::preserve_into(
+                &record,
+                &mut stream,
+                crate::session::Provenance::IncompleteStep,
+            )?;
+            closed["preserved"] = json!(preserved.branch);
+        }
         if !hand_back(&record) {
             closed["retained"] = json!(record.clone.to_string_lossy());
         }
@@ -1426,12 +1535,68 @@ pub fn close(token: &str) -> Result<Record> {
     // Publish the terminator before making `Closed` observable. An event follower
     // queries state before its final drain; reversing these writes lets it observe
     // closure and drain the stream before the closing event exists.
-    let mut stream = Stream::open(token)?;
     stream.emit(EventKind::SessionClosed, object(closed));
     record.state = Lifecycle::Closed;
     save(&record)?;
     drop(lease);
     Ok(record)
+}
+
+/// Every live process this host can show is working inside the session.
+///
+/// The run root, which is the whole of the session: the worktree a close removes is
+/// cut inside it, and so is the clone a command may be reading and the scratch tree
+/// a publication builds in. Asking the worktree alone would answer *no* for a
+/// dispatch that had stepped into any of the rest.
+fn occupants(record: &Record) -> Vec<processes::Holder> {
+    processes::holding(&record.run_root)
+}
+
+/// Why a close refused a session something is still working in, and what to do.
+///
+/// **A refusal rather than a silent skip**, because the caller asked for the
+/// worktree to go and it did not: a close that answered success while a dispatch
+/// went on writing in the tree would leave that dispatch's own directory
+/// unprotected — [`reclaim`] keeps a run root only while an *open* record names it —
+/// and the next `session open` on the host would reap it. That is the same
+/// destruction the record check there was written for, reached one verb along.
+///
+/// It names every holder, because the caller's move is about *those* processes: a
+/// `retry` hands a replacement the predecessor's token, and the predecessor's close
+/// then arrives while the replacement is working in the tree. Which of the two the
+/// operator wants is a question this crate cannot answer, so it names both ways
+/// forward and takes neither.
+fn occupied(record: &Record, holders: &[processes::Holder]) -> Error {
+    let inside: Vec<String> = holders
+        .iter()
+        .map(|holder| format!("{} in {}", holder.pid(), holder.cwd().display()))
+        .collect();
+    let inside: Vec<&str> = inside.iter().map(String::as_str).collect();
+    error::invalid(format!(
+        "session {token:?} was not closed: {count} still working inside its run root {root} — \
+         {inside} — and removing its worktree {worktree} would take the directory out from \
+         under {them}. Let the dispatch that holds it finish, or stop it, and then re-run \
+         `{close}`",
+        token = &*record.token,
+        count = counted_processes(holders.len()),
+        root = record.run_root.display(),
+        worktree = record.worktree.display(),
+        inside = guidance::listed(&inside),
+        them = match holders.len() {
+            1 => "it",
+            _ => "them",
+        },
+        close = guidance::command(["onevcs", "session", "close", &record.token]),
+    ))
+}
+
+/// A count and the noun it counts, so the refusal above reads as English at one as
+/// well as at three.
+fn counted_processes(holders: usize) -> String {
+    match holders {
+        1 => "one process is".to_owned(),
+        many => format!("{many} processes are"),
+    }
 }
 
 /// Hand the session's own branch back to the execution checkout, saying whether it

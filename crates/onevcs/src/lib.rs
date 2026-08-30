@@ -165,6 +165,12 @@ pub fn close_session(providers: &Providers<'_>, token: &SessionToken) -> Result<
 /// `Git` writes them and where the command reads them. A `Vcs` that keeps its
 /// sessions elsewhere therefore does not appear in this list — the same limit the
 /// command has, since the two are one path.
+///
+/// A record whose owner process has exited *and* whose run root no live process is
+/// working inside is forgotten as this answers rather than reported: nobody is left
+/// to be asked about it, and a list of those is what buries the one holder a caller
+/// had to act on. A session somebody is still working in is reported however long
+/// ago the command that opened it exited.
 pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>> {
     workspace::holders(repo)
 }
