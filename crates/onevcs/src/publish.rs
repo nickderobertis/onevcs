@@ -1377,6 +1377,11 @@ fn publish_as_change(
     // where the branch would already be on the remote and the refusal would read as a
     // merge path nobody could verify.
     refuse_an_unhosted_identity(&context.resolution.key)?;
+    if let Some(reason) = &context.draft {
+        if let Some(refusal) = refuse_a_draft_over_a_reviewed_change(context, reason) {
+            return Err(refusal);
+        }
+    }
     if context.effective != MergePolicy::ChangeOpen {
         // Only the policies that watch read these, so only those are held to them.
         gh::checks_timeout()?;
@@ -1685,16 +1690,7 @@ fn hold_as_draft(
     // is the same refusal, because either way the change on the host can land while
     // its caller believes it cannot.
     if !host.is_draft(change)? {
-        return Err(crate::error::invalid(format!(
-            "{url} is open for review on the host, and this publication asked for a draft \
-             awaiting {awaiting} {target}. A change that is open can land, so reporting it as a \
-             draft would say the work is held back when nothing is holding it. Lift nothing and \
-             publish {branch:?} without a draft, or close that change request and publish again",
-            url = change.url,
-            awaiting = reason.awaiting,
-            target = reason.target,
-            branch = context.branch,
-        )));
+        return Err(already_open_for_review(context, change, reason));
     }
     // The publication record, and the only place the reason is written: see
     // [`DraftReason`].
@@ -1705,6 +1701,63 @@ fn hold_as_draft(
     fields.insert("base".to_owned(), json!(change.base));
     stream.emit(EventKind::ChangeDrafted, object(payload));
     Ok(PublishOutcome::ChangeDraft(change.url.clone()))
+}
+
+/// The refusal for a draft asked over a change request the host has open for review.
+///
+/// One sentence, two places: `hold_as_draft` reaches it once the change is adopted,
+/// and the pre-push check below reaches it before anything is on the remote. A
+/// refusal that read differently depending on which noticed first would be two rules
+/// about one state.
+fn already_open_for_review(
+    context: &Context<'_>,
+    change: &ChangeRequest,
+    reason: &DraftReason,
+) -> Error {
+    crate::error::invalid(format!(
+        "{url} is open for review on the host, and this publication asked for a draft awaiting \
+         {awaiting} {target}. A change that is open can land, so reporting it as a draft would \
+         say the work is held back when nothing is holding it. Lift nothing and publish \
+         {branch:?} without a draft, or close that change request and publish again",
+        url = change.url,
+        awaiting = reason.awaiting,
+        target = reason.target,
+        branch = context.branch,
+    ))
+}
+
+/// Refuse a draft over a change request the host already has open for review, before
+/// anything reaches the remote.
+///
+/// The same question [`hold_as_draft`] asks after the change is adopted, asked at the
+/// boundary as well — because everything past the publishing push is reported as a
+/// merge path this build could not read, and this is not one of those. The merge path
+/// ruled on the push perfectly well; what stopped the publication is a state the host
+/// *answered*, and an operator told their push is unverified would go looking for a
+/// failure that never happened.
+///
+/// **Only a definite answer refuses.** A host this build has no implementation for,
+/// one that cannot be reached, and one that will not say whether a change is a draft
+/// are each left exactly where they are met today — after the push, by the paths that
+/// already handle them — so this can only ever move a refusal *earlier*, never invent
+/// one. `hold_as_draft` stays the authoritative check for the same reason it existed
+/// before this: a host may take `--draft` and open an ordinary change anyway.
+fn refuse_a_draft_over_a_reviewed_change(
+    context: &Context<'_>,
+    reason: &DraftReason,
+) -> Option<Error> {
+    let host = change_host(&context.resolution.key)
+        .ok()
+        .and_then(|slug| context.hosting.for_repo(&slug).ok())?;
+    let open = host
+        .find_changes(&context.branch, context.target.base())
+        .ok()?
+        .into_iter()
+        .next()?;
+    match host.is_draft(&open) {
+        Ok(false) => Some(already_open_for_review(context, &open, reason)),
+        _ => None,
+    }
 }
 
 /// Lift the draft on a change request this publication is landing without one.
