@@ -265,6 +265,12 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         })
     }
 
+    // llmlint: ignore[invalid_states_unrepresentable] the signature is the trait's, which
+    // the approved amendment in `docs/contract.md` declares verbatim as `-> Result<bool>`;
+    // an implementation cannot narrow it, and a named domain type would be a public item
+    // the contract does not name. The third state a caller must not read as "not a draft"
+    // — "this host would not say" — is the `Err` arm rather than a value inside it, and the
+    // reason is recorded on the declaration in the crate next door.
     fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
         let state = self.store.snapshot()?;
         Ok(state.drafts.contains_key(&cr.id) && !state.made_ready.contains(&cr.id))
