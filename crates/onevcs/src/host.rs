@@ -1133,6 +1133,14 @@ impl RemoteHost for GitHub {
     fn open_change(&self, req: ChangeSpec) -> Result<ChangeRequest> {
         addressable_branch(&req.head, "the head branch")?;
         addressable_branch(&req.base, "the base branch")?;
+        // The publication rule the crate states, applied rather than restated —
+        // and applied here as well as where a publication takes a request in, because
+        // [`ChangeSpec`] is public and this trait is reachable directly. A reason no
+        // publication could have carried must not open a change request the record
+        // then cannot say anything readable about.
+        if let Some(reason) = &req.draft {
+            reason.checked()?;
+        }
         let body = req.body.unwrap_or_default();
         let mut args = vec![
             "pr", "create", "--repo", &self.repo, "--head", &req.head, "--base", &req.base,

@@ -3736,3 +3736,41 @@ fn a_host_that_takes_the_draft_request_and_opens_an_ordinary_change_is_refused()
         "nothing wrote a reason for a draft nobody is holding"
     );
 }
+
+#[test]
+fn the_real_host_refuses_an_unusable_reason_before_it_reaches_the_host_at_all() {
+    // `ChangeSpec` is public and `RemoteHost` is reachable directly, so a consumer can
+    // hand `GitHub` a reason without a publication ever seeing it. The rule is the
+    // publication's own, applied at this call for the reason the head and base branch
+    // names are: input is refused where it arrives, and a reason that would not render
+    // as itself must not become a change request nobody can read the record of.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let host = GitHub::new("acme-corp/hosted").expect("a repository named owner/name");
+
+    let refused = host
+        .open_change(onevcs::ChangeSpec {
+            head: "feature/unusable".to_owned(),
+            base: "main".to_owned(),
+            title: "feat: the thing".to_owned(),
+            body: None,
+            draft: Some(DraftReason {
+                because: String::new(),
+                ..awaiting_a_release()
+            }),
+        })
+        .expect_err("a reason nothing could render is not one to open a draft with");
+    assert!(
+        refused
+            .to_string()
+            .contains("the reason the change is not ready"),
+        "{refused}"
+    );
+    assert!(
+        world.host_calls().is_empty(),
+        "it is refused at the boundary, so the host is never asked: {:?}",
+        world.host_calls()
+    );
+}
