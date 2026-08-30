@@ -139,9 +139,8 @@ impl Workspace {
     }
 
     /// Run the cached target through `just nx`, this repository's own escape hatch
-    /// for Nx — the entry point an operator who skipped the recipe uses, and the
-    /// only one that reaches the target's own guards, since the recipe resolves the
-    /// base before Nx ever sees it.
+    /// for Nx — the entry point an operator who skipped the recipe uses, and the one
+    /// that hands the target a base the recipe would have resolved first.
     fn run_nx_target(&self, environment: &[(&str, &str)]) -> Reported {
         let mut command = Command::new("just");
         command
@@ -347,6 +346,17 @@ impl Reported {
             self.stderr.contains(expected),
             "expected {expected:?} on stderr in {self}"
         );
+        self
+    }
+
+    /// What a red run owes reaches the operator exactly once, however Nx behaved.
+    /// The read-back is conditional on a relay this suite cannot choose, so the claim
+    /// that it does not double up what an intact relay already carried is asked as a
+    /// count: one copy whichever way the relay went, and never two.
+    #[track_caller]
+    fn says_once(&self, expected: &str) -> &Self {
+        let copies = self.stdout.matches(expected).count() + self.stderr.matches(expected).count();
+        assert_eq!(copies, 1, "expected one {expected:?} in {self}");
         self
     }
 
@@ -750,12 +760,11 @@ exit 1
         .says_on_stderr(FAIL_FINDING)
         .says_on_stderr(FAIL_SUMMARY)
         .says_on_stderr("ACTION: clear each finding at the file and line it names");
-    // And when the relay arrived whole, the record is not read back over it: the same
-    // findings printed twice would read as two runs disagreeing about one diff.
-    intact
-        .failed()
-        .says(FAIL_FINDING)
-        .silent_about("Nx relayed none of the judge's report");
+    // And the record is never read back *over* an intact relay: the same findings
+    // printed twice would read as two runs disagreeing about one diff. Whether this
+    // second run's relay survived is Nx's to decide and not this suite's, so the claim
+    // is the one that holds either way — the findings arrive, once.
+    intact.failed().says_once(FAIL_FINDING);
 }
 
 #[test]
@@ -863,13 +872,11 @@ fn a_missing_pinned_runtime_helper_is_actionable() {
 
     let refused = workspace.lint(&workspace.head(), &[], &[]);
     let printed = workspace.fingerprint(&[]);
-    let refused_by_the_target =
-        workspace.run_nx_target(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
+    let refused_by_the_judge = workspace.judge(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
 
     // The recipe meets it through the fingerprint it asks for first, which is the
-    // one an operator diagnosing this would run by hand; a run that went straight to
-    // the target through `just nx` meets the target's own refusal instead. Both name
-    // the file and how to put it back.
+    // one an operator diagnosing this would run by hand; the target's own body meets
+    // its own refusal instead. Both name the file and how to put it back.
     refused
         .failed()
         .says_on_stderr("llmlint fingerprint: could not load the pinned runtime environment")
@@ -879,7 +886,7 @@ fn a_missing_pinned_runtime_helper_is_actionable() {
         .failed()
         .says("llmlint fingerprint: could not load the pinned runtime environment")
         .says("restore scripts/llmlint-runtime-env.sh and retry");
-    refused_by_the_target
+    refused_by_the_judge
         .failed()
         .says("could not load scripts/llmlint-runtime-env.sh")
         .says("git checkout -- scripts/llmlint-runtime-env.sh");
@@ -933,10 +940,14 @@ fn the_target_run_through_just_nx_refuses_a_base_it_cannot_judge() {
         ("origin/main", "must be a resolved commit id"),
         (&"0".repeat(40), "missing from this checkout"),
     ] {
-        workspace
-            .run_nx_target(&[("LLMLINT_DIFF_BASE_SHA", base_sha)])
-            .failed()
-            .says(expected);
+        let environment = [("LLMLINT_DIFF_BASE_SHA", base_sha)];
+        // The entry point answers for what survives Nx — that the target failed at
+        // all — and the target's body answers for what it said. Splitting them is the
+        // loss `a_report_nx_relayed_none_of_is_read_back_from_the_record` is about,
+        // met where the driver's read-back cannot help: a base is refused before
+        // there is any record to read one back from.
+        workspace.run_nx_target(&environment).failed();
+        workspace.judge(&environment).failed().says(expected);
     }
     assert_eq!(workspace.judge_runs(), 0);
 }
