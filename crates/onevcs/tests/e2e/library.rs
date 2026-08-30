@@ -3381,3 +3381,85 @@ fn a_host_that_declines_to_lift_the_draft_leaves_the_publication_saying_so() {
         world.host_calls()
     );
 }
+
+#[test]
+fn a_branch_keyed_verb_lifts_the_draft_the_session_that_cut_the_branch_opened() {
+    // The other verb that lands a branch, and the one a fast-adopting operator
+    // actually reaches for once the release has arrived: the session is long gone,
+    // the branch is on the host as a draft, and `publish-branch` carries no reason —
+    // which is exactly what says the reason no longer holds.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let providers = || Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+    let session = worked(&world, "feature/branch-lifted");
+
+    let drafted = onevcs::publish(
+        &providers(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    let PublishOutcome::ChangeDraft(url) = drafted.outcome else {
+        panic!("a drafted publication opens a draft: {drafted:?}");
+    };
+    let opened = host.state().changes[0].clone();
+
+    // The session's run clone is disposable, so the branch is taken back into the
+    // publication checkout the way an operator takes it: from the origin it is on.
+    let checkout = world.path("hosted");
+    world.git(
+        &checkout,
+        &[
+            "fetch",
+            "-q",
+            "origin",
+            "feature/branch-lifted:feature/branch-lifted",
+        ],
+    );
+    onevcs::close_session(&providers(), &session.token).expect("the session closes");
+
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "publish-branch",
+                "feature/branch-lifted",
+                "--repo",
+                &checkout.to_string_lossy(),
+            ],
+            providers(),
+        ),
+        0,
+        "the branch-keyed verb lands the branch"
+    );
+
+    assert_eq!(
+        host.state().made_ready,
+        vec![opened.id.clone()],
+        "publishing the branch with no reason lifted the draft"
+    );
+    assert!(
+        !host
+            .for_repo("acme-corp/hosted")
+            .expect("a host")
+            .is_draft(&opened)
+            .expect("the host answers"),
+        "and the change request is open for review"
+    );
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "it adopted the change the session opened rather than opening a second"
+    );
+    assert_eq!(host.state().changes[0].url, url);
+}

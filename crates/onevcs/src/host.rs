@@ -197,7 +197,16 @@ pub trait RemoteHost {
     ///
     /// Defaulted to the refusal, never to `false`: "this host was never taught to
     /// answer" and "this change is not a draft" are different facts, and only the
-    /// second is a reason to go on and merge.
+    /// second is a reason to go on and merge — which is what the `Result` around the
+    /// answer carries, rather than a third value inside it.
+    // llmlint: ignore[invalid_states_unrepresentable] the approved amendment in
+    // `docs/contract.md` declares this seam verbatim as `-> Result<bool>`, and a named
+    // domain type here would be a public item the contract does not name — reported
+    // rather than taken, which is this repository's rule for a contract conflict. The
+    // meaning it would carry is already carried: the *third* state a caller must not
+    // confuse with "not a draft" is "this host would not say", and that is the `Err`
+    // arm rather than a `false`. Every call site reads it as one of three, and the two
+    // in `publish.rs` — `hold_as_draft` and `lift_any_draft` — are the only ones.
     fn is_draft(&self, _cr: &ChangeRequest) -> Result<bool> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::is_draft",

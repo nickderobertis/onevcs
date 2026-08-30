@@ -2633,6 +2633,50 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
 }
 
 #[test]
+fn the_inferred_surface_row_lists_every_ending_publish_outcome_actually_has() {
+    // The third copy of the endings, after the amendment and the README, and the one
+    // nothing reconciled: a row that restates a type is the thing that goes stale,
+    // and this row is what a consumer reads before it writes the match.
+    let row = repo_file("docs/inferred-surface.md")
+        .lines()
+        .find(|line| line.starts_with("| `PublishOutcome` |"))
+        .expect("the record has a row for PublishOutcome")
+        .to_owned();
+    let listed: BTreeSet<String> = row
+        .split('|')
+        .nth(2)
+        .expect("the row's inferred-shape column")
+        .split('/')
+        .map(|span| span.trim().trim_matches('`').to_owned())
+        .filter(|span| !span.is_empty())
+        .collect();
+
+    // Taken off the type, through the serialization the row is written in: the row
+    // spells the wire words, and the endings are what the enum serializes as.
+    let spelled: BTreeSet<String> = all_publish_outcomes()
+        .into_iter()
+        .map(|variant| {
+            let mut wire = String::new();
+            for (at, letter) in variant.char_indices() {
+                if letter.is_ascii_uppercase() {
+                    if at > 0 {
+                        wire.push('-');
+                    }
+                    wire.push(letter.to_ascii_lowercase());
+                } else {
+                    wire.push(letter);
+                }
+            }
+            wire
+        })
+        .collect();
+    assert_eq!(
+        listed, spelled,
+        "docs/inferred-surface.md and PublishOutcome disagree about how a publication can end"
+    );
+}
+
+#[test]
 fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_not() {
     // The approved usage block is committed verbatim and spells `publish` with two
     // options, so an option added since is written down in an amendment or nowhere.
