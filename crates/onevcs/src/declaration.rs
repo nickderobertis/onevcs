@@ -596,8 +596,6 @@ pub struct InstructionVariables {
 impl InstructionVariables {
     /// Whether each variable renders as itself.
     ///
-    /// Whether each variable renders as itself.
-    ///
     /// Both values here arrive from the caller rather than from the declaration, and
     /// both are rendered into text somebody reads, so a control character in either
     /// would put something other than what it is into the instruction. A blank one is
