@@ -93,25 +93,31 @@ pub struct PublishRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftReason {
     /// The repository identity whose release is awaited, as the registry keys one.
-    // llmlint: ignore[invalid_states_unrepresentable] an identity key is a `String`
-    // everywhere this crate spells one — `Identity::origin`, `Recoverable::identity`,
-    // the registry document's own map key — and a newtype here would disagree with all
-    // of them. What must not be representable is a value that renders as something
-    // other than itself in a refusal or an event payload, and `checked` below refuses
-    // exactly that, at the boundary a publication takes this in at.
+    ///
+    /// A `String` rather than a newtype because an identity key is one everywhere this
+    /// crate spells one — `Identity::origin`, `Recoverable::identity`, the registry
+    /// document's own map key — so a narrower type here would disagree with every type
+    /// it is compared against. What must not be representable is a value that renders as
+    /// something *other* than itself in a refusal or an event payload, and `checked`
+    /// refuses exactly that at every boundary one arrives at.
+    // llmlint: ignore[invalid_states_unrepresentable] the doc above: the key's own type, checked.
     pub awaiting: String,
     /// Which release target of it is awaited.
     pub target: TargetName,
     /// The reference this change is pinned to until that release arrives — the
     /// branch of the awaited repository the pin names.
-    // llmlint: ignore[invalid_states_unrepresentable] see `awaiting` above: this is the
-    // awaited repository's own branch name rather than one this repository's git could
-    // be asked about, so the parser that would decide it is not this host's. `checked`
-    // refuses the values that would render as something else.
+    ///
+    /// A `String` for the reason `awaiting` above is, and one more of its own: this is
+    /// the *awaited* repository's branch name rather than one this repository's git
+    /// could be asked about, so the parser that would decide it is not this host's.
+    /// `checked` refuses the values that would render as something else.
+    // llmlint: ignore[invalid_states_unrepresentable] the doc above: another host's name, checked.
     pub reference: String,
     /// One line a person reads, saying why the change is not ready.
-    // llmlint: ignore[invalid_states_unrepresentable] prose, held to the one shape that
-    // matters where it lands — a single rendered line — by `checked` below.
+    ///
+    /// Prose, so there is nothing for a type to narrow. The one shape that matters is
+    /// where it lands — a single rendered line — and `checked` is what holds it to that.
+    // llmlint: ignore[invalid_states_unrepresentable] the doc above: prose, checked where it lands.
     pub because: String,
 }
 
