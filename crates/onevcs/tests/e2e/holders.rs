@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 
-use onevcs::{Git, Lifecycle, Liveness, Providers, SessionHolder, SessionRequest, Vcs};
+use onevcs::{Git, Lifecycle, Liveness, Providers, Session, SessionHolder, SessionRequest, Vcs};
 use predicates::prelude::*;
 
 use crate::honesty::inhabit;
@@ -916,4 +916,128 @@ fn work_a_failed_node_left_only_in_its_run_clone_outlives_the_interlock_that_rea
         log[0], "feat: finish the step",
         "the work reaches the base: {log:?}"
     );
+}
+
+/// The launch interlock a consumer builds on this enumeration, spelled the way
+/// `onepipeline`'s `src/concurrency.rs` spells it: before a launch, ask who holds the
+/// repository, and refuse while a session somebody is still answering for is one this
+/// caller has not acknowledged.
+///
+/// It lives here rather than in the crate because it *is* the consumer: `onevcs`
+/// answers who holds a repository and takes no view on whether that should stop a
+/// launch. What this journey drives is the whole decision made over the real public
+/// call — no predicate stood in for it, and the launch that goes through opens a real
+/// session in a real worktree.
+fn launch(repo: &str, branch: &str, acknowledged: &[&str]) -> std::result::Result<Session, String> {
+    let holders = onevcs::session_holders(repo).expect("the library enumerates the holders");
+    let held: Vec<&SessionHolder> = holders
+        .iter()
+        .filter(|holder| holder.liveness == Liveness::Live)
+        .filter(|holder| !acknowledged.contains(&holder.token.0.as_str()))
+        .collect();
+    if !held.is_empty() {
+        return Err(format!(
+            "refusing to launch in {repo:?}: it is still held by {}",
+            held.iter()
+                .map(|holder| format!("{} on {:?}", holder.token.0, holder.branch))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    Git.open_session(SessionRequest {
+        repo: repo.to_owned(),
+        branch: Some(branch.to_owned()),
+        base: None,
+        execution_checkout: None,
+    })
+    .map_err(|refused| format!("{refused}"))
+}
+
+/// The interlock the enumeration exists for, driven over the real call.
+///
+/// In-process for the reason the journey above it is: a session's owner is the
+/// process that opened it, and only a caller embedding the crate stays alive
+/// afterwards the way a consumer driving a dispatch does. The holder it decides on is
+/// a *real* live one — another process, still running, with its own record on disk —
+/// because a stale holder is the ordinary state and would refuse nothing.
+#[test]
+fn a_live_holder_refuses_a_launch_until_the_caller_acknowledges_that_exact_session() {
+    let fixture = Fixture::local(&local_direct());
+    inhabit(&fixture.world);
+    let mut elsewhere = HeldOwner::open(&fixture.world, "feature/held-open");
+    let theirs_pid = elsewhere.pid();
+    // Waited for before this process asks anything, for the reason the journey above
+    // waits: the two opens fetch and clone the one execution checkout, and what this
+    // drives is the decision rather than two `session open`s racing over a checkout.
+    elsewhere.recorded(|| {
+        onevcs::session_holders("project")
+            .expect("the library enumerates the holders")
+            .iter()
+            .any(|holder| holder.owner_pid == theirs_pid)
+    });
+    let holders = onevcs::session_holders("project").expect("the library enumerates the holders");
+    let holder = holders
+        .iter()
+        .find(|holder| holder.owner_pid == theirs_pid)
+        .expect("the session the held process opened");
+    assert_eq!(
+        holder.liveness,
+        Liveness::Live,
+        "the premise: a process is still answering for it"
+    );
+    assert_eq!(holder.state, Lifecycle::Open);
+    let held_token = holder.token.0.clone();
+
+    // Unacknowledged, the launch does not happen, and the refusal names the session
+    // that stopped it rather than saying that something did.
+    let refused = launch("project", "feature/first-try", &[])
+        .expect_err("a live holder nobody acknowledged stops the launch");
+    assert!(
+        refused.contains(&held_token) && refused.contains("feature/held-open"),
+        "the refusal names the holder it refused for:\n{refused}"
+    );
+    assert_eq!(
+        onevcs::session_holders("project").expect("the holders are read again"),
+        holders,
+        "and a refused launch opened nothing: the holders are exactly who they were"
+    );
+
+    // Acknowledging *a* session is not acknowledging *this* one.
+    let still = launch("project", "feature/first-try", &["s-somebody-else"])
+        .expect_err("acknowledging another token acknowledges nothing here");
+    assert!(
+        still.contains(&held_token),
+        "the refusal still names the holder that is actually there:\n{still}"
+    );
+
+    // Acknowledged by the exact token the enumeration handed back, the launch goes
+    // through — and what it produces is a real session in a real worktree.
+    let opened = launch("project", "feature/after-the-nod", &[held_token.as_str()])
+        .expect("an acknowledged holder does not stop a launch");
+    assert_eq!(opened.branch, "feature/after-the-nod");
+    assert!(
+        opened.worktree.is_dir(),
+        "the launch cut the worktree it answered with"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&opened.worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feature/after-the-nod",
+        "and that worktree is on the branch the launch asked for"
+    );
+
+    // Both sessions are held now, which is what the acknowledgement said it knew.
+    let after = onevcs::session_holders("project").expect("the holders are read again");
+    assert!(
+        after.iter().any(|held| held.token == opened.token),
+        "the session the launch opened holds the repository too: {after:?}"
+    );
+    assert!(
+        after.iter().any(|held| held.token.0 == held_token),
+        "and acknowledging the other one did not make it go away: {after:?}"
+    );
+
+    onevcs::close_session(&Providers::real(), &opened.token).expect("the launch's session closes");
+    elsewhere.released();
 }

@@ -495,7 +495,7 @@ pub fn occupancy_identity(run_root: &Path) -> String {
 // record proves, and this is how the record is found: [`load`] resolves the path for a
 // name `ids::is_safe_name` has just accepted and nothing has parsed yet, so a `&Token`
 // parameter would be a type only reachable through the file it is used to open.
-pub fn record_path(token: &str) -> Result<PathBuf> {
+pub(crate) fn record_path(token: &str) -> Result<PathBuf> {
     Ok(home::sessions_dir()?.join(format!("{token}.json")))
 }
 
@@ -678,7 +678,7 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// Host-wide rather than per identity, because that is the question the verb that
 /// asks it is about: the sweep answers for this host's state root rather than for
 /// one repository.
-pub fn spent_records() -> Result<Vec<Record>> {
+pub(crate) fn spent_records() -> Result<Vec<Record>> {
     Ok(all()?.into_iter().filter(spent).collect())
 }
 
@@ -783,7 +783,7 @@ fn holds_unpublished_work(record: &Record) -> bool {
 /// answered to the caller rather than printed here: the one caller is `onevcs sweep`,
 /// whose whole output is what it reaped and what it kept and why, and a warning
 /// beside that report would be the same fact said twice in two shapes.
-pub fn forget(record: &Path) -> std::result::Result<(), String> {
+pub(crate) fn forget(record: &Path) -> std::result::Result<(), String> {
     match std::fs::remove_file(record) {
         Ok(()) => Ok(()),
         Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => Ok(()),
