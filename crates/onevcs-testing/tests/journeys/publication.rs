@@ -790,3 +790,66 @@ impl onevcs::RemoteHost for Unreadable {
         })
     }
 }
+
+#[test]
+fn a_host_written_before_drafts_publishes_here_the_way_it_always_did() {
+    // The mirror of the compatibility guarantee: a `RemoteHost` that was never taught
+    // to answer about drafts adopts the change it already holds and publishes
+    // unchanged, rather than meeting a seam with no body.
+    let _home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+    let session = open(&vcs, "feature/earlier-host");
+
+    struct Earlier;
+    impl onevcs::RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            Ok("tester".to_owned())
+        }
+        fn open_change(&self, _: onevcs::ChangeSpec) -> onevcs::Result<onevcs::ChangeRequest> {
+            unreachable!("this host already holds the change request")
+        }
+        fn find_changes(&self, _: &str, base: &str) -> onevcs::Result<Vec<onevcs::ChangeRequest>> {
+            Ok(vec![onevcs::ChangeRequest {
+                id: onevcs::ChangeId("7".to_owned()),
+                url: onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/7")
+                    .expect("a URL"),
+                head_sha: onevcs::Sha("0f1e2d3".to_owned()),
+                base: base.to_owned(),
+            }])
+        }
+        fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+            unreachable!("change-open asks a host nothing about its checks")
+        }
+        fn check_log(
+            &self,
+            _: &onevcs::ChangeRequest,
+            _: &onevcs::Check,
+        ) -> onevcs::Result<onevcs::ArtifactId> {
+            unreachable!("change-open asks a host for no log")
+        }
+        fn merge(
+            &self,
+            _: &onevcs::ChangeRequest,
+            _: MergePolicy,
+        ) -> onevcs::Result<onevcs::MergeOutcome> {
+            unreachable!("change-open asks a host to merge nothing")
+        }
+    }
+    struct Only;
+    impl Hosting for Only {
+        fn for_repo(&self, _: &str) -> onevcs::Result<Box<dyn onevcs::RemoteHost>> {
+            Ok(Box::new(Earlier))
+        }
+    }
+
+    let published = vcs
+        .publish(&session.token, &PublishRequest::default(), &Only)
+        .expect("the publication runs");
+    assert_eq!(
+        published.outcome,
+        PublishOutcome::ChangeOpen(
+            onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/7").expect("a URL")
+        ),
+        "a host that cannot be asked about drafts publishes as it always did"
+    );
+}

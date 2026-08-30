@@ -3516,3 +3516,72 @@ fn a_real_host_that_will_not_say_during_a_lift_stops_the_publication() {
         world.host_calls()
     );
 }
+
+#[test]
+fn a_host_written_before_drafts_adopts_its_change_request_and_publishes_unchanged() {
+    // The compatibility guarantee the two defaulted methods exist for: a
+    // `RemoteHost` written against the earlier surface goes on publishing exactly as
+    // it did. It cannot have drafted anything — it was never given the field — so the
+    // publication passes the refusal over rather than reporting a seam with no body,
+    // and asks it to lift nothing.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            Ok("tester".to_owned())
+        }
+        fn open_change(&self, _: onevcs::ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("this host already holds the change request")
+        }
+        fn find_changes(&self, _: &str, base: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            Ok(vec![ChangeRequest {
+                id: ChangeId("7".to_owned()),
+                url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/7")
+                    .expect("a URL"),
+                head_sha: onevcs::Sha("0f1e2d3".to_owned()),
+                base: base.to_owned(),
+            }])
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+            unreachable!("change-open asks a host nothing about its checks")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<onevcs::ArtifactId> {
+            unreachable!("change-open asks a host for no log")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("change-open asks a host to merge nothing")
+        }
+    }
+    struct Only;
+    impl Hosting for Only {
+        fn for_repo(&self, _: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+            Ok(Box::new(Earlier))
+        }
+    }
+
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let session = worked(&world, "feature/earlier-host");
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &Only,
+        },
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+
+    assert_eq!(
+        published.outcome,
+        PublishOutcome::ChangeOpen(
+            onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/7").expect("a URL")
+        ),
+        "a host that cannot be asked about drafts publishes as it always did"
+    );
+    assert!(
+        world.events_of(&session.token.0, "draft-lifted").is_empty(),
+        "nothing may record a lift a host was never asked to perform"
+    );
+}
