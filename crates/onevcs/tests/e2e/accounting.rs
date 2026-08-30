@@ -1682,6 +1682,78 @@ fn a_drafted_publication_reports_why_it_is_held_and_a_lifted_one_reports_no_draf
         kinds.iter().any(|kind| kind == "change-drafted"),
         "the session's own stream still records why it was drafted: {kinds:?}"
     );
+
+    // …and the tie the reader is documented to break. A draft and the lift that
+    // answers it cannot be simultaneous — a lift is performed on a change the host is
+    // already holding — so two records stamped at the same millisecond are a clock
+    // that could not tell them apart, and the reader clears the draft rather than
+    // reporting a reason that may already be spent. Both records are valid and both
+    // are newer than everything above, so nothing but the comparison decides this: a
+    // reader that broke the tie the other way would report the reason below.
+    let same = "2099-06-01T12:00:00.000Z";
+    let appended = |seq: u64, kind: &str, payload: serde_json::Value| {
+        serde_json::json!({
+            "v": 1,
+            "ts": same,
+            "stream": token,
+            "seq": seq,
+            "source": "vcs",
+            "kind": kind,
+            "labels": {},
+            "payload": payload,
+            "artifacts": [],
+        })
+        .to_string()
+    };
+    let stream = hosted
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let recorded = std::fs::read_to_string(&stream).expect("the session wrote a stream");
+    std::fs::write(
+        &stream,
+        format!(
+            "{recorded}{}\n{}\n",
+            appended(
+                9001,
+                "change-drafted",
+                serde_json::json!({
+                    "url": url,
+                    "id": "1",
+                    "base": "main",
+                    "awaiting": "github.com/acme-corp/upstream",
+                    "target": "crate",
+                    "reference": "feature/the-pinned-branch",
+                    "because": "a hold and its lift stamped at one millisecond",
+                }),
+            ),
+            appended(
+                9002,
+                "draft-lifted",
+                serde_json::json!({"url": url, "id": "1"})
+            ),
+        ),
+    )
+    .expect("a stream whose newest draft and newest lift share a stamp");
+
+    let tied = report(&hosted.world, "feature/held");
+    assert!(
+        tied["publication"].get("draft").is_none(),
+        "a lift stamped with the draft it answers clears it: {tied}"
+    );
+    // Both records were readable, so this is the comparison deciding rather than a gap
+    // in what could be read — the report says so by having nothing to say.
+    assert!(
+        tied.get("notes").is_none(),
+        "both appended records are valid, so nothing is a gap: {tied}"
+    );
+    // …and it is still the same change request, still open: what the tie decided is
+    // the draft, not the publication it was a draft of.
+    assert_eq!(tied["publication"]["change_url"], url);
+    assert_eq!(tied["publication"]["state"], "open");
+    assert_eq!(tied["ref"]["given"], "feature/held");
+    assert_eq!(tied["branch"]["name"], "feature/held");
 }
 
 #[test]
