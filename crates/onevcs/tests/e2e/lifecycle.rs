@@ -1196,7 +1196,7 @@ pub fn stop(mut process: std::process::Child) {
 }
 
 #[test]
-fn a_close_refuses_while_a_process_is_working_inside_the_session_worktree() {
+fn a_close_refuses_while_a_process_is_working_anywhere_inside_the_session_run_root() {
     // The destruction this refuses, as it happened: a `retry` hands the replacement
     // dispatch its predecessor's token, and the predecessor is killed 300s after
     // being asked to stop — so the predecessor's `close` runs while the replacement

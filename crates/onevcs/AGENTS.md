@@ -726,9 +726,9 @@ worktree remove` forces past an unclean tree.
 
 **A record is forgotten when nobody is left to answer for it, which takes two
 answers.** `workspace::holders` drops one whose recorded owner is no longer that same
-running process **and** whose run root no live process is working inside — the record
-nothing ever removed, seven of which above a launch made a real refusal read like an
-ignorable one. `Record::owner_is_running` is the first, shared with `liveness`, so a
+running process **and** whose run root no live process is working inside, so the list a
+caller reads carries only records somebody can still be asked about and a refusal that
+matters is not buried under litter. `Record::owner_is_running` is the first, shared with `liveness`, so a
 closed session an embedding process opened is still reported while that process runs
 and a recycled pid is not an owner. `processes::holding` is the second, and it is the
 one that makes the first safe to act on: `onevcs session open` prints a token and
