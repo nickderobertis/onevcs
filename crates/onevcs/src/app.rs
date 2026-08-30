@@ -1062,6 +1062,15 @@ fn release_declaration(args: &ReleaseDeclarationArgs) -> Result<u8> {
                     .join(", ")
             );
         }
+        // The template as the producer wrote it, rather than a rendering of it: this
+        // verb answers what the document *declares*, and rendering one belongs to the
+        // consumer that holds the variables.
+        if let Some(instructions) = target.adoption_instructions.as_ref() {
+            println!("    adoption instructions:");
+            for line in instructions.lines() {
+                println!("      {line}");
+            }
+        }
     }
     // Absent rather than empty: a repository that has retired nothing has nothing to
     // say here, and a heading over no rows reads as a list that failed to load.

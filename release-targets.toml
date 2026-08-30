@@ -37,13 +37,18 @@
 # not publish fails it too.
 
 # `schema_version` is what this document states about its own shape, not a second
-# gate its identifiers are put through. `2` is the shape a producer writes today;
-# what it moved is which identifiers a `target.id` or a `covers` entry may express —
-# npm's scoped `@scope/name` — and no key at all, so a consumer still reading
-# version 1 reads this document as the shape it knows and loses nothing, because
-# nothing here is spelled scoped.
+# gate its identifiers are put through. `3` is the shape a producer writes today, and
+# it is what this document declares because two of its targets carry
+# `adoption_instructions` — the one key versions 1 and 2 do not have. Version 2 before
+# it moved
+# which identifiers a `target.id` or a `covers` entry may express — npm's scoped
+# `@scope/name` — and no key at all, which is why nothing here needed it: nothing here
+# is spelled scoped.
+#
+# A consumer still reading version 1 or 2 is told, by number, that this document names
+# something its build has no opinion on, and reads the rest of it exactly as before.
 
-schema_version = 2
+schema_version = 3
 probe = "scripts/release-probe.sh"
 
 # The library and the `onevcs` binary. Its version is the one version source for
@@ -55,6 +60,25 @@ name = "crate"
 what = "The library and the `onevcs` binary, as a Rust dependent takes them."
 published_by = ".github/workflows/release.yml — the publish-crate job, first of the two names it passes scripts/publish-crates.sh, under crates/onevcs/Cargo.toml's [package] name."
 manifest = "crates/onevcs/Cargo.toml"
+# What a consumer does when this releases, said here because it is ours to say. The
+# three blocks are the ones the schema names — a consumer's own template may
+# `{% extends "producer" %}` and override any of them rather than discarding the prose
+# around it — and the `{% if version %}` is what a node that adopted fast renders
+# before there is any release to name.
+adoption_instructions = """
+{% block adopt %}\
+Move the `onevcs` dependency in {{ repository }} off its git pin and onto \
+{% if version %}version `{{ version }}`{% else %}the released version, once one is \
+published{% endif %}, then update the lockfile.\
+{% endblock %}
+{% block verify %}\
+Run `just check`, which is this repository's deterministic tier.\
+{% endblock %}
+{% block caveat %}\
+The `{{ target }}` target carries the library and the binary together, so a change to \
+either is a release of both.\
+{% endblock %}
+"""
 
 # The in-memory and file-backed `Vcs` and `RemoteHost` implementations a consumer
 # puts in dev-dependencies. It versions and tags on its own cadence — a change to a
@@ -66,6 +90,23 @@ name = "testing-crate"
 what = "The in-memory and file-backed Vcs and RemoteHost implementations, for a consumer's dev-dependencies."
 published_by = ".github/workflows/release.yml — the publish-crate job, second of the two names it passes scripts/publish-crates.sh, under crates/onevcs-testing/Cargo.toml's [package] name."
 manifest = "crates/onevcs-testing/Cargo.toml"
+# The rule a consumer of this repository has no way to know from the outside, and the
+# reason per-target adoption instructions are worth declaring at all: the two crates
+# here release on two cadences, so a release of this one moves this dev-dependency and
+# nothing beside it.
+adoption_instructions = """
+{% block adopt %}\
+Move only the `onevcs-testing` dev-dependency\
+{% if version %} to version `{{ version }}`{% endif %}.\
+{% endblock %}
+{% block verify %}\
+Run `just check`; the journeys that supply these implementations are what exercise it.\
+{% endblock %}
+{% block caveat %}\
+It versions on its own cadence, so this release does not move the `onevcs` dependency \
+beside it — leave that pin alone.\
+{% endblock %}
+"""
 
 # The wheels, whose project name is the one in pyproject.toml: the upload step
 # names nothing, because it publishes whatever the wheels declare.

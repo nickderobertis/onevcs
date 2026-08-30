@@ -76,7 +76,9 @@ mod sweep;
 mod vcs;
 mod workspace;
 
-pub use declaration::{Declaration, DeclaredTarget, RegistryId, RetiredArtifact};
+pub use declaration::{
+    Declaration, DeclaredTarget, InstructionTemplate, RegistryId, RetiredArtifact,
+};
 pub use error::{Error, Result};
 pub use event::{
     ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Phase, Source,

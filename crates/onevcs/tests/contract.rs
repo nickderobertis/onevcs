@@ -1023,6 +1023,7 @@ fn the_amendment_declares_the_release_surface_it_added() {
                     timeout_seconds: 60,
                 },
             },
+            adoption_instructions: None,
         }],
         declaration: DeclarationSource::Undeclared {
             looked_in: PathBuf::from("/checkouts/onevcs"),
@@ -1065,6 +1066,7 @@ fn the_amendment_declares_the_release_surface_it_added() {
         release: ReleaseMethod::HumanStep {
             action: "Push the image to the internal registry and record the tag.".to_owned(),
         },
+        adoption_instructions: None,
     };
     assert_eq!(
         human_step.probe(),
@@ -1086,7 +1088,11 @@ fn the_amendment_declares_the_release_surface_it_added() {
         "pub struct ReleaseRule { pub r#match: rules::RuleMatch, pub adoption: Option<Adoption>,",
         "pub default_target: Option<TargetName>,",
         "pub targets: Vec<ReleaseTarget> }",
-        "pub struct ReleaseTarget { pub name: TargetName, pub release: ReleaseMethod }",
+        "pub struct ReleaseTarget { pub name: TargetName, pub release: ReleaseMethod,",
+        // The version 3 field, carried across from the declaration so a consumer reading
+        // the resolved set finds the template that survived the three layers.
+        "pub adoption_instructions:",
+        "Option<declaration::InstructionTemplate> }",
         "pub struct TargetName(String);",
         "pub enum Adoption { Fast, Published }",
         "pub enum ReleaseMethod {",
@@ -1200,6 +1206,23 @@ fn the_canonical_declaration_the_amendment_spells_is_one_this_build_reads() {
         "the amendment's `published_by` names the workflow: {:?}",
         target.published_by
     );
+
+    // The version 3 key, held to the text the same way: the amendment's own example
+    // declares a template, it names the blocks a consumer's own overrides, and it asks
+    // about a version that is not there yet — which is the property the field exists
+    // for. What it renders *to* is the consumer's question and is asked nowhere here.
+    let template = target
+        .adoption_instructions
+        .as_ref()
+        .expect("the amendment's example declares adoption instructions");
+    assert!(
+        template.contains("{% if version %}"),
+        "the amendment's example is written for a version that is not there yet: {template:?}"
+    );
+    assert!(
+        template.contains("{% block adopt %}"),
+        "…and declares a block a consumer's own template can override: {template:?}"
+    );
     let [retired] = &declared.retired[..] else {
         panic!("the amendment spells exactly one [[retired]] entry");
     };
@@ -1241,7 +1264,16 @@ fn the_amendment_states_the_version_a_producer_writes_and_the_oldest_a_consumer_
     let oldest = onevcs::declaration::OLDEST_SCHEMA_VERSION;
     for sentence in [
         format!("`{writes}` is what a producer writes today; `{oldest}` is still read"),
-        format!("**Version {writes} is the npm scoped form, and version {oldest} does not stop being readable.**"),
+        // One sentence per bump, spelled at the version it is about rather than at
+        // whichever is newest: what version 2 moved does not become what version 3
+        // moved when the constant advances, and a producer reading this text is
+        // deciding which of the three their own document declares.
+        "**Version 2 is the npm scoped form, and version 1 does not stop being readable.**"
+            .to_owned(),
+        format!(
+            "**Version {writes} is the per-target adoption instructions, and versions \
+             {oldest} and 2 do not stop being readable.**"
+        ),
     ] {
         assert!(
             amendments.contains(&unwrapped(&sentence)),
@@ -1340,6 +1372,11 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
                 .expect("a sentence"),
             manifest: Some("Cargo.toml".parse().expect("a repository path")),
             covers: vec!["npm:onevcs-cli-linux-x64".parse().expect("an identifier")],
+            adoption_instructions: Some(
+                "{% block adopt %}Move the pin.{% endblock %}"
+                    .parse()
+                    .expect("a template"),
+            ),
         }],
         retired: vec![onevcs::RetiredArtifact {
             id: "pypi:onepipeline-ui-cli".parse().expect("an identifier"),
@@ -1357,7 +1394,7 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
     let declarations = amendment_declaring("pub struct Declaration");
     for spelled in [
         "pub const FILE: &str = \"release-targets.toml\";",
-        "pub const SCHEMA_VERSION: u32 = 2;",
+        "pub const SCHEMA_VERSION: u32 = 3;",
         "pub const OLDEST_SCHEMA_VERSION: u32 = 1;",
         "pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,",
         "pub targets: Vec<DeclaredTarget>,",
@@ -1366,7 +1403,9 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
         "pub struct DeclaredTarget { pub id: RegistryId, pub name: TargetName,",
         "pub what: Prose, pub published_by: Prose,",
         "pub manifest: Option<RepositoryPath>,",
-        "pub covers: Vec<RegistryId> }",
+        "pub covers: Vec<RegistryId>,",
+        "pub adoption_instructions: Option<InstructionTemplate> }",
+        "pub struct InstructionTemplate(String);",
         "pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }",
         "impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }",
         "pub struct Prose(String);",
@@ -1395,7 +1434,7 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
         json!({
             // The version this build writes, spelled as the number a consumer would
             // read off the wire rather than as the constant that produced it.
-            "schema_version": 2,
+            "schema_version": 3,
             "probe": "scripts/release-probe.sh",
             "target": [{
                 "id": "crate:onevcs",
@@ -1404,6 +1443,7 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
                 "published_by": ".github/workflows/release.yml — the publish-crate job.",
                 "manifest": "Cargo.toml",
                 "covers": ["npm:onevcs-cli-linux-x64"],
+                "adoption_instructions": "{% block adopt %}Move the pin.{% endblock %}",
             }],
             "retired": [{
                 "id": "pypi:onepipeline-ui-cli",
@@ -1432,12 +1472,20 @@ fn the_amendment_declares_the_three_layers_a_repositorys_targets_come_from() {
                         timeout_seconds: 60,
                     },
                 },
+                // Carried across from the declaration, which is what makes the
+                // producer's own template reach a consumer that reads the resolved set.
+                adoption_instructions: Some(
+                    "{% block adopt %}Move the pin.{% endblock %}"
+                        .parse()
+                        .expect("a template"),
+                ),
             },
             ReleaseTarget {
                 name: name("container"),
                 release: ReleaseMethod::HumanStep {
                     action: "Push the image and record the tag.".to_owned(),
                 },
+                adoption_instructions: None,
             },
         ],
         declaration: DeclarationSource::Declared {

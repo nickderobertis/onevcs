@@ -41,18 +41,28 @@ pub const FILE: &str = "release-targets.toml";
 
 /// The schema version this build writes.
 ///
-/// Version 2 is the schema that spells the npm scoped form, `@scope/name`, as a name
-/// a [`DeclaredTarget::id`] may take. The keys are version 1's, key for key — what
-/// moved is which identifiers a producer can express — so a declaration that names
-/// one is telling a reader "there may be a spelling in here that a build one release
-/// behind cannot read", which is the whole thing a version number is for.
+/// Version 3 is the schema that declares [`DeclaredTarget::adoption_instructions`], the one
+/// key either of the two versions below it does not have. Version 2 before it spells
+/// the npm scoped form, `@scope/name`, as a name a [`DeclaredTarget::id`] may take —
+/// no key at all, only which identifiers a producer can express. Either way, a
+/// declaration naming a version is telling a reader "there may be something in here
+/// that a build one release behind cannot read", which is the whole thing a version
+/// number is for.
 ///
 /// A producer writes this one. Reading spans [`OLDEST_SCHEMA_VERSION`] to here and
 /// then past it: a declaration written against a *later* schema is read as this
 /// shape with whatever it names beyond it ignored, because refusing it would make a
 /// consumer one release behind unable to learn anything about a repository one
 /// release ahead.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
+
+/// The version at which a target may carry an [`InstructionTemplate`].
+///
+/// Stated as its own number rather than spelled as [`SCHEMA_VERSION`], because the
+/// two say different things and will stop being equal at the next bump: this is the
+/// version whose keys a document has to declare to use the field, and that does not
+/// move when something else does.
+const INSTRUCTION_SCHEMA_VERSION: u32 = 3;
 
 /// The oldest schema version this build reads.
 ///
@@ -66,9 +76,10 @@ pub const OLDEST_SCHEMA_VERSION: u32 = 1;
 /// Whether this build knows what keys a declared version has — which is every
 /// version it reads, up to the one it writes.
 ///
-/// Versions 1 and 2 declare one key set, so knowing the keys is knowing them for
-/// both. Above [`SCHEMA_VERSION`] the answer is no, and the keys of a schema this
-/// build has never seen are not its to have an opinion on.
+/// Versions 1 and 2 declare one key set and version 3 adds one key to it, so knowing
+/// the keys is knowing which of the two sets a declared version takes. Above
+/// [`SCHEMA_VERSION`] the answer is no, and the keys of a schema this build has never
+/// seen are not its to have an opinion on.
 fn keys_are_known_at(declared: i64) -> bool {
     (i64::from(OLDEST_SCHEMA_VERSION)..=i64::from(SCHEMA_VERSION)).contains(&declared)
 }
@@ -151,6 +162,12 @@ pub struct DeclaredTarget {
     /// parses one shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub covers: Vec<RegistryId>,
+    /// The minijinja template a consumer of this target is instructed by.
+    ///
+    /// Producer knowledge. Absent means the consumer's own default. Declared from
+    /// schema version 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adoption_instructions: Option<InstructionTemplate>,
 }
 
 /// Something this repository once published and does not publish again.
@@ -415,6 +432,114 @@ impl std::ops::Deref for Prose {
     }
 }
 
+/// The minijinja template a consumer of one target is instructed by.
+///
+/// **Producer knowledge.** What a repository's own adoption asks of a dependent is a
+/// fact that repository knows and a dependent would otherwise have to guess — and
+/// guessing has been wrong. Absent means the consumer's own default.
+///
+/// A newtype and deliberately **not** [`Prose`]: prose is capped at 400 characters,
+/// refuses every control character, and is the one line an entry is rendered beside,
+/// while a template carrying `{% if version %}` and `{% block %}` is multi-line by
+/// construction.
+///
+/// It is validated in its conversion the way every other newtype here is: non-empty,
+/// at most 4000 bytes, and it **parses as a minijinja template** — so a
+/// producer's syntax error is refused where the declaration is read rather than at a
+/// consumer's render, on a machine the producer will never see.
+///
+/// What a template renders *against*, and where it is rendered, belong to the
+/// consumer: this crate carries the template through the three layers and nothing
+/// else. The one thing it fixes is how the two layers compose — a host template may
+/// begin `{% extends "producer" %}` and override named blocks, and a host template
+/// naming no `extends` replaces wholly, exactly as every other field of a target does.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct InstructionTemplate(String);
+
+/// How long an instruction template may be, in bytes.
+///
+/// An order of magnitude above `MAX_PROSE`, because this one is not rendered on a
+/// line beside anything: it is the paragraph a consumer acts on. Bounded all the same
+/// — a declaration is a document a consumer fetches from a repository nobody here
+/// owns.
+const MAX_INSTRUCTION: usize = 4000;
+
+impl TryFrom<String> for InstructionTemplate {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(
+                "a release target's adoption instructions are what a consumer does when a \
+                 release of it arrives, so an empty template says less than declaring none \
+                 at all"
+                    .to_owned(),
+            );
+        }
+        if value.len() > MAX_INSTRUCTION {
+            return Err(format!(
+                "a release target's adoption instructions are longer than {MAX_INSTRUCTION} \
+                 bytes; they are the paragraph a consumer acts on, and the reasoning behind \
+                 them belongs in a comment"
+            ));
+        }
+        // Parsed here rather than at a consumer's render, which is the whole reason this
+        // is a template type and not a string: a producer's syntax error is theirs to see,
+        // in the document they wrote, rather than a machine they will never look at.
+        // `{% extends %}` is resolved at render and so is not a name this has to know.
+        minijinja::Environment::new()
+            .add_template("adoption_instructions", &value)
+            .map_err(|failure| {
+                format!(
+                    "a release target's adoption instructions are not a minijinja template: \
+                     {failure:#}"
+                )
+            })?;
+        Ok(InstructionTemplate(value))
+    }
+}
+
+/// The conversion a caller building a declaration reaches for, which is the same
+/// check the document gets.
+impl std::str::FromStr for InstructionTemplate {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        InstructionTemplate::try_from(value.to_owned())
+    }
+}
+
+impl From<InstructionTemplate> for String {
+    fn from(template: InstructionTemplate) -> Self {
+        template.0
+    }
+}
+
+/// The template itself, quoted — never the wrapper, for the reason [`Prose`] spells
+/// its own.
+impl std::fmt::Debug for InstructionTemplate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for InstructionTemplate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The template as the producer wrote it, which is what a consumer hands its own
+/// engine. `Deref` rather than a named accessor, exactly as [`Prose`] does it.
+impl std::ops::Deref for InstructionTemplate {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A path to something the repository being released carries, checked where it is
 /// read.
 ///
@@ -618,15 +743,39 @@ pub(crate) fn parse(raw: &str, origin: &str) -> Result<Declaration> {
     Ok(declaration)
 }
 
-/// The keys schema versions 1 and 2 declare, by the table they belong to.
+/// The keys every schema version this build reads declares, by the table they belong
+/// to.
 ///
-/// One key set for both, because version 2 moved which identifiers a producer can
-/// express and no key at all. Spelled here rather than derived from
-/// `deny_unknown_fields`, because that attribute would refuse a *later* schema's keys
-/// too — and the whole of the leniency this document promises is that it does not.
+/// Spelled here rather than derived from `deny_unknown_fields`, because that
+/// attribute would refuse a *later* schema's keys too — and the whole of the leniency
+/// this document promises is that it does not.
 const TOP_LEVEL_KEYS: [&str; 4] = ["schema_version", "probe", "target", "retired"];
 const TARGET_KEYS: [&str; 6] = ["id", "name", "what", "published_by", "manifest", "covers"];
+/// The one key version 3 added, which versions 1 and 2 do not declare.
+const TARGET_KEYS_AT_3: [&str; 7] = [
+    "id",
+    "name",
+    "what",
+    "published_by",
+    "manifest",
+    "covers",
+    "adoption_instructions",
+];
 const RETIRED_KEYS: [&str; 2] = ["id", "why"];
+
+/// Which keys a `[[target]]` has at the version the document declared.
+///
+/// Versions 1 and 2 share one set — version 2 moved which identifiers a producer can
+/// express and no key at all — and version 3 is that set plus `adoption_instructions`.
+/// Asked of
+/// the *declared* version rather than of the newest this build writes, because a
+/// document is held to the schema its author named.
+fn target_keys_at(declared: i64) -> &'static [&'static str] {
+    match declared >= i64::from(INSTRUCTION_SCHEMA_VERSION) {
+        true => &TARGET_KEYS_AT_3,
+        false => &TARGET_KEYS,
+    }
+}
 
 /// Refuse a key this schema does not declare, naming it and the table it is in.
 ///
@@ -634,11 +783,22 @@ const RETIRED_KEYS: [&str; 2] = ["id", "why"];
 /// writes: a version 1 declaration carrying a typo is told which schema refused it,
 /// and that is the schema its author wrote against.
 fn refuse_unknown_keys(document: &toml::Value, origin: &str, declared: i64) -> Result<()> {
-    let unknown = |table: &str, key: &str| {
+    // A key a *later* schema this build knows declares is a different mistake from a
+    // typo, and it has a different fix: the document names the version it wants rather
+    // than its author hunting for a misspelling that is not there. Asked per table, so
+    // a top-level `adoption_instructions` is still the typo it is.
+    let unknown = |table: &str, key: &str, at_the_newest: &[&str]| {
+        let later = match at_the_newest.contains(&key) {
+            true => format!(
+                ". schema_version {SCHEMA_VERSION} does declare it, so declare that version \
+                 to use it"
+            ),
+            false => String::new(),
+        };
         error::invalid(format!(
             "the release declaration at {origin} names {key:?} in {table}, which schema_version \
              {declared} does not declare; a misspelled key would otherwise be read as an \
-             absent one"
+             absent one{later}"
         ))
     };
     let Some(top) = document.as_table() else {
@@ -649,10 +809,13 @@ fn refuse_unknown_keys(document: &toml::Value, origin: &str, declared: i64) -> R
     };
     for key in top.keys() {
         if !TOP_LEVEL_KEYS.contains(&key.as_str()) {
-            return Err(unknown("the document", key));
+            return Err(unknown("the document", key, &TOP_LEVEL_KEYS));
         }
     }
-    for (array, keys) in [("target", &TARGET_KEYS[..]), ("retired", &RETIRED_KEYS[..])] {
+    for (array, keys, at_the_newest) in [
+        ("target", target_keys_at(declared), &TARGET_KEYS_AT_3[..]),
+        ("retired", &RETIRED_KEYS[..], &RETIRED_KEYS[..]),
+    ] {
         let Some(entries) = top.get(array).and_then(toml::Value::as_array) else {
             continue;
         };
@@ -662,7 +825,11 @@ fn refuse_unknown_keys(document: &toml::Value, origin: &str, declared: i64) -> R
             };
             for key in table.keys() {
                 if !keys.contains(&key.as_str()) {
-                    return Err(unknown(&format!("[[{array}]] {}", index + 1), key));
+                    return Err(unknown(
+                        &format!("[[{array}]] {}", index + 1),
+                        key,
+                        at_the_newest,
+                    ));
                 }
             }
         }
@@ -711,8 +878,36 @@ fn validate(declaration: &Declaration, origin: &str) -> Result<()> {
             )));
         }
     }
+    instructed(declaration, origin)?;
     covered(declaration, origin)?;
     retired(declaration, origin)
+}
+
+/// Hold a declaration carrying adoption instructions to a version that declares them.
+///
+/// A *document* that does this is refused by name before it is ever deserialized, so
+/// this is here for the one caller a document cannot be: somebody who **built** a
+/// `Declaration`. Rendering one at a version that does not declare the key would write
+/// a file the very next reader refuses by name, which is the one thing rendering
+/// promises not to do.
+fn instructed(declaration: &Declaration, origin: &str) -> Result<()> {
+    if declaration.schema_version >= INSTRUCTION_SCHEMA_VERSION {
+        return Ok(());
+    }
+    for (index, target) in declaration.targets.iter().enumerate() {
+        if target.adoption_instructions.is_some() {
+            return Err(error::invalid(format!(
+                "the release declaration at {origin} has [[target]] {at} ({id:?}) carrying \
+                 adoption instructions, which schema_version {declared} does not declare; \
+                 schema_version {INSTRUCTION_SCHEMA_VERSION} does, and a document written at \
+                 {declared} carrying them is one its own reader refuses by name",
+                at = index + 1,
+                id = target.id,
+                declared = declaration.schema_version,
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Hold every `covers` entry to what covering means.

@@ -272,10 +272,11 @@ fn a_declaration_that_names_a_document_from_the_future_is_read_as_far_as_this_bu
              what = \"The crate.\"\npublished_by = \"release.yml\"\nsigned_by = \"a later schema\"\n"
         )
     };
-    let producer = Producer::declaring(&later(3));
+    let ahead = onevcs::declaration::SCHEMA_VERSION + 1;
+    let producer = Producer::declaring(&later(ahead));
     assert_eq!(
         producer.reported()["schema_version"],
-        serde_json::json!(3),
+        serde_json::json!(ahead),
         "the version it declared is the version reported, never lowered to this build's"
     );
     assert_eq!(producer.reported()["target"][0]["name"], "crate");
@@ -413,16 +414,18 @@ fn an_npm_scoped_package_is_a_name_a_registry_serves_and_a_declaration_may_say_s
     );
 }
 
-/// The committed declarations that hold both readable schema versions.
+/// The committed declarations that hold every readable schema version.
 ///
-/// Two documents rather than one, because the two version constants are two different
-/// promises: a producer writes `SCHEMA_VERSION`, and a consumer reads everything from
-/// `OLDEST_SCHEMA_VERSION` up. Nothing but a version 1 document still in the tree
-/// proves the second one, and six repositories carry a committed declaration each
-/// that nobody is going to rewrite on this crate's clock. Both are hand-written
-/// producer files, comments and all, because that is what is committed out there.
+/// One document per version rather than one in total, because the two version
+/// constants are two different promises: a producer writes `SCHEMA_VERSION`, and a
+/// consumer reads everything from `OLDEST_SCHEMA_VERSION` up. Nothing but a version 1
+/// document still in the tree proves the second one, and six repositories carry a
+/// committed declaration each that nobody is going to rewrite on this crate's clock.
+/// All three are hand-written producer files, comments and all, because that is what
+/// is committed out there.
 const DECLARATION_V1: &str = include_str!("../golden/release-declaration-v1.toml");
 const DECLARATION_V2: &str = include_str!("../golden/release-declaration-v2.toml");
+const DECLARATION_V3: &str = include_str!("../golden/release-declaration-v3.toml");
 
 /// What rendering the version 2 golden writes, byte for byte.
 ///
@@ -433,14 +436,18 @@ const DECLARATION_V2: &str = include_str!("../golden/release-declaration-v2.toml
 const RENDERED_V2: &str = include_str!("../golden/release-declaration-v2-rendered.toml");
 
 #[test]
-fn both_committed_schema_versions_read_and_declare_the_same_artifacts() {
-    // The bump's whole promise, driven through the verb a consumer asks with: version
-    // 2 is what a producer writes now, version 1 is what is already committed in
-    // repositories this crate does not own, and both answer the same artifacts.
-    let mut without_version = Vec::new();
+fn every_committed_schema_version_reads_and_declares_the_same_artifacts() {
+    // Every bump's whole promise, driven through the verb a consumer asks with:
+    // version 3 is what a producer writes now, versions 1 and 2 are what is already
+    // committed in repositories this crate does not own, and all three answer the same
+    // artifacts. What separates them is one key and one spelling, and this is where
+    // that claim is held rather than described.
+    let mut stripped = Vec::new();
+    let mut instructions = Vec::new();
     for (document, version) in [
         (DECLARATION_V1, onevcs::declaration::OLDEST_SCHEMA_VERSION),
-        (DECLARATION_V2, onevcs::declaration::SCHEMA_VERSION),
+        (DECLARATION_V2, 2),
+        (DECLARATION_V3, onevcs::declaration::SCHEMA_VERSION),
     ] {
         let mut reported = Producer::declaring(document).reported();
         assert_eq!(
@@ -449,17 +456,41 @@ fn both_committed_schema_versions_read_and_declare_the_same_artifacts() {
             "a declaration is answered at the version it declares, never lifted to \
              this build's"
         );
-        let target = reported.as_object_mut().expect("the report is an object");
-        target.remove("schema_version");
-        without_version.push(reported);
+        let document = reported.as_object_mut().expect("the report is an object");
+        document.remove("schema_version");
+        // The one key version 3 added, taken off before the comparison so what is left
+        // is the claim: everything *else* about the three goldens is identical.
+        let declared: Vec<Value> = document["target"]
+            .as_array_mut()
+            .expect("a declaration declares targets")
+            .iter_mut()
+            .filter_map(|target| {
+                target
+                    .as_object_mut()
+                    .expect("a target is an object")
+                    .remove("adoption_instructions")
+            })
+            .collect();
+        instructions.push(declared);
+        stripped.push(reported);
     }
-    let [v1, v2] = &without_version[..] else {
-        panic!("two goldens, two reports");
+    let [v1, v2, v3] = &stripped[..] else {
+        panic!("three goldens, three reports");
     };
     assert_eq!(
         v1, v2,
         "version 2 moved which identifiers a producer can express and no key at all, \
          so the two goldens declare the same thing"
+    );
+    assert_eq!(
+        v2, v3,
+        "version 3 added one key and moved nothing else, so stripping that key leaves \
+         the same declaration"
+    );
+    assert_eq!(
+        instructions.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![0, 0, 1],
+        "only the version 3 golden declares adoption instructions: {instructions:?}"
     );
 
     // …and the version 1 golden is the one that would have been refused: it names the
@@ -842,6 +873,31 @@ const REFUSALS: &[(&str, &str, &str)] = &[
         "schema_version: 1\ntargets:\n  - id: crate:onevcs\n",
         "is not TOML",
     ),
+    (
+        "empty adoption instructions where a consumer was promised a template",
+        "schema_version = 3\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\n\
+         adoption_instructions = \"\"\n",
+        "an empty template says less than declaring none at all",
+    ),
+    (
+        // The one bump that added a key, and therefore the one a producer cannot leave
+        // unstated: a version 2 document naming it is refused by name.
+        "adoption instructions at a schema version that does not declare them",
+        "schema_version = 2\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\n\
+         adoption_instructions = \"Move the pin.\"\n",
+        "\"adoption_instructions\" in [[target]] 1, which schema_version 2 does not declare",
+    ),
+    (
+        // …and the same key at version 1, because the two older versions declare one
+        // key set and a producer may be writing against either.
+        "adoption instructions at the oldest schema version this build reads",
+        "schema_version = 1\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\n\
+         adoption_instructions = \"Move the pin.\"\n",
+        "\"adoption_instructions\" in [[target]] 1, which schema_version 1 does not declare",
+    ),
 ];
 
 #[test]
@@ -947,6 +1003,7 @@ fn a_declaration_a_caller_built_is_refused_rather_than_written_out_unreadable() 
         published_by: "release.yml".parse().expect("a sentence"),
         manifest: None,
         covers: Vec::new(),
+        adoption_instructions: None,
     };
     let clashing = onevcs::Declaration {
         schema_version: 1,
@@ -977,6 +1034,47 @@ fn a_declaration_a_caller_built_is_refused_rather_than_written_out_unreadable() 
     assert_eq!(
         onevcs::validate_release_declaration(&rendered, "a rendering").expect("it reads back"),
         sound
+    );
+
+    // …and a declaration a caller built *with* adoption instructions renders them,
+    // because the one way to hold a template that is not one is refused by the
+    // conversion before a `Declaration` can carry it.
+    let instructed = onevcs::Declaration {
+        schema_version: 3,
+        targets: vec![onevcs::DeclaredTarget {
+            adoption_instructions: Some(
+                "{% block adopt %}Move the pin.{% endblock %}"
+                    .parse()
+                    .expect("a template"),
+            ),
+            ..target("crate:onevcs", "cli")
+        }],
+        ..sound
+    };
+    let written = onevcs::render_release_declaration(&instructed).expect("it renders");
+    assert!(
+        written.contains("adoption_instructions = "),
+        "a rendering writes the template a caller declared: {written}"
+    );
+    assert_eq!(
+        onevcs::validate_release_declaration(&written, "a rendering").expect("it reads back"),
+        instructed
+    );
+
+    // The version the caller declared is the one it is held to, which a document is
+    // held to before it is deserialized and a built value has nowhere else to be: a
+    // version 1 declaration carrying a version 3 key would render as a file its own
+    // reader refuses by name.
+    let understated = onevcs::Declaration {
+        schema_version: 1,
+        ..instructed
+    };
+    let failure = onevcs::render_release_declaration(&understated)
+        .expect_err("a version 1 declaration cannot carry adoption instructions");
+    assert!(
+        format!("{failure}").contains("[[target]] 1 (\"crate:onevcs\")")
+            && format!("{failure}").contains("schema_version 1 does not declare"),
+        "the refusal names the target and both versions: {failure}"
     );
 }
 
@@ -1199,4 +1297,169 @@ repositories:
         "…while the target only the repository declares is the repository's own: {after}"
     );
     assert_eq!(after["declaration"]["state"], "declared");
+}
+
+// The adoption instructions are producer knowledge, so they are declared here — and
+// rendered by the consumer that holds the variables, which is not this crate. What
+// these journeys hold is the half onevcs owns: a template a producer can declare, a
+// syntax error refused in the document that carries it, and the field surviving every
+// reading and rendering of a declaration unchanged.
+//
+// The other half — the template reaching a consumer through the three layers, and a
+// host's own template composing with the producer's — is `tests/e2e/discovery.rs`,
+// because that is where the resolution it travels through is driven.
+
+/// The smallest version 3 document that puts one template through the load a consumer
+/// gives it, with `template` as the one target's adoption instructions.
+///
+/// A TOML literal string, so what a producer wrote is what this build parses — a basic
+/// string would make `\n` in a template an escape this fixture chose.
+fn declaring_instructions(template: &str) -> String {
+    format!(
+        "schema_version = 3\n\n[[target]]\nid = \"crate:onevcs\"\nname = \"crate\"\n\
+         what = \"The crate.\"\npublished_by = \"release.yml\"\nmanifest = \"Cargo.toml\"\n\
+         adoption_instructions = \'\'\'{template}\'\'\'\n"
+    )
+}
+
+#[test]
+fn a_version_three_declaration_carries_a_template_and_hands_it_back_as_it_was_written() {
+    // The committed version 3 golden — a hand-written producer file, comments and all —
+    // read by the compiled binary and by the library under it. What comes back is the
+    // template, not a rendering of it: rendering belongs to the consumer that holds the
+    // variables, and this verb was given none of them.
+    let producer = Producer::declaring(DECLARATION_V3);
+    let reported = producer.reported();
+    assert_eq!(reported["schema_version"], serde_json::json!(3));
+    let declared = reported["target"][0]["adoption_instructions"]
+        .as_str()
+        .expect("the version 3 golden declares adoption instructions");
+    for block in [
+        "{% block adopt %}",
+        "{% block verify %}",
+        "{% block caveat %}",
+    ] {
+        assert!(
+            declared.contains(block),
+            "a producer declares the blocks a consumer's own template overrides: {declared:?}"
+        );
+    }
+    assert!(
+        declared.contains("{% if version %}"),
+        "…and asks about a version that is not there yet: {declared:?}"
+    );
+    assert!(
+        reported["target"][1].get("adoption_instructions").is_none(),
+        "a target that declares none carries no key at all: {reported}"
+    );
+
+    // The table says the same thing, so an operator reading a repository's declaration
+    // sees the rule its consumers will follow.
+    let output = command()
+        .args(["release", "declaration"])
+        .arg(producer.path())
+        .assert()
+        .success();
+    let table = String::from_utf8(output.get_output().stdout.clone()).expect("the table is text");
+    assert!(
+        table.contains("    adoption instructions:") && table.contains("{% block adopt %}"),
+        "the table prints the declared template: {table}"
+    );
+
+    // …and the library hands back the same bytes, which is what a consumer renders.
+    let target = &onevcs::validate_release_declaration(DECLARATION_V3, "the version 3 golden")
+        .expect("it reads")
+        .targets[0];
+    assert_eq!(
+        &**target
+            .adoption_instructions
+            .as_ref()
+            .expect("the golden's first target declares them"),
+        declared,
+        "the binary and the library answer one template"
+    );
+}
+
+#[test]
+fn a_template_that_does_not_parse_is_refused_where_the_declaration_is_read() {
+    // Refused in the conversion, which is where every other field of a declaration is
+    // refused and what gets the TOML reader's own line and column. The point is *when*:
+    // a producer's syntax error is theirs to see, in the document they wrote, rather
+    // than at a consumer's render on a machine they will never look at.
+    let broken = declaring_instructions("Move the pin {% if version }to {{ version }}{% endif %}.");
+    let refusal = Producer::declaring(&broken).refusal();
+    assert!(
+        refusal.contains("not a minijinja template"),
+        "a template that does not parse is refused as that: {refusal}"
+    );
+    assert!(
+        refusal.contains("adoption_instructions") && refusal.contains("line "),
+        "…naming the field and where in the document it is: {refusal}"
+    );
+
+    // The library refuses the same document for the same reason, so a linking consumer
+    // is not the one that finds out at render time.
+    let why = onevcs::validate_release_declaration(&broken, "a producer's declaration")
+        .expect_err("a template that does not parse is not a declaration this build reads")
+        .to_string();
+    assert!(why.contains("not a minijinja template"), "{why}");
+
+    // …and a caller building the value directly meets the same check, which is what
+    // makes an unrenderable template unrepresentable rather than merely refused by
+    // whichever reader met one first.
+    let built = "{% block %}"
+        .parse::<onevcs::InstructionTemplate>()
+        .expect_err("the conversion is the check");
+    assert!(built.contains("not a minijinja template"), "{built}");
+
+    // A template that parses but names something no producer declared is *not* refused
+    // here: what a template renders against is the consumer's, and a build that refused
+    // an unknown name would refuse variables a consumer has and this crate does not.
+    onevcs::validate_release_declaration(
+        &declaring_instructions("{{ whatever_the_consumer_has }}"),
+        "a producer's declaration",
+    )
+    .expect("what a template renders against is not this crate's question");
+}
+
+#[test]
+fn instructions_longer_than_a_paragraph_are_refused_with_the_bound_they_broke() {
+    // The one instruction refusal whose document is too long for the table above. The
+    // bound is read out of the refusal rather than repeated here — the crate is what
+    // decides how much of a producer's reasoning belongs in a template rather than in a
+    // comment.
+    let overlong = "x".repeat(8_000);
+    let refusal = Producer::declaring(&declaring_instructions(&overlong)).refusal();
+    assert!(
+        refusal.contains("longer than") && refusal.contains("bytes"),
+        "an overlong template is refused with the bound it broke: {refusal}"
+    );
+    assert!(
+        refusal.contains("belongs in a comment"),
+        "…and with where the reasoning it was carrying should go instead: {refusal}"
+    );
+}
+
+#[test]
+fn a_version_three_declaration_round_trips_with_the_template_it_declares() {
+    // The promise every declaration makes, held over the key version 3 added: a caller
+    // *producing* a declaration writes a template a reader answers as the same
+    // template, and the comments around it are still not this crate's to keep.
+    let declared = onevcs::validate_release_declaration(DECLARATION_V3, "the version 3 golden")
+        .expect("it reads");
+    let rendered = onevcs::render_release_declaration(&declared).expect("it renders");
+    assert!(
+        !rendered.contains('#'),
+        "a rendering answers the declaration and none of the prose around it: {rendered}"
+    );
+    assert_eq!(
+        onevcs::validate_release_declaration(&rendered, "a rendering").expect("it reads back"),
+        declared,
+        "a rendered version 3 declaration reads back as the declaration it came from"
+    );
+    assert_eq!(
+        Producer::declaring(&rendered).reported(),
+        Producer::declaring(DECLARATION_V3).reported(),
+        "…and the binary answers the same thing for both"
+    );
 }
