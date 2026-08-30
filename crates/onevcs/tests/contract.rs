@@ -2633,6 +2633,54 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
 }
 
 #[test]
+fn the_inferred_surface_row_lists_the_fields_a_change_spec_actually_has() {
+    // The row a consumer implementing `RemoteHost` reads before it writes
+    // `open_change`, and — like the two rows below it — a restatement of a type, which
+    // is the thing that goes stale. The document says the suite reconciles it; this is
+    // where, for the seam's own side of a publication.
+    let row = repo_file("docs/inferred-surface.md")
+        .lines()
+        .find(|line| line.starts_with("| `ChangeSpec` |"))
+        .expect("the record has a row for ChangeSpec")
+        .to_owned();
+    let listed: BTreeSet<String> = row
+        .split('|')
+        .nth(2)
+        .expect("the row's inferred-shape column")
+        .split(',')
+        .map(|span| span.trim().trim_matches('`').to_owned())
+        .filter(|span| !span.is_empty())
+        .collect();
+
+    // Taken off the type: a spec with every field set writes every one of them,
+    // because each is skipped only when it is absent.
+    let spec = ChangeSpec {
+        head: "feature".to_owned(),
+        base: "main".to_owned(),
+        title: "feat: add the seam".to_owned(),
+        body: Some("Why the seam is where it is.".to_owned()),
+        draft: Some(DraftReason {
+            awaiting: "github.com/acme-corp/upstream".to_owned(),
+            target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+            reference: "feature/the-pinned-branch".to_owned(),
+            because: "the pin moves when the release lands".to_owned(),
+        }),
+    };
+    let serialized = serde_json::to_value(&spec).expect("a spec serializes");
+    let fields: BTreeSet<String> = serialized
+        .as_object()
+        .expect("a spec is an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        listed, fields,
+        "docs/inferred-surface.md and ChangeSpec disagree about what a change request is \
+         opened with"
+    );
+}
+
+#[test]
 fn the_inferred_surface_row_lists_every_ending_publish_outcome_actually_has() {
     // The third copy of the endings, after the amendment and the README, and the one
     // nothing reconciled: a row that restates a type is the thing that goes stale,

@@ -136,6 +136,14 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         // The same refusal the real host makes: a change request whose title names
         // nothing is one it will not open.
         crate::state::titled(&req.title)?;
+        // The publication rule the crate next door states, applied rather than
+        // restated — and applied *here* rather than only where a publication takes a
+        // request in, because this trait is reachable directly: a journey that holds a
+        // host and opens a change on it hands this the reason, and a reason nothing
+        // could render is one the state must not go on to answer from.
+        if let Some(reason) = &req.draft {
+            reason.checked()?;
+        }
         let slug = self.slug.clone();
         self.store.with(|state| {
             // The host numbers its change requests, consecutively from one, so a
