@@ -666,8 +666,7 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// Whether a record has nothing left to name, which is the whole of what makes one
 /// litter.
 ///
-/// Three things have to hold, and the ordering is the point rather than an
-/// optimisation.
+/// Three things have to hold, and each of them is load-bearing on its own.
 ///
 /// Its **owner process** has to be gone. A record whose owner is that same process,
 /// still running, is a session something can still be done with, whatever became of
