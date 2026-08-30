@@ -569,6 +569,10 @@ fn publish_as_change(
     // real publication and for the same reason.
     let author = host.authenticated_user()?;
     let existing = host.find_changes(&session.branch, &session.base)?;
+    // Whether the host already held it, which is what decides whether there can be a
+    // draft to lift — and, as next door, keeps a publication that opens its own change
+    // request from asking this host anything extra.
+    let adopted = !existing.is_empty();
     let change = match existing.into_iter().next() {
         Some(change) => change,
         None => host.open_change(ChangeSpec {
@@ -644,10 +648,16 @@ fn publish_as_change(
     }
     // Publishing without a reason is what lifts a draft, and a change that is not one
     // is asked for nothing — which is what makes a second publication idempotent.
-    // Three answers, told apart exactly as they are next door: a host that was never
-    // taught to draft one has nothing to lift and is passed over, and a host that
-    // *could not say* is a refusal rather than a change nobody is holding.
-    match host.is_draft(&change) {
+    // Asked only of a change the host already held, as next door: one opened moments
+    // ago without a reason is one nobody drafted. Three answers, told apart the same
+    // way — a host that was never taught to draft one has nothing to lift and is
+    // passed over, and a host that *could not say* is a refusal rather than a change
+    // nobody is holding.
+    match if adopted {
+        host.is_draft(&change)
+    } else {
+        Ok(false)
+    } {
         Ok(true) => {
             host.ready_for_review(&change)?;
             emissions.push(Emission {
