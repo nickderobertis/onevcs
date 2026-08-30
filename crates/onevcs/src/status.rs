@@ -337,6 +337,15 @@ impl TryFrom<AnyPublication> for PublicationReport {
     type Error = String;
 
     fn try_from(value: AnyPublication) -> std::result::Result<Self, Self::Error> {
+        // A document is input, and the reason is the one field of this section that a
+        // *person* reads off a line. So it is held to the publication's own rule
+        // rather than to a restatement of it: a reason no publication could have
+        // carried is not one this report reads back, for the reason the two landing
+        // answers below cannot disagree — the number exists to be acted on, and a
+        // document half-read is how a consumer acts on a field it never saw.
+        if let Some(reason) = &value.draft {
+            reason.checked().map_err(|refusal| refusal.to_string())?;
+        }
         if (value.state == Landing::Landed) != value.landed.is_landed() {
             return Err(format!(
                 "a report says the work is {state:?} and that it landed is {landed}; those are \
@@ -1511,7 +1520,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // this is the *only* place it was written, because nothing of it goes into
             // the change request's body or reaches the host beyond `--draft`.
             EventKind::ChangeDrafted => {
-                match (
+                let read = match (
                     field("awaiting"),
                     // Through the conversion that decides what a target name is, for
                     // the reason the branch name and the landing commit above go
@@ -1523,21 +1532,28 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     field("because"),
                 ) {
                     (Some(awaiting), Some(target), Some(reference), Some(because)) => {
-                        record.draft = Some(Stamped {
-                            at,
-                            value: DraftReason {
-                                awaiting,
-                                target,
-                                reference,
-                                because,
-                            },
-                        });
+                        let reason = DraftReason {
+                            awaiting,
+                            target,
+                            reference,
+                            because,
+                        };
+                        // The publication's own rule, applied where the record is read
+                        // back rather than restated: a stream is a file whichever
+                        // process wrote it, so a reason this crate would have refused
+                        // to publish is one it must not render either — every field of
+                        // it is printed on the line it is reported on.
+                        reason.checked().ok().map(|()| reason)
                     }
+                    _ => None,
+                };
+                match read {
+                    Some(reason) => record.draft = Some(Stamped { at, value: reason }),
                     // Said out loud rather than read as a change nobody drafted: the
                     // whole point of this field is that the host cannot say *why* a
                     // change is held back, so a record that could not be read is a gap
                     // in the one answer there is.
-                    _ => notes.push(format!(
+                    None => notes.push(format!(
                         "line {} of the event stream at {} records a draft whose reason cannot \
                          be read, so why {} is held back is not in this report",
                         index + 1,
@@ -2167,12 +2183,19 @@ mod round_trip {
         // A reason the document could not spell is refused where the document is read,
         // as every other validated value in this report is: `target` names a release
         // target, and one nothing could name is not a reason to render.
-        let mut document = parsed(FULL);
-        document["publication"]["draft"]["target"] = Value::from("not a target name");
-        assert!(
-            serde_json::from_value::<Report>(document).is_err(),
-            "a target name this crate would refuse from a document is refused here too"
-        );
+        for (field, unusable) in [
+            ("target", "not a target name"),
+            ("because", ""),
+            ("reference", "feature/two\nlines"),
+        ] {
+            let mut document = parsed(FULL);
+            document["publication"]["draft"][field] = Value::from(unusable);
+            assert!(
+                serde_json::from_value::<Report>(document).is_err(),
+                "a {field} no publication could have carried is refused where the document is \
+                 read, rather than rendered as though one had"
+            );
+        }
     }
 
     #[test]

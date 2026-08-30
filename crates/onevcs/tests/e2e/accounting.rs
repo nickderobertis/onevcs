@@ -695,10 +695,11 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         .to_string()
     };
     let envelope = |version: u32, stamp: &str| of_kind(version, stamp, "change-opened");
-    // A draft record whose reason cannot be read, in the two shapes that can arrive:
-    // one whose payload never carried the fields at all, and one naming a release
-    // target no document of this crate's could name.
-    let drafted = |stamp: &str, target: &str| {
+    // A draft record whose reason cannot be read, in the three shapes that can
+    // arrive: one whose payload never carried the fields at all, one naming a release
+    // target no document of this crate's could name, and one whose reason is a line
+    // no publication could have carried.
+    let drafted = |stamp: &str, target: &str, because: &str| {
         serde_json::json!({
             "v": 1,
             "ts": stamp,
@@ -712,7 +713,7 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
                 "awaiting": "github.com/acme-corp/upstream",
                 "target": target,
                 "reference": "feature/the-pinned-branch",
-                "because": "the pin moves when the release lands",
+                "because": because,
             },
             "artifacts": [],
         })
@@ -721,7 +722,7 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
     std::fs::write(
         &stream,
         format!(
-            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
             // An envelope of a shape this build does not read, and one stamped in a
             // form nothing can order against the rest: both are gaps in what this
             // could read, and neither is a value to act on.
@@ -742,7 +743,15 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
             // is that the *host* cannot say why a change is held back, so a record
             // that could not be read is a gap in the only answer there is.
             of_kind(1, "2024-01-01T00:00:02.000Z", "change-drafted"),
-            drafted("2024-01-01T00:00:03.000Z", "not a target name"),
+            drafted(
+                "2024-01-01T00:00:03.000Z",
+                "not a target name",
+                "the pin moves when the release lands",
+            ),
+            // The publication's own rule, applied where the record is read back: a
+            // reason naming nothing is one no publication could have carried, so it
+            // is not one to render as though it had.
+            drafted("2024-01-01T00:00:04.000Z", "crate", ""),
         ),
     )
     .expect("a stream a writer left half a line of, and two a later build wrote");
@@ -775,7 +784,7 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
             .lines()
             .filter(|note| note.contains("records a draft whose reason cannot be read"))
             .count(),
-        2,
+        3,
         "each unreadable draft record is its own gap:\n{notes}"
     );
     assert!(
