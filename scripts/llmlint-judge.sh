@@ -53,18 +53,8 @@ report=.logs/lint-llm-diff.log
 status=0
 llmlint --diff --diff-base "$base_sha" >"$report" 2>&1 || status=$?
 if [ "$status" -ne 0 ]; then
-  # Appended to the record before being printed, rather than only printed. Nx relays
-  # a task's own streams through transforms it does not flush before it exits, so
-  # everything below can be missing from what the caller reads back while Nx's
-  # framing around it survives — `scripts/llmlint-diff.sh` reads the record instead
-  # when that happens, and what it finds there has to be the whole of what was said
-  # rather than the findings without the action they call for. The last line is
-  # deliberately the marker that driver looks for: a truncating relay loses the end
-  # of this first.
-  {
-    echo "lint-llm-diff: the judge reported the above against base $base_sha"
-    echo "ACTION: clear each finding at the file and line it names, then rerun 'just lint-llm-diff <base>'"
-  } >>"$report"
   cat "$report" >&2
+  echo "lint-llm-diff: the judge reported the above against base $base_sha" >&2
+  echo "ACTION: clear each finding at the file and line it names, then rerun 'just lint-llm-diff <base>'" >&2
 fi
 exit "$status"
