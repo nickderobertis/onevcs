@@ -681,13 +681,11 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// process from that instant while an agent works in its worktree for hours —
 /// forgetting the record on the owner alone would take that run root's protection
 /// with it, because [`reclaim`] keeps one only while an *open* record names it, and
-/// the next `session open` would then reap a directory somebody is inside. That is
-/// the destruction this crate has already done once, reached by a different verb.
+/// the next `session open` would then reap a directory somebody is inside.
 ///
 /// So what is forgotten is a record with nobody to answer for it *and* nobody in
-/// it, which is the litter the report is about: seven of those above a launch made
-/// a real refusal arrive in the same shape as seven ignorable ones, and nothing has
-/// ever removed one.
+/// it. Records that answer for nobody accumulate, and a refusal that matters then
+/// arrives in the same shape as the ones a caller has learned to read past.
 ///
 /// Asked in that order deliberately: the owner is two file reads and the occupancy
 /// question walks every process on the host, so the cheap answer that retains is
@@ -1511,8 +1509,7 @@ pub fn close(token: &str) -> Result<Record> {
     if record.clone.is_dir() {
         // Whatever the worktree still holds uncommitted, before any of it can be
         // removed. `git worktree remove` forces past an unclean tree, so what is not
-        // committed here is deleted a few lines below without ever having been
-        // reported — which is how about fifteen minutes of finished work went.
+        // committed here is deleted a few lines below without ever being reported.
         if record.worktree.is_dir() && git::is_dirty(&record.worktree)? {
             let preserved = crate::vcs::preserve_into(
                 &record,
