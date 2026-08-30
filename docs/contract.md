@@ -1354,7 +1354,9 @@ differently from the document it read: `target` (the short name), `id` (the
 registry-qualified identifier), and `manifest` (the declared manifest path, undefined
 where the target declares none). Two are the consumer's, supplied at render:
 `repository` (the identity the release came from, undefined where the caller has none)
-and `version` (the released version, **undefined until there is one**). Undefined is
+and `version` (the released version, **undefined until there is one**). Both are
+`Option`, and a blank one is refused rather than rendered: a caller without the value
+says so with `None`, which is the state a template asks about. Undefined is
 semi-strict: a template may ask `{% if version %}` about a variable that is not there,
 and printing one that is not there is an error rather than a gap in the middle of a
 sentence somebody acts on.
@@ -1403,7 +1405,8 @@ pub mod declaration {                                 // the producer's half
                                 pub instruction: Option<InstructionTemplate> }
     pub struct InstructionTemplate(String);           // TryFrom<String>, one minijinja template
     impl InstructionTemplate { pub fn source(&self) -> &str; }
-    pub struct InstructionVariables { pub repository: String, pub version: Option<String> }
+    pub struct InstructionVariables { pub repository: Option<String>,
+                                     pub version: Option<String> }
     pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }
     pub struct RegistryId { /* registry, name */ }    // TryFrom<String>, `<registry>:<name>`
     impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }

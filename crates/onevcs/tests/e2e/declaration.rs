@@ -414,14 +414,15 @@ fn an_npm_scoped_package_is_a_name_a_registry_serves_and_a_declaration_may_say_s
     );
 }
 
-/// The committed declarations that hold both readable schema versions.
+/// The committed declarations that hold every readable schema version.
 ///
-/// Two documents rather than one, because the two version constants are two different
-/// promises: a producer writes `SCHEMA_VERSION`, and a consumer reads everything from
-/// `OLDEST_SCHEMA_VERSION` up. Nothing but a version 1 document still in the tree
-/// proves the second one, and six repositories carry a committed declaration each
-/// that nobody is going to rewrite on this crate's clock. Both are hand-written
-/// producer files, comments and all, because that is what is committed out there.
+/// One document per version rather than one in total, because the two version
+/// constants are two different promises: a producer writes `SCHEMA_VERSION`, and a
+/// consumer reads everything from `OLDEST_SCHEMA_VERSION` up. Nothing but a version 1
+/// document still in the tree proves the second one, and six repositories carry a
+/// committed declaration each that nobody is going to rewrite on this crate's clock.
+/// All three are hand-written producer files, comments and all, because that is what
+/// is committed out there.
 const DECLARATION_V1: &str = include_str!("../golden/release-declaration-v1.toml");
 const DECLARATION_V2: &str = include_str!("../golden/release-declaration-v2.toml");
 const DECLARATION_V3: &str = include_str!("../golden/release-declaration-v3.toml");
@@ -1032,6 +1033,29 @@ fn a_declaration_a_caller_built_is_refused_rather_than_written_out_unreadable() 
         onevcs::validate_release_declaration(&rendered, "a rendering").expect("it reads back"),
         sound
     );
+
+    // The same asymmetry over the one field whose validity a conversion cannot decide:
+    // an instruction is text a caller can always build, and whether it is a *template*
+    // is a question only the whole document can name the target of. So it is refused
+    // here rather than written out into a file the next reader would refuse.
+    let unrenderable = onevcs::Declaration {
+        targets: vec![onevcs::DeclaredTarget {
+            instruction: Some(
+                "Move the pin {% if version }to {{ version }}{% endif %}."
+                    .parse()
+                    .expect("it is text a caller can hold"),
+            ),
+            ..target("crate:onevcs", "cli")
+        }],
+        ..sound
+    };
+    let failure = onevcs::render_release_declaration(&unrenderable)
+        .expect_err("a template nothing can render is not written out as a declaration");
+    assert!(
+        format!("{failure}").contains("[[target]] 1 (\"crate:onevcs\")")
+            && format!("{failure}").contains("is not a template"),
+        "the refusal names the target and what is wrong with it: {failure}"
+    );
 }
 
 #[test]
@@ -1255,8 +1279,6 @@ repositories:
     assert_eq!(after["declaration"]["state"], "declared");
 }
 
-// ── What a consumer does when a release arrives ─────────────────────────────
-//
 // The instruction is producer knowledge, so it is declared here and rendered from
 // here. Every journey below starts from a *document*, the way every journey above
 // does, and drives the library call an engine reaches for — `render_release_instruction`
@@ -1299,7 +1321,7 @@ fn instruction_for(
         target,
         consumer,
         &onevcs::InstructionVariables {
-            repository: "github.com/nickderobertis/onevcs".to_owned(),
+            repository: Some("github.com/nickderobertis/onevcs".to_owned()),
             version: version.map(str::to_owned),
         },
     )
@@ -1538,35 +1560,55 @@ fn a_variable_that_is_not_there_is_an_error_where_it_is_printed_and_a_question_w
 #[test]
 fn a_variable_a_caller_supplies_is_held_to_rendering_as_itself() {
     // The two values that arrive from the caller rather than from the document, at the
-    // boundary they arrive at. A blank version is refused separately from a control
-    // character in one, because they are different mistakes: a caller with no version
-    // yet gives none, which is the state a template is written against.
+    // boundary they arrive at. A blank one is refused separately from one carrying a
+    // control character, because they are different mistakes: a caller that does not
+    // have the value gives none, which is the state a template is written against, and
+    // `Some("")` is that state spelled a second way.
     let target = one_target(&declaring_instruction("{{ repository }} at {{ version }}."));
-    let refused = |repository: &str, version: Option<&str>| {
+    let render = |repository: Option<&str>, version: Option<&str>| {
         onevcs::render_release_instruction(
             &target,
             None,
             &onevcs::InstructionVariables {
-                repository: repository.to_owned(),
+                repository: repository.map(str::to_owned),
                 version: version.map(str::to_owned),
             },
         )
-        .expect_err("a variable that does not render as itself is refused")
-        .to_string()
     };
+    let refused = |repository: Option<&str>, version: Option<&str>| {
+        render(repository, version)
+            .expect_err("a variable that does not render as itself is refused")
+            .to_string()
+    };
+    let host = Some("github.com/nickderobertis/onevcs");
     assert!(
-        refused("github.com/nickderobertis/onevcs", Some("  ")).contains("blank released version"),
+        refused(host, Some("  ")).contains("blank released version"),
         "an empty version is not a version"
     );
     assert!(
-        refused("github.com/nickderobertis/onevcs", Some("0.18.0\n"))
-            .contains("carries a control character"),
+        refused(Some("   "), Some("0.18.0")).contains("blank repository"),
+        "and an empty identity is not an identity"
+    );
+    assert!(
+        refused(host, Some("0.18.0\n")).contains("carries a control character"),
         "a version is one line, because it lands in text somebody reads"
     );
     assert!(
-        refused("github.com/nick\u{1b}[31m", Some("0.18.0"))
+        refused(Some("github.com/nick\u{1b}[31m"), Some("0.18.0"))
             .contains("carries a control character"),
         "and so is the repository it is rendered for"
+    );
+
+    // …while a caller that genuinely has no identity to give says so, and the template
+    // can ask rather than printing a gap.
+    let asking = one_target(&declaring_instruction(
+        "{% if repository %}From {{ repository }}.{% else %}From the producer.{% endif %}",
+    ));
+    assert_eq!(
+        onevcs::render_release_instruction(&asking, None, &onevcs::InstructionVariables::default())
+            .expect("a render with neither value is a render")
+            .expect("the target declares a template"),
+        "From the producer."
     );
 }
 

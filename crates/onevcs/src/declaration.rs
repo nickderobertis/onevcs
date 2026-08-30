@@ -568,9 +568,12 @@ impl std::fmt::Display for InstructionTemplate {
 pub struct InstructionVariables {
     /// The repository the release comes from, as this host spells its identity.
     ///
-    /// Empty where the caller has no identity to give — which renders `repository` as
-    /// undefined rather than as an empty line in the middle of a sentence.
-    pub repository: String,
+    /// `None` where the caller has none to give, which renders `repository` as
+    /// undefined rather than as a gap in the middle of a sentence. An `Option` rather
+    /// than an empty string for the reason `version` beside it is one: "nobody said"
+    /// and "somebody said nothing" are two states, and a sentinel that spells them
+    /// alike is a state this type would let a caller reach.
+    pub repository: Option<String>,
     /// The version that was released, where there is one.
     ///
     /// `None` is the state that makes the whole field a template: a node that adopts
@@ -582,32 +585,32 @@ pub struct InstructionVariables {
 impl InstructionVariables {
     /// Whether each variable renders as itself.
     ///
-    /// The two values here arrive from the caller rather than from the declaration,
-    /// and they are rendered into text somebody reads, so a control character in one
-    /// would put something other than what it is into the instruction. `Some("")` is
-    /// refused separately: an empty version is not a version, and a caller that does
-    /// not have one says so with `None` — which is the state `{% if version %}` is
-    /// written against.
+    /// Both values here arrive from the caller rather than from the declaration, and
+    /// both are rendered into text somebody reads, so a control character in either
+    /// would put something other than what it is into the instruction. A blank one is
+    /// refused for the reason the field is an `Option` at all: a caller that does not
+    /// have the value says so with `None`, which is the state `{% if version %}` is
+    /// written against, and `Some("")` is that state spelled a second way.
     fn checked(&self) -> Result<()> {
-        if self.repository.chars().any(char::is_control) {
-            return Err(error::invalid(format!(
-                "the repository {repository:?} an instruction would be rendered for carries a \
-                 control character",
-                repository = self.repository
-            )));
+        for (what, value) in [
+            ("repository", self.repository.as_deref()),
+            ("released version", self.version.as_deref()),
+        ] {
+            let Some(value) = value else { continue };
+            if value.trim().is_empty() {
+                return Err(error::invalid(format!(
+                    "an instruction was given a blank {what}; a caller that does not have one \
+                     gives none, which is the state a template asks about with `{{% if ... %}}`"
+                )));
+            }
+            if value.chars().any(char::is_control) {
+                return Err(error::invalid(format!(
+                    "the {what} {value:?} an instruction would be rendered for carries a \
+                     control character"
+                )));
+            }
         }
-        match self.version.as_deref() {
-            Some(version) if version.trim().is_empty() => Err(error::invalid(
-                "an instruction was given a blank released version; a caller that has no \
-                 version yet gives none, which is the state a template asks about with \
-                 `{% if version %}`",
-            )),
-            Some(version) if version.chars().any(char::is_control) => Err(error::invalid(format!(
-                "the released version {version:?} an instruction would be rendered for carries \
-                 a control character"
-            ))),
-            _ => Ok(()),
-        }
+        Ok(())
     }
 }
 
@@ -660,8 +663,8 @@ pub(crate) fn render_instruction(
     if let Some(manifest) = target.manifest.as_ref() {
         context.insert("manifest", manifest.to_string());
     }
-    if !variables.repository.is_empty() {
-        context.insert("repository", variables.repository.clone());
+    if let Some(repository) = variables.repository.as_ref() {
+        context.insert("repository", repository.clone());
     }
     if let Some(version) = variables.version.as_ref() {
         context.insert("version", version.clone());

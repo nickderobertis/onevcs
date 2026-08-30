@@ -1217,7 +1217,7 @@ fn the_canonical_declaration_the_amendment_spells_is_one_this_build_reads() {
             target,
             None,
             &onevcs::InstructionVariables {
-                repository: "github.com/nickderobertis/onevcs".to_owned(),
+                repository: Some("github.com/nickderobertis/onevcs".to_owned()),
                 version: version.map(str::to_owned),
             },
         )
@@ -1417,8 +1417,8 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
         "pub instruction: Option<InstructionTemplate> }",
         "pub struct InstructionTemplate(String);",
         "impl InstructionTemplate { pub fn source(&self) -> &str; }",
-        "pub struct InstructionVariables { pub repository: String, \
-         pub version: Option<String> }",
+        "pub struct InstructionVariables { pub repository: Option<String>,",
+        "pub version: Option<String> }",
         "pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }",
         "impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }",
         "pub struct Prose(String);",
