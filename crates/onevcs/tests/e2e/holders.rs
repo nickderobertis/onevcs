@@ -607,19 +607,16 @@ fn a_holder_is_reported_while_its_owner_runs_and_dropped_from_the_answer_once_it
 
 #[test]
 fn a_holder_a_dispatch_is_working_in_is_retained_until_that_process_stops() {
-    // The safety this pruning must not cost. `onevcs session open` prints a token
-    // and exits, so a session opened from the command line has no owner process from
-    // that instant — while the dispatch it was opened for works in the worktree for
-    // hours. Forgetting the record then would take the run root's protection with
-    // it, because `reclaim` keeps one only while an open record names it, and the
-    // next `session open` would reap a directory somebody is inside.
+    // The safety the reaping must not cost. `onevcs session open` prints a token and
+    // exits, so a session opened from the command line has no owner process from that
+    // instant — while the dispatch it was opened for works in the worktree for hours.
+    // Forgetting the record then would take the run root's protection with it, because
+    // `reclaim` keeps one only while an open record names it, and the next `session
+    // open` would reap a directory somebody is inside.
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/worked-in"]);
     // The dispatch, as this crate can ever see one: a real process whose own working
-    // directory is inside the session. Started here so this journey owns its pid, and
-    // started *before* anything reads the holders, because reading them is what
-    // forgets a record — a journey that checked its premise first would be the very
-    // launch this is about.
+    // directory is inside the session. Started here so this journey owns its pid.
     let dispatch = working_in(&worktree);
     let held = reported(&fixture);
     let row = held
@@ -633,9 +630,7 @@ fn a_holder_a_dispatch_is_working_in_is_retained_until_that_process_stops() {
         "the premise, and what the row says: the command that opened it has exited"
     );
     assert!(record_path(&fixture, &token).exists());
-    // Read again, because forgetting is what this read does: being asked twice must
-    // not wear the record down.
-    assert_eq!(reported(&fixture), held);
+    assert_eq!(reported(&fixture), held, "reading it again changes nothing");
 
     // A sweep while that process is inside it takes nothing, which is the safety
     // itself: the run root's protection outlives the command that opened the session.

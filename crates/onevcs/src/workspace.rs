@@ -491,6 +491,10 @@ pub fn occupancy_identity(run_root: &Path) -> String {
 }
 
 /// Where one session's record is written.
+// llmlint: ignore[invalid_states_unrepresentable] a `Token` is what a *readable*
+// record proves, and this is how the record is found: [`load`] resolves the path for a
+// name `ids::is_safe_name` has just accepted and nothing has parsed yet, so a `&Token`
+// parameter would be a type only reachable through the file it is used to open.
 pub fn record_path(token: &str) -> Result<PathBuf> {
     Ok(home::sessions_dir()?.join(format!("{token}.json")))
 }
@@ -752,12 +756,20 @@ fn holds_unpublished_work(record: &Record) -> bool {
     // that way: a tag or a remote-tracking ref wearing the same name is not this
     // session's branch.
     let reference = format!("refs/heads/{}", record.branch);
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: git declining a
+    // question it can answer, in a repository this crate has read as one on the line
+    // before. No interface this crate exposes produces that — a journey for it would
+    // be a fixture standing in for `git` rather than a journey — and what it would
+    // prove is that the record is *retained*, which is the answer every other unknown
+    // in this module already resolves to and the one the whole predicate exists to
+    // reach: a count nobody got is not a count of none.
     let carried = [&record.clone, &record.execution_checkout]
         .into_iter()
         .any(|repo| {
             git::is_repo(repo) && !matches!(git::unpublished_ahead(repo, &reference, &[]), Ok(0))
         });
     carried || (record.worktree.is_dir() && git::is_dirty(&record.worktree).unwrap_or(true))
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
 /// Drop one spent record, answering the reason it is still there rather than failing

@@ -202,12 +202,12 @@ fn records(report: &mut Report, dry_run: bool, min_age: Duration) -> Result<()> 
         };
         report.records.push(SessionRecord {
             path,
-            token: record.token.to_string(),
-            branch: record.branch.to_string(),
+            token: record.token,
+            branch: record.branch,
             outcome,
         });
     }
-    report.records.sort_by(|a, b| a.token.cmp(&b.token));
+    report.records.sort_by(|a, b| (*a.token).cmp(&b.token));
     Ok(())
 }
 
@@ -762,10 +762,14 @@ struct Skipped {
 }
 
 /// One spent session record this sweep considered, and what became of it.
+///
+/// The record's own types rather than the strings they print as: this is a report
+/// about a session that exists, so a token no session could wear and a name git would
+/// not accept are unrepresentable here for the reason they are in the record itself.
 struct SessionRecord {
     path: PathBuf,
-    token: String,
-    branch: String,
+    token: workspace::Token,
+    branch: workspace::Ref,
     outcome: Forgetting,
 }
 
