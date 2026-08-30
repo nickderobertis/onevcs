@@ -1027,7 +1027,14 @@ fn publish_locally(
                 Phase::Integrate,
             )?;
             if !pushed.accepted() {
-                return Err(rejected(&publishing(&context.branch), &pushed, &kept));
+                // The tree this push was built in goes when this closure returns,
+                // so the refusal must not send anybody to a path inside it.
+                return Err(rejected(
+                    &publishing(&context.branch),
+                    &pushed,
+                    &kept,
+                    Some(&scratch_parent),
+                ));
             }
             fast_forward_publication(publication, context.target.base())?;
             stream.emit(
@@ -1078,7 +1085,16 @@ fn publishing(branch: &Ref) -> String {
 ///
 /// `what` is the push, named as its own caller names it: the branch a publication
 /// was landing, or the base a merge train advanced.
-pub(crate) fn rejected(what: &str, pushed: &git::Pushed, kept: &Kept) -> Error {
+///
+/// `removed` is the tree the push was built in where its caller removes that tree
+/// before returning, and is what [`outliving`] scrubs the message of: every path
+/// this refusal names has to be openable by the person reading it.
+pub(crate) fn rejected(
+    what: &str,
+    pushed: &git::Pushed,
+    kept: &Kept,
+    removed: Option<&Path>,
+) -> Error {
     let summary = pushed
         .refusal()
         .unwrap_or_else(|| pushed.output().lines().next_back().unwrap_or("").trim());
@@ -1107,9 +1123,59 @@ pub(crate) fn rejected(what: &str, pushed: &git::Pushed, kept: &Kept) -> Error {
         )
     };
     Error::PushRejected {
-        reason: format!("{what} was rejected by the merge path: {summary}.{where_it_is}{said}"),
+        reason: outliving(
+            &format!("{what} was rejected by the merge path: {summary}.{where_it_is}{said}"),
+            removed,
+        ),
     }
 }
+
+/// The same refusal with every path into a tree that will not outlive this command
+/// replaced by the fact that it did not.
+///
+/// A merge path keeps its own account where it runs — `.logs/nx.log` under the tree
+/// the publishing push was built from is one real spelling — and says so in the
+/// output quoted above. That tree is a scratch worktree removed before the command
+/// returns, so the refusal named a path an operator opened and found nothing at,
+/// while the same output sat under the publication's own retained gate logs, which
+/// the sentence beside it already names. A path that is not there is worse than no
+/// path: it is the one thing in a failure a reader trusts enough to go and open.
+///
+/// What is replaced is the whole path and not its prefix, because half of one still
+/// reads as somewhere to look. Nothing else is touched — the preserved log and the
+/// checkouts this names are under neither this tree nor any other that is going.
+fn outliving(reason: &str, removed: Option<&Path>) -> String {
+    let Some(removed) = removed else {
+        return reason.to_owned();
+    };
+    let doomed = removed.display().to_string();
+    if doomed.is_empty() {
+        return reason.to_owned();
+    }
+    let mut left = reason;
+    let mut answer = String::with_capacity(reason.len());
+    while let Some(at) = left.find(&doomed) {
+        answer.push_str(&left[..at]);
+        let rest = &left[at..];
+        // To the end of the path and no further: a path ends where the prose around
+        // it resumes, and the sentence-final stop of the line it sits in is prose.
+        let end = rest
+            .find(|c: char| c.is_whitespace() || ENDS_A_PATH.contains(&c))
+            .unwrap_or(rest.len());
+        let end = rest[..end].trim_end_matches('.').len().max(doomed.len());
+        answer.push_str(GONE);
+        left = &rest[end..];
+    }
+    answer.push_str(left);
+    answer
+}
+
+/// What a path is quoted or punctuated with once it is over, in the prose a merge
+/// path writes around one.
+const ENDS_A_PATH: [char; 6] = [')', '"', '\'', '`', ',', ';'];
+
+/// What stands where such a path stood: not a path, and the reason it is not.
+const GONE: &str = "(gone with the publication worktree this ran in)";
 
 /// Why git turned a leased push down, when the lease is what it turned down.
 ///
@@ -1213,7 +1279,9 @@ fn publish_as_change(
             None => None,
         };
         let (Some(replaced), Some(declined)) = (replacing, declined) else {
-            return Err(rejected(&publishing(&context.branch), &pushed, &kept));
+            // The session's own worktree, which outlives this command: what it
+            // wrote about itself stays readable.
+            return Err(rejected(&publishing(&context.branch), &pushed, &kept, None));
         };
         let branch = &context.branch;
         let base = context.target.base();

@@ -3965,6 +3965,86 @@ fn a_push_a_hook_refuses_records_what_the_hook_wrote() {
     );
 }
 
+/// Every absolute path one message names, as a reader would pick them out of it.
+///
+/// Split on the punctuation prose puts around a path rather than on whitespace
+/// alone, because a refusal quotes a verifier's own sentences — where a path sits
+/// in parentheses, ends a clause, or ends the sentence.
+fn absolute_paths_in(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace() || "\"'`(<>".contains(c))
+        .filter(|word| word.starts_with('/'))
+        .map(|word| word.trim_end_matches(['.', ',', ';', ':', ')']).to_owned())
+        .filter(|word| word.len() > 1)
+        .collect()
+}
+
+#[test]
+fn every_path_a_refused_publication_names_can_be_opened_when_the_command_returns() {
+    // What a merge path writes about itself is written where it *runs*, and it says
+    // so: `scripts/nx.sh` in this very repository prints `(full output: …/.logs/nx.log)`.
+    // For a `local-direct` publication that tree is a scratch worktree removed before
+    // the command returns, so the refusal named `…/publish-<id>/worktree/.logs/nx.log`
+    // — the one thing in the message an operator trusts enough to open, and nothing
+    // was there.
+    let fixture = Fixture::local(&local_direct());
+    fixture.world.install_pre_push(
+        &fixture.checkout,
+        "mkdir -p .logs\n\
+         echo 'llmlint: comment_adds_nothing at src/thing.rs:12' > .logs/nx.log\n\
+         cat .logs/nx.log >&2\n\
+         echo \"nx: targets failed (full output: $PWD/.logs/nx.log)\" >&2\n\
+         exit 1",
+    );
+    let (token, worktree) = fixture.open(&["--branch", "feature/openable"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(stderr.contains("rejected by the merge path"), "{stderr}");
+
+    // The whole of the bar: every path it names, opened now that the command has
+    // returned — which is when whoever reads it opens one.
+    let named = absolute_paths_in(&stderr);
+    assert!(
+        named.iter().any(|path| path.contains("gate-logs")),
+        "the refusal names no path at all to check:\n{stderr}"
+    );
+    for path in &named {
+        std::fs::File::open(path).unwrap_or_else(|why| {
+            panic!("the refusal names {path}, which cannot be opened when it returns ({why}):\n{stderr}")
+        });
+    }
+
+    // And what became of the one it used to name is said rather than left blank: the
+    // tree it ran in has gone, and the same output is under the gate logs above.
+    assert!(
+        stderr.contains("gone with the publication worktree this ran in"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(".logs/nx.log"),
+        "a path into the reaped tree is still being offered:\n{stderr}"
+    );
+    let preserved = named
+        .iter()
+        .find(|path| path.contains("gate-logs"))
+        .expect("the preserved gate log");
+    assert!(
+        std::fs::read_to_string(preserved)
+            .expect("the preserved log is readable")
+            .contains("llmlint: comment_adds_nothing at src/thing.rs:12"),
+        "what the reaped path pointed at is in the log the refusal does name"
+    );
+}
+
 #[test]
 fn a_refused_publishing_push_says_where_its_output_is_and_quotes_the_end_of_it() {
     // The evidence exists and always did; what an operator had no way to reach was
