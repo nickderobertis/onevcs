@@ -227,7 +227,7 @@ pub fn full_host_state() -> HostState {
         titles,
         bodies,
         drafts,
-        reviews_requested: vec![drafted],
+        made_ready: vec![drafted],
         checks,
         check_logs,
         // The credential the real implementation meets in CI: a fine-grained token,

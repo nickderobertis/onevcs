@@ -260,14 +260,14 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     /// and it is.
     fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()> {
         self.store.with(|state| {
-            state.reviews_requested.push(cr.id.clone());
+            state.made_ready.push(cr.id.clone());
             Ok(())
         })
     }
 
     fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
         let state = self.store.snapshot()?;
-        Ok(state.drafts.contains_key(&cr.id) && !state.reviews_requested.contains(&cr.id))
+        Ok(state.drafts.contains_key(&cr.id) && !state.made_ready.contains(&cr.id))
     }
 
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {

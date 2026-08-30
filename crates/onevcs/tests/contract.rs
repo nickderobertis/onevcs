@@ -3452,6 +3452,97 @@ fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
     );
 }
 
+#[test]
+fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_for() {
+    // A draft is new capability rather than a widening of one, so the amendment is
+    // where a consumer reads it first — and the shape it declares is the shape the
+    // code has, or the two teach different things about the same seam.
+    let declared = amendment_declaring("pub struct DraftReason");
+    for line in [
+        "pub struct DraftReason { pub awaiting: String, pub target: TargetName,",
+        "pub reference: String, pub because: String }",
+        "impl DraftReason { pub fn checked(&self) -> Result<()>; }",
+        "pub draft: Option<DraftReason>",
+        "fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()>;",
+        "fn is_draft(&self, cr: &ChangeRequest) -> Result<bool>;",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+
+    // Both are defaulted, so the seam stays additive — and both default to the
+    // refusal this repository reserves for a seam with no body rather than to an
+    // answer. `false` from a host that was never taught to say would report a change
+    // somebody held back as one nothing is holding.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let change = ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL"),
+        head_sha: Sha("0f1e2d3".to_owned()),
+        base: "main".to_owned(),
+    };
+    assert!(matches!(
+        Earlier.is_draft(&change),
+        Err(Error::NotImplemented { operation }) if operation.contains("is_draft")
+    ));
+    assert!(matches!(
+        Earlier.ready_for_review(&change),
+        Err(Error::NotImplemented { operation }) if operation.contains("ready_for_review")
+    ));
+
+    // And the rule the amendment says is public really is the one a supplied
+    // implementation can apply: a reason that would not render as the one line it is
+    // printed on is refused by the crate's own check rather than by a restatement.
+    let usable = DraftReason {
+        awaiting: "github.com/acme-corp/upstream".to_owned(),
+        target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+        reference: "feature/the-pinned-branch".to_owned(),
+        because: "the pin moves when the release lands".to_owned(),
+    };
+    usable.checked().expect("a usable reason");
+    for unusable in [
+        DraftReason {
+            because: String::new(),
+            ..usable.clone()
+        },
+        DraftReason {
+            awaiting: "github.com/acme-corp/\nupstream".to_owned(),
+            ..usable.clone()
+        },
+        DraftReason {
+            reference: String::new(),
+            ..usable.clone()
+        },
+    ] {
+        assert!(
+            matches!(unusable.checked(), Err(Error::Invalid { .. })),
+            "a reason that would not render as itself is not one: {unusable:?}"
+        );
+    }
+}
+
 fn all_publish_outcomes() -> Vec<&'static str> {
     let url = Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a valid URL");
     let outcomes = [

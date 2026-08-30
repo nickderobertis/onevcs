@@ -57,7 +57,7 @@
       "because": "the dependency is pinned to a branch until its release arrives"
     }
   },
-  "reviews_requested": [
+  "made_ready": [
     "2"
   ],
   "check_sources": [

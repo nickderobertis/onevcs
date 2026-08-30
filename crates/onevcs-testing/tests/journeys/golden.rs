@@ -58,7 +58,7 @@ const HOST_OPTIONAL: &[&str] = &[
     "titles",
     "bodies",
     "drafts",
-    "reviews_requested",
+    "made_ready",
     "checks",
     "check_logs",
     "check_sources",
@@ -224,7 +224,7 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     // request nobody drafted as a draft — is what would make a publication over a
     // consumer's checked-in scenario refuse to merge work nothing is holding back.
     assert!(
-        state.drafts.is_empty() && state.reviews_requested.is_empty(),
+        state.drafts.is_empty() && state.made_ready.is_empty(),
         "a document that predates drafts records none: {state:?}"
     );
     let repository = vcs.state().expect("readable");

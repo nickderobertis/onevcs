@@ -116,13 +116,24 @@ pub struct DraftReason {
 }
 
 impl DraftReason {
-    /// The same reason, or the refusal that it is not one.
+    /// The rule a publication holds a reason to, or the refusal that this is not one.
     ///
     /// Every field here is printed: into a refusal, into an event payload a consumer
     /// reads back, and — through `--draft` — at a host. So the check is the one that
     /// decides whether a value renders as itself: nothing empty, and nothing carrying
     /// a control character, which is what turns one line of a record into two.
-    fn checked(&self) -> Result<()> {
+    ///
+    /// Public for the reason [`MergePolicy::narrow`] and [`FailureKind::of`] are: it
+    /// belongs to publication rather than to any one implementation of it, so a
+    /// supplied [`Vcs`](crate::Vcs) applies *this* rule at its own boundary rather
+    /// than a restatement of it that could accept what the real one refuses. It is a
+    /// method rather than a conversion because the contract fixes the four fields as
+    /// public and settable, so there is no constructor for a check to live in.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] naming the field that would not render as itself.
+    pub fn checked(&self) -> Result<()> {
         for (what, value) in [
             ("the repository whose release is awaited", &self.awaiting),
             ("the reference the change is pinned to", &self.reference),

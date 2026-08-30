@@ -468,7 +468,7 @@ fn a_drafted_publication_opens_a_draft_here_the_way_it_opens_one_next_door() {
         matches!(lifted.outcome, PublishOutcome::Merged(_)),
         "a lifted draft lands under change-direct: {lifted:?}"
     );
-    assert_eq!(host.state().reviews_requested, vec![opened.id.clone()]);
+    assert_eq!(host.state().made_ready, vec![opened.id.clone()]);
     assert_eq!(
         home.events(&session.token.0)
             .into_iter()
@@ -511,7 +511,7 @@ fn a_second_lift_here_asks_the_host_for_nothing_and_reports_the_original() {
         .publish(&session.token, &PublishRequest::default(), &host)
         .expect("the second publication runs");
     assert_eq!(lifted.outcome, PublishOutcome::ChangeOpen(url));
-    let asked = host.state().reviews_requested;
+    let asked = host.state().made_ready;
 
     let again = vcs
         .publish(&session.token, &PublishRequest::default(), &host)
@@ -521,7 +521,7 @@ fn a_second_lift_here_asks_the_host_for_nothing_and_reports_the_original() {
         "a second lift reports the original"
     );
     assert_eq!(
-        host.state().reviews_requested,
+        host.state().made_ready,
         asked,
         "and asks the host for nothing"
     );
@@ -584,4 +584,83 @@ fn drafting_is_refused_here_where_it_is_refused_next_door() {
     };
     assert!(reason.contains("open for review"), "{reason}");
     assert!(second.state().drafts.is_empty());
+}
+
+#[test]
+fn a_draft_reason_this_provider_could_not_publish_is_refused_where_it_arrives() {
+    // The publication rule applied rather than restated: a reason that would not
+    // render as itself is refused at this provider's boundary exactly as the real
+    // implementation refuses it, so a consumer's suite cannot pass here on a request
+    // the real one turns down. Nothing reaches the host and nothing is recorded.
+    let _home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+    let host = MemoryHost::new();
+    let session = open(&vcs, "feature/unusable-reason");
+
+    for (field, unusable) in [
+        (
+            "the reason the change is not ready",
+            DraftReason {
+                because: String::new(),
+                ..awaiting_a_release()
+            },
+        ),
+        (
+            "the reference the change is pinned to",
+            DraftReason {
+                reference: "feature/two\nlines".to_owned(),
+                ..awaiting_a_release()
+            },
+        ),
+    ] {
+        let refused = vcs
+            .publish(
+                &session.token,
+                &PublishRequest {
+                    policy: None,
+                    title: None,
+                    body: None,
+                    draft: Some(unusable),
+                },
+                &host,
+            )
+            .expect_err("a reason nothing could read is refused before the publication starts");
+        assert!(refused.to_string().contains(field), "{refused}");
+    }
+    assert!(host.state().changes.is_empty());
+    assert!(vcs.state().publications.is_empty());
+}
+
+#[test]
+fn a_seeded_draft_reason_nothing_could_have_carried_is_refused_when_it_is_read() {
+    // A hand-written scenario is input too, and a document holding a reason no
+    // publication could have carried would let a journey assert on a draft the real
+    // implementation would never have opened.
+    let home = Home::new();
+    let mut state = crate::support::full_host_state();
+    let drafted = state.changes[1].id.clone();
+    state.drafts.insert(
+        drafted,
+        DraftReason {
+            because: "carries\na newline".to_owned(),
+            ..awaiting_a_release()
+        },
+    );
+
+    // Written as a document a hand-editing journey would leave behind, and read back
+    // the way the next process reads it — which is where a document is checked.
+    let path = home.path("host.json");
+    std::fs::write(
+        &path,
+        serde_json::to_string(&state).expect("a state serializes"),
+    )
+    .expect("a written document");
+    let refused =
+        FileHost::create(&path).expect_err("a document holding a reason nothing could read");
+    assert!(
+        refused
+            .to_string()
+            .contains("the reason the change is not ready"),
+        "{refused}"
+    );
 }

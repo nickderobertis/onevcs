@@ -1516,6 +1516,7 @@ name.
 // onevcs::publish, exported from the crate root
 pub struct DraftReason { pub awaiting: String, pub target: TargetName,
                          pub reference: String, pub because: String }
+impl DraftReason { pub fn checked(&self) -> Result<()>; }   // renders on one line
 
 // PublishRequest gains one field, defaulting to None — today's behaviour for every
 // existing caller — and ChangeSpec gains the same one:
@@ -1536,6 +1537,15 @@ meaning something else. `GitHub` implements the two methods as `gh pr ready` and
 `Some`. Both trait methods are **defaulted to `Error::NotImplemented`**, exactly as
 `merged_at` is: the seam stays additive, and a host that was never taught to answer
 has not answered `false`.
+
+`DraftReason::checked` is public for the reason `MergePolicy::narrow`, `FailureKind::of`
+and `Subject` are: it is a rule of publication rather than of any one implementation of
+it, so a supplied `Vcs` applies *that* rule at its own boundary rather than a
+restatement that could accept what the real one refuses. It is a method rather than a
+conversion because the contract fixes the four fields as public and settable, so there
+is no constructor for a check to live in. Every field of a reason is printed — into a
+refusal, into the record a consumer reads back — so what it decides is whether a value
+renders as itself: nothing empty, and nothing carrying a control character.
 
 **A branch published as a draft is unmergeable in that state, and this crate keeps it
 so.** The publication stops at `ChangeDraft` under every change policy: nothing merges

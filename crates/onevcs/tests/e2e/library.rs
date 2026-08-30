@@ -2869,7 +2869,7 @@ fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
         .expect("the second publication runs");
     assert_eq!(lifted.outcome, PublishOutcome::ChangeOpen(url.clone()));
     assert_eq!(
-        host.state().reviews_requested,
+        host.state().made_ready,
         vec![opened.id.clone()],
         "the lift asked the host once"
     );
@@ -2897,7 +2897,7 @@ fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
         .expect("the third publication runs");
     assert_eq!(again.outcome, lifted.outcome);
     assert_eq!(
-        host.state().reviews_requested,
+        host.state().made_ready,
         vec![opened.id],
         "a second lift asks the host for nothing"
     );
@@ -3067,7 +3067,7 @@ fn a_publication_that_asks_for_no_draft_opens_an_ordinary_change_request() {
         "a publication that asked for no draft opened no draft"
     );
     assert!(
-        host.state().drafts.is_empty() && host.state().reviews_requested.is_empty(),
+        host.state().drafts.is_empty() && host.state().made_ready.is_empty(),
         "nothing was drafted and no lift was asked for"
     );
     assert_eq!(
@@ -3323,5 +3323,61 @@ fn a_real_host_that_will_not_say_whether_it_drafted_the_change_is_a_refusal() {
     assert!(
         reason.contains("without saying whether it is a draft"),
         "{reason}"
+    );
+}
+
+#[test]
+fn a_host_that_declines_to_lift_the_draft_leaves_the_publication_saying_so() {
+    // The lift is the call that turns work nobody may merge into work the host may
+    // land, so a host that declines it has lifted nothing — and the publication has
+    // to report that rather than go on to ask for a merge. The change stays a draft.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = worked(&world, "feature/unliftable");
+
+    let drafted = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(matches!(
+        drafted.outcome,
+        PublishOutcome::ChangeDraft { .. }
+    ));
+
+    world.refuse_to_lift_a_draft();
+    let refused = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the second publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { reason, .. } = &refused.outcome else {
+        panic!("a lift the host declined is not a publication that carried on: {refused:?}");
+    };
+    assert!(
+        reason.contains("declines to make") && reason.contains("ready for review"),
+        "the refusal carries what the host said: {reason}"
+    );
+    assert!(
+        world.events_of(&session.token.0, "draft-lifted").is_empty(),
+        "nothing may record a lift the host refused"
+    );
+    assert!(
+        world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("pr merge")),
+        "and nothing asked the host to merge it: {:?}",
+        world.host_calls()
     );
 }

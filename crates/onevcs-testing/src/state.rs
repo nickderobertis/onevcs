@@ -36,8 +36,8 @@ use crate::store::Checked;
 /// says so. `6` is the two a `Check` gained inside [`HostState::checks`] — the
 /// commit the host attached that check to, and where the check is on the host. `7`
 /// is the two a draft change request needs — [`HostState::drafts`], the reason each
-/// change request was opened as a draft with, and [`HostState::reviews_requested`],
-/// the lifts the host was asked for.
+/// change request was opened as a draft with, and [`HostState::made_ready`], the
+/// `ready_for_review` calls it took.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -255,8 +255,8 @@ pub struct HostState {
     /// it is applied where a publication takes one in, before any host is asked.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<ChangeId, DraftReason>,
-    /// Every change request this host was asked to make ready for review, in the
-    /// order it was asked.
+    /// Every `ready_for_review` call this host has taken, in the order it took them
+    /// — the lifts it was asked to perform, never a request for a *reviewer*.
     ///
     /// A list rather than a set, and beyond the sketch for a reason a set could not
     /// serve: lifting a draft is required to be *idempotent*, so what a journey
@@ -264,7 +264,7 @@ pub struct HostState {
     /// record of the calls themselves can say that. A change named here is not a
     /// draft any more, whatever [`drafts`](HostState::drafts) says it was opened as.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub reviews_requested: Vec<ChangeId>,
+    pub made_ready: Vec<ChangeId>,
     /// Which sources this host answers about its checks from, which is what the
     /// real implementation reports alongside them.
     ///
@@ -304,7 +304,7 @@ impl Default for HostState {
             titles: BTreeMap::new(),
             bodies: BTreeMap::new(),
             drafts: BTreeMap::new(),
-            reviews_requested: Vec::new(),
+            made_ready: Vec::new(),
             checks: BTreeMap::new(),
             check_logs: BTreeMap::new(),
             check_sources: None,
@@ -610,10 +610,14 @@ impl Checked for HostState {
             // prose, and a change request opened with an empty one is a scenario.
             opened_change(self, id, "a body")?;
         }
-        for id in self.drafts.keys() {
+        for (id, reason) in &self.drafts {
             opened_change(self, id, "a draft reason")?;
+            // The publication rule the crate next door states, applied rather than
+            // restated: a seeded reason no publication could have carried is refused
+            // where the document is read, not answered from later.
+            reason.checked()?;
         }
-        for id in &self.reviews_requested {
+        for id in &self.made_ready {
             opened_change(self, id, "a lifted draft")?;
         }
         Ok(())

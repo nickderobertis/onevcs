@@ -359,6 +359,13 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 .cloned()
                 .ok_or_else(|| unknown_session(token))?;
             let identity = state::identity_for(state, token)?;
+            // The publication rule the crate next door states, applied rather than
+            // restated: a reason that would not render as itself is refused here
+            // exactly where the real implementation refuses it, before any host is
+            // asked and before anything is recorded.
+            if let Some(reason) = &request.draft {
+                reason.checked()?;
+            }
             let resolved = state.policy.unwrap_or(DEFAULT_PUBLICATION);
             let policy = match request.policy {
                 Some(requested) => resolved.narrow(requested)?,

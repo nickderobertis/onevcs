@@ -556,6 +556,16 @@ impl World {
     }
     // llmlint: ignore-end[tests_mirror_real_usage]
 
+    /// Make the substituted host refuse to take a change out of its draft.
+    ///
+    /// The lift is the one call that turns work nobody may merge into work the host
+    /// may land, so a host that declines it has not lifted anything — and the
+    /// publication must say so rather than carry on as though it had.
+    pub fn refuse_to_lift_a_draft(&self) {
+        std::fs::write(self.path("gh-state/refuse-ready"), "")
+            .expect("a host that will not lift a draft")
+    }
+
     /// Make the substituted host accept a merge and then not perform it.
     pub fn accept_merges_without_performing_them(&self) {
         std::fs::write(self.path("gh-state/refuse-merge"), "")
@@ -1243,6 +1253,12 @@ case "$subcommand" in
     ;;
   ready)
     . "$STATE/pr-$number.env"
+    if [ -f "$STATE/refuse-ready" ]; then
+      # A host that will not take the change out of its draft: the credential may
+      # not, or the host is having a bad day. Nothing is lifted.
+      printf 'the host declines to make %s ready for review\n' "$PR_URL" >&2
+      exit 1
+    fi
     : >"$STATE/ready-$PR_NUMBER"
     printf '%s is marked as "ready for review"\n' "$PR_URL"
     ;;
