@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use predicates::prelude::*;
 use serde_json::Value;
 
+use crate::honesty::inhabit;
 use crate::host::{Hosted, AUTOMATED, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::registry::configure_rules;
@@ -39,8 +40,8 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v3.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v3-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v4.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v4-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
@@ -56,11 +57,27 @@ const OPTIONAL: &[&[&str]] = &[
     &["session"],
     &["branch", "change_base"],
     &["publication", "change_url"],
+    &["publication", "draft"],
     &["merge_path"],
 ];
 
 /// A change-auto identity, which arms the host's own merge and then watches it.
 const AUTOMATED_POLICY: &str = "{publication: change-auto, approvals: required}";
+
+/// Why a fast-adopting caller holds a change back: the work is finished and the
+/// dependency is still pinned to a branch, so merging it now would make the pin
+/// permanent.
+///
+/// The reason a person actually reads is [`DraftReason::because`]; the three fields
+/// beside it are what decides when the draft may be lifted.
+fn held_for_a_release() -> onevcs::DraftReason {
+    onevcs::DraftReason {
+        awaiting: "github.com/acme-corp/upstream".to_owned(),
+        target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
+        reference: "feature/the-pinned-branch".to_owned(),
+        because: "the dependency is pinned to a branch until crate 2.0 is released".to_owned(),
+    }
+}
 
 /// One green required check, which is what lets an automated publication land.
 const GREEN: Check = Check {
@@ -678,10 +695,34 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         .to_string()
     };
     let envelope = |version: u32, stamp: &str| of_kind(version, stamp, "change-opened");
+    // A draft record whose reason cannot be read, in the three shapes that can
+    // arrive: one whose payload never carried the fields at all, one naming a release
+    // target no document of this crate's could name, and one whose reason is a line
+    // no publication could have carried.
+    let drafted = |stamp: &str, target: &str, because: &str| {
+        serde_json::json!({
+            "v": 1,
+            "ts": stamp,
+            "stream": token,
+            "seq": 9997,
+            "source": "vcs",
+            "kind": "change-drafted",
+            "labels": {},
+            "payload": {
+                "url": "https://github.com/acme-corp/hosted/pull/9",
+                "awaiting": "github.com/acme-corp/upstream",
+                "target": target,
+                "reference": "feature/the-pinned-branch",
+                "because": because,
+            },
+            "artifacts": [],
+        })
+        .to_string()
+    };
     std::fs::write(
         &stream,
         format!(
-            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n{}\n{}\n{}\n",
+            "{recorded}{{\"v\": 1, \"kind\":\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
             // An envelope of a shape this build does not read, and one stamped in a
             // form nothing can order against the rest: both are gaps in what this
             // could read, and neither is a value to act on.
@@ -697,6 +738,20 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
             // read passes them over and says nothing.
             of_kind(1, "2024-01-01T00:00:00.000Z", "gate-started"),
             of_kind(1, "2024-01-01T00:00:01.000Z", "gate-verdict"),
+            // …and the two unreadable draft records. Both are gaps rather than a
+            // change nobody drafted: the whole reason this report carries the reason
+            // is that the *host* cannot say why a change is held back, so a record
+            // that could not be read is a gap in the only answer there is.
+            of_kind(1, "2024-01-01T00:00:02.000Z", "change-drafted"),
+            drafted(
+                "2024-01-01T00:00:03.000Z",
+                "not a target name",
+                "the pin moves when the release lands",
+            ),
+            // The publication's own rule, applied where the record is read back: a
+            // reason naming nothing is one no publication could have carried, so it
+            // is not one to render as though it had.
+            drafted("2024-01-01T00:00:04.000Z", "crate", ""),
         ),
     )
     .expect("a stream a writer left half a line of, and two a later build wrote");
@@ -718,9 +773,24 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         "is stamped \"yesterday\"",
         "is stamped \"9999-99-99T99:99:99.999Z\"",
         "could not be read",
+        "records a draft whose reason cannot be read",
     ] {
         assert!(notes.contains(said), "{said} is not in the notes:\n{notes}");
     }
+    // Both unreadable records are named, one per line, rather than one standing in
+    // for the other — and neither becomes a reason.
+    assert_eq!(
+        notes
+            .lines()
+            .filter(|note| note.contains("records a draft whose reason cannot be read"))
+            .count(),
+        3,
+        "each unreadable draft record is its own gap:\n{notes}"
+    );
+    assert!(
+        answer["publication"].get("draft").is_none(),
+        "a record that could not be read is a gap, never a reason to render: {answer}"
+    );
     // …and the two kinds this build has no word for cost nothing at all. One note
     // per such line is what made a status read over a host's own streams unreadable:
     // 30% of them carry these two, and the answer arrived under hundreds of notes
@@ -1507,6 +1577,186 @@ fn readable(report: &Value, world: &World, token: Option<&str>) -> String {
 }
 
 #[test]
+fn a_drafted_publication_reports_why_it_is_held_and_a_lifted_one_reports_no_draft() {
+    // The whole point of putting the reason in the publication record: a draft change
+    // request on the host says that it *is* a draft and never why, so an operator
+    // holding only the host can see the work is held back and not what is holding it.
+    // This is where they read it.
+    //
+    // The lift is driven the way an operator reaches for it once the release has
+    // arrived — the session is closed and `publish-branch` lands the branch carrying
+    // no reason — which also puts the draft and the lift in **two different streams**
+    // of one branch. A reader that consulted only the drafting session's stream would
+    // go on reporting a reason nothing is holding.
+    let hosted = Hosted::new(REVIEWED);
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["session", "open", "hosted", "--branch", "feature/held"])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let token = crate::world::token_of(&stdout);
+    let worktree = crate::world::worktree_of(&stdout);
+    hosted
+        .world
+        .commit_file(&worktree, "held.txt", "held\n", "feat: add the held thing");
+
+    inhabit(&hosted.world);
+    let drafted = onevcs::publish(
+        &onevcs::Providers::real(),
+        &onevcs::SessionToken(token.clone()),
+        &onevcs::PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(held_for_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    let url = match &drafted.outcome {
+        onevcs::PublishOutcome::ChangeDraft(url) => url.to_string(),
+        other => panic!("a drafted publication opens a draft: {other:?}"),
+    };
+
+    // Read back through the compiled binary, which is the surface an operator meets.
+    let held = report(&hosted.world, "feature/held");
+    let reason = held_for_a_release();
+    assert_eq!(held["publication"]["draft"]["because"], reason.because);
+    assert_eq!(held["publication"]["draft"]["awaiting"], reason.awaiting);
+    assert_eq!(
+        held["publication"]["draft"]["target"],
+        reason.target.to_string()
+    );
+    assert_eq!(held["publication"]["draft"]["reference"], reason.reference);
+    // The change request is open, and the draft is the only thing this report says
+    // about it beyond that — the host's own answer has no room for a reason.
+    assert_eq!(held["publication"]["state"], "open");
+    assert_eq!(held["publication"]["change_url"], url);
+    assert!(held.get("notes").is_none(), "{held}");
+
+    // The release arrives: the branch is taken back into the checkout, the session is
+    // closed, and the branch-keyed verb lands it carrying no reason — which is the
+    // lift.
+    hosted.world.git(
+        &hosted.checkout,
+        &["fetch", "-q", "origin", "feature/held:feature/held"],
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/held",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+
+    let lifted = report(&hosted.world, "feature/held");
+    assert!(
+        lifted["publication"].get("draft").is_none(),
+        "a lifted draft is no reason at all rather than a stale one: {lifted}"
+    );
+    // …and the change request it was a draft of is still the same one, still open, so
+    // what went away is the draft and not the publication.
+    assert_eq!(lifted["publication"]["change_url"], url);
+    assert_eq!(lifted["publication"]["state"], "open");
+    // The record of both is still there for whoever wants the history, which is the
+    // other half of "the reason lives in the publication record".
+    let kinds: Vec<String> = hosted
+        .world
+        .events(&token)
+        .into_iter()
+        .filter_map(|event| event["kind"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        kinds.iter().any(|kind| kind == "change-drafted"),
+        "the session's own stream still records why it was drafted: {kinds:?}"
+    );
+
+    // …and the tie the reader is documented to break. A draft and the lift that
+    // answers it cannot be simultaneous — a lift is performed on a change the host is
+    // already holding — so two records stamped at the same millisecond are a clock
+    // that could not tell them apart, and the reader clears the draft rather than
+    // reporting a reason that may already be spent. Both records are valid and both
+    // are newer than everything above, so nothing but the comparison decides this: a
+    // reader that broke the tie the other way would report the reason below.
+    let same = "2099-06-01T12:00:00.000Z";
+    let appended = |seq: u64, kind: &str, payload: serde_json::Value| {
+        serde_json::json!({
+            "v": 1,
+            "ts": same,
+            "stream": token,
+            "seq": seq,
+            "source": "vcs",
+            "kind": kind,
+            "labels": {},
+            "payload": payload,
+            "artifacts": [],
+        })
+        .to_string()
+    };
+    let stream = hosted
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let recorded = std::fs::read_to_string(&stream).expect("the session wrote a stream");
+    std::fs::write(
+        &stream,
+        format!(
+            "{recorded}{}\n{}\n",
+            appended(
+                9001,
+                "change-drafted",
+                serde_json::json!({
+                    "url": url,
+                    "id": "1",
+                    "base": "main",
+                    "awaiting": "github.com/acme-corp/upstream",
+                    "target": "crate",
+                    "reference": "feature/the-pinned-branch",
+                    "because": "a hold and its lift stamped at one millisecond",
+                }),
+            ),
+            appended(
+                9002,
+                "draft-lifted",
+                serde_json::json!({"url": url, "id": "1"})
+            ),
+        ),
+    )
+    .expect("a stream whose newest draft and newest lift share a stamp");
+
+    let tied = report(&hosted.world, "feature/held");
+    assert!(
+        tied["publication"].get("draft").is_none(),
+        "a lift stamped with the draft it answers clears it: {tied}"
+    );
+    // Both records were readable, so this is the comparison deciding rather than a gap
+    // in what could be read — the report says so by having nothing to say.
+    assert!(
+        tied.get("notes").is_none(),
+        "both appended records are valid, so nothing is a gap: {tied}"
+    );
+    // …and it is still the same change request, still open: what the tie decided is
+    // the draft, not the publication it was a draft of.
+    assert_eq!(tied["publication"]["change_url"], url);
+    assert_eq!(tied["publication"]["state"], "open");
+    assert_eq!(tied["ref"]["given"], "feature/held");
+    assert_eq!(tied["branch"]["name"], "feature/held");
+}
+
+#[test]
 fn the_status_report_is_the_versioned_object_its_goldens_record() {
     // `status --json` is read by whatever consumes this command, so it is a stored
     // contract: it says which shape it is, its bytes are checked in, and a field it
@@ -1565,13 +1815,29 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
     hosted
         .world
         .commit_file(&worktree, "full.txt", "full\n", "feat: add the whole thing");
-    hosted
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("change request open at"));
+    // Published as a **draft**, which is the one optional field of this report the
+    // command line cannot produce: the approved amendment gives the draft surface to
+    // the library alone, because the reason is four machine-readable fields a caller
+    // composes rather than a sentence somebody types. Everything else about this
+    // publication is what `onevcs publish` does — the same real git, the same real
+    // push, and the same substituted `gh` — and the report below is still read back
+    // out of the compiled binary.
+    inhabit(&hosted.world);
+    let published = onevcs::publish(
+        &onevcs::Providers::real(),
+        &onevcs::SessionToken(token.clone()),
+        &onevcs::PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(held_for_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(
+        matches!(published.outcome, onevcs::PublishOutcome::ChangeDraft(_)),
+        "the golden's publication is the drafted one: {published:?}"
+    );
 
     // Reachable from the checkout as well as the run clone, which is what makes the
     // holder list say more than one thing.
@@ -1619,7 +1885,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&full, &hosted.world, Some(&token)),
         FULL,
         "the object `onevcs status --json` writes is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/status-report-v2.json from the run above, and bump \
+         crates/onevcs/tests/golden/status-report-v4.json from the run above, and bump \
          the version in docs/inferred-surface.md and src/status.rs if the shape moved"
     );
     for path in OPTIONAL {
@@ -1662,7 +1928,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&minimal, &plain.world, None),
         MINIMAL,
         "the object a report with nothing optional in it writes is its checked-in \
-         golden; re-make crates/onevcs/tests/golden/status-report-v2-minimal.json"
+         golden; re-make crates/onevcs/tests/golden/status-report-v4-minimal.json"
     );
     // Omitted rather than null: a consumer that has never heard of a field is not
     // handed one, and "no session" and "a session that is null" are different

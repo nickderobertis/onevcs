@@ -20,6 +20,7 @@ use crate::event::{EventKind, Phase};
 use url::Url;
 
 use crate::host::{ChangeRequest, ChangeSpec, Check, Hosting, MergeOutcome, RemoteHost, Sha};
+use crate::releases::TargetName;
 use crate::rules::{MergePolicy, Policy};
 use crate::session::{Lifecycle, Provenance, SessionToken};
 use crate::store::Resolution;
@@ -57,6 +58,119 @@ pub struct PublishRequest {
     /// title is a [`Subject`] for the opposite reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Open the change request as a **draft**, and why it is not ready.
+    ///
+    /// Absent is every publication that came before this field: an ordinary change
+    /// request, opened for review. Present is a change whose work is as far along as
+    /// it can go while something outside this repository has not happened yet — and
+    /// the reason travels with it, because a draft nobody can read the reason for is
+    /// a change request nobody knows how to finish.
+    ///
+    /// A draft is unmergeable in that state, and this crate keeps it so: nothing
+    /// merges it, arms the host's own merge on it, or advances a base from it while
+    /// the draft stands. A publication of the same branch carrying **no**
+    /// `DraftReason` is what lifts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftReason>,
+}
+
+/// Why a change request was opened as a draft, in the shape a machine reads it.
+///
+/// A draft is a change that has gone as far as it can and stopped short of the one
+/// step that would make something temporary permanent — a dependency pinned to a
+/// branch rather than to a release. What it is waiting for is therefore the whole of
+/// the reason: which repository, which of that repository's release targets, and the
+/// reference the change is pinned to in the meantime. [`because`](Self::because) is
+/// the same fact as a sentence, for whoever reads it rather than routes on it.
+///
+/// It is recorded on the session's own event stream — the publication record — and
+/// nowhere else. **Nothing is written into the change request's body**, under a
+/// marker heading or anywhere: a body is prose a reviewer reads and a drafting
+/// caller may rewrite, and deciding a control action from it would turn an editorial
+/// act into one. The cost of that is carried openly: somebody looking at the draft
+/// change request without access to this host sees that it **is** a draft and not
+/// why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftReason {
+    /// The repository identity whose release is awaited, as the registry keys one.
+    ///
+    /// A `String` rather than a newtype because an identity key is one everywhere this
+    /// crate spells one — `Identity::origin`, `Recoverable::identity`, the registry
+    /// document's own map key — so a narrower type here would disagree with every type
+    /// it is compared against. What must not be representable is a value that renders as
+    /// something *other* than itself in a refusal or an event payload, and `checked`
+    /// refuses exactly that at every boundary one arrives at.
+    // llmlint: ignore[invalid_states_unrepresentable] the doc above: the key's own type, checked.
+    pub awaiting: String,
+    /// Which release target of it is awaited.
+    pub target: TargetName,
+    /// The reference this change is pinned to until that release arrives — the
+    /// branch of the awaited repository the pin names.
+    ///
+    /// A `String` for the reason `awaiting` above is, and one more of its own: this is
+    /// the *awaited* repository's branch name rather than one this repository's git
+    /// could be asked about, so the parser that would decide it is not this host's.
+    /// `checked` refuses the values that would render as something else.
+    // llmlint: ignore[invalid_states_unrepresentable] the doc above: another host's name, checked.
+    pub reference: String,
+    /// One line a person reads, saying why the change is not ready.
+    ///
+    /// Prose, so there is nothing for a type to narrow. The one shape that matters is
+    /// where it lands — a single rendered line — and `checked` is what holds it to that.
+    // llmlint: ignore[invalid_states_unrepresentable] the doc above: prose, checked where it lands.
+    pub because: String,
+}
+
+impl DraftReason {
+    /// The rule a publication holds a reason to, or the refusal that this is not one.
+    ///
+    /// Every field here is printed: into a refusal, into an event payload a consumer
+    /// reads back, and — through `--draft` — at a host. So the check is the one that
+    /// decides whether a value renders as itself: nothing empty, and nothing carrying
+    /// a control character, which is what turns one line of a record into two.
+    ///
+    /// Public for the reason [`MergePolicy::narrow`] and [`FailureKind::of`] are: it
+    /// belongs to publication rather than to any one implementation of it, so a
+    /// supplied [`Vcs`](crate::Vcs) applies *this* rule at its own boundary rather
+    /// than a restatement of it that could accept what the real one refuses. It is a
+    /// method rather than a conversion because the contract fixes the four fields as
+    /// public and settable, so there is no constructor for a check to live in.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Invalid`] naming the field that would not render as itself.
+    pub fn checked(&self) -> Result<()> {
+        for (what, value) in [
+            ("the repository whose release is awaited", &self.awaiting),
+            ("the reference the change is pinned to", &self.reference),
+            ("the reason the change is not ready", &self.because),
+        ] {
+            if value.is_empty() {
+                return Err(crate::error::invalid(format!(
+                    "a draft change request must say {what}, and this one names none: a draft \
+                     whose reason cannot be read is a change request nobody knows how to finish"
+                )));
+            }
+            if value.chars().any(char::is_control) {
+                return Err(crate::error::invalid(format!(
+                    "{what} is {value:?}, which carries a control character: every field of a \
+                     draft's reason is printed on one line, in a refusal and in the publication \
+                     record, and a value that renders as something other than itself is not one"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The reason as the fields an event payload and a refusal both name it by.
+    fn fields(&self) -> serde_json::Value {
+        json!({
+            "awaiting": self.awaiting,
+            "target": self.target.to_string(),
+            "reference": self.reference,
+            "because": self.because,
+        })
+    }
 }
 
 /// A title that can be the subject of the commit a publication lands.
@@ -151,6 +265,13 @@ pub enum PublishOutcome {
     Merged(Sha),
     /// A change request is open, which the policy asked for.
     ChangeOpen(Url),
+    /// A change request is open **as a draft**, carrying the reason it is not ready.
+    ///
+    /// Its own case rather than a shade of [`ChangeOpen`](PublishOutcome::ChangeOpen),
+    /// deliberately: the two differ in the one thing a caller acts on — whether this
+    /// change can land — and folding them together would make every exhaustive match
+    /// on this enum go on compiling while meaning something else.
+    ChangeDraft(Url),
     /// The host queued the merge and will land it once its checks pass.
     Queued(Url),
     /// The branch had nothing the base did not already carry.
@@ -179,6 +300,11 @@ impl PublishOutcome {
         match self {
             PublishOutcome::Merged(sha) => format!("merged at {}", sha.0),
             PublishOutcome::ChangeOpen(url) => format!("change request open at {url}"),
+            PublishOutcome::ChangeDraft(url) => {
+                format!(
+                    "change request open as a draft at {url}, which cannot land while it is one"
+                )
+            }
             PublishOutcome::Queued(url) => format!("merge queued for {url}"),
             PublishOutcome::NothingToPublish => {
                 "nothing to publish: the base already carries this branch's content".to_owned()
@@ -342,6 +468,7 @@ pub fn run_for_session(
         preserved_into: record.execution_checkout.clone(),
         title: request.title.clone(),
         body: request.body.clone(),
+        draft: request.draft.clone(),
         trailers: Vec::new(),
         provenance: provenance::from_rules(&file),
         hosting,
@@ -413,6 +540,13 @@ pub struct Context<'a> {
     /// The body the change request is opened with, verbatim, or none at all. A
     /// branch-keyed verb has no caller to take one from and publishes without one.
     pub body: Option<String>,
+    /// Why this change request is opened as a draft, or none at all — which is both
+    /// an ordinary publication and the thing that *lifts* a draft one.
+    ///
+    /// A branch-keyed verb has no caller to take one from and publishes without one,
+    /// as it does with a body: landing a branch somebody else drafted is exactly the
+    /// call that says the reason no longer holds.
+    pub draft: Option<DraftReason>,
     /// Trailers the publication commit must carry.
     pub trailers: Vec<String>,
     /// The provenance trailer keys this host reads and writes, which decide which
@@ -589,6 +723,7 @@ impl<'a> Context<'a> {
             preserved_into: self.preserved_into.clone(),
             title: self.title.clone(),
             body: self.body.clone(),
+            draft: self.draft.clone(),
             trailers: self.trailers.clone(),
             provenance: self.provenance.clone(),
             hosting: self.hosting,
@@ -598,6 +733,26 @@ impl<'a> Context<'a> {
 
 /// Verify and publish a branch.
 pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome> {
+    // Input, rejected at its boundary: before the fetch, before the sync, and before
+    // anything reaches a remote. A draft is a state of a *change request*, so a
+    // publication that opens none cannot be in it, and a reason nobody can read is
+    // not a reason.
+    if let Some(reason) = &context.draft {
+        reason.checked()?;
+        if context.effective == MergePolicy::LocalDirect {
+            return Err(crate::error::invalid(format!(
+                "{branch:?} was asked to publish as a draft awaiting {awaiting} {target}, and \
+                 this identity publishes with local-direct, which squashes the branch onto \
+                 {base:?} and opens no change request at all — so there is nothing to draft and \
+                 the work would land with the very pin the draft exists to hold back. Publish it \
+                 under a change-* policy, or publish it without a draft",
+                branch = context.branch,
+                awaiting = reason.awaiting,
+                target = reason.target,
+                base = context.target.base(),
+            )));
+        }
+    }
     // Where this repository last saw the host's copy of the branch, read before the
     // fetch that is about to update it: a publication that replays its own commits
     // pushes over that copy, and what it may replace is what it had already seen —
@@ -1235,6 +1390,11 @@ fn publish_as_change(
     // where the branch would already be on the remote and the refusal would read as a
     // merge path nobody could verify.
     refuse_an_unhosted_identity(&context.resolution.key)?;
+    if let Some(reason) = &context.draft {
+        if let Some(refusal) = refuse_a_draft_over_a_reviewed_change(context, reason) {
+            return Err(refusal);
+        }
+    }
     if context.effective != MergePolicy::ChangeOpen {
         // Only the policies that watch read these, so only those are held to them.
         gh::checks_timeout()?;
@@ -1402,6 +1562,10 @@ fn land_as_change(
     let author = host.authenticated_user()?;
 
     let existing = host.find_changes(&context.branch, context.target.base())?;
+    // Whether the host already held this change request, which is what decides
+    // whether there can be a draft to lift: a change this publication just opened
+    // without a reason is one nobody drafted.
+    let adopted = !existing.is_empty();
     let change = match existing.into_iter().next() {
         Some(change) => change,
         None => host.open_change(ChangeSpec {
@@ -1412,6 +1576,10 @@ fn land_as_change(
             // that knows what the change is for; this one only knows the branch,
             // and everything it could say from that the title already says.
             body: context.body.clone(),
+            // The reason travels to the host so that the host can open it as a
+            // draft, and no further: what the host renders of a draft is the state,
+            // never the reason. The reason is recorded below, on the stream.
+            draft: context.draft.clone(),
         })?,
     };
     stream.emit(
@@ -1424,6 +1592,13 @@ fn land_as_change(
             "author": author,
         })),
     );
+
+    if let Some(reason) = &context.draft {
+        return hold_as_draft(context, host.as_ref(), &change, reason, stream);
+    }
+    if adopted {
+        lift_any_draft(host.as_ref(), &change, stream)?;
+    }
 
     if context.effective == MergePolicy::ChangeOpen {
         return Ok(PublishOutcome::ChangeOpen(change.url.clone()));
@@ -1504,6 +1679,139 @@ fn land_as_change(
     })();
     drop(turn);
     outcome
+}
+
+/// Hold a change request open as a draft, and record why.
+///
+/// The publication stops here under **every** change policy: a draft is unmergeable
+/// in that state, so nothing below this asks the host to merge it, arms the host's
+/// own merge on it, takes the identity's merge queue, or fast-forwards a base from
+/// it. Which policy the identity publishes under decides what happens once the draft
+/// is lifted, not what happens while it stands.
+fn hold_as_draft(
+    context: &Context<'_>,
+    host: &dyn RemoteHost,
+    change: &ChangeRequest,
+    reason: &DraftReason,
+    stream: &mut Stream,
+) -> Result<PublishOutcome> {
+    // Asked of the host rather than assumed from having said `--draft`, and the two
+    // cases it separates are both real: a host whose `open_change` was written before
+    // this field silently ignores it, and a change request already open for review is
+    // one this crate will not put back into a draft — the seam has no method for it,
+    // and inventing one would be a public item nobody approved. Either way the answer
+    // is the same refusal, because either way the change on the host can land while
+    // its caller believes it cannot.
+    if !host.is_draft(change)? {
+        return Err(already_open_for_review(context, change, reason));
+    }
+    // The publication record, and the only place the reason is written: see
+    // [`DraftReason`].
+    let mut payload = reason.fields();
+    let fields = payload.as_object_mut().expect("the reason is an object");
+    fields.insert("url".to_owned(), json!(change.url.to_string()));
+    fields.insert("id".to_owned(), json!(change.id.0));
+    fields.insert("base".to_owned(), json!(change.base));
+    stream.emit(EventKind::ChangeDrafted, object(payload));
+    Ok(PublishOutcome::ChangeDraft(change.url.clone()))
+}
+
+/// The refusal for a draft asked over a change request the host has open for review.
+///
+/// One sentence, two places: `hold_as_draft` reaches it once the change is adopted,
+/// and the pre-push check below reaches it before anything is on the remote. A
+/// refusal that read differently depending on which noticed first would be two rules
+/// about one state.
+fn already_open_for_review(
+    context: &Context<'_>,
+    change: &ChangeRequest,
+    reason: &DraftReason,
+) -> Error {
+    crate::error::invalid(format!(
+        "{url} is open for review on the host, and this publication asked for a draft awaiting \
+         {awaiting} {target}. A change that is open can land, so reporting it as a draft would \
+         say the work is held back when nothing is holding it. Lift nothing and publish \
+         {branch:?} without a draft, or close that change request and publish again",
+        url = change.url,
+        awaiting = reason.awaiting,
+        target = reason.target,
+        branch = context.branch,
+    ))
+}
+
+/// Refuse a draft over a change request the host already has open for review, before
+/// anything reaches the remote.
+///
+/// The same question [`hold_as_draft`] asks after the change is adopted, asked at the
+/// boundary as well — because everything past the publishing push is reported as a
+/// merge path this build could not read, and this is not one of those. The merge path
+/// ruled on the push perfectly well; what stopped the publication is a state the host
+/// *answered*, and an operator told their push is unverified would go looking for a
+/// failure that never happened.
+///
+/// **Only a definite answer refuses.** A host this build has no implementation for,
+/// one that cannot be reached, and one that will not say whether a change is a draft
+/// are each left exactly where they are met today — after the push, by the paths that
+/// already handle them — so this can only ever move a refusal *earlier*, never invent
+/// one. `hold_as_draft` stays the authoritative check for the same reason it existed
+/// before this: a host may take `--draft` and open an ordinary change anyway.
+fn refuse_a_draft_over_a_reviewed_change(
+    context: &Context<'_>,
+    reason: &DraftReason,
+) -> Option<Error> {
+    let host = change_host(&context.resolution.key)
+        .ok()
+        .and_then(|slug| context.hosting.for_repo(&slug).ok())?;
+    let open = host
+        .find_changes(&context.branch, context.target.base())
+        .ok()?
+        .into_iter()
+        .next()?;
+    match host.is_draft(&open) {
+        Ok(false) => Some(already_open_for_review(context, &open, reason)),
+        _ => None,
+    }
+}
+
+/// Lift the draft on a change request this publication is landing without one.
+///
+/// The lift, and the whole of it: a publication carrying no [`DraftReason`] is a
+/// caller saying the reason no longer holds, so the change it adopts goes open for
+/// review before anything asks the host to land it.
+///
+/// **Idempotent, because the host decides.** A change request that is not a draft is
+/// asked for nothing, so a second publication after a lift makes no call and reports
+/// exactly what the first one did.
+///
+/// Asked only of a change request the host already held. One this publication opened
+/// moments ago, without a reason, is one nobody drafted — so a publication that
+/// opens its own change request asks the host nothing extra, and every implementation
+/// written against the earlier surface goes on publishing exactly as it did.
+///
+/// A host that cannot say is a host that was never taught to draft one, and it is
+/// passed over rather than refused — `is_draft` is defaulted to
+/// [`Error::NotImplemented`], so this is the answer every implementation written
+/// against the earlier surface gives, and refusing it would break publications that
+/// have nothing to do with drafts. The cost is bounded and safe in the one direction
+/// that matters: a host that drafts a change and cannot be asked about it leaves the
+/// draft standing, and a draft that stands is a change that does not land.
+fn lift_any_draft(
+    host: &dyn RemoteHost,
+    change: &ChangeRequest,
+    stream: &mut Stream,
+) -> Result<()> {
+    match host.is_draft(change) {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(Error::NotImplemented { .. }) => return Ok(()),
+        Err(unreadable) => return Err(unreadable),
+    }
+    host.ready_for_review(change)?;
+    stream.emit(
+        EventKind::DraftLifted,
+        object(json!({"url": change.url.to_string(), "id": change.id.0})),
+    );
+    Ok(())
 }
 
 /// Record the commit the host merged this change at, on the branch itself.

@@ -202,7 +202,12 @@ impl World {
     ///
     /// Bounded and loud: a journey that waits forever reports nothing, and one that
     /// sleeps a fixed time and hopes is the flake this exists to replace.
-    pub fn until(what: &str, condition: impl Fn() -> bool) {
+    ///
+    /// The condition is `FnMut` so that a waiter can ask something of its own state
+    /// on every turn — whether the process it is waiting on is still running, say,
+    /// which is the difference between a timeout that names a cause and one that
+    /// reports a minute of nothing having happened.
+    pub fn until(what: &str, mut condition: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !condition() {
             assert!(
@@ -501,6 +506,10 @@ impl World {
     /// a workflow run's own `head_sha`. Both are host-supplied text a publication
     /// goes on to compare against the commit it pushed, so neither may be taken on
     /// trust.
+    ///
+    /// `no-draft-state` answers a `gh pr view` without the field that says whether
+    /// the change request is a draft, which is what a host that will not say looks
+    /// like — never the same thing as a host saying it is not one.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -551,6 +560,16 @@ impl World {
             .expect("a change request somebody closed without merging it");
     }
     // llmlint: ignore-end[tests_mirror_real_usage]
+
+    /// Make the substituted host refuse to take a change out of its draft.
+    ///
+    /// The lift is the one call that turns work nobody may merge into work the host
+    /// may land, so a host that declines it has not lifted anything — and the
+    /// publication must say so rather than carry on as though it had.
+    pub fn refuse_to_lift_a_draft(&self) {
+        std::fs::write(self.path("gh-state/refuse-ready"), "")
+            .expect("a host that will not lift a draft")
+    }
 
     /// Make the substituted host accept a merge and then not perform it.
     pub fn accept_merges_without_performing_them(&self) {
@@ -935,10 +954,21 @@ esac
 subcommand="${1:-}"; shift || true
 number=""
 case "$subcommand" in
-  view|merge|checks) number="${1:-}"; shift || true ;;
+  view|merge|checks|ready)
+    number="${1:-}"; shift || true
+    # The number is what selects the per-change state this subcommand reads, so it
+    # is argv reaching a path. Refuse anything but digits here, at the one place the
+    # value arrives, rather than letting it name a file further down.
+    case "$number" in
+      ""|*[!0-9]*)
+        printf 'fake gh: pr %s addresses a change by its number, not %s\n' "$subcommand" "$number" >&2
+        exit 1 ;;
+    esac
+    ;;
 esac
 
 repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""; only_required=0
+draft=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}"; shift 2 ;;
@@ -949,6 +979,7 @@ while [ $# -gt 0 ]; do
     --json) json_fields="${2:-}"; shift 2 ;;
     --state) shift 2 ;;
     --auto) auto=1; shift ;;
+    --draft) draft=1; shift ;;
     --required) only_required=1; shift ;;
     *) shift ;;
   esac
@@ -1164,6 +1195,7 @@ case "$subcommand" in
       printf 'PR_BASE=%s\n' "$base"
       printf 'PR_HEAD_SHA=%s\n' "$head_sha"
       printf 'PR_MERGE_COMMIT=\n'
+      printf 'PR_DRAFT=%s\n' "$draft"
     } >"$STATE/pr-$next.env"
     printf '%s\n' "$title" >"$STATE/pr-$next.title"
     printf '%s\n' "$body" >"$STATE/pr-$next.body"
@@ -1185,17 +1217,17 @@ case "$subcommand" in
     if [ -n "$PR_MERGE_COMMIT" ]; then merge_commit="{\"oid\":\"$PR_MERGE_COMMIT\"}"; fi
     case "$malformed" in
       no-head)
-        printf '{"number":%s,"state":"%s","mergeCommit":null,"statusCheckRollup":[]}\n' \
+        printf '{"number":%s,"state":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":[]}\n' \
           "$PR_NUMBER" "$PR_STATE"
         exit 0 ;;
       rollup-not-a-list)
-        printf '{"number":%s,"state":"%s","headRefOid":"%s","mergeCommit":null,"statusCheckRollup":"soon"}\n' \
+        printf '{"number":%s,"state":"%s","headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":"soon"}\n' \
           "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA"
         exit 0 ;;
       no-state)
         # Its checks are answered as usual, so the publication reaches the merge —
         # which is the call that has to know whether the change is already merged.
-        printf '{"number":%s,"headRefOid":"%s","mergeCommit":null,"statusCheckRollup":%s}\n' \
+        printf '{"number":%s,"headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":%s}\n' \
           "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
         exit 0 ;;
       misleading-refusal)
@@ -1220,9 +1252,30 @@ case "$subcommand" in
     if wanted state; then printf '%s"state":"%s"' "$separator" "$PR_STATE"; separator=","; fi
     if wanted mergeStateStatus; then printf '%s"mergeStateStatus":"CLEAN"' "$separator"; separator=","; fi
     if wanted headRefOid; then printf '%s"headRefOid":"%s"' "$separator" "$PR_HEAD_SHA"; separator=","; fi
+    # A host that answers the call and says nothing about the draft state, which is
+    # not the same as saying it is not one: whether the change may be asked to merge
+    # rests on this field, so its absence is a refusal rather than a `false`.
+    if wanted isDraft && [ "$malformed" != "no-draft-state" ]; then
+      is_draft=false
+      # A draft the host was asked to make ready for review is not one any more,
+      # which is what makes lifting it observable and lifting it twice a no-op.
+      if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then is_draft=true; fi
+      printf '%s"isDraft":%s' "$separator" "$is_draft"; separator=","
+    fi
     if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
     if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
     printf '}\n'
+    ;;
+  ready)
+    . "$STATE/pr-$number.env"
+    if [ -f "$STATE/refuse-ready" ]; then
+      # A host that will not take the change out of its draft: the credential may
+      # not, or the host is having a bad day. Nothing is lifted.
+      printf 'the host declines to make %s ready for review\n' "$PR_URL" >&2
+      exit 1
+    fi
+    : >"$STATE/ready-$PR_NUMBER"
+    printf '%s is marked as "ready for review"\n' "$PR_URL"
     ;;
   merge)
     . "$STATE/pr-$number.env"

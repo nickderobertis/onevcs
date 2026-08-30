@@ -19,7 +19,7 @@
 //! consumer's checked-in scenario, read here as that consumer's next run would read
 //! it.
 
-use onevcs::{ChangeSpec, Hosting, Landed, SessionRequest, Vcs};
+use onevcs::{ChangeSpec, DraftReason, Hosting, Landed, SessionRequest, TargetName, Vcs};
 use onevcs_testing::{
     FileHost, FileVcs, HostState, VcsState, OLDEST_READABLE_VERSION, STATE_VERSION,
 };
@@ -27,19 +27,19 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v6-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v6-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v7-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v7-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v6.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v6.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v7.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v7.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v5.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v5.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v6.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v6.json");
 
 /// Every optional key of a repository state, as the document spells it.
 const VCS_OPTIONAL: &[&str] = &[
@@ -57,6 +57,8 @@ const HOST_OPTIONAL: &[&str] = &[
     "heads",
     "titles",
     "bodies",
+    "drafts",
+    "made_ready",
     "checks",
     "check_logs",
     "check_sources",
@@ -193,7 +195,7 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
     std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
     assert!(
-        HOST_PREVIOUS.contains(r#""version": 5"#) && !HOST_PREVIOUS.contains(r#""head":"#),
+        HOST_PREVIOUS.contains(r#""version": 6"#) && !HOST_PREVIOUS.contains(r#""drafts""#),
         "the previous document is the one that predates the field, or it proves nothing"
     );
 
@@ -213,19 +215,18 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     );
     let carried = &state.checks[&state.changes[0].id];
     assert_eq!(carried.len(), 2);
-    // The field a version 5 document could not hold, read as the answer that
-    // document *was*: a build that never recorded which commit its host attached a
-    // check to did not thereby say the check is about the change request's own head.
-    // Filling it in from `head_sha` is the one thing that must not happen here —
-    // a publication would then read a scenario's stale checks as current.
-    for check in carried {
-        assert_eq!(
-            check.head, None,
-            "a document that predates the commit a check is attached to says nothing about \
-             one: {check:?}"
-        );
-        assert_eq!(check.url, None);
-    }
+    // Everything the previous document did hold reads back unchanged, the commit its
+    // host attached a check to included.
+    assert_eq!(carried[0].head, Some(onevcs::Sha("def456".to_owned())));
+    // The two fields a version 6 document could not hold, read as the answer that
+    // document *was*: a build that could not draft a change request did not draft
+    // one, and never asked a host to lift one. Inventing either — reading a change
+    // request nobody drafted as a draft — is what would make a publication over a
+    // consumer's checked-in scenario refuse to merge work nothing is holding back.
+    assert!(
+        state.drafts.is_empty() && state.made_ready.is_empty(),
+        "a document that predates drafts records none: {state:?}"
+    );
     let repository = vcs.state().expect("readable");
     assert_eq!(repository.version, STATE_VERSION);
     assert_eq!(repository.sessions.len(), 1);
@@ -241,6 +242,12 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     // a document carried forward is carried forward, rather than read one way and
     // stored as something no build declares.
     let drafted = "## Why\n\nBecause the reviewer has to read something.\n";
+    let held = DraftReason {
+        awaiting: "github.com/acme-corp/upstream".to_owned(),
+        target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+        reference: "feature/the-pinned-branch".to_owned(),
+        because: "the pin moves when the release lands".to_owned(),
+    };
     let opened = host
         .for_repo(onevcs_testing::DEFAULT_SLUG)
         .expect("a host for the repository")
@@ -249,6 +256,7 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
             base: "main".to_owned(),
             title: "feat: the change opened after the bump".to_owned(),
             body: Some(drafted.to_owned()),
+            draft: Some(held.clone()),
         })
         .expect("the change request opens");
     vcs.open_session(SessionRequest {
@@ -270,6 +278,14 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
         host.state().expect("readable").bodies[&opened.id],
         drafted,
         "a field of the previous bump is written to the carried-forward document"
+    );
+    // …and this bump's own field with it: the reason the change was drafted, recorded
+    // where the ruling puts it and read back out of the carried-forward document.
+    assert_eq!(
+        host.state().expect("readable").drafts[&opened.id],
+        held,
+        "the reason a change request was drafted with is written to the carried-forward \
+         document"
     );
     // …and this bump's field is written into it, carrying the answer that list meant
     // rather than the one nothing said. A carried-forward document says what this

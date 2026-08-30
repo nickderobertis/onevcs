@@ -111,6 +111,23 @@ pub enum EventKind {
     Push,
     /// A change request was opened; carries its URL and the host kind.
     ChangeOpened,
+    /// A change request was opened as a **draft**, and this is why it is not ready;
+    /// carries its URL, the host's identifier for it, and the reason's four fields —
+    /// the repository whose release is awaited, which target of it, the reference the
+    /// change is pinned to, and the one line a person reads.
+    ///
+    /// Beside [`ChangeOpened`](EventKind::ChangeOpened) rather than instead of it: the
+    /// change request *was* opened, and the link from its URL back to the branch is
+    /// what that kind records. This one records the state it was opened in.
+    ChangeDrafted,
+    /// The draft was lifted and the change request is open for review; carries its
+    /// URL and the host's identifier for it.
+    ///
+    /// The reason is not repeated here: it is on the
+    /// [`ChangeDrafted`](EventKind::ChangeDrafted) this answers, and the publication
+    /// that lifts a draft is a later one that never held the reason — it lifts the
+    /// draft *by* carrying none.
+    DraftLifted,
     /// A check moved; carries its name, whether it is required, the status
     /// transition, the conclusion, and its log as an artifact once complete.
     ChangeCheck,
@@ -384,9 +401,11 @@ impl Phase {
             EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict => {
                 Phase::Integrate
             }
-            EventKind::ChangeOpened | EventKind::ChangeCheck | EventKind::ChangeMerged => {
-                Phase::Review
-            }
+            EventKind::ChangeOpened
+            | EventKind::ChangeDrafted
+            | EventKind::DraftLifted
+            | EventKind::ChangeCheck
+            | EventKind::ChangeMerged => Phase::Review,
             EventKind::ReleaseProbed
             | EventKind::ReleaseAcknowledged
             | EventKind::ReleaseObserved => Phase::Release,
@@ -464,6 +483,8 @@ impl EventKind {
             EventKind::CommitPreserved => "commit-preserved",
             EventKind::Push => "push",
             EventKind::ChangeOpened => "change-opened",
+            EventKind::ChangeDrafted => "change-drafted",
+            EventKind::DraftLifted => "draft-lifted",
             EventKind::ChangeCheck => "change-check",
             EventKind::ChangeMerged => "change-merged",
             EventKind::MergeQueued => "merge-queued",

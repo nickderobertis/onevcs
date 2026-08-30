@@ -359,6 +359,13 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 .cloned()
                 .ok_or_else(|| unknown_session(token))?;
             let identity = state::identity_for(state, token)?;
+            // The publication rule the crate next door states, applied rather than
+            // restated: a reason that would not render as itself is refused here
+            // exactly where the real implementation refuses it, before any host is
+            // asked and before anything is recorded.
+            if let Some(reason) = &request.draft {
+                reason.checked()?;
+            }
             let resolved = state.policy.unwrap_or(DEFAULT_PUBLICATION);
             let policy = match request.policy {
                 Some(requested) => resolved.narrow(requested)?,
@@ -390,7 +397,26 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             }
 
             let (outcome, emissions) = if policy == MergePolicy::LocalDirect {
-                record_local_landing(&identity, &session, token)
+                // The same refusal the real publication makes at the same boundary: a
+                // local-direct publication opens no change request, so there is
+                // nothing to draft and the work would land carrying the very pin the
+                // draft exists to hold back.
+                match &request.draft {
+                    Some(reason) => (
+                        failed(&Error::Invalid {
+                            reason: format!(
+                                "{branch:?} was asked to publish as a draft awaiting {awaiting} \
+                                 {target}, and this identity publishes with local-direct, which \
+                                 opens no change request at all",
+                                branch = session.branch,
+                                awaiting = reason.awaiting,
+                                target = reason.target,
+                            ),
+                        }),
+                        Vec::new(),
+                    ),
+                    None => record_local_landing(&identity, &session, token),
+                }
             } else {
                 match slug(&identity) {
                     Some(slug) => match publish_as_change(
@@ -543,6 +569,10 @@ fn publish_as_change(
     // real publication and for the same reason.
     let author = host.authenticated_user()?;
     let existing = host.find_changes(&session.branch, &session.base)?;
+    // Whether the host already held it, which is what decides whether there can be a
+    // draft to lift — and, as next door, keeps a publication that opens its own change
+    // request from asking this host anything extra.
+    let adopted = !existing.is_empty();
     let change = match existing.into_iter().next() {
         Some(change) => change,
         None => host.open_change(ChangeSpec {
@@ -561,6 +591,9 @@ fn publish_as_change(
             // composes no body either, so a provider that composed one would be a
             // consumer's suite proving a change request nobody opens.
             body: request.body.clone(),
+            // The reason travels to the host and no further, as it does there: what
+            // the host does with it is open the change as a draft.
+            draft: request.draft.clone(),
         })?,
     };
     let mut emissions = vec![Emission {
@@ -575,6 +608,70 @@ fn publish_as_change(
             "author": author,
         })),
     }];
+    if let Some(reason) = &request.draft {
+        // The same question the real publication asks, for the same reason: a host
+        // that ignored the request, or a change request already open for review,
+        // would otherwise be reported as held back while it can land.
+        if !host.is_draft(&change)? {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "{url} is open for review on the host, and this publication asked for a \
+                     draft awaiting {awaiting} {target}. A change that is open can land, so \
+                     reporting it as a draft would say the work is held back when nothing is \
+                     holding it",
+                    url = change.url,
+                    awaiting = reason.awaiting,
+                    target = reason.target,
+                ),
+            });
+        }
+        // The publication record, and the only place the reason is written: the real
+        // implementation writes nothing of it into the change request, and a provider
+        // that did would be a consumer's suite proving a body nobody renders.
+        emissions.push(Emission {
+            stream: token.0.clone(),
+            identity: Some(identity.to_owned()),
+            kind: EventKind::ChangeDrafted,
+            payload: object(json!({
+                "url": change.url.to_string(),
+                "id": change.id.0,
+                "base": change.base,
+                "awaiting": reason.awaiting,
+                "target": reason.target.to_string(),
+                "reference": reason.reference,
+                "because": reason.because,
+            })),
+        });
+        // Under every policy: a draft is unmergeable in that state, so nothing below
+        // asks this host to merge it.
+        return Ok((PublishOutcome::ChangeDraft(change.url.clone()), emissions));
+    }
+    // Publishing without a reason is what lifts a draft, and a change that is not one
+    // is asked for nothing — which is what makes a second publication idempotent.
+    // Asked only of a change the host already held, as next door: one opened moments
+    // ago without a reason is one nobody drafted. Three answers, told apart the same
+    // way — a host that was never taught to draft one has nothing to lift and is
+    // passed over, and a host that *could not say* is a refusal rather than a change
+    // nobody is holding.
+    match if adopted {
+        host.is_draft(&change)
+    } else {
+        Ok(false)
+    } {
+        Ok(true) => {
+            host.ready_for_review(&change)?;
+            emissions.push(Emission {
+                stream: token.0.clone(),
+                identity: Some(identity.to_owned()),
+                kind: EventKind::DraftLifted,
+                payload: object(json!({"url": change.url.to_string(), "id": change.id.0})),
+            });
+        }
+        Ok(false) => {}
+        Err(Error::NotImplemented { .. }) => {}
+        Err(unreadable) => return Err(unreadable),
+    }
+
     if policy == MergePolicy::ChangeOpen {
         return Ok((PublishOutcome::ChangeOpen(change.url.clone()), emissions));
     }

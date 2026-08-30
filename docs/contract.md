@@ -117,8 +117,8 @@ pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<S
 pub struct Subject(String);                  // TryFrom<String>: a title that can be one
 pub struct Publication { pub session: SessionToken, pub branch: String,
                          pub policy: MergePolicy, pub outcome: PublishOutcome }
-pub enum PublishOutcome {
-    Merged(Sha), ChangeOpen(Url), Queued(Url), NothingToPublish,
+pub enum PublishOutcome {                    // widened by the draft amendment
+    Merged(Sha), ChangeOpen(Url), ChangeDraft(Url), Queued(Url), NothingToPublish,
     Failed { kind: FailureKind, reason: String, retained: Option<Retention> },
 }
 pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented }  // 1 | 2 | 3 | 70
@@ -1032,7 +1032,8 @@ base it is going onto, it is proposed and ruled on, and what carries it is relea
 development  session-opened fetch lock-wait lock-acquired commit-preserved
              recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
-review       change-opened change-check change-merged
+review       change-opened change-drafted draft-lifted change-check
+             change-merged
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -1501,6 +1502,87 @@ built to.
 A host that has configured no release targets and whose repositories declare none
 answers exactly what it always did: no targets, the global adoption rung, and
 `declaration` saying which of *undeclared* and *unreadable* that host is in.
+
+**A publication can open its change request as a draft, carrying a machine-readable
+reason it is not ready.** A consumer that adopts a dependency early launches work
+against a git pin, and the work can go all the way to a change request without the
+one step that would make that pin permanent — merging it. The draft state is what
+makes launching early safe: the work lands as far as it can and stops short. This
+crate had no draft concept before this amendment; every earlier use of the word here
+is about drafting a change request *body*, which is a different thing and keeps its
+name.
+
+```rust
+// onevcs::publish, exported from the crate root
+pub struct DraftReason { pub awaiting: String, pub target: TargetName,
+                         pub reference: String, pub because: String }
+impl DraftReason { pub fn checked(&self) -> Result<()>; }   // renders on one line
+
+// PublishRequest gains one field, defaulting to None — today's behaviour for every
+// existing caller — and ChangeSpec gains the same one:
+//   PublishRequest   pub draft: Option<DraftReason>
+//   ChangeSpec       pub draft: Option<DraftReason>
+
+pub trait RemoteHost {                       // the seven above, unchanged, plus:
+    fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()>;
+    fn is_draft(&self, cr: &ChangeRequest) -> Result<bool>;
+}
+```
+
+`PublishOutcome` gains one ending, `ChangeDraft(Url)`, deliberately not folded into
+`ChangeOpen`: the two differ in whether the change can land, which is the one thing a
+consumer acts on, and folding them would leave every exhaustive match compiling while
+meaning something else. `GitHub` implements the two methods as `gh pr ready` and
+`gh pr view --json isDraft`, and `open_change` passes `--draft` when the field is
+`Some`. Both trait methods are **defaulted to `Error::NotImplemented`**, exactly as
+`merged_at` is: the seam stays additive, and a host that was never taught to answer
+has not answered `false`.
+
+`DraftReason::checked` is public for the reason `MergePolicy::narrow`, `FailureKind::of`
+and `Subject` are: it is a rule of publication rather than of any one implementation of
+it, so a supplied `Vcs` applies *that* rule at its own boundary rather than a
+restatement that could accept what the real one refuses. It is a method rather than a
+conversion because the contract fixes the four fields as public and settable, so there
+is no constructor for a check to live in. Every field of a reason is printed — into a
+refusal, into the record a consumer reads back — so what it decides is whether a value
+renders as itself: nothing empty, and nothing carrying a control character.
+
+**A branch published as a draft is unmergeable in that state, and this crate keeps it
+so.** The publication stops at `ChangeDraft` under every change policy: nothing merges
+it, arms the host's own merge on it, takes the identity's merge queue, or advances a
+base from it. `MergePolicy` is **not** extended — drafting is orthogonal to how a
+change lands — and `local-direct` refuses a `DraftReason` by name at the boundary,
+because it opens no change request at all and would land the work carrying the very
+pin the draft exists to hold back.
+
+**A publication carrying no `DraftReason` is what lifts the draft**, which is why
+there is no separate verb for it: the caller that republishes with the pin moved is
+saying the reason no longer holds. It is idempotent because the host decides — a
+change that is not a draft is asked for nothing, so a second publication makes no call
+and reports exactly what the first one did.
+
+**Where the reason lives: the publication record, and only there.** It is emitted as
+`change-drafted` beside `change-opened` on the session's own event stream, with
+`draft-lifted` when `ready_for_review` succeeds. **Nothing is written into the change
+request's body** — not under a marker heading, not anywhere. A body is prose a
+reviewer reads and a drafting caller may rewrite, so deciding a control action from it
+would turn an editorial act into one. The cost is recorded rather than worked around:
+somebody looking at the draft change request without access to this host's state root
+sees that it **is** a draft and not why.
+
+The command line takes no draft. The reason is four machine-readable fields a caller
+composes, and this surface is the library's.
+
+Event kinds added: `change-drafted`, `draft-lifted`.
+
+Both belong to the `review` phase, beside `change-opened`.
+
+- `change-drafted` — `{url, id, base, awaiting, target, reference, because}`, emitted
+  beside `change-opened` when the publication carried a `DraftReason`. The four
+  reason fields are the record, and there is no second copy of them anywhere.
+- `draft-lifted` — `{url, id}`, emitted when `ready_for_review` succeeded. It carries
+  no reason: the reason is on the `change-drafted` it answers, and the publication
+  that lifts a draft is one that never held it.
 
 ---
 

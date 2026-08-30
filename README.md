@@ -158,6 +158,8 @@ let published = onevcs::publish(&providers, &token, &PublishRequest::default())?
 match published.outcome {
     PublishOutcome::Merged(sha) => journal.landed(sha),
     PublishOutcome::ChangeOpen(url) | PublishOutcome::Queued(url) => journal.awaiting(url),
+    // A draft cannot land while it stands; publishing again with no `draft` lifts it.
+    PublishOutcome::ChangeDraft(url) => journal.held_back(url),
     PublishOutcome::NothingToPublish => journal.nothing(),
     PublishOutcome::Failed { kind, reason, retained } => journal.failed(kind, reason, retained),
 }

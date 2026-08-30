@@ -10,9 +10,9 @@ use std::path::PathBuf;
 
 use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, HeldBy, Holding, Identity, Landed, LineChange,
-    MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
-    PublishOutcome, Recoverable, Session, SessionToken, Sha, Url,
+    ChangeId, ChangeRequest, Check, CheckSource, DraftReason, HeldBy, Holding, Identity, Landed,
+    LineChange, MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
+    PublishOutcome, Recoverable, Session, SessionToken, Sha, TargetName, Url,
 };
 use onevcs_testing::{HostState, VcsState};
 
@@ -190,18 +190,44 @@ pub fn full_host_state() -> HostState {
     check_logs.insert(id.clone(), logs);
     let mut merges = BTreeMap::new();
     merges.insert(id.clone(), MergeOutcome::Merged(Sha("abc123".to_owned())));
+    // A second change request, opened as a draft and since lifted: the document has
+    // to hold both halves of a draft's life, and neither is a fact about the merged
+    // change above.
+    let drafted = ChangeId("2".to_owned());
+    heads.insert(drafted.clone(), "feature/drafted".to_owned());
+    titles.insert(drafted.clone(), "feat: the drafted change".to_owned());
+    let mut drafts = BTreeMap::new();
+    drafts.insert(
+        drafted.clone(),
+        DraftReason {
+            awaiting: "github.com/acme-corp/widgets".to_owned(),
+            target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+            reference: "feature/the-pinned-branch".to_owned(),
+            because: "the dependency is pinned to a branch until its release arrives".to_owned(),
+        },
+    );
     HostState {
         version: onevcs_testing::STATE_VERSION,
         authenticated_user: "seeded-user".to_owned(),
-        changes: vec![ChangeRequest {
-            id,
-            url: Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL"),
-            head_sha: Sha("def456".to_owned()),
-            base: "main".to_owned(),
-        }],
+        changes: vec![
+            ChangeRequest {
+                id,
+                url: Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL"),
+                head_sha: Sha("def456".to_owned()),
+                base: "main".to_owned(),
+            },
+            ChangeRequest {
+                id: drafted.clone(),
+                url: Url::parse("https://github.com/acme-corp/widgets/pull/2").expect("a URL"),
+                head_sha: Sha("789abc".to_owned()),
+                base: "main".to_owned(),
+            },
+        ],
         heads,
         titles,
         bodies,
+        drafts,
+        made_ready: vec![drafted],
         checks,
         check_logs,
         // The credential the real implementation meets in CI: a fine-grained token,

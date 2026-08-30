@@ -264,6 +264,7 @@ fn the_real_commands_read_what_a_provider_wrote() {
             base: "main".to_owned(),
             title: "feat: the written thing".to_owned(),
             body: None,
+            draft: None,
         })
         .expect("opened");
     let artifact = host

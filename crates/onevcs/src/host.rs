@@ -10,6 +10,7 @@ use url::Url;
 
 use crate::error::{invalid, Error, Result};
 use crate::event::ArtifactId;
+use crate::publish::DraftReason;
 use crate::rules::MergePolicy;
 use crate::{gh, git, stream};
 
@@ -170,6 +171,48 @@ pub trait RemoteHost {
             operation: "RemoteHost::merged_at",
         })
     }
+
+    /// Take a change request out of its draft state, so the host will let it land.
+    ///
+    /// What lifts a draft. A publication that carries no
+    /// [`DraftReason`](crate::DraftReason) is a caller saying the reason no longer
+    /// holds, and this is the call that says so to the host.
+    ///
+    /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
+    /// stays additive — and to the same refusal: a host that was never taught to
+    /// lift a draft has not lifted one, and answering `Ok(())` would report a change
+    /// as ready for review while the host goes on holding it.
+    fn ready_for_review(&self, _cr: &ChangeRequest) -> Result<()> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::ready_for_review",
+        })
+    }
+
+    /// Whether the host is holding this change request as a draft.
+    ///
+    /// Asked on both sides of a draft's life: after one is opened, because a host
+    /// that ignored the request would otherwise leave a landable change reported as
+    /// held back; and before one is lifted, so a change nobody drafted is asked for
+    /// nothing and a second lift changes nothing.
+    ///
+    /// Defaulted to the refusal, never to `false`: "this host was never taught to
+    /// answer" and "this change is not a draft" are different facts, and only the
+    /// second is a reason to go on and merge — which is what the `Result` around the
+    /// answer carries, rather than a third value inside it.
+    ///
+    /// The answer is a `bool` because the approved amendment in `docs/contract.md`
+    /// declares this seam verbatim as `-> Result<bool>`: a named domain type here would
+    /// be a public item the contract does not name, which this repository reports rather
+    /// than takes. Nothing is lost to the shape — the *third* state a caller must not
+    /// confuse with "not a draft" is "this host would not say", and that is the `Err`
+    /// arm rather than a value inside the `Ok`. Both call sites read it as one of three,
+    /// and they are `hold_as_draft` and `lift_any_draft` in `publish.rs`.
+    // llmlint: ignore[invalid_states_unrepresentable] the doc above: the contract fixes this seam.
+    fn is_draft(&self, _cr: &ChangeRequest) -> Result<bool> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::is_draft",
+        })
+    }
 }
 
 /// Where a [`RemoteHost`] for one repository comes from.
@@ -220,6 +263,16 @@ pub struct ChangeSpec {
     pub title: String,
     /// The body. Absent means the host's default from the repository template.
     pub body: Option<String>,
+    /// Open it as a **draft**, and why it is not ready. Absent opens an ordinary
+    /// change request, which is every publication that came before this field.
+    ///
+    /// The host is handed the whole reason and asked for one thing with it: open the
+    /// change as a draft. Nothing here renders the reason into the change request —
+    /// see [`DraftReason`] for the ruling that keeps it out of the body — so a host
+    /// implementation that reads past this field's presence is reading further than
+    /// the contract asks it to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftReason>,
 }
 
 /// An open change request on the host.
@@ -1081,11 +1134,25 @@ impl RemoteHost for GitHub {
     fn open_change(&self, req: ChangeSpec) -> Result<ChangeRequest> {
         addressable_branch(&req.head, "the head branch")?;
         addressable_branch(&req.base, "the base branch")?;
+        // The publication rule the crate states, applied rather than restated —
+        // and applied here as well as where a publication takes a request in, because
+        // [`ChangeSpec`] is public and this trait is reachable directly. A reason no
+        // publication could have carried must not open a change request the record
+        // then cannot say anything readable about.
+        if let Some(reason) = &req.draft {
+            reason.checked()?;
+        }
         let body = req.body.unwrap_or_default();
-        let raw = gh::invoke(&[
+        let mut args = vec![
             "pr", "create", "--repo", &self.repo, "--head", &req.head, "--base", &req.base,
             "--title", &req.title, "--body", &body,
-        ])?;
+        ];
+        // The whole of what the reason does at the host: it opens as a draft. Nothing
+        // of the reason itself is written there — see `DraftReason`.
+        if req.draft.is_some() {
+            args.push("--draft");
+        }
+        let raw = gh::invoke(&args)?;
         let url = raw
             .lines()
             .map(str::trim)
@@ -1236,6 +1303,31 @@ impl RemoteHost for GitHub {
                 }
             }
         }
+    }
+
+    fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()> {
+        addressable(&cr.id.0, "change request id")?;
+        gh::invoke(&["pr", "ready", &cr.id.0, "--repo", &self.repo]).map(|_| ())
+    }
+
+    /// One `gh pr view`, reading the one field the host decides a draft by.
+    ///
+    /// A response that does not carry it is refused rather than read as "not a
+    /// draft": what this decides is whether a change may be asked to merge, and
+    /// "could not look" reported as "nothing is holding it" is the one answer that
+    /// lands work somebody held back.
+    fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
+        addressable(&cr.id.0, "change request id")?;
+        let view = self.view(&cr.id.0, "isDraft")?;
+        view.get("isDraft")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "gh pr view answered about {} without saying whether it is a draft, so \
+                     whether the host is holding it cannot be read",
+                    cr.url
+                ))
+            })
     }
 
     /// One `gh pr view`, reading exactly the two fields a merge is decided from —

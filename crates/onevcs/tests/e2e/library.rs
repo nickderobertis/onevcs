@@ -26,10 +26,10 @@
 // journey in this suite uses.
 
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, EventFilter, EventMatcher, EventStream,
-    FailureKind, Git, GitHub, Holding, Hosting, Identity, MergeOutcome, MergePolicy, Phase,
-    Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope, Session,
-    SessionRequest, SessionToken, Source, Vcs,
+    ChangeId, ChangeRequest, Check, CheckSource, DraftReason, EventFilter, EventMatcher,
+    EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, MergeOutcome, MergePolicy,
+    Phase, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope, Session,
+    SessionRequest, SessionToken, Source, TargetName, Vcs,
 };
 use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -398,6 +398,7 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
             policy: Some(MergePolicy::ChangeOpen),
             title: Some(subject("feat: the narrowed thing")),
             body: None,
+            draft: None,
         },
     )
     .expect("the publication runs");
@@ -416,6 +417,7 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
             policy: Some(MergePolicy::LocalDirect),
             title: None,
             body: None,
+            draft: None,
         },
     )
     .expect_err("a widening is refused rather than published");
@@ -879,6 +881,7 @@ fn a_title_that_could_not_be_a_subject_is_refused_where_the_request_is_built() {
         policy: None,
         title: Some(subject),
         body: Some("## Why\n\nBecause the reviewer has to read something.\n".to_owned()),
+        draft: None,
     };
     let json = serde_json::to_string(&request).expect("a request serializes");
     assert_eq!(
@@ -924,6 +927,7 @@ fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
             policy: None,
             title: Some(subject("feat: the title the caller asked for")),
             body: None,
+            draft: None,
         },
     )
     .expect("the publication runs");
@@ -968,6 +972,7 @@ fn a_requested_body_is_what_the_change_request_is_opened_with_verbatim() {
             policy: None,
             title: None,
             body: Some(DRAFTED.to_owned()),
+            draft: None,
         },
     )
     .expect("the publication runs");
@@ -2728,5 +2733,1044 @@ fn a_release_targets_document_this_build_cannot_read_rules_no_phase_out() {
             .all(|event| event.kind == onevcs::EventKind::ReleaseProbed),
         "{:?}",
         events.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+}
+
+/// A policy that opens a change request and asks the host to land it on its own
+/// clock, which is the one a draft has to hold back as firmly as any other.
+const AUTOMATED: &str = "{publication: change-auto, approvals: none}";
+
+/// A policy that asks the host to merge the change now.
+const DIRECT: &str = "{publication: change-direct, approvals: none}";
+
+/// The reason a fast-adopting caller drafts a change request with: the work is done
+/// and the dependency is still pinned to a branch.
+fn awaiting_a_release() -> DraftReason {
+    DraftReason {
+        awaiting: "github.com/acme-corp/upstream".to_owned(),
+        target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+        reference: "feature/the-pinned-branch".to_owned(),
+        because: "the dependency is pinned to a branch until crate 2.0 is released".to_owned(),
+    }
+}
+
+/// A session on `branch` over the registered repository, with one commit on it —
+/// real git, in the run clone the real repository side cut.
+fn worked(world: &World, branch: &str) -> Session {
+    let session = open(&Git, branch);
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        &format!("feat: the work on {branch}"),
+    );
+    session
+}
+
+/// The commit a bare origin has one of its branches at, or nothing where it has no
+/// such branch — which is how a journey says the base did not move.
+fn origin_tip(world: &World, origin: &std::path::Path, branch: &str) -> Option<String> {
+    let read = world.git_raw(origin, &["rev-parse", &format!("refs/heads/{branch}")]);
+    read.status
+        .success()
+        .then(|| String::from_utf8_lossy(&read.stdout).trim().to_owned())
+}
+
+#[test]
+fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
+    // Fast adoption's whole point: the work goes as far as a change request and
+    // stops short of the merge that would make a git pin permanent. Real git against
+    // a real bare origin, and a supplied host — which is the only side that can say
+    // what the *create call* was actually given, because a host renders a draft's
+    // state and never its reason.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+    let session = worked(&world, "feature/drafted");
+    let base = origin_tip(&world, &origin, "main");
+    let reason = awaiting_a_release();
+
+    let published = onevcs::publish(
+        &providers,
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: Some(DRAFTED.to_owned()),
+            draft: Some(reason.clone()),
+        },
+    )
+    .expect("the publication runs");
+
+    // Its own ending, not a shade of `ChangeOpen`: what a caller acts on is whether
+    // this change can land, and it cannot.
+    let url = match &published.outcome {
+        PublishOutcome::ChangeDraft(url) => url.clone(),
+        other => panic!("a drafted publication opens a draft, not {other:?}"),
+    };
+    assert!(
+        published.outcome.describe().contains("draft"),
+        "and the rendering says so too: {}",
+        published.outcome.describe()
+    );
+
+    // The create call asked for a draft and carried the reason: read off the host's
+    // own record of what it was handed rather than off the value passed in.
+    let opened = host.state().changes[0].clone();
+    assert_eq!(opened.url, url);
+    assert_eq!(
+        host.state().drafts.get(&opened.id),
+        Some(&reason),
+        "the host was given the whole reason, not a flag"
+    );
+    assert!(
+        host.for_repo("acme-corp/hosted")
+            .expect("a host")
+            .is_draft(&opened)
+            .expect("the host says whether it is holding it"),
+        "the change request the host holds really is a draft"
+    );
+
+    // The reason is in the publication record and nowhere else. The body is the one
+    // the caller drafted, byte for byte, with nothing of the reason appended to it.
+    let drafted = world.events_of(&session.token.0, "change-drafted");
+    assert_eq!(drafted.len(), 1, "{drafted:?}");
+    assert_eq!(drafted[0]["payload"]["awaiting"], reason.awaiting);
+    assert_eq!(drafted[0]["payload"]["target"], reason.target.to_string());
+    assert_eq!(drafted[0]["payload"]["reference"], reason.reference);
+    assert_eq!(drafted[0]["payload"]["because"], reason.because);
+    assert_eq!(drafted[0]["payload"]["url"], url.to_string());
+    assert_eq!(drafted[0]["phase"], "review");
+    assert_eq!(
+        host.state().bodies.get(&opened.id).map(String::as_str),
+        Some(DRAFTED),
+        "the body is the caller's, and the reason is not written into it"
+    );
+    for span in [reason.because.as_str(), reason.awaiting.as_str()] {
+        assert!(
+            !host.state().bodies[&opened.id].contains(span),
+            "nothing of the reason is rendered into the change request body"
+        );
+    }
+
+    // Nothing merged it, and no base moved while the draft stood.
+    assert!(host.state().merges.is_empty(), "{:?}", host.state().merges);
+    assert_eq!(origin_tip(&world, &origin, "main"), base);
+
+    // …and a later publication carrying no reason lifts it. That is the whole lift:
+    // the caller that republishes with the pin moved is the one saying the reason no
+    // longer holds.
+    let lifted = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("the second publication runs");
+    assert_eq!(lifted.outcome, PublishOutcome::ChangeOpen(url.clone()));
+    assert_eq!(
+        host.state().made_ready,
+        vec![opened.id.clone()],
+        "the lift asked the host once"
+    );
+    assert!(
+        !host
+            .for_repo("acme-corp/hosted")
+            .expect("a host")
+            .is_draft(&opened)
+            .expect("the host answers"),
+        "and the change request is not a draft any more"
+    );
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "the lift adopted the change request rather than opening a second"
+    );
+    let events = world.events_of(&session.token.0, "draft-lifted");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["payload"]["url"], url.to_string());
+    assert_eq!(events[0]["phase"], "review");
+
+    // Lifting again succeeds, changes nothing, and reports the original: the host is
+    // asked for nothing the second time, because it is no longer holding anything.
+    let again = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("the third publication runs");
+    assert_eq!(again.outcome, lifted.outcome);
+    assert_eq!(
+        host.state().made_ready,
+        vec![opened.id],
+        "a second lift asks the host for nothing"
+    );
+    assert_eq!(
+        world.events_of(&session.token.0, "draft-lifted").len(),
+        1,
+        "and records nothing further"
+    );
+}
+
+#[test]
+fn a_draft_is_merged_by_nothing_under_any_policy_this_crate_publishes_under() {
+    // "Unmergeable in that state" is the property the whole draft exists for, and it
+    // has to hold under every policy — including the two that ask the host to land
+    // the change rather than leaving it open. A draft that armed auto-merge would be
+    // exactly the failure this guards: the host would land it on its own clock, with
+    // the temporary pin in it.
+    for (rules, policy) in [
+        (REVIEWED, MergePolicy::ChangeOpen),
+        (AUTOMATED, MergePolicy::ChangeAuto),
+        (DIRECT, MergePolicy::ChangeDirect),
+    ] {
+        let world = World::new();
+        inhabit(&world);
+        let (origin, _identity) = hosted(&world, rules);
+        // Green required checks, so nothing but the draft itself is holding this
+        // change back: a host asked to land it would.
+        let host = MemoryHost::seeded(HostState {
+            authenticated_user: "tester".to_owned(),
+            checks: [(
+                ChangeId("1".to_owned()),
+                vec![Check {
+                    name: "gate".to_owned(),
+                    status: "completed".to_owned(),
+                    conclusion: Some("success".to_owned()),
+                    required: true,
+                    head: None,
+                    url: None,
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            ..HostState::default()
+        });
+        let session = worked(&world, "feature/held");
+        let base = origin_tip(&world, &origin, "main");
+
+        let published = onevcs::publish(
+            &Providers {
+                vcs: &Git,
+                hosting: &host,
+            },
+            &session.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(awaiting_a_release()),
+            },
+        )
+        .expect("the publication runs");
+
+        assert!(
+            matches!(published.outcome, PublishOutcome::ChangeDraft(_)),
+            "{policy:?} must stop at the draft: {published:?}"
+        );
+        assert_eq!(published.policy, policy);
+        assert!(
+            host.state().merges.is_empty(),
+            "{policy:?} asked the host to merge a draft: {:?}",
+            host.state().merges
+        );
+        assert_eq!(
+            origin_tip(&world, &origin, "main"),
+            base,
+            "{policy:?} advanced a base from a draft"
+        );
+        for absent in ["change-merged", "merge-queued", "merge-completed"] {
+            assert!(
+                world.events_of(&session.token.0, absent).is_empty(),
+                "{policy:?} recorded {absent} for a draft"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_local_direct_publication_refuses_a_draft_by_name_before_anything_is_pushed() {
+    // The fourth policy, and the one that cannot express a draft at all: it squashes
+    // the branch onto its base and opens no change request, so honouring the request
+    // would land the work carrying the very pin the draft exists to hold back.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, LOCAL);
+    let host = MemoryHost::new();
+    let session = worked(&world, "feature/undraftable");
+    let base = origin_tip(&world, &origin, "main");
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &host,
+        },
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("local-direct cannot draft: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Invalid);
+    assert!(
+        reason.contains("local-direct") && reason.contains("github.com/acme-corp/upstream"),
+        "the refusal names the policy and what the draft was waiting for: {reason}"
+    );
+    assert_eq!(
+        origin_tip(&world, &origin, "main"),
+        base,
+        "nothing was pushed and nothing landed"
+    );
+    assert!(host.state().changes.is_empty());
+}
+
+#[test]
+fn a_publication_that_asks_for_no_draft_opens_an_ordinary_change_request() {
+    // The other half of the same seam, and the one every existing caller is: a
+    // publication with no reason opens a change request that is not a draft, and it
+    // carries the body that was drafted for it.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let session = worked(&world, "feature/undrafted");
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &host,
+        },
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: Some(DRAFTED.to_owned()),
+            draft: None,
+        },
+    )
+    .expect("the publication runs");
+
+    let opened = host.state().changes[0].clone();
+    assert_eq!(
+        published.outcome,
+        PublishOutcome::ChangeOpen(opened.url.clone())
+    );
+    assert!(
+        !host
+            .for_repo("acme-corp/hosted")
+            .expect("a host")
+            .is_draft(&opened)
+            .expect("the host answers"),
+        "a publication that asked for no draft opened no draft"
+    );
+    assert!(
+        host.state().drafts.is_empty() && host.state().made_ready.is_empty(),
+        "nothing was drafted and no lift was asked for"
+    );
+    assert_eq!(
+        host.state().bodies.get(&opened.id).map(String::as_str),
+        Some(DRAFTED),
+        "and it carries the body that was drafted for it"
+    );
+    assert!(
+        world
+            .events_of(&session.token.0, "change-drafted")
+            .is_empty(),
+        "nothing recorded a draft"
+    );
+}
+
+#[test]
+fn a_draft_reason_that_would_not_render_as_itself_is_refused_where_it_arrives() {
+    // Every field of the reason is printed — in a refusal, and in the record a
+    // consumer reads back — so a value that renders as something other than itself
+    // is not one. Refused before the fetch, before the push, and before any host is
+    // asked, which is where input is rejected.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let base = origin_tip(&world, &origin, "main");
+
+    for (field, unusable) in [
+        (
+            "the reason the change is not ready",
+            DraftReason {
+                because: String::new(),
+                ..awaiting_a_release()
+            },
+        ),
+        (
+            "the reference the change is pinned to",
+            DraftReason {
+                reference: "feature/two\nlines".to_owned(),
+                ..awaiting_a_release()
+            },
+        ),
+    ] {
+        let session = worked(
+            &world,
+            &format!("feature/unusable-{}", unusable.reference.len()),
+        );
+        let published = onevcs::publish(
+            &Providers {
+                vcs: &Git,
+                hosting: &host,
+            },
+            &session.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(unusable),
+            },
+        )
+        .expect("the publication runs and reports what stopped it");
+        let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+            panic!("an unusable reason is refused: {published:?}");
+        };
+        assert_eq!(*kind, FailureKind::Invalid);
+        assert!(reason.contains(field), "{reason}");
+    }
+    assert!(
+        host.state().changes.is_empty(),
+        "nothing reached the host, and nothing was pushed"
+    );
+    assert_eq!(origin_tip(&world, &origin, "main"), base);
+}
+
+#[test]
+fn a_host_that_will_not_say_whether_it_drafted_the_change_is_not_read_as_having_done_so() {
+    // The one shape that must never be inferred here: a host whose `open_change` was
+    // written before this field ignores it silently, and a publication that reported
+    // `ChangeDraft` from having *asked* would tell a caller the work is held back
+    // while the host will merge it on its next green check. So the state is read back
+    // off the host, and a host that cannot say is exit code 70 — the seam behind the
+    // request has no body — rather than a draft nobody is holding.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            Ok("tester".to_owned())
+        }
+        fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            Ok(ChangeRequest {
+                id: ChangeId("1".to_owned()),
+                url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/1")
+                    .expect("a URL"),
+                head_sha: onevcs::Sha("0f1e2d3".to_owned()),
+                base: req.base,
+            })
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            Ok(Vec::new())
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+            unreachable!("a draft never reaches the checks")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<onevcs::ArtifactId> {
+            unreachable!("a draft never reaches the checks")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("a draft is merged by nothing")
+        }
+    }
+    struct Only;
+    impl Hosting for Only {
+        fn for_repo(&self, _: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+            Ok(Box::new(Earlier))
+        }
+    }
+
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let session = worked(&world, "feature/unanswered");
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &Only,
+        },
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a host that cannot say must not be read as having drafted: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::NotImplemented);
+    assert_eq!(kind.exit_code(), 70);
+    assert!(reason.contains("is_draft"), "{reason}");
+}
+
+#[test]
+fn the_real_host_is_asked_for_a_draft_and_asked_to_lift_it() {
+    // The same seam through `GitHub` itself: the argv this build hands `gh` is what
+    // decides whether a real pull request opens as a draft and whether it is ever
+    // taken out of one, and only a journey through the real implementation can say
+    // what that argv was. Real git against a real bare origin, and the substituted
+    // `gh` every journey in this suite drives.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = worked(&world, "feature/really-drafted");
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    let url = match &published.outcome {
+        PublishOutcome::ChangeDraft(url) => url.clone(),
+        other => panic!("the real host was asked for a draft, and answered {other:?}"),
+    };
+    assert!(
+        world
+            .host_calls()
+            .iter()
+            .any(|call| call.contains("pr create") && call.contains("--draft")),
+        "the create call asked the host for a draft: {:?}",
+        world.host_calls()
+    );
+    // And nothing of the reason went to the host: the record is the stream.
+    assert!(
+        !world
+            .host_calls()
+            .iter()
+            .any(|call| call.contains("the dependency is pinned")),
+        "the reason is not written to the host: {:?}",
+        world.host_calls()
+    );
+    assert_eq!(world.change_request_body(1), "");
+
+    let lifted = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the second publication runs");
+    assert_eq!(lifted.outcome, PublishOutcome::ChangeOpen(url));
+    let ready: Vec<String> = world
+        .host_calls()
+        .into_iter()
+        .filter(|call| call.contains("pr ready"))
+        .collect();
+    assert_eq!(ready.len(), 1, "the lift asked the host once: {ready:?}");
+
+    // …and again, which asks the host for nothing further because it is no longer
+    // holding anything.
+    let again = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the third publication runs");
+    assert_eq!(again.outcome, lifted.outcome);
+    assert_eq!(
+        world
+            .host_calls()
+            .iter()
+            .filter(|call| call.contains("pr ready"))
+            .count(),
+        1,
+        "a second lift asks the real host for nothing"
+    );
+}
+
+#[test]
+fn a_real_host_that_will_not_say_whether_it_drafted_the_change_is_a_refusal() {
+    // The other end of the same rule, at the real implementation's boundary: `gh pr
+    // view` answering without the field is a host that would not say, and reading
+    // that as "not a draft" is what would let a change somebody held back be merged.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    world.answer_malformed("no-draft-state");
+    let session = worked(&world, "feature/unsaid-draft");
+
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { reason, .. } = &published.outcome else {
+        panic!("a host that would not say is not read as having drafted: {published:?}");
+    };
+    assert!(
+        reason.contains("without saying whether it is a draft"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_host_that_declines_to_lift_the_draft_leaves_the_publication_saying_so() {
+    // The lift is the call that turns work nobody may merge into work the host may
+    // land, so a host that declines it has lifted nothing — and the publication has
+    // to report that rather than go on to ask for a merge. The change stays a draft.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = worked(&world, "feature/unliftable");
+
+    let drafted = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(matches!(
+        drafted.outcome,
+        PublishOutcome::ChangeDraft { .. }
+    ));
+
+    world.refuse_to_lift_a_draft();
+    let refused = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the second publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { reason, .. } = &refused.outcome else {
+        panic!("a lift the host declined is not a publication that carried on: {refused:?}");
+    };
+    assert!(
+        reason.contains("declines to make") && reason.contains("ready for review"),
+        "the refusal carries what the host said: {reason}"
+    );
+    assert!(
+        world.events_of(&session.token.0, "draft-lifted").is_empty(),
+        "nothing may record a lift the host refused"
+    );
+    assert!(
+        world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("pr merge")),
+        "and nothing asked the host to merge it: {:?}",
+        world.host_calls()
+    );
+}
+
+#[test]
+fn a_branch_keyed_verb_lifts_the_draft_the_session_that_cut_the_branch_opened() {
+    // The other verb that lands a branch, and the one a fast-adopting operator
+    // actually reaches for once the release has arrived: the session is long gone,
+    // the branch is on the host as a draft, and `publish-branch` carries no reason —
+    // which is exactly what says the reason no longer holds.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let providers = || Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+    let session = worked(&world, "feature/branch-lifted");
+
+    let drafted = onevcs::publish(
+        &providers(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    let PublishOutcome::ChangeDraft(url) = drafted.outcome else {
+        panic!("a drafted publication opens a draft: {drafted:?}");
+    };
+    let opened = host.state().changes[0].clone();
+
+    // The session's run clone is disposable, so the branch is taken back into the
+    // publication checkout the way an operator takes it: from the origin it is on.
+    let checkout = world.path("hosted");
+    world.git(
+        &checkout,
+        &[
+            "fetch",
+            "-q",
+            "origin",
+            "feature/branch-lifted:feature/branch-lifted",
+        ],
+    );
+    onevcs::close_session(&providers(), &session.token).expect("the session closes");
+
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "publish-branch",
+                "feature/branch-lifted",
+                "--repo",
+                &checkout.to_string_lossy(),
+            ],
+            providers(),
+        ),
+        0,
+        "the branch-keyed verb lands the branch"
+    );
+
+    assert_eq!(
+        host.state().made_ready,
+        vec![opened.id.clone()],
+        "publishing the branch with no reason lifted the draft"
+    );
+    assert!(
+        !host
+            .for_repo("acme-corp/hosted")
+            .expect("a host")
+            .is_draft(&opened)
+            .expect("the host answers"),
+        "and the change request is open for review"
+    );
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "it adopted the change the session opened rather than opening a second"
+    );
+    assert_eq!(host.state().changes[0].url, url);
+}
+
+#[test]
+fn a_real_host_that_will_not_say_during_a_lift_stops_the_publication() {
+    // The other side of the same rule, on the lift rather than on the draft: a host
+    // that would not say whether it is holding the change is not read as holding
+    // nothing. Reading it that way would carry straight on to the merge, which is the
+    // one thing a draft exists to prevent.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = worked(&world, "feature/unreadable-lift");
+
+    let drafted = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(matches!(
+        drafted.outcome,
+        PublishOutcome::ChangeDraft { .. }
+    ));
+
+    world.answer_malformed("no-draft-state");
+    let refused = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the second publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { reason, .. } = &refused.outcome else {
+        panic!("a host that would not say is not read as holding nothing: {refused:?}");
+    };
+    assert!(
+        reason.contains("without saying whether it is a draft"),
+        "{reason}"
+    );
+    assert!(
+        world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("pr ready") && !call.contains("pr merge")),
+        "nothing lifted or merged it: {:?}",
+        world.host_calls()
+    );
+}
+
+#[test]
+fn a_host_written_before_drafts_adopts_its_change_request_and_publishes_unchanged() {
+    // The compatibility guarantee the two defaulted methods exist for: a
+    // `RemoteHost` written against the earlier surface goes on publishing exactly as
+    // it did. It cannot have drafted anything — it was never given the field — so the
+    // publication passes the refusal over rather than reporting a seam with no body,
+    // and asks it to lift nothing.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            Ok("tester".to_owned())
+        }
+        fn open_change(&self, _: onevcs::ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("this host already holds the change request")
+        }
+        fn find_changes(&self, _: &str, base: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            Ok(vec![ChangeRequest {
+                id: ChangeId("7".to_owned()),
+                url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/7")
+                    .expect("a URL"),
+                head_sha: onevcs::Sha("0f1e2d3".to_owned()),
+                base: base.to_owned(),
+            }])
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+            unreachable!("change-open asks a host nothing about its checks")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<onevcs::ArtifactId> {
+            unreachable!("change-open asks a host for no log")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("change-open asks a host to merge nothing")
+        }
+    }
+    struct Only;
+    impl Hosting for Only {
+        fn for_repo(&self, _: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+            Ok(Box::new(Earlier))
+        }
+    }
+
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let session = worked(&world, "feature/earlier-host");
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &Only,
+        },
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+
+    assert_eq!(
+        published.outcome,
+        PublishOutcome::ChangeOpen(
+            onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/7").expect("a URL")
+        ),
+        "a host that cannot be asked about drafts publishes as it always did"
+    );
+    assert!(
+        world.events_of(&session.token.0, "draft-lifted").is_empty(),
+        "nothing may record a lift a host was never asked to perform"
+    );
+}
+
+#[test]
+fn a_change_request_already_open_for_review_is_not_put_back_into_a_draft() {
+    // A draft is a state the host is holding the change in, so asking for one over a
+    // change that is *already open* would report the work as held back while the host
+    // will merge it on its next green check. The seam names no method for un-reviewing
+    // a change — inventing one would be a public item nobody approved — so the request
+    // is refused, and it is refused after the state is read off the host rather than
+    // assumed from having asked.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let providers = || Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+    let session = worked(&world, "feature/already-reviewed");
+
+    let opened = onevcs::publish(&providers(), &session.token, &PublishRequest::default())
+        .expect("the publication runs");
+    assert!(matches!(opened.outcome, PublishOutcome::ChangeOpen(_)));
+
+    let refused = onevcs::publish(
+        &providers(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { kind, reason, .. } = &refused.outcome else {
+        panic!("an open change request is not drafted: {refused:?}");
+    };
+    // Refused before anything reached the remote, so it arrives as the refusal it is
+    // rather than as a merge path nobody could read — which is what everything past
+    // the publishing push is reported as, and which this is not.
+    assert_eq!(*kind, FailureKind::Invalid);
+    assert_eq!(kind.exit_code(), 2);
+    assert!(
+        reason.contains("open for review") && reason.contains("github.com/acme-corp/upstream"),
+        "the refusal names the state it found and what the draft was waiting for: {reason}"
+    );
+    assert!(
+        !reason.contains("merge path"),
+        "the merge path ruled on the push and is not what stopped this: {reason}"
+    );
+    assert!(
+        host.state().drafts.is_empty(),
+        "nothing recorded a draft the host is not holding"
+    );
+    assert!(
+        world
+            .events_of(&session.token.0, "change-drafted")
+            .is_empty(),
+        "and nothing wrote the reason into the record"
+    );
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "it adopted the change already open rather than opening a second"
+    );
+}
+
+#[test]
+fn a_host_that_takes_the_draft_request_and_opens_an_ordinary_change_is_refused() {
+    // The check that cannot move to the boundary, and the reason `hold_as_draft`
+    // keeps one at all: this host holds nothing before the push, so nothing can be
+    // asked about it — and then it takes `--draft`, opens a change that is open for
+    // review, and says so. A publication that trusted its own request would answer
+    // `ChangeDraft` for a change the host will merge on its next green check.
+    struct Ignores;
+    impl RemoteHost for Ignores {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            Ok("tester".to_owned())
+        }
+        fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            assert!(
+                req.draft.is_some(),
+                "the publication really did ask this host for a draft"
+            );
+            Ok(ChangeRequest {
+                id: ChangeId("3".to_owned()),
+                url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/3")
+                    .expect("a URL"),
+                head_sha: onevcs::Sha("0f1e2d3".to_owned()),
+                base: req.base,
+            })
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            Ok(Vec::new())
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+            unreachable!("a draft that was refused reaches no checks")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<onevcs::ArtifactId> {
+            unreachable!("a draft that was refused reaches no log")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("nothing may merge a change this publication refused to report")
+        }
+        fn is_draft(&self, _: &ChangeRequest) -> onevcs::Result<bool> {
+            // It opened one, and it is not holding it.
+            Ok(false)
+        }
+    }
+    struct Only;
+    impl Hosting for Only {
+        fn for_repo(&self, _: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+            Ok(Box::new(Ignores))
+        }
+    }
+
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let session = worked(&world, "feature/ignored-draft");
+
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &Only,
+        },
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { reason, .. } = &published.outcome else {
+        panic!("a change the host is not holding is not reported as a draft: {published:?}");
+    };
+    assert!(
+        reason.contains("open for review") && reason.contains("github.com/acme-corp/upstream"),
+        "the same refusal the boundary makes, from the one place it is written: {reason}"
+    );
+    assert!(
+        world
+            .events_of(&session.token.0, "change-drafted")
+            .is_empty(),
+        "nothing wrote a reason for a draft nobody is holding"
+    );
+}
+
+#[test]
+fn the_real_host_refuses_an_unusable_reason_before_it_reaches_the_host_at_all() {
+    // `ChangeSpec` is public and `RemoteHost` is reachable directly, so a consumer can
+    // hand `GitHub` a reason without a publication ever seeing it. The rule is the
+    // publication's own, applied at this call for the reason the head and base branch
+    // names are: input is refused where it arrives, and a reason that would not render
+    // as itself must not become a change request nobody can read the record of.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let host = GitHub::new("acme-corp/hosted").expect("a repository named owner/name");
+
+    let refused = host
+        .open_change(onevcs::ChangeSpec {
+            head: "feature/unusable".to_owned(),
+            base: "main".to_owned(),
+            title: "feat: the thing".to_owned(),
+            body: None,
+            draft: Some(DraftReason {
+                because: String::new(),
+                ..awaiting_a_release()
+            }),
+        })
+        .expect_err("a reason nothing could render is not one to open a draft with");
+    assert!(
+        refused
+            .to_string()
+            .contains("the reason the change is not ready"),
+        "{refused}"
+    );
+    assert!(
+        world.host_calls().is_empty(),
+        "it is refused at the boundary, so the host is never asked: {:?}",
+        world.host_calls()
     );
 }

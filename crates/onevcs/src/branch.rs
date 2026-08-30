@@ -535,6 +535,10 @@ impl Landing {
             // by whichever verb its provenance belongs to, and which one that was is
             // no reason for the change request to describe itself differently.
             body,
+            // A branch-keyed verb has no caller to take a reason from, and landing a
+            // branch somebody else drafted is exactly the call that says the reason
+            // no longer holds: publishing without one is what lifts the draft.
+            draft: None,
             trailers: Vec::new(),
             provenance: self.trailers.clone(),
             hosting,

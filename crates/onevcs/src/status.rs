@@ -38,7 +38,9 @@ use crate::event::{EventKind, Line};
 use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
+use crate::publish::DraftReason;
 use crate::registry::{Registry, RepoType, Workflow};
+use crate::releases::TargetName;
 use crate::rules::{Approvals, MergePolicy};
 use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
 use crate::store::{self, Resolution};
@@ -69,10 +71,18 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// bar is a different field on a different document and `onevcs repos
 /// --audit-gates` is what reports merge-path coverage.
 ///
+/// `4` is `publication.draft`: the reason a change request was opened as a **draft**
+/// and has not been taken out of one. It is the readback of the record the draft
+/// amendment puts that reason in — the session's own event stream — and this report
+/// is where it is rendered, because nothing else in this crate reads a stream back
+/// for a person. A change nobody drafted, and one whose draft has since been lifted,
+/// both omit the field: "there is no reason holding this back" is the same answer
+/// either way, and the *reason* is only ever the one currently holding it.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 3;
+pub const REPORT_VERSION: u32 = 4;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -288,6 +298,20 @@ pub struct PublicationReport {
     /// The change request, when one is recorded or open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_url: Option<String>,
+    /// Why the change request is open as a **draft**, where this host's own record
+    /// says it is one and nothing has lifted it since.
+    ///
+    /// The readback of where the draft amendment puts that reason: the session's
+    /// event stream, and nowhere else — a draft change request on the host says that
+    /// it is one and never why, so without this an operator holding only the host
+    /// can see the work is held back and not what is holding it.
+    ///
+    /// Omitted for a change nobody drafted **and** for one whose draft was lifted,
+    /// which are the same answer to the question this field asks: there is no reason
+    /// holding this change back now. What was drafted and then lifted is still in the
+    /// stream, which is what `onevcs events` is for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftReason>,
     /// The policy this identity's rules publish under.
     pub merge_policy: MergePolicy,
 }
@@ -304,6 +328,8 @@ struct AnyPublication {
     landed: Landed,
     #[serde(default)]
     change_url: Option<String>,
+    #[serde(default)]
+    draft: Option<DraftReason>,
     merge_policy: MergePolicy,
 }
 
@@ -311,6 +337,15 @@ impl TryFrom<AnyPublication> for PublicationReport {
     type Error = String;
 
     fn try_from(value: AnyPublication) -> std::result::Result<Self, Self::Error> {
+        // A document is input, and the reason is the one field of this section that a
+        // *person* reads off a line. So it is held to the publication's own rule
+        // rather than to a restatement of it: a reason no publication could have
+        // carried is not one this report reads back, for the reason the two landing
+        // answers below cannot disagree — the number exists to be acted on, and a
+        // document half-read is how a consumer acts on a field it never saw.
+        if let Some(reason) = &value.draft {
+            reason.checked().map_err(|refusal| refusal.to_string())?;
+        }
         if (value.state == Landing::Landed) != value.landed.is_landed() {
             return Err(format!(
                 "a report says the work is {state:?} and that it landed is {landed}; those are \
@@ -323,6 +358,7 @@ impl TryFrom<AnyPublication> for PublicationReport {
             state: value.state,
             landed: value.landed,
             change_url: value.change_url,
+            draft: value.draft,
             merge_policy: value.merge_policy,
         })
     }
@@ -475,6 +511,12 @@ struct Work {
 /// and two readings of the same streams would be two answers about one branch.
 struct Told {
     change_url: Option<String>,
+    /// The reason a draft is standing right now, which is the newest `change-drafted`
+    /// with nothing that lifted it since — across every stream of this branch, not
+    /// only the one that drafted it. The publication that lifts a draft is a *later*
+    /// one carrying no reason, and a branch-keyed verb writes its own stream, so the
+    /// draft and the lift routinely sit in two different records of one branch.
+    draft: Option<DraftReason>,
     asked_the_host_to_land: bool,
     merge_path: Option<MergePathReport>,
     recorded: landed::Recorded,
@@ -488,6 +530,7 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
             .filter_map(|record| record.change_url.clone()),
     );
     Told {
+        draft: standing_draft(&relevant),
         asked_the_host_to_land: relevant.iter().any(|record| record.asked_the_host_to_land),
         merge_path: latest(
             relevant
@@ -502,6 +545,33 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
             change: change_url.as_deref().and_then(|url| Url::parse(url).ok()),
         },
         change_url,
+    }
+}
+
+/// The reason a draft is standing over this branch right now, or none.
+///
+/// Two records decide it and both are stamped, because they are written by two
+/// different publications: `change-drafted` says a change was opened as one and why,
+/// and `draft-lifted` says a later publication took it out. Which is newer is the
+/// answer, so a lift is compared against the draft it answers rather than assumed to
+/// follow it in the order the streams happened to be listed in — a branch drafted by
+/// a session and lifted by `publish-branch` has the two in *different* streams, and
+/// reading only the drafting one would report a reason nothing is holding.
+///
+/// A lift stamped at the same moment as a draft clears it. The two cannot be
+/// simultaneous — a lift answers a draft the host was already holding — so an equal
+/// stamp is a clock that could not tell them apart, and reporting a reason that may
+/// already be spent is the direction that sends somebody to wait for a release that
+/// has arrived.
+fn standing_draft(relevant: &[&Recorded]) -> Option<DraftReason> {
+    let drafted = newest(relevant.iter().filter_map(|record| record.draft.clone()))?;
+    let lifted = relevant
+        .iter()
+        .filter_map(|record| record.lifted.clone())
+        .max();
+    match lifted {
+        Some(lifted) if lifted >= drafted.at => None,
+        _ => Some(drafted.value),
     }
 }
 
@@ -729,6 +799,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let held_by = session.as_ref().map(|session| session.token.to_string());
     let told = from_streams(&streams, &work, held_by.as_deref());
     let change_url = told.change_url.clone();
+    let draft = told.draft.clone();
     let asked_the_host_to_land = told.asked_the_host_to_land;
     let merge_path = told.merge_path.clone();
 
@@ -827,6 +898,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             state,
             landed,
             change_url,
+            draft,
             merge_policy: resolved.policy.publication,
         },
         checks,
@@ -1204,6 +1276,17 @@ pub(crate) struct Recorded {
     /// whichever process wrote it and this value goes on to be handed to git as a
     /// revision.
     landing: Option<Stamped<ObjectId>>,
+    /// The reason the newest `change-drafted` on this stream gave for opening the
+    /// change request as a draft.
+    draft: Option<Stamped<DraftReason>>,
+    /// When the newest `draft-lifted` on this stream took a change out of its draft.
+    ///
+    /// A moment rather than a value, and a field of its own rather than an absence in
+    /// [`draft`](Recorded::draft): the lift carries no reason — the publication that
+    /// performs one is the one that carries none — and it is routinely on a *different*
+    /// stream from the draft it answers, so it has to be orderable against it rather
+    /// than able only to clear the record it shares.
+    lifted: Option<Stamp>,
     asked_the_host_to_land: bool,
     merge_path: Option<Stamped<MergePathReport>>,
 }
@@ -1271,9 +1354,13 @@ struct Stamped<T> {
 }
 
 fn latest<T>(recorded: impl Iterator<Item = Stamped<T>>) -> Option<T> {
-    recorded
-        .max_by(|left, right| left.at.cmp(&right.at))
-        .map(|stamped| stamped.value)
+    newest(recorded).map(|stamped| stamped.value)
+}
+
+/// The same, keeping the moment: what a caller needs when the value is only an
+/// answer once it has been held against *another* record's stamp.
+fn newest<T>(recorded: impl Iterator<Item = Stamped<T>>) -> Option<Stamped<T>> {
+    recorded.max_by(|left, right| left.at.cmp(&right.at))
 }
 
 /// Every stream this host has, read for what it says about the work it recorded.
@@ -1343,6 +1430,8 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         branch: None,
         change_url: None,
         landing: None,
+        draft: None,
+        lifted: None,
         asked_the_host_to_land: false,
         merge_path: None,
     };
@@ -1427,6 +1516,53 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     record.change_url = Some(Stamped { at, value: url });
                 }
             }
+            // The publication record the draft amendment puts the reason in, read back:
+            // this is the *only* place it was written, because nothing of it goes into
+            // the change request's body or reaches the host beyond `--draft`.
+            EventKind::ChangeDrafted => {
+                let read = match (
+                    field("awaiting"),
+                    // Through the conversion that decides what a target name is, for
+                    // the reason the branch name and the landing commit above go
+                    // through theirs: a stream is a file whichever process wrote it,
+                    // and a name this crate would not accept from a document is not
+                    // one to render as though it had.
+                    field("target").and_then(|name| TargetName::try_from(name).ok()),
+                    field("reference"),
+                    field("because"),
+                ) {
+                    (Some(awaiting), Some(target), Some(reference), Some(because)) => {
+                        let reason = DraftReason {
+                            awaiting,
+                            target,
+                            reference,
+                            because,
+                        };
+                        // The publication's own rule, applied where the record is read
+                        // back rather than restated: a stream is a file whichever
+                        // process wrote it, so a reason this crate would have refused
+                        // to publish is one it must not render either — every field of
+                        // it is printed on the line it is reported on.
+                        reason.checked().ok().map(|()| reason)
+                    }
+                    _ => None,
+                };
+                match read {
+                    Some(reason) => record.draft = Some(Stamped { at, value: reason }),
+                    // Said out loud rather than read as a change nobody drafted: the
+                    // whole point of this field is that the host cannot say *why* a
+                    // change is held back, so a record that could not be read is a gap
+                    // in the one answer there is.
+                    None => notes.push(format!(
+                        "line {} of the event stream at {} records a draft whose reason cannot \
+                         be read, so why {} is held back is not in this report",
+                        index + 1,
+                        path.display(),
+                        record.branch.as_deref().unwrap_or("this change"),
+                    )),
+                }
+            }
+            EventKind::DraftLifted => record.lifted = Some(at),
             // Emitted with the change request's URL only where this crate went on to
             // ask the host to land it; the local merge train emits one without.
             EventKind::MergeQueued => {
@@ -1946,8 +2082,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v3.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v3-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v4.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v4-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -2000,6 +2136,66 @@ mod round_trip {
         assert!(minimal.branch.change_base.is_none());
         assert!(minimal.publication.change_url.is_none());
         assert!(minimal.notes.is_empty());
+        assert!(
+            minimal.publication.draft.is_none(),
+            "a report about a change nobody drafted holds no reason, and the golden must not \
+             name the key even as null"
+        );
+    }
+
+    #[test]
+    fn a_recorded_draft_reason_round_trips_and_an_absent_one_is_omitted() {
+        // The field exists because a draft change request on the host says that it is
+        // one and never why, so what a consumer gets out of the document has to be the
+        // whole reason — every field, through the conversions that decide them — rather
+        // than prose it would have to parse back.
+        let full: Report = serde_json::from_str(FULL).expect("the full golden");
+        let held = full
+            .publication
+            .draft
+            .as_ref()
+            .expect("the full golden's publication is the drafted one");
+        assert_eq!(held.awaiting, "github.com/acme-corp/upstream");
+        assert_eq!(&*held.target, "crate");
+        assert_eq!(held.reference, "feature/the-pinned-branch");
+        assert_eq!(
+            held.because,
+            "the dependency is pinned to a branch until crate 2.0 is released"
+        );
+        // And it is a reason a publication could have carried, by the crate's own rule
+        // rather than by this test restating it.
+        held.checked().expect("the golden's reason is a usable one");
+
+        // Present round-trips to the same bytes, and absent stays absent: writing the
+        // key as `null` would hand a consumer that never heard of drafts a field, and
+        // "nothing is holding this back" is not "the reason is null".
+        assert_eq!(
+            serde_json::to_value(&full).expect("a report serializes")["publication"]["draft"],
+            parsed(FULL)["publication"]["draft"],
+        );
+        let minimal: Report = serde_json::from_str(MINIMAL).expect("the minimal golden");
+        let written = serde_json::to_value(&minimal).expect("a report serializes");
+        assert!(
+            written["publication"].get("draft").is_none(),
+            "an absent reason is omitted rather than written: {written}"
+        );
+
+        // A reason the document could not spell is refused where the document is read,
+        // as every other validated value in this report is: `target` names a release
+        // target, and one nothing could name is not a reason to render.
+        for (field, unusable) in [
+            ("target", "not a target name"),
+            ("because", ""),
+            ("reference", "feature/two\nlines"),
+        ] {
+            let mut document = parsed(FULL);
+            document["publication"]["draft"][field] = Value::from(unusable);
+            assert!(
+                serde_json::from_value::<Report>(document).is_err(),
+                "a {field} no publication could have carried is refused where the document is \
+                 read, rather than rendered as though one had"
+            );
+        }
     }
 
     #[test]

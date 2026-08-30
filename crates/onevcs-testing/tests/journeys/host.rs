@@ -19,6 +19,7 @@ fn spec(head: &str) -> ChangeSpec {
         base: "main".to_owned(),
         title: "feat: the thing".to_owned(),
         body: Some("## What\n\nthe thing\n".to_owned()),
+        draft: None,
     }
 }
 
@@ -391,4 +392,64 @@ fn a_file_backed_host_carries_a_change_request_from_one_invocation_to_the_next()
 
     assert_eq!(found, vec![opened]);
     assert_eq!(second.state().expect("readable").changes.len(), 1);
+}
+
+#[test]
+fn a_change_request_opened_directly_with_an_unusable_reason_is_refused() {
+    // This trait is reachable without a publication: a journey holds a host and opens
+    // a change on it. So the rule a publication applies before it hands one over is
+    // applied here too — a reason no publication could have carried must not enter the
+    // state a journey then asserts on, which is the same reason a title naming nothing
+    // is refused at this call.
+    let _home = Home::new();
+    let factory = MemoryHost::new();
+    let host = factory.for_repo("acme-corp/widgets").expect("a host");
+
+    for (field, unusable) in [
+        (
+            "the reason the change is not ready",
+            onevcs::DraftReason {
+                awaiting: "github.com/acme-corp/upstream".to_owned(),
+                target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
+                reference: "feature/the-pinned-branch".to_owned(),
+                because: String::new(),
+            },
+        ),
+        (
+            "the repository whose release is awaited",
+            onevcs::DraftReason {
+                awaiting: "github.com/acme-corp/\nupstream".to_owned(),
+                target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
+                reference: "feature/the-pinned-branch".to_owned(),
+                because: "the pin moves when the release lands".to_owned(),
+            },
+        ),
+    ] {
+        let refused = host
+            .open_change(ChangeSpec {
+                draft: Some(unusable),
+                ..spec("feature/unusable")
+            })
+            .expect_err("a reason nothing could render is not one to open a draft with");
+        assert!(refused.to_string().contains(field), "{refused}");
+    }
+    assert!(
+        factory.state().changes.is_empty() && factory.state().drafts.is_empty(),
+        "nothing entered the state: {:?}",
+        factory.state()
+    );
+
+    // …and the usable one opens, so what was refused is the reason rather than drafts.
+    let opened = host
+        .open_change(ChangeSpec {
+            draft: Some(onevcs::DraftReason {
+                awaiting: "github.com/acme-corp/upstream".to_owned(),
+                target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
+                reference: "feature/the-pinned-branch".to_owned(),
+                because: "the pin moves when the release lands".to_owned(),
+            }),
+            ..spec("feature/usable")
+        })
+        .expect("a usable reason opens a draft");
+    assert!(host.is_draft(&opened).expect("the host answers"));
 }
