@@ -10,6 +10,7 @@ use predicates::prelude::*;
 
 use crate::honesty::inhabit;
 use crate::lifecycle::{local_direct, stop, working_in, Fixture};
+use crate::sweep::swept;
 use crate::world::{token_of, World};
 
 fn files_beneath(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -540,12 +541,12 @@ fn reported(fixture: &Fixture) -> Vec<SessionHolder> {
 }
 
 #[test]
-fn a_holder_is_reported_while_its_owner_runs_and_forgotten_once_that_process_exits() {
-    // The record of a session nobody owns any more is what nothing has ever removed,
+fn a_holder_is_reported_while_its_owner_runs_and_dropped_from_the_answer_once_it_exits() {
+    // The record of a session nobody owns any more is what nothing had ever removed,
     // and seven of them above a launch made a real refusal arrive in the same shape
     // as seven ignorable ones. The question is asked of the owner *process* and of
     // nothing else, so this journey moves that one fact and leaves everything else
-    // where it is.
+    // where it is — including the record itself, which this read no longer takes.
     let fixture = Fixture::local(&local_direct());
     let mut owner = HeldOwner::open(&fixture.world, "feature/owned");
     let pid = owner.pid();
@@ -569,8 +570,6 @@ fn a_holder_is_reported_while_its_owner_runs_and_forgotten_once_that_process_exi
         record_path(&fixture, &token).exists(),
         "the premise: the record is on disk while its owner runs"
     );
-    // Asked twice, because forgetting is what this read now does: a live owner's
-    // record survives being read about.
     assert_eq!(reported(&fixture), held, "reading it again changes nothing");
 
     // …and then that exact process exits.
@@ -586,8 +585,23 @@ fn a_holder_is_reported_while_its_owner_runs_and_forgotten_once_that_process_exi
         "a session whose owner has exited is no longer a holder: {after:?}"
     );
     assert!(
+        record_path(&fixture, &token).exists(),
+        "and the read that says so takes nothing: removing it is the sweep's"
+    );
+
+    // The verb that does remove it, over a state root the age floor no longer covers.
+    let report = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(
+        report.contains(&format!(
+            "{} — the session {token} on {:?}, forgotten",
+            record_path(&fixture, &token).display(),
+            "feature/owned",
+        )),
+        "the sweep names the record it forgot and the session it was for:\n{report}"
+    );
+    assert!(
         !record_path(&fixture, &token).exists(),
-        "and its record is forgotten rather than merely filtered out of one report"
+        "and the record is gone rather than merely filtered out of one report"
     );
 }
 
@@ -623,6 +637,15 @@ fn a_holder_a_dispatch_is_working_in_is_retained_until_that_process_stops() {
     // not wear the record down.
     assert_eq!(reported(&fixture), held);
 
+    // A sweep while that process is inside it takes nothing, which is the safety
+    // itself: the run root's protection outlives the command that opened the session.
+    let report = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(
+        !report.contains(&token),
+        "a session something is working in is not a record to forget:\n{report}"
+    );
+    assert!(record_path(&fixture, &token).exists());
+
     // …and once that exact process has stopped, there is nobody left either way.
     stop(dispatch);
     let after = reported(&fixture);
@@ -630,18 +653,20 @@ fn a_holder_a_dispatch_is_working_in_is_retained_until_that_process_stops() {
         !after.iter().any(|holder| holder.token.0 == token),
         "a session with no owner and nobody inside it is not a holder: {after:?}"
     );
+    swept(&fixture, &["--min-age-hours", "0"]);
     assert!(
         !record_path(&fixture, &token).exists(),
-        "and its record is forgotten"
+        "and its record is forgotten by the verb that reaps litter"
     );
 }
 
 #[test]
-fn a_record_this_host_will_not_let_go_of_is_said_rather_than_answered_for() {
-    // Forgetting is housekeeping beside the answer the caller asked for, so a state
-    // root that will not take the removal is a warning and an answer rather than a
-    // read that failed. What must not happen is the opposite of both: reporting the
-    // record as a holder somebody could still be asked about.
+fn a_record_this_host_will_not_let_go_of_is_said_rather_than_failing_the_sweep() {
+    // Forgetting is housekeeping beside the reaping the caller asked for, so a state
+    // root that will not take the removal is a line in the report rather than a sweep
+    // that failed. What must not happen is the opposite of both: a record silently
+    // kept, which is a session an operator is never told is still on this host — or
+    // one reported as a holder somebody could still be asked about.
     let fixture = Fixture::local(&local_direct());
     let token = fixture.open(&["--branch", "feature/unremovable"]).0;
     let record = record_path(&fixture, &token);
@@ -663,6 +688,12 @@ fn a_record_this_host_will_not_let_go_of_is_said_rather_than_answered_for() {
         .args(["session", "holders", "project", "--json"])
         .output()
         .expect("holders runs");
+    let swept = fixture
+        .world
+        .onevcs()
+        .args(["sweep", "--min-age-hours", "0"])
+        .output()
+        .expect("sweep runs");
     // Put back before the assertions, so a failure here is the finding rather than a
     // directory the fixture could not clean up.
     std::fs::set_permissions(&sessions, original).expect("the directory is restored");
@@ -673,14 +704,18 @@ fn a_record_this_host_will_not_let_go_of_is_said_rather_than_answered_for() {
         "[]\n",
         "a record nobody owns is not a holder, whether or not it could be removed"
     );
-    let said = String::from_utf8_lossy(&printed.stderr).into_owned();
     assert!(
-        said.contains(&token),
-        "the warning names the session:\n{said}"
+        swept.status.success(),
+        "and the sweep still reaps and reports"
     );
+    let report = String::from_utf8_lossy(&swept.stdout).into_owned();
     assert!(
-        said.contains(&record.display().to_string()),
-        "and the record it could not remove:\n{said}"
+        report.contains(&format!(
+            "{} — the session {token} on {:?}, kept: this host would not remove it:",
+            record.display(),
+            "feature/unremovable",
+        )),
+        "the report names the record it could not remove, and why:\n{report}"
     );
     assert!(record.is_file(), "which is still there to be named");
 }
@@ -700,7 +735,7 @@ fn non_process_pid_values_name_no_owner() {
     // llmlint: ignore-end[tests_mirror_real_usage]
 
     // A number no process on this host wears is not an owner that is running, and a
-    // record with no owner running is one this read forgets — never one it reports
+    // record with no owner running is one this read leaves out — never one it reports
     // as though somebody might still answer for it.
     let output = fixture
         .world
@@ -711,11 +746,179 @@ fn non_process_pid_values_name_no_owner() {
     assert!(output.status.success());
     let rows: Vec<serde_json::Value> =
         serde_json::from_slice(&output.stdout).expect("holders prints a JSON array");
+    let report = swept(&fixture, &["--min-age-hours", "0"]);
     for token in [zero, overflow] {
         assert!(
             !rows.iter().any(|row| row["token"] == token),
             "a pid no process can wear is not a live owner: {rows:?}"
         );
+        assert!(
+            report.contains(&format!("the session {token} on ")),
+            "and the sweep reaps the record it leaves behind:\n{report}"
+        );
         assert!(!record_path(&fixture, &token).exists());
     }
+}
+
+#[test]
+fn a_record_whose_branch_still_holds_unpublished_work_is_neither_dropped_nor_pruned() {
+    // The shape a failed node leaves: the run settled, the session was closed, the
+    // process that opened it exited when the command did, and nothing is working in
+    // the run root — while the branch holds finished commits nobody has published.
+    // Two of the three questions say nobody; the third is what keeps the record.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/unpublished"]);
+    fixture
+        .world
+        .commit_file(&worktree, "step.txt", "done\n", "feat: finish the step");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    let held = reported(&fixture);
+    let row = held
+        .iter()
+        .find(|holder| holder.token.0 == token)
+        .unwrap_or_else(|| panic!("a session whose branch holds work is a holder: {held:?}"));
+    assert_eq!(row.branch, "feature/unpublished");
+    assert_eq!(row.state, Lifecycle::Closed);
+    assert_eq!(
+        row.liveness,
+        Liveness::Stale,
+        "the premise: nobody is answering for it"
+    );
+    assert!(
+        record_path(&fixture, &token).exists(),
+        "and the read leaves the record where the continuation will need it"
+    );
+
+    // …and the verb that does reap records leaves it too, past its age floor, because
+    // taking it is what would take the branch's clone off the list every verb searches
+    // a name for.
+    let report = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(
+        !report.contains(&token),
+        "a record with work behind it is not litter, whichever verb is asking:\n{report}"
+    );
+    assert!(record_path(&fixture, &token).exists());
+    assert!(
+        reported(&fixture)
+            .iter()
+            .any(|holder| holder.token.0 == token),
+        "and it is still reported"
+    );
+}
+
+#[test]
+fn a_preserved_branch_survives_the_read_above_it_and_is_published_by_the_continuation() {
+    // The journey a consumer measured this on. A node fails with its branch
+    // preserved; the harness asks who holds the repository before launching the next
+    // attempt; the attempt continues that branch, writes no commit of its own, and
+    // publishes. The read in the middle is what used to destroy the record, and with
+    // it the only route back to the finished work.
+    let fixture = Fixture::local(&local_direct());
+    let (failed, worktree) = fixture.open(&["--branch", "feature/carried"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: finish the step");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &failed])
+        .assert()
+        .success();
+
+    // The launch interlock, which is a read and nothing else.
+    assert!(
+        reported(&fixture)
+            .iter()
+            .any(|holder| holder.token.0 == failed),
+        "the failed attempt still holds the repository"
+    );
+    assert!(record_path(&fixture, &failed).exists());
+
+    // The continuation: the same branch, and nothing committed onto it here.
+    let (continued, tree) = fixture.open(&["--branch", "feature/carried"]);
+    assert_ne!(continued, failed, "a new session onto the same branch");
+    assert_eq!(
+        fixture.world.git(&tree, &["log", "--format=%s", "-1"]),
+        "feat: finish the step",
+        "the continuation opens at the work the failed attempt left"
+    );
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &continued])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let log = fixture.origin_log();
+    assert_eq!(
+        log[0], "feat: finish the step",
+        "the preserved commits reached the base: {log:?}"
+    );
+}
+
+#[test]
+fn work_a_failed_node_left_only_in_its_run_clone_outlives_the_interlock_that_reads_the_holders() {
+    // The same loss by the shortest route to it. A node that settles `failed` without
+    // closing its session leaves the finished commits in the run clone and nowhere
+    // else: the `session open` that printed the token exited with the command, so
+    // nothing owns the record, and nothing is working in the run root either. The
+    // record is then the only thing putting that clone on the list every verb searches
+    // a branch name for — and the read above the next attempt used to take it.
+    let fixture = Fixture::local(&local_direct());
+    let (failed, worktree) = fixture.open(&["--branch", "feature/only-in-the-clone"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: finish the step");
+    assert_eq!(
+        fixture.world.git(
+            &fixture.checkout,
+            &["branch", "--list", "feature/only-in-the-clone"]
+        ),
+        "",
+        "the premise: nothing outside the run clone carries this branch"
+    );
+
+    // The launch interlock a consumer runs before the next attempt.
+    assert!(
+        reported(&fixture)
+            .iter()
+            .any(|holder| holder.token.0 == failed),
+        "the failed attempt still holds the repository"
+    );
+    assert!(record_path(&fixture, &failed).exists());
+
+    // The next attempt onto that branch, which commits nothing of its own. A session
+    // still open is taken up rather than cut beside, so this is the same session —
+    // which is the point: a record the read had forgotten is one nothing can take up.
+    let (again, tree) = fixture.open(&["--branch", "feature/only-in-the-clone"]);
+    assert_eq!(
+        again, failed,
+        "the attempt takes up the session that is there"
+    );
+    assert_eq!(
+        fixture.world.git(&tree, &["log", "--format=%s", "-1"]),
+        "feat: finish the step",
+        "and opens at the work the failed attempt left"
+    );
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &again])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let log = fixture.origin_log();
+    assert_eq!(
+        log[0], "feat: finish the step",
+        "the work reaches the base: {log:?}"
+    );
 }
