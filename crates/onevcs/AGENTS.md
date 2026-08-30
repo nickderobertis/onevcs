@@ -712,6 +712,26 @@ command that is inside a run root *now*, which is the state a record does not
 cover; a run root no record names has only that answer, and is reclaimable, since
 protecting it would make a refused open's litter permanent.
 
+**A close is held to the same standard, and refuses rather than skipping.**
+`workspace::close` asks `processes::holding` of the run root — the one answer this
+crate has for *who is in here*, a live process's own working directory — and
+refuses on any holder, naming each and leaving the caller to let the dispatch
+finish or stop it. The shared lease it takes proves nothing: every other shared
+holder succeeds beside it. A silent skip would be worse than the removal, because
+the record would then say `closed` and reclamation protects only an *open* one — so
+the live dispatch would be working in a directory nothing holds for it, which is the
+same destruction reached one verb along. Whatever the worktree still holds
+uncommitted is committed behind the incomplete-step marker first, since `git
+worktree remove` forces past an unclean tree.
+
+**A record is forgotten only when it names nothing.** `workspace::holders` drops one
+whose owner is gone, whose run root has already been reclaimed, and that no
+`retried_by` points at — the tombstone nothing ever removed, seven of which above a
+launch made a real refusal read like an ignorable one. Staleness alone must never be
+the test: a session opened from the command line is stale from the instant the
+command exits, and dropping its record is what would hand a live dispatch's run root
+to the next `session open` to reap.
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory
