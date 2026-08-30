@@ -1200,6 +1200,38 @@ fn the_canonical_declaration_the_amendment_spells_is_one_this_build_reads() {
         "the amendment's `published_by` names the workflow: {:?}",
         target.published_by
     );
+
+    // The version 3 key, held to the text the same way: the amendment's own example
+    // declares a template, and what it declares renders — with a version and without
+    // one, which is the property the whole field exists for.
+    let template = target
+        .instruction
+        .as_ref()
+        .expect("the amendment's example declares an instruction");
+    assert!(
+        template.source().contains("{% if version %}"),
+        "the amendment's example is written for a version that is not there yet: {template:?}"
+    );
+    let rendered = |version: Option<&str>| {
+        onevcs::render_release_instruction(
+            target,
+            None,
+            &onevcs::InstructionVariables {
+                repository: "github.com/nickderobertis/onevcs".to_owned(),
+                version: version.map(str::to_owned),
+            },
+        )
+        .expect("the amendment's example renders")
+        .expect("it declares a template, so there is something to render")
+    };
+    assert!(
+        rendered(Some("0.18.0")).contains("0.18.0"),
+        "a released version is what the instruction names"
+    );
+    assert!(
+        rendered(None).contains("once one is out"),
+        "and with none, the template says so rather than failing"
+    );
     let [retired] = &declared.retired[..] else {
         panic!("the amendment spells exactly one [[retired]] entry");
     };
@@ -1241,7 +1273,16 @@ fn the_amendment_states_the_version_a_producer_writes_and_the_oldest_a_consumer_
     let oldest = onevcs::declaration::OLDEST_SCHEMA_VERSION;
     for sentence in [
         format!("`{writes}` is what a producer writes today; `{oldest}` is still read"),
-        format!("**Version {writes} is the npm scoped form, and version {oldest} does not stop being readable.**"),
+        // One sentence per bump, spelled at the version it is about rather than at
+        // whichever is newest: what version 2 moved does not become what version 3
+        // moved when the constant advances, and a producer reading this text is
+        // deciding which of the three their own document declares.
+        "**Version 2 is the npm scoped form, and version 1 does not stop being readable.**"
+            .to_owned(),
+        format!(
+            "**Version {writes} is the per-target instruction template, and versions \
+             {oldest} and 2 do not stop being readable.**"
+        ),
     ] {
         assert!(
             amendments.contains(&unwrapped(&sentence)),
@@ -1340,6 +1381,11 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
                 .expect("a sentence"),
             manifest: Some("Cargo.toml".parse().expect("a repository path")),
             covers: vec!["npm:onevcs-cli-linux-x64".parse().expect("an identifier")],
+            instruction: Some(
+                "{% block adopt %}Move the pin.{% endblock %}"
+                    .parse()
+                    .expect("a template"),
+            ),
         }],
         retired: vec![onevcs::RetiredArtifact {
             id: "pypi:onepipeline-ui-cli".parse().expect("an identifier"),
@@ -1357,8 +1403,9 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
     let declarations = amendment_declaring("pub struct Declaration");
     for spelled in [
         "pub const FILE: &str = \"release-targets.toml\";",
-        "pub const SCHEMA_VERSION: u32 = 2;",
+        "pub const SCHEMA_VERSION: u32 = 3;",
         "pub const OLDEST_SCHEMA_VERSION: u32 = 1;",
+        "pub const PRODUCER_TEMPLATE: &str = \"producer\";",
         "pub struct Declaration { pub schema_version: u32, pub probe: Option<RepositoryPath>,",
         "pub targets: Vec<DeclaredTarget>,",
         "pub retired: Vec<RetiredArtifact> }",
@@ -1366,7 +1413,12 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
         "pub struct DeclaredTarget { pub id: RegistryId, pub name: TargetName,",
         "pub what: Prose, pub published_by: Prose,",
         "pub manifest: Option<RepositoryPath>,",
-        "pub covers: Vec<RegistryId> }",
+        "pub covers: Vec<RegistryId>,",
+        "pub instruction: Option<InstructionTemplate> }",
+        "pub struct InstructionTemplate(String);",
+        "impl InstructionTemplate { pub fn source(&self) -> &str; }",
+        "pub struct InstructionVariables { pub repository: String, \
+         pub version: Option<String> }",
         "pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }",
         "impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }",
         "pub struct Prose(String);",
@@ -1376,6 +1428,9 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
         "pub fn validate_release_declaration(document: &str, origin: &str) \
          -> Result<Declaration>;",
         "pub fn render_release_declaration(declared: &Declaration) -> Result<String>;",
+        "pub fn render_release_instruction(target: &DeclaredTarget,",
+        "consumer: Option<&InstructionTemplate>,",
+        "variables: &InstructionVariables) -> Result<Option<String>>;",
     ] {
         assert!(
             declarations.contains(spelled),
@@ -1395,7 +1450,7 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
         json!({
             // The version this build writes, spelled as the number a consumer would
             // read off the wire rather than as the constant that produced it.
-            "schema_version": 2,
+            "schema_version": 3,
             "probe": "scripts/release-probe.sh",
             "target": [{
                 "id": "crate:onevcs",
@@ -1404,6 +1459,7 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
                 "published_by": ".github/workflows/release.yml — the publish-crate job.",
                 "manifest": "Cargo.toml",
                 "covers": ["npm:onevcs-cli-linux-x64"],
+                "instruction": "{% block adopt %}Move the pin.{% endblock %}",
             }],
             "retired": [{
                 "id": "pypi:onepipeline-ui-cli",

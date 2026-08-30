@@ -1,0 +1,48 @@
+# The same declaration at schema version 3 — the version a producer writes today.
+#
+# Version 3 is the first bump that adds a *key*: `target.instruction`, the template a
+# consumer renders when a release of that target arrives. Everything else is version
+# 2's, key for key and identifier for identifier — this file, `release-declaration-v2.toml`
+# and `release-declaration-v1.toml` beside it declare the same two artifacts and the
+# same retirement, and the one difference is the instruction below.
+#
+# Which is also why this one cannot be left unstated the way version 2 could: a
+# document declaring `1` or `2` and naming `instruction` is refused by name.
+schema_version = 3
+probe = "scripts/release-probe.sh"
+
+[[target]]
+id = "npm:oneharness-cli"
+name = "cli-npm"
+what = "The launcher that resolves and execs the prebuilt binary."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness/package.json's name."
+manifest = "npm/oneharness/package.json"
+covers = [
+  "npm:@oneharness/cli-linux-x64",
+  "npm:@oneharness/cli-linux-arm64",
+  "npm:@oneharness/cli-darwin-x64",
+  "npm:@oneharness/cli-darwin-arm64",
+  "npm:@oneharness/cli-win32-x64",
+]
+# Every variable this producer has, and the `{% if version %}` a node that adopted
+# fast renders before there is any release to name. The `{% block %}` is what a
+# consumer's own template extends rather than discards.
+instruction = """
+{% block adopt %}\
+Reinstall {{ id }} from {{ repository }}\
+{% if version %} at version {{ version }}{% else %} once a release is out{% endif %}, \
+then move the pin recorded for the {{ target }} target in {{ manifest }}.\
+{% endblock %}
+"""
+
+# …and a target that declares none, which is the other half of what a reader has to
+# get right: an absent instruction is absent, never a blank one.
+[[target]]
+id = "npm:@oneharness/sdk"
+name = "node-sdk"
+what = "The typed Node.js client, imported as `@oneharness/sdk`."
+published_by = ".github/workflows/release.yml — the publish-npm job, from npm/oneharness-sdk/package.json's name."
+
+[[retired]]
+id = "pypi:oneharness"
+why = "The name was unavailable; `pypi:oneharness-cli` is what ships instead."

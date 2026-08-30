@@ -440,6 +440,69 @@ fn a_host_target_the_producer_also_declares_replaces_it_and_keeps_its_position()
     assert_eq!(discovering.probed(), vec!["npm:project-cli"]);
 }
 
+/// The same two targets at schema version 3, where the one the host overrides also
+/// declares what a consumer does when it releases.
+const DECLARING_WITH_INSTRUCTIONS: &str = r#"schema_version = 3
+probe = "scripts/release-probe.sh"
+
+[[target]]
+id = "crate:project"
+name = "crate"
+what = "The library and the binary, as a Rust dependent takes them."
+published_by = ".github/workflows/release.yml — the publish-crate job."
+manifest = "Cargo.toml"
+instruction = "{% block adopt %}Move the pin.{% endblock %}"
+
+[[target]]
+id = "npm:project-cli"
+name = "npm"
+what = "The binary as an npx-resolvable launcher."
+published_by = ".github/workflows/release.yml — the publish-npm job."
+"#;
+
+#[test]
+fn an_override_still_replaces_the_target_whole_where_the_producer_declared_an_instruction() {
+    // The rule the instruction template is deliberately the exception to, held where
+    // the exception was made. A target is `{name, style, body}` and a half-host,
+    // half-producer one is a probe nobody wrote — so a producer declaring an
+    // instruction changes nothing about what an override does to the probe beside it.
+    let discovering = Discovering::new();
+    discovering
+        .declares(DECLARING_WITH_INSTRUCTIONS)
+        .carries_probe()
+        .answers("crate:project", "9.9.9\n")
+        .host(
+            "    adoption: published\n    targets:\n      - name: crate\n        style: \
+             automated\n        probe:\n          shell: 'echo 5.0.0'\n",
+        );
+
+    let targets = discovering.json(&["targets", &discovering.repo()]);
+    assert_eq!(
+        targets["sources"],
+        serde_json::json!({"crate": "override", "npm": "declared"}),
+        "{targets}"
+    );
+    assert_eq!(
+        discovering.json(&["latest", &discovering.repo(), "--target", "crate"])["version"],
+        "5.0.0",
+        "the host's probe answered, not the repository's committed script"
+    );
+    assert!(
+        !discovering.probed().contains(&"crate:project".to_owned()),
+        "the overridden target's declared probe was never run: {:?}",
+        discovering.probed()
+    );
+
+    // …while what the producer declared is still *there*, whole, which is what makes
+    // composing an instruction with it possible at all: an override replaces the
+    // target this host waits on, never the document the repository committed.
+    assert_eq!(
+        targets["declaration"]["declared"]["target"][0]["instruction"],
+        "{% block adopt %}Move the pin.{% endblock %}",
+        "the producer's own declaration is answered as it was written: {targets}"
+    );
+}
+
 #[test]
 fn a_rule_that_ignores_the_declaration_answers_with_its_own_targets_alone() {
     // How a host says "a target I do not consume": one key, per rule, and the answer

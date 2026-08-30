@@ -609,10 +609,40 @@ consumer reads from `OLDEST_SCHEMA_VERSION` up — and version 2 is the npm scop
 identifier form rather than a key. A version 1 declaration naming a scoped package is
 read rather than refused: six committed declarations already do, and the version says
 what a producer *states* about their file, not a second gate the identifiers pass
-through. `tests/golden/release-declaration-v*.toml` are the committed documents that
-hold both versions readable. And a rendering answers the
+through. Version 3 is the first bump that adds a **key** — `target.instruction` — so
+unlike version 2 it cannot be left unstated: a document at 1 or 2 naming it is refused
+by name, and the refusal says which version declares it.
+`tests/golden/release-declaration-v*.toml` are the committed documents that hold all
+three versions readable, and they declare the same two artifacts on purpose, so the
+journey comparing them states exactly what each bump moved. And a rendering answers the
 declaration alone — a producer's comments were never read, so writing one back over
 their file deletes the reasoning that is the most valuable thing in it.
+
+## The adoption instruction is producer knowledge, and it is a template
+
+`target.instruction` is what a consumer does when a release of that target arrives,
+written by the repository that publishes it because a dependent would otherwise guess —
+and guessing has been wrong here. `render_release_instruction` is the whole surface;
+there is no verb, because the two things a render needs (this consumer's override and
+the released version) are values a caller holds rather than operands anybody types.
+
+Three things are easy to undo.
+
+- **`{% if version %}` has to work with the version absent.** A node that adopts fast
+  launches *before* the release exists — that is what fast adoption is — so the first
+  render has no version to name. Undefined is semi-strict for exactly that reason:
+  asking about a variable that is not there is the point, printing one is an error.
+- **A consumer's override composes, and nothing else about overriding moves.** The
+  producer's template is registered under `PRODUCER_TEMPLATE`, so a consumer's own can
+  `{% extends "producer" %}` and replace one `{% block %}`. Whole replacement is still
+  the rule for every other field of a target — *a half-host, half-producer target is a
+  probe nobody wrote* — and `an_override_still_replaces_the_target_whole_where_the_producer_declared_an_instruction`
+  in `tests/e2e/discovery.rs` is what keeps that true in the presence of this one.
+- **A template that does not parse is refused in `validate`, not in its conversion.**
+  Every other field is refused where it is converted, which is what gets the TOML
+  reader's line and column. This one has to name the **target**, and a target is
+  something only the whole document knows — so it sits beside the duplicate-name check,
+  and a `Declaration` a caller *built* is refused by `render_release_declaration` too.
 
 ## A repository's targets come from three layers, and `resolve` is the only place
 
