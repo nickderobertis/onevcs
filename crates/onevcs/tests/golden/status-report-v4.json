@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "ref": {
     "given": "feature/full",
     "kind": "branch"
@@ -43,6 +43,12 @@
       "state": "no"
     },
     "change_url": "https://github.com/acme-corp/hosted/pull/1",
+    "draft": {
+      "awaiting": "github.com/acme-corp/upstream",
+      "target": "crate",
+      "reference": "feature/the-pinned-branch",
+      "because": "the dependency is pinned to a branch until crate 2.0 is released"
+    },
     "merge_policy": "change-open"
   },
   "checks": {

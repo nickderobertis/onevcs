@@ -304,7 +304,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `3`, and it is deliberately not a migration boundary
+The report's schema version is `4`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -312,6 +312,7 @@ Version 3 is the rules gate going away: `identity.gate` was the rules file's
 `gate:`, which no schema has any more, and the top-level `gate` was the last verdict
 a gate this crate ran had recorded, which it re-expresses as `merge_path` — the same
 question asked of the verifier that actually rules on a change.
+Version 4 is `publication.draft`, the readback of the draft amendment's record.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -327,8 +328,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v2.json` and
-`status-report-v2-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v4.json` and
+`status-report-v4-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
@@ -341,11 +342,33 @@ covered by name elsewhere: `next.command`, which no report carrying an open chan
 request has (there is nothing to advance), and `notes`, which reports a gap in what
 could be *read* rather than anything about the work.
 
+**Recorded contract conflict: the approved draft amendment says "`just work-status`
+renders it", and this repository has no such recipe and cannot have one.** The
+approved surface for the draft reason ends *"…and `just work-status` renders it"*.
+The clause is reproduced here rather than dropped, because a clause nobody can
+satisfy is still the contract until somebody amends it — but it names a command that
+does not exist in this repository, and the reason is structural rather than an
+oversight anybody can fix by adding a recipe. `just --list` here is the *development*
+command surface for building and verifying `onevcs` itself — `check`, `gate`, `test`,
+`lint`, `doc`, `msrv`, `semver-check`, `run` — and it holds no verb that reports on a
+piece of *work*, because work is what the built artifact is asked about rather than
+what the build is. The operator surface for that question is `onevcs status REF`, and
+`just run status REF --json` is what driving it through `just` spells.
+
+So the **capability** the clause asks for is implemented — the record reader gains
+the reason and the report renders it — and only the *name* is unsatisfiable. Nothing
+here has been renamed to close the gap: adding a `work-status` recipe that shells out
+to `onevcs status` would make this document true and the justfile wrong, putting one
+repository's operator vocabulary into another's build file. Amending the clause to
+name `onevcs status` is the fix, and it belongs to whoever owns the amendment.
+
 | Item | Inferred shape | Why |
 | --- | --- | --- |
 | `status REF` | one operand, four spellings, read in the documented order | A change request's URL, a session token, a branch name, and a commit are four names for one piece of work, and which one somebody has depends on where they are standing. Four options would make a caller say which they hold; one operand does not. First match wins, so a session token is a session token even where a branch of that name exists, and ambiguity is *within* a spelling — one branch name in two identities — which is refused naming every candidate. |
 | the sections | identity, session, branch, publication, checks, merge path, next | What an agent had to reach outside for, in one place. `next` is the surface the branch-keyed refusals already are: a report that diagnoses without naming the command that advances the work leaves an agent to invent one. |
 | `landed` | decided from the base's own history, in four tiers, naming the one that decided it | Publication squashes, so a branch that landed is an ancestor of nothing afterwards — and the content comparison that used to answer this is an inference that stops being true the moment anything else lands on the base. The tiers are recorded below. It is the same question `vcs::collect` excludes a branch on, which is what keeps the report and `recoverable` from disagreeing about one branch. |
+| `publication.draft` | the `DraftReason` currently holding the change back, omitted where nothing is | The one thing a draft change request cannot tell anybody. The approved amendment puts the reason in the publication record — the session's own event stream — and **nothing in the change request's body**, so a host renders that the change *is* a draft and never why. This report is where that record is read back, because it is the only place in this crate that reads a stream for a person. The reason is `DraftReason` itself rather than a second shape beside it: a consumer that routes on `awaiting`/`target`/`reference` to decide when to lift is reading the same four fields the publication was given. Omitted for a change nobody drafted **and** for one whose draft has been lifted, which are one answer — nothing is holding this back now — and the history of both is in `onevcs events`. |
+| how a lift is read | the newest `change-drafted` held against the newest `draft-lifted`, across every stream of the branch | A publication carrying no reason is what lifts a draft, and a branch-keyed verb writes its own stream — so the draft and the lift routinely sit in two *different* records of one branch, and a reader that consulted only the drafting stream would report a reason nothing is holding. An equal stamp clears the draft: the two cannot be simultaneous, so it is a clock that could not tell them apart, and reporting a spent reason sends somebody to wait for a release that has arrived. |
 | the host section | degrades, never fails | `status` reaches the host for what a change request is doing now, and everything else it reports is answerable offline. A command that failed because a network call did would leave an operator with none of the answer. |
 | `--json` | the same object, on stdout | The scope note `recoverable` carries does not apply: `status` is asked about one piece of work by name, so there is no unstated scope for a reader to mistake. |
 | `import BRANCH --repo PATH` | the operands `recover` already takes | It is addressed at one branch of one identity, so it is reached the same way the two branch-keyed verbs are. Where it looks with no `--from` is `branch::locate` — the same search those verbs use, run clones included. |
