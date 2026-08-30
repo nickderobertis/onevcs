@@ -30,10 +30,24 @@
 //! starts daemons, and unlinking the files a daemon still holds open frees no disk at
 //! all. Nothing a live workspace holds is ever signalled.
 //!
+//! **The session records beside them are litter of the same kind, and this is the
+//! one verb that removes one.** A record whose owner process has gone, whose run root
+//! nobody is working in, and whose session left nothing behind is a file nothing will
+//! ever read again — and nothing had ever removed one, so seven of them above a
+//! launch made a real refusal arrive in the same shape as seven ignorable ones. It is
+//! reaped *here* rather than by the read that enumerates them: `onevcs session
+//! holders` is an interlock a consumer runs on every launch, and a read that deletes
+//! made that caller the one performing the deletion. The same age floor applies, and
+//! for the same reason — a session opened a minute ago is one a dispatch is about to
+//! work in.
+//!
 //! One boundary is deliberately outside it. `<identity>/runs` is the per-run
 //! lifecycle clone root, which [`crate::workspace`] keeps as a bounded recovery
 //! history so a dead run's branch stays reachable; this verb reports it as a
-//! family it does not reach into rather than reaping it.
+//! family it does not reach into rather than reaping it. Forgetting a record is not
+//! reaching into it: what a spent record names is a run root whose session left
+//! nothing behind, which is one [`crate::workspace`]'s own reclamation removes on
+//! sight.
 
 use std::fmt;
 use std::fs::File;
@@ -98,6 +112,7 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
         skipped: Vec::new(),
         reclaimed: Vec::new(),
         retained: Vec::new(),
+        records: Vec::new(),
     };
 
     // A state root nothing has cut a workspace under yet is a sweep with nothing to
@@ -150,7 +165,50 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     for verb in families {
         family(&mut report, verb, min_age)?;
     }
+    records(&mut report, dry_run, min_age)?;
     Ok(report)
+}
+
+/// Forget every session record this host has nothing left to answer for.
+///
+/// The candidates come from [`workspace::spent_records`], which asks the three
+/// questions that decide it; what is asked *here* is the one question this verb owns,
+/// and it is the same one every directory above is asked: was it written inside the
+/// age floor. A record a minute old belongs to a session `onevcs session open` has
+/// just printed a token for, whose dispatch has not started working yet — and that
+/// dispatch is the one this crate has already lost work for once.
+///
+/// Every candidate is reported, kept or not. A record silently removed is a session
+/// an operator can no longer close, publish, or adopt, and this verb's whole promise
+/// is to say what it did.
+fn records(report: &mut Report, dry_run: bool, min_age: Duration) -> Result<()> {
+    for record in workspace::spent_records()? {
+        let path = workspace::record_path(&record.token)?;
+        let age = SystemTime::now()
+            .duration_since(last_written(&path))
+            .unwrap_or(Duration::ZERO);
+        let outcome = if age < min_age {
+            Forgetting::Fresh {
+                age,
+                floor: min_age,
+            }
+        } else if dry_run {
+            Forgetting::Forgotten
+        } else {
+            match workspace::forget(&path) {
+                Ok(()) => Forgetting::Forgotten,
+                Err(kept) => Forgetting::Kept(kept),
+            }
+        };
+        report.records.push(SessionRecord {
+            path,
+            token: record.token,
+            branch: record.branch,
+            outcome,
+        });
+    }
+    report.records.sort_by(|a, b| (*a.token).cmp(&b.token));
+    Ok(())
 }
 
 /// Enforce the retention rule over one verb's family, as that verb cuts a run root.
@@ -175,6 +233,11 @@ pub fn enforce(verb: Verb) -> Result<()> {
         skipped: Vec::new(),
         reclaimed: Vec::new(),
         retained: Vec::new(),
+        // Empty and left so. A landing is housekeeping for the directory it is about
+        // to add to, and the session records are a question about the whole host that
+        // nothing here has a report to answer in: `onevcs sweep` is where they are
+        // asked about and where what became of one is said.
+        records: Vec::new(),
     };
     family(&mut report, verb, min_age)?;
     // A family this pass could not read is a pass that did not happen, and the caller
@@ -698,6 +761,46 @@ struct Skipped {
     reason: String,
 }
 
+/// One spent session record this sweep considered, and what became of it.
+///
+/// The record's own types rather than the strings they print as: this is a report
+/// about a session that exists, so a token no session could wear and a name git would
+/// not accept are unrepresentable here for the reason they are in the record itself.
+struct SessionRecord {
+    path: PathBuf,
+    token: workspace::Token,
+    branch: workspace::Ref,
+    outcome: Forgetting,
+}
+
+/// What this sweep did with one spent session record.
+enum Forgetting {
+    /// It is gone, or would be under a rehearsal.
+    Forgotten,
+    /// It was written inside the age floor.
+    Fresh { age: Duration, floor: Duration },
+    /// This host would not take the removal, and said why.
+    Kept(String),
+}
+
+impl Forgetting {
+    /// The outcome as the report states it.
+    fn describe(&self, dry_run: bool) -> String {
+        match self {
+            Forgetting::Forgotten if dry_run => "would be forgotten".to_owned(),
+            Forgetting::Forgotten => "forgotten".to_owned(),
+            Forgetting::Fresh { age, floor } => format!(
+                "kept: it was written {} ago, inside the {} the age floor leaves alone",
+                describe_duration(*age),
+                describe_duration(*floor),
+            ),
+            Forgetting::Kept(why) => {
+                format!("kept: this host would not remove it: {why}")
+            }
+        }
+    }
+}
+
 struct Reclaimed {
     path: PathBuf,
     bytes: u64,
@@ -851,6 +954,7 @@ pub struct Report {
     skipped: Vec<Skipped>,
     reclaimed: Vec<Reclaimed>,
     retained: Vec<Retained>,
+    records: Vec<SessionRecord>,
 }
 
 impl Report {
@@ -940,6 +1044,24 @@ impl fmt::Display for Report {
             )?;
         }
 
+        // Named with the branch each one was for, because that is what an operator
+        // reads the line to decide: a record is a name for a session, and which
+        // session it was is the branch it worked on.
+        writeln!(f, "Session records with nothing left behind them:")?;
+        if self.records.is_empty() {
+            writeln!(f, "  none")?;
+        }
+        for record in &self.records {
+            writeln!(
+                f,
+                "  {} — the session {} on {:?}, {}",
+                record.path.display(),
+                record.token,
+                record.branch,
+                record.outcome.describe(self.dry_run),
+            )?;
+        }
+
         // The scope, said the way `recoverable` says its own: unstated, a report
         // about two families under one root reads as a report about the host, and a
         // caller composing this with another tool's sweep would believe the disk was
@@ -947,7 +1069,7 @@ impl fmt::Display for Report {
         write!(
             f,
             "This answers for the publication and recovery workspaces onevcs owns under {}, \
-             and for nothing else on this host.",
+             for the session records beside them, and for nothing else on this host.",
             self.root.display()
         )
     }

@@ -174,12 +174,12 @@ fn publish_branch(fixture: &Fixture, branch: &str) {
 }
 
 /// What one `onevcs sweep` printed, and its exit code asserted at nought.
-fn swept(fixture: &Fixture, extra: &[&str]) -> String {
+pub fn swept(fixture: &Fixture, extra: &[&str]) -> String {
     swept_with_diagnosis(fixture, extra).0
 }
 
 /// The report and the diagnosis beside it, with the exit code asserted at nought.
-fn swept_with_diagnosis(fixture: &Fixture, extra: &[&str]) -> (String, String) {
+pub fn swept_with_diagnosis(fixture: &Fixture, extra: &[&str]) -> (String, String) {
     let assert = fixture
         .world
         .onevcs()
@@ -245,7 +245,7 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
     assert!(
         report.contains(&format!(
             "This answers for the publication and recovery workspaces onevcs owns under {}, \
-             and for nothing else on this host.",
+             for the session records beside them, and for nothing else on this host.",
             fixture.world.home().join("workspaces").display()
         )),
         "the report states the scope it answered under:\n{report}"
@@ -1989,5 +1989,125 @@ fn a_landing_says_so_when_the_retention_rule_could_not_run_and_lands_anyway() {
     assert!(
         !earlier.exists(),
         "the workspace the refused lease protected is reclaimed once it can be judged"
+    );
+}
+
+#[test]
+fn a_session_record_with_nothing_left_behind_it_is_reaped_under_the_same_age_floor() {
+    // The other litter this verb reaps. A record of a session nobody owns any more,
+    // with nothing working in its run root and nothing on its branch the origin does
+    // not already have, is a file nothing will ever read again — and nothing had ever
+    // removed one. It is reaped here rather than by `onevcs session holders`, which is
+    // an interlock a consumer runs on every launch: a read that deleted made that
+    // caller the one performing the deletion.
+    let fixture = Fixture::local(&local_direct());
+    let (token, _) = fixture.open(&["--branch", "feature/nothing-behind"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let record = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+    assert!(record.is_file(), "the premise: the record is on disk");
+    let named = format!(
+        "{} — the session {token} on {:?}, ",
+        record.display(),
+        "feature/nothing-behind"
+    );
+
+    // Inside the floor every directory here is kept inside, it is kept too, and for
+    // the same reason: a record written a minute ago belongs to a session a dispatch
+    // is about to be handed.
+    let kept = swept(&fixture, &[]);
+    assert!(
+        kept.contains(&format!("{named}kept: it was written ")),
+        "a fresh record is kept with the floor as its reason:\n{kept}"
+    );
+    assert!(record.is_file());
+
+    // A rehearsal past the floor says what it would do and does none of it.
+    let rehearsed = swept(&fixture, &["--dry-run", "--min-age-hours", "0"]);
+    assert!(
+        rehearsed.contains(&format!("{named}would be forgotten")),
+        "the rehearsal says what the real run would take:\n{rehearsed}"
+    );
+    assert!(record.is_file(), "and a rehearsal removes nothing");
+
+    // …and the run that is not a rehearsal takes it.
+    let done = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(
+        done.contains(&format!("{named}forgotten")),
+        "the sweep names the record it forgot:\n{done}"
+    );
+    assert!(!record.exists(), "and the record is gone");
+
+    // Asked again, the section is answered rather than absent: a section that
+    // disappears when it is empty reads as a section nobody asked.
+    let after = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(
+        after.contains("Session records with nothing left behind them:\n  none"),
+        "the empty answer is still an answer:\n{after}"
+    );
+}
+
+#[test]
+fn a_session_record_whose_work_is_still_only_in_its_own_worktree_is_never_reaped() {
+    // The record this verb must never take. `onevcs session open` prints a token and
+    // exits, so a session opened from the command line has no owner process from that
+    // instant — and the agent handed its worktree may not have committed anything
+    // yet, which is exactly the state with the least protection. `session close` is
+    // what preserves such a tree onto a branch, and a session whose record is gone can
+    // no longer be closed.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/half-written"]);
+    std::fs::write(worktree.join("in-progress.txt"), "half-written\n")
+        .expect("the agent is working in the worktree it was handed");
+    let record = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+
+    let report = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(
+        !report.contains(&token),
+        "a session with an uncommitted tree behind it is not a record with nothing \
+         behind it:\n{report}"
+    );
+    assert!(record.is_file());
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("in-progress.txt")).ok(),
+        Some("half-written\n".to_owned()),
+        "and the work in its worktree is where it was left"
+    );
+
+    // Surviving as a file is not the claim; surviving as a session is. The work
+    // reaches its branch, which is what a record the sweep had taken could not do.
+    fixture.world.commit_file(
+        &worktree,
+        "in-progress.txt",
+        "finished\n",
+        "feat: work made while a sweep ran beside it",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(
+        fixture
+            .world
+            .git(
+                &fixture.checkout,
+                &["branch", "--list", "feature/half-written"]
+            )
+            .contains("feature/half-written"),
+        "the work it made is handed back on its branch"
     );
 }
