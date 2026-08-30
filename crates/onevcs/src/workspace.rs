@@ -490,7 +490,12 @@ pub fn occupancy_identity(run_root: &Path) -> String {
     format!("run:{}", run_root.display())
 }
 
-fn record_path(token: &str) -> Result<PathBuf> {
+/// Where one session's record is written.
+// llmlint: ignore[invalid_states_unrepresentable] a `Token` is what a *readable*
+// record proves, and this is how the record is found: [`load`] resolves the path for a
+// name `ids::is_safe_name` has just accepted and nothing has parsed yet, so a `&Token`
+// parameter would be a type only reachable through the file it is used to open.
+pub(crate) fn record_path(token: &str) -> Result<PathBuf> {
     Ok(home::sessions_dir()?.join(format!("{token}.json")))
 }
 
@@ -644,37 +649,49 @@ pub fn all() -> Result<Vec<Record>> {
 /// "nobody is in this repository" and "this is not a repository I know" are
 /// different answers to act on.
 ///
-/// **A record whose owner process has exited, with nothing working inside its run
-/// root, is forgotten here rather than listed** — see [`spent`]. A record whose
-/// owner is still running is always reported, closed or open, live or stale; so is
-/// one a dispatch is still working in, whatever became of the command that opened
-/// it.
+/// **A record nothing answers for and nothing is behind is left out of the answer
+/// and not removed** — see [`spent`]. Nobody holds a repository through it, so it is
+/// not a holder; but this is a read, and a caller asking who is here is not asking
+/// for anything to be destroyed. Removing it is `onevcs sweep`, over the candidates
+/// [`spent_records`] names. A record whose owner is still running is always reported,
+/// closed or open, live or stale; so is one a dispatch is still working in, and so
+/// is one whose branch still carries work nobody has published.
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, repo)?;
-    let mut holders = Vec::new();
-    for record in all()? {
-        if record.identity != resolution.key {
-            continue;
-        }
-        if spent(&record) {
-            forget(&record.token);
-            continue;
-        }
-        holders.push(SessionHolder::from(record));
-    }
-    Ok(holders)
+    Ok(all()?
+        .into_iter()
+        .filter(|record| record.identity == resolution.key && !spent(record))
+        .map(SessionHolder::from)
+        .collect())
 }
 
-/// Whether a record has nobody left to answer for it, which is what makes one
-/// litter.
+/// Every session record on this host that nothing answers for and nothing is behind.
 ///
-/// Two questions, and both have to say nobody. **Has the process that opened this
-/// session gone** — not the *lifecycle* beside it, since a session an embedding
+/// The candidates for removal, and nothing is removed here: [`holders`] used to
+/// forget one as it read, which made a caller asking who holds a repository the one
+/// performing the deletion — and one of the records that deletion took was a
+/// preserved branch's only route back. So the litter is *named* here and reaped by
+/// `onevcs sweep`, the verb an operator runs to reap litter, past the age floor it
+/// keeps everything else inside.
+///
+/// Host-wide rather than per identity, because that is the question the verb that
+/// asks it is about: the sweep answers for this host's state root rather than for
+/// one repository.
+pub(crate) fn spent_records() -> Result<Vec<Record>> {
+    Ok(all()?.into_iter().filter(spent).collect())
+}
+
+/// Whether a record has nobody left to answer for it **and nothing left behind it**,
+/// which is what makes one litter.
+///
+/// Three questions, and all three have to say nobody. **Has the process that opened
+/// this session gone** — not the *lifecycle* beside it, since a session an embedding
 /// process opened and closed is a closed session that process can still be asked
 /// about. And, only then, **is anything working inside its run root**, which is the
 /// same [`processes::holding`] answer [`close`] refuses on: a live process's own
-/// working directory.
+/// working directory. And, only then, **does its branch still carry work nobody has
+/// published** — [`holds_unpublished_work`].
 ///
 /// The second is what makes the first safe to act on. `onevcs session open` prints
 /// a token and exits, so a session opened from the command line has no owner
@@ -684,36 +701,93 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// the next `session open` would then reap a directory somebody is inside. That is
 /// the destruction this crate has already done once, reached by a different verb.
 ///
-/// So what is forgotten is a record with nobody to answer for it *and* nobody in
-/// it, which is the litter the report is about: seven of those above a launch made
-/// a real refusal arrive in the same shape as seven ignorable ones, and nothing has
-/// ever removed one.
+/// The third is what the first two cannot ask. Both of them ask whether anybody is
+/// *answering* for the session; neither asks whether it left anything behind. A node
+/// that settles failed with its branch preserved is precisely a session whose run
+/// settled, whose owner is gone, and whose run root nobody is inside — while its
+/// branch holds finished commits nobody has published. Forgetting that record takes
+/// its clone off the list [`checkouts_of`] hands every verb that looks for a branch
+/// by name, so the continuation onto that branch finds nothing carrying it, cuts a
+/// fresh one under the same name, and the publication of it refuses for having no
+/// commit that describes a change. The work is still on disk and nothing can reach
+/// it. So a branch with work behind it vetoes, whatever the other two say.
 ///
-/// Asked in that order deliberately: the owner is two file reads and the occupancy
-/// question walks every process on the host, so the cheap answer that retains is
-/// the one that runs on every record.
+/// So what is forgotten is a record with nobody to answer for it, nobody in it, and
+/// nothing behind it — which is the litter the report is about: seven of those above
+/// a launch made a real refusal arrive in the same shape as seven ignorable ones,
+/// and nothing had ever removed one.
+///
+/// Asked in that order deliberately: the owner is two file reads, the occupancy
+/// question walks every process on the host, and the branch question runs git in the
+/// clone — so the cheapest answer that retains is the one that runs on every record,
+/// and the dearest runs only on the records the other two have already given up on.
 fn spent(record: &Record) -> bool {
-    !record.owner_is_running() && processes::holding(&record.run_root).is_empty()
+    !record.owner_is_running()
+        && processes::holding(&record.run_root).is_empty()
+        && !holds_unpublished_work(record)
 }
 
-/// Drop one spent record, saying so rather than failing the read it happened in.
+/// Whether this session still holds work nobody has published — on its branch, or
+/// uncommitted in the worktree it was handed.
 ///
-/// Best effort: what the caller asked for is who holds this repository, and a
-/// record this host would not let go of is still an answer to that — reported as
-/// the housekeeping it is, on stderr, the way every other capture beside a decision
-/// already made reports itself.
-fn forget(token: &Token) {
-    let Ok(path) = record_path(token) else {
-        return;
-    };
-    if let Err(kept) = std::fs::remove_file(&path) {
-        if kept.kind() != std::io::ErrorKind::NotFound {
-            eprintln!(
-                "onevcs: warning: the session {token} has no owner process on this host any \
-                 more and its record at {} could not be removed: {kept}",
-                path.display(),
-            );
-        }
+/// The commits first, and asked the way [`reclaim`] keeps a dead run root and
+/// [`close`] lets a clone go: how much this session's branch holds that no `origin`
+/// ref does. One measure of "there is work here", so a run root and the record that
+/// indexes it cannot come to disagree about whether anything is behind this session.
+///
+/// **Two repositories, because a session's branch lives in two places.** The run
+/// clone is where the work is made, and [`hand_back`] copies it into the execution
+/// checkout as the session closes — so a record whose clone has since been reclaimed
+/// still has a branch, and forgetting it would be forgetting the session that made
+/// the work an operator is about to go looking for. Either copy holding something is
+/// this session holding something.
+///
+/// **Then the worktree**, because a run that stopped before it committed left its
+/// work nowhere else. `close` is what preserves such a tree onto a branch, and a
+/// session whose record is gone can no longer be closed — so an uncommitted tree with
+/// no record is work nothing can reach, which is the same loss by a longer route.
+///
+/// Anything that is not a confident answer of *none* retains: a count nobody got is
+/// not a count of none, and what this decides is whether to destroy the only route
+/// back to somebody's work. A repository that is not there holds nothing, which is
+/// the one negative answer that is a fact rather than a failure.
+fn holds_unpublished_work(record: &Record) -> bool {
+    // By its full ref name, for the reason `branch::locate` reads a copy of a branch
+    // that way: a tag or a remote-tracking ref wearing the same name is not this
+    // session's branch.
+    let reference = format!("refs/heads/{}", record.branch);
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: git declining a
+    // question it can answer, in a repository this crate has read as one on the line
+    // before. No interface this crate exposes produces that — a journey for it would
+    // be a fixture standing in for `git` rather than a journey — and what it would
+    // prove is that the record is *retained*, which is the answer every other unknown
+    // in this module already resolves to and the one the whole predicate exists to
+    // reach: a count nobody got is not a count of none.
+    let carried = [&record.clone, &record.execution_checkout]
+        .into_iter()
+        .any(|repo| {
+            git::is_repo(repo) && !matches!(git::unpublished_ahead(repo, &reference, &[]), Ok(0))
+        });
+    carried || (record.worktree.is_dir() && git::is_dirty(&record.worktree).unwrap_or(true))
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+}
+
+/// Drop one spent record, answering the reason it is still there rather than failing
+/// the sweep it happened in.
+///
+/// The path rather than the token, because the caller has already resolved one to
+/// read the record's age and to name it in its report: two resolutions of one path
+/// are two paths that could differ.
+///
+/// A record already gone is a removal that got what it wanted. Anything else is
+/// answered to the caller rather than printed here: the one caller is `onevcs sweep`,
+/// whose whole output is what it reaped and what it kept and why, and a warning
+/// beside that report would be the same fact said twice in two shapes.
+pub(crate) fn forget(record: &Path) -> std::result::Result<(), String> {
+    match std::fs::remove_file(record) {
+        Ok(()) => Ok(()),
+        Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(kept) => Err(format!("{kept}")),
     }
 }
 

@@ -460,11 +460,26 @@ something to read.
 
 | Item | Inferred shape | Why |
 | --- | --- | --- |
-| `sweep` with no operand | the two families this crate cuts run roots under, and nothing else | It is asked about this tool's own disk, and a path operand would make it a general-purpose remover pointed at whatever a caller typed. `branch::Verb::ALL` is the list, so the verbs that make the directories and the verb that reaps them cannot come to disagree about where they are. |
+| `sweep` with no operand | the two families this crate cuts run roots under, and the session records beside them — nothing else | It is asked about this tool's own disk, and a path operand would make it a general-purpose remover pointed at whatever a caller typed. `branch::Verb::ALL` is the list, so the verbs that make the directories and the verb that reaps them cannot come to disagree about where they are. |
 | `--dry-run` | reports the same decisions and removes nothing | What a caller wants from a rehearsal is what the real run would decide, so the two runs differ in the removal alone. |
 | `--min-age-hours HOURS` | a window, defaulting to 24 hours | Parsed into a `Duration` at the boundary, so nothing past the parser can be handed hours that are negative, infinite, or not a number. |
 | the exit code | `0` whenever the sweep *ran* | A run root it could not prove dead, or could not remove, is a line in the report. A caller that got a non-zero code for a directory somebody else is inside could not tell that from a sweep that never happened. |
-| the report | every family examined, every family it did not examine and why, what it reclaimed, and every retained directory with its reason | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. |
+| the report | every family examined, every family it did not examine and why, what it reclaimed, every retained directory with its reason, and every session record it considered with what became of it | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. A record silently removed is the same defect one verb along: it is a session an operator can no longer close, publish, or adopt. |
+
+**The session records are litter of the same kind, and this is the one verb that
+removes one.** A record whose owner process has gone, whose run root nobody is
+working in, and whose session left nothing behind — no commit on its branch that no
+`origin` ref carries, in the run clone or in the execution checkout `workspace::close`
+hands it back to, and no uncommitted tree in its worktree — is a file nothing will
+ever read again, and nothing had ever removed one: seven of them above a launch made
+a real refusal arrive in the same shape as seven ignorable ones.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| where a record is reaped | `onevcs sweep`, never `onevcs session holders` | The enumeration is an interlock a consumer runs on every launch, so a read that deleted made that caller the one performing the deletion. It deleted the record of a node that had settled `failed` with its branch preserved, which took that clone off the list `workspace::checkouts_of` hands every verb that searches a branch by name: the continuation onto that branch then found nothing carrying it, cut a fresh one under the same name, and the publication refused for having no commit that describes a change. |
+| what makes a record spent | nobody answering for it *and* nothing behind it, asked in that order | The owner process is two file reads, the run root's occupants walk every process on the host, and the work question runs `git` — so the cheapest answer that retains runs on every record and the dearest runs only on the ones the others have given up on. The third is the one the first two cannot ask: both ask whether anybody is *answering* for a session, neither asks whether it left anything behind. |
+| a spent record inside the age floor | kept, with the floor as its reason | The same promise the directories get, for the same reason: `onevcs session open` prints a token and exits, so a record written a minute ago belongs to a session whose dispatch has not started working yet. |
+| a record this host would not remove | kept, and named in the report with the reason | The one caller has a report to say it in, so a warning beside it would be the same fact in two shapes. |
 
 **Retain rather than remove whenever the answer is not proven.**
 The state root is shared by several managers on one host. A run root whose owner
@@ -496,7 +511,10 @@ exists to prevent.
 **One boundary is deliberately outside it.** `workspaces/<identity>/runs` is the
 per-run lifecycle clone root, which `workspace::reclaim` keeps as a bounded
 recovery history so a dead run's branch stays reachable. This verb reports it as a
-family it does not reach into rather than reaping it. **`recoveries` is inside**,
+family it does not reach into rather than reaping it — and forgetting a record is not
+reaching into it, because what a spent record names is a run root whose session left
+nothing behind, which is one `workspace::reclaim` removes on sight. **`recoveries` is
+inside**,
 and that was a decision rather than an oversight: it is the same directory shape
 cut by the same function under the same two proofs, and leaving it out would mean
 one of two families filling a disk that the other no longer does.
