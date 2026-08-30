@@ -705,7 +705,7 @@ fn findings_fail_the_tier_and_are_never_replayed() {
 fn a_report_nx_relayed_none_of_is_read_back_from_the_record() {
     let workspace = Workspace::new();
     let base = workspace.head();
-    // llmlint: ignore-block[e2e_not_mocked, tests_mirror_real_usage] the layer under test is the driver,
+    // llmlint: ignore-block[e2e_not_mocked] the layer under test is the driver,
     // `scripts/llmlint-diff.sh`, and the state it has to answer for is one only Nx
     // produces: a task whose own streams were dropped while Nx's framing around them
     // survived. Nx offers no way to ask for that, so the judge — the driver's
@@ -714,9 +714,7 @@ fn a_report_nx_relayed_none_of_is_read_back_from_the_record() {
     // from the real `scripts/llmlint-report-marker.sh` the shipped judge uses, so a
     // spelling that drifted between the two ends fails this journey rather than
     // silently disabling the read-back. Everything else is real: the recipe, Nx and
-    // its target declaration, and the driver whose branch this covers. The second
-    // rule is named for the same reason: an operator does reach this state, and the
-    // only interface that produces it is an Nx that chose to drop a stream.
+    // its target declaration, and the driver whose branch this covers.
     write_script(
         &workspace.root.join("scripts/llmlint-judge.sh"),
         &format!(
@@ -736,7 +734,7 @@ exit 1
             report = RECORDED_REPORT,
         ),
     );
-    // llmlint: ignore-end[e2e_not_mocked, tests_mirror_real_usage]
+    // llmlint: ignore-end[e2e_not_mocked]
 
     let lost = workspace.lint(&base, &[], &[]);
     let relayed = Workspace::new();
