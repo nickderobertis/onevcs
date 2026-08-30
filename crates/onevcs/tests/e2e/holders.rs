@@ -200,7 +200,7 @@ fn the_library_refuses_a_repository_nothing_resolves_rather_than_answering_empty
 }
 
 #[test]
-fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_state() {
+fn holders_reports_live_and_stale_open_and_closed_sessions_and_forgets_a_recycled_owner() {
     let fixture = Fixture::local(&local_direct());
     inhabit(&fixture.world);
     // Both sessions are opened by *this* process, so both have an owner that is
