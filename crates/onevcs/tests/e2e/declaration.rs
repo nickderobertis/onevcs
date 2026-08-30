@@ -1575,10 +1575,26 @@ fn a_variable_a_caller_supplies_is_held_to_rendering_as_itself() {
             },
         )
     };
+    let variables =
+        |repository: Option<&str>, version: Option<&str>| onevcs::InstructionVariables {
+            repository: repository.map(str::to_owned),
+            version: version.map(str::to_owned),
+        };
     let refused = |repository: Option<&str>, version: Option<&str>| {
-        render(repository, version)
+        let refusal = render(repository, version)
             .expect_err("a variable that does not render as itself is refused")
-            .to_string()
+            .to_string();
+        // A caller applying the rule at its own boundary gets that same refusal, which
+        // is what makes the check public rather than something a caller restates.
+        assert_eq!(
+            variables(repository, version)
+                .checked()
+                .expect_err("the caller's own check refuses what a render refuses")
+                .to_string(),
+            refusal,
+            "one rule, asked from either side"
+        );
+        refusal
     };
     let host = Some("github.com/nickderobertis/onevcs");
     assert!(
@@ -1598,6 +1614,11 @@ fn a_variable_a_caller_supplies_is_held_to_rendering_as_itself() {
             .contains("carries a control character"),
         "and so is the repository it is rendered for"
     );
+
+    // …and a pair a render accepts is a pair the caller's own check accepts.
+    variables(host, Some("0.18.0"))
+        .checked()
+        .expect("both values render as themselves");
 
     // …while a caller that genuinely has no identity to give says so, and the template
     // can ask rather than printing a gap.

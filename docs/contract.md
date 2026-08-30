@@ -1356,7 +1356,11 @@ where the target declares none). Two are the consumer's, supplied at render:
 `repository` (the identity the release came from, undefined where the caller has none)
 and `version` (the released version, **undefined until there is one**). Both are
 `Option`, and a blank one is refused rather than rendered: a caller without the value
-says so with `None`, which is the state a template asks about. Undefined is
+says so with `None`, which is the state a template asks about.
+`InstructionVariables::checked` is public for the reason `DraftReason::checked` is —
+it is a rule about what a value is rather than about one rendering of it, so a caller
+applies *that* rule at its own boundary rather than a restatement that could accept
+what a render refuses. Undefined is
 semi-strict: a template may ask `{% if version %}` about a variable that is not there,
 and printing one that is not there is an error rather than a gap in the middle of a
 sentence somebody acts on.
@@ -1407,6 +1411,7 @@ pub mod declaration {                                 // the producer's half
     impl InstructionTemplate { pub fn source(&self) -> &str; }
     pub struct InstructionVariables { pub repository: Option<String>,
                                      pub version: Option<String> }
+    impl InstructionVariables { pub fn checked(&self) -> Result<()>; }
     pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }
     pub struct RegistryId { /* registry, name */ }    // TryFrom<String>, `<registry>:<name>`
     impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }

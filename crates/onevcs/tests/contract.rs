@@ -1419,6 +1419,7 @@ fn the_amendment_declares_the_producer_declaration_it_added() {
         "impl InstructionTemplate { pub fn source(&self) -> &str; }",
         "pub struct InstructionVariables { pub repository: Option<String>,",
         "pub version: Option<String> }",
+        "impl InstructionVariables { pub fn checked(&self) -> Result<()>; }",
         "pub struct RetiredArtifact { pub id: RegistryId, pub why: Prose }",
         "impl RegistryId { pub fn registry(&self) -> &str; pub fn name(&self) -> &str; }",
         "pub struct Prose(String);",

@@ -570,28 +570,48 @@ pub struct InstructionVariables {
     ///
     /// `None` where the caller has none to give, which renders `repository` as
     /// undefined rather than as a gap in the middle of a sentence. An `Option` rather
-    /// than an empty string for the reason `version` beside it is one: "nobody said"
-    /// and "somebody said nothing" are two states, and a sentinel that spells them
-    /// alike is a state this type would let a caller reach.
+    /// than an empty string: "nobody said" and "somebody said nothing" are two
+    /// states, and a sentinel that spelled them alike is a state this type would let
+    /// a caller reach.
+    // llmlint: ignore[invalid_states_unrepresentable] the *string* is bare on purpose, and
+    // [`checked`](Self::checked) is the rule rather than a conversion — the same shape
+    // `DraftReason` next door has, and for the same reason the contract gives there: the
+    // fields are fixed public and settable, so there is no constructor for a check to live
+    // in. A newtype here would also be a second vocabulary for a value this crate already
+    // hands its own caller as a `String`: an identity is `RepositoryReleases::identity`.
     pub repository: Option<String>,
     /// The version that was released, where there is one.
     ///
     /// `None` is the state that makes the whole field a template: a node that adopts
     /// fast launches *before* the release exists, so its first render has no version
     /// and `{% if version %}` is how a producer writes for both.
+    // llmlint: ignore[invalid_states_unrepresentable] for the reason `repository` above
+    // states, and one more that is specific to this field: a released version is a bare
+    // `String` on every approved surface this crate already has — `ReleaseAnswer::Released`,
+    // `Baseline::At`, `ReleaseStatus::Released`, `Acknowledgement::version` — so a newtype
+    // here would make a caller convert a value this crate handed it a moment ago.
     pub version: Option<String>,
 }
 
 impl InstructionVariables {
     /// Whether each variable renders as itself.
     ///
+    /// Whether each variable renders as itself.
+    ///
     /// Both values here arrive from the caller rather than from the declaration, and
     /// both are rendered into text somebody reads, so a control character in either
     /// would put something other than what it is into the instruction. A blank one is
-    /// refused for the reason the field is an `Option` at all: a caller that does not
+    /// refused for the reason the fields are `Option`s at all: a caller that does not
     /// have the value says so with `None`, which is the state `{% if version %}` is
     /// written against, and `Some("")` is that state spelled a second way.
-    fn checked(&self) -> Result<()> {
+    ///
+    /// Public for the reason [`DraftReason::checked`](crate::DraftReason::checked) is:
+    /// it is a rule about what a value *is* rather than about any one rendering of it,
+    /// so a caller applies **this** rule at its own boundary rather than a restatement
+    /// that could accept what a render refuses. A method rather than a conversion
+    /// because the fields are public and settable, which leaves no constructor for the
+    /// check to live in.
+    pub fn checked(&self) -> Result<()> {
         for (what, value) in [
             ("repository", self.repository.as_deref()),
             ("released version", self.version.as_deref()),
