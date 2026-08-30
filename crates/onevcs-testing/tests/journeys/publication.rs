@@ -10,8 +10,8 @@
 use clap::Parser;
 use onevcs::cli::Cli;
 use onevcs::{
-    FailureKind, Hosting, Lifecycle, MergePolicy, Provenance, Providers, PublishOutcome,
-    PublishRequest, Session, SessionRequest, SessionToken, Vcs,
+    DraftReason, FailureKind, Hosting, Lifecycle, MergePolicy, Provenance, Providers,
+    PublishOutcome, PublishRequest, Session, SessionRequest, SessionToken, TargetName, Vcs,
 };
 use onevcs_testing::{FileHost, FileVcs, HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -205,6 +205,7 @@ fn a_publication_adopts_the_change_request_the_host_already_holds() {
             base: "main".to_owned(),
             title: "feat: the earlier attempt".to_owned(),
             body: None,
+            draft: None,
         })
         .expect("a change request");
 
@@ -254,6 +255,7 @@ fn a_requested_title_and_body_are_the_ones_the_host_is_given() {
             policy: None,
             title: Some(subject("  feat: the requested title  ")),
             body: Some(drafted.to_owned()),
+            draft: None,
         },
         &host,
     )
@@ -388,4 +390,198 @@ fn a_file_backed_provider_publishes_and_closes_across_invocations() {
     assert_eq!(state.publications[0].branch, "feature/across");
     assert!(state.closed_sessions.contains(&session.token));
     assert_eq!(host.state().expect("readable").changes.len(), 1);
+}
+
+/// The reason a fast-adopting caller drafts a change request with.
+fn awaiting_a_release() -> DraftReason {
+    DraftReason {
+        awaiting: "github.com/acme-corp/upstream".to_owned(),
+        target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+        reference: "feature/the-pinned-branch".to_owned(),
+        because: "the dependency is pinned to a branch until crate 2.0 is released".to_owned(),
+    }
+}
+
+#[test]
+fn a_drafted_publication_opens_a_draft_here_the_way_it_opens_one_next_door() {
+    // The host side of a draft is a thing this provider can honestly perform: the
+    // change request is really opened as a draft on the host it was handed, really
+    // held back from every merge while it stands, and really taken out of the draft
+    // by the next publication that carries no reason.
+    let home = Home::new();
+    let mut state = one_repository();
+    // The policy that asks the host to land it, so that a draft holding it back is
+    // the *only* thing that could be holding it back.
+    state.policy = Some(MergePolicy::ChangeDirect);
+    let vcs = MemoryVcs::seeded(state);
+    let host = MemoryHost::new();
+    let session = open(&vcs, "feature/drafted");
+    let reason = awaiting_a_release();
+
+    let published = vcs
+        .publish(
+            &session.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(reason.clone()),
+            },
+            &host,
+        )
+        .expect("the publication runs");
+
+    let PublishOutcome::ChangeDraft(url) = published.outcome.clone() else {
+        panic!("a drafted publication opens a draft: {published:?}");
+    };
+    let opened = host.state().changes[0].clone();
+    assert_eq!(opened.url, url);
+    assert_eq!(
+        host.state().drafts.get(&opened.id),
+        Some(&reason),
+        "the host was given the whole reason"
+    );
+    assert!(
+        host.state().merges.is_empty(),
+        "nothing asked this host to merge a draft: {:?}",
+        host.state().merges
+    );
+    // The record, and the only place the reason is: the body is not written at all.
+    let drafted: Vec<serde_json::Value> = home
+        .events(&session.token.0)
+        .into_iter()
+        .filter(|event| event["kind"] == "change-drafted")
+        .collect();
+    assert_eq!(drafted.len(), 1, "{drafted:?}");
+    assert_eq!(drafted[0]["payload"]["because"], reason.because);
+    assert_eq!(drafted[0]["payload"]["awaiting"], reason.awaiting);
+    assert_eq!(drafted[0]["payload"]["reference"], reason.reference);
+    assert_eq!(drafted[0]["payload"]["target"], reason.target.to_string());
+    assert!(host.state().bodies.is_empty(), "no body was written");
+
+    // Publishing again with no reason lifts it, and the change then lands under the
+    // policy that was waiting for it all along.
+    let lifted = vcs
+        .publish(&session.token, &PublishRequest::default(), &host)
+        .expect("the second publication runs");
+    assert!(
+        matches!(lifted.outcome, PublishOutcome::Merged(_)),
+        "a lifted draft lands under change-direct: {lifted:?}"
+    );
+    assert_eq!(host.state().reviews_requested, vec![opened.id.clone()]);
+    assert_eq!(
+        home.events(&session.token.0)
+            .into_iter()
+            .filter(|event| event["kind"] == "draft-lifted")
+            .count(),
+        1,
+        "the lift is recorded once"
+    );
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "the lift adopted the change rather than opening a second"
+    );
+}
+
+#[test]
+fn a_second_lift_here_asks_the_host_for_nothing_and_reports_the_original() {
+    let _home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+    let host = MemoryHost::new();
+    let session = open(&vcs, "feature/twice-lifted");
+
+    let drafted = vcs
+        .publish(
+            &session.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(awaiting_a_release()),
+            },
+            &host,
+        )
+        .expect("the publication runs");
+    let PublishOutcome::ChangeDraft(url) = drafted.outcome else {
+        panic!("a drafted publication opens a draft: {drafted:?}");
+    };
+
+    let lifted = vcs
+        .publish(&session.token, &PublishRequest::default(), &host)
+        .expect("the second publication runs");
+    assert_eq!(lifted.outcome, PublishOutcome::ChangeOpen(url));
+    let asked = host.state().reviews_requested;
+
+    let again = vcs
+        .publish(&session.token, &PublishRequest::default(), &host)
+        .expect("the third publication runs");
+    assert_eq!(
+        again.outcome, lifted.outcome,
+        "a second lift reports the original"
+    );
+    assert_eq!(
+        host.state().reviews_requested,
+        asked,
+        "and asks the host for nothing"
+    );
+}
+
+#[test]
+fn drafting_is_refused_here_where_it_is_refused_next_door() {
+    let _home = Home::new();
+    // A local-direct publication opens no change request at all, so there is nothing
+    // to draft — the same refusal the real implementation makes at the same point.
+    let mut state = one_repository();
+    state.policy = Some(MergePolicy::LocalDirect);
+    let vcs = MemoryVcs::seeded(state);
+    let host = MemoryHost::new();
+    let session = open(&vcs, "feature/undraftable");
+
+    let published = vcs
+        .publish(
+            &session.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(awaiting_a_release()),
+            },
+            &host,
+        )
+        .expect("the publication runs and reports what stopped it");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("local-direct cannot draft: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Invalid);
+    assert!(
+        reason.contains("local-direct") && reason.contains("github.com/acme-corp/upstream"),
+        "{reason}"
+    );
+
+    // And a change request already open for review is not put back into a draft:
+    // this host is holding nothing, so saying the work is held back would be false.
+    let open_already = MemoryVcs::seeded(one_repository());
+    let second = MemoryHost::new();
+    let other = open(&open_already, "feature/already-open");
+    open_already
+        .publish(&other.token, &PublishRequest::default(), &second)
+        .expect("the first publication runs");
+    let refused = open_already
+        .publish(
+            &other.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(awaiting_a_release()),
+            },
+            &second,
+        )
+        .expect("the publication runs and reports what stopped it");
+    let PublishOutcome::Failed { reason, .. } = &refused.outcome else {
+        panic!("an open change request is not drafted: {refused:?}");
+    };
+    assert!(reason.contains("open for review"), "{reason}");
+    assert!(second.state().drafts.is_empty());
 }

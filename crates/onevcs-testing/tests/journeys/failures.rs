@@ -82,6 +82,7 @@ fn a_state_root_that_cannot_hold_a_stream_does_not_fail_the_operation() {
             base: "main".to_owned(),
             title: "feat: the thing".to_owned(),
             body: None,
+            draft: None,
         })
         .expect("opened");
     let refused = host
@@ -105,6 +106,7 @@ fn an_unusable_state_root_is_refused_by_name() {
             base: "main".to_owned(),
             title: "feat: the thing".to_owned(),
             body: None,
+            draft: None,
         })
         .expect("opened");
     let check = crate::support::green_check("gate");
@@ -395,6 +397,7 @@ fn a_change_with_no_checks_at_all_is_not_one_auto_merge_lands() {
             base: "main".to_owned(),
             title: "feat: the thing".to_owned(),
             body: None,
+            draft: None,
         })
         .expect("opened");
 
@@ -435,6 +438,7 @@ fn a_check_named_something_that_is_not_a_filename_still_has_its_log_stored() {
             base: "main".to_owned(),
             title: "feat: the thing".to_owned(),
             body: None,
+            draft: None,
         })
         .expect("opened");
 

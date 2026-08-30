@@ -87,7 +87,9 @@ pub use host::{
 };
 pub use landed::{Landed, LandingEvidence};
 pub use providers::Providers;
-pub use publish::{FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject};
+pub use publish::{
+    DraftReason, FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject,
+};
 pub use registry::Identity;
 pub use releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,

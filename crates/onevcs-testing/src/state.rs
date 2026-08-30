@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, Error, Identity, Landed, MergeOutcome,
-    Recoverable, Result,
+    ChangeId, ChangeRequest, Check, CheckSource, DraftReason, Error, Identity, Landed,
+    MergeOutcome, Recoverable, Result,
 };
 use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
 
@@ -34,7 +34,10 @@ use crate::store::Checked;
 /// holding a branch, and the lines it would land when it removes more than it adds.
 /// `5` is one more of those: whether the branch's work reached its base, and what
 /// says so. `6` is the two a `Check` gained inside [`HostState::checks`] — the
-/// commit the host attached that check to, and where the check is on the host.
+/// commit the host attached that check to, and where the check is on the host. `7`
+/// is the two a draft change request needs — [`HostState::drafts`], the reason each
+/// change request was opened as a draft with, and [`HostState::reviews_requested`],
+/// the lifts the host was asked for.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -44,7 +47,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 6;
+pub const STATE_VERSION: u32 = 7;
 
 /// The oldest document version this build reads.
 ///
@@ -62,7 +65,9 @@ pub const STATE_VERSION: u32 = 6;
 /// appear only when they hold something, so a version 5 document's checks read as
 /// checks whose commit and address that build never recorded — which is what they
 /// were, and the one thing that must not be filled in from the change request's own
-/// head.
+/// head. `6` to `7` added two more of that kind, so a version 6 document reads as one
+/// whose change requests were opened before this crate could draft one — which is what
+/// they were: no draft reason recorded for any of them, and no lift ever asked for.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -237,6 +242,29 @@ pub struct HostState {
     /// without this the only log a journey could asssert on is a synthesized one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub check_logs: BTreeMap<ChangeId, BTreeMap<String, String>>,
+    /// The reason each change request that was opened as a **draft** was drafted
+    /// with, for the change requests that were.
+    ///
+    /// Beside [`bodies`](HostState::bodies) and for its reason: the reason is what a
+    /// caller passes on the `PublishRequest` and this is where a journey reads back
+    /// that the host was given it. A change with no entry is not a draft, which is
+    /// what every change request opened without one is.
+    ///
+    /// Nothing is refused about the reason itself here. Its shape — that every field
+    /// of it renders as the one line it is printed on — is `onevcs`'s own rule, and
+    /// it is applied where a publication takes one in, before any host is asked.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub drafts: BTreeMap<ChangeId, DraftReason>,
+    /// Every change request this host was asked to make ready for review, in the
+    /// order it was asked.
+    ///
+    /// A list rather than a set, and beyond the sketch for a reason a set could not
+    /// serve: lifting a draft is required to be *idempotent*, so what a journey
+    /// asserts is that a second publication asked the host for nothing — and only a
+    /// record of the calls themselves can say that. A change named here is not a
+    /// draft any more, whatever [`drafts`](HostState::drafts) says it was opened as.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reviews_requested: Vec<ChangeId>,
     /// Which sources this host answers about its checks from, which is what the
     /// real implementation reports alongside them.
     ///
@@ -275,6 +303,8 @@ impl Default for HostState {
             heads: BTreeMap::new(),
             titles: BTreeMap::new(),
             bodies: BTreeMap::new(),
+            drafts: BTreeMap::new(),
+            reviews_requested: Vec::new(),
             checks: BTreeMap::new(),
             check_logs: BTreeMap::new(),
             check_sources: None,
@@ -579,6 +609,12 @@ impl Checked for HostState {
             // Nothing is refused about the body itself: a host places no shape on
             // prose, and a change request opened with an empty one is a scenario.
             opened_change(self, id, "a body")?;
+        }
+        for id in self.drafts.keys() {
+            opened_change(self, id, "a draft reason")?;
+        }
+        for id in &self.reviews_requested {
+            opened_change(self, id, "a lifted draft")?;
         }
         Ok(())
     }

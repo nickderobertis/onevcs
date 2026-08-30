@@ -501,6 +501,10 @@ impl World {
     /// a workflow run's own `head_sha`. Both are host-supplied text a publication
     /// goes on to compare against the commit it pushed, so neither may be taken on
     /// trust.
+    ///
+    /// `no-draft-state` answers a `gh pr view` without the field that says whether
+    /// the change request is a draft, which is what a host that will not say looks
+    /// like — never the same thing as a host saying it is not one.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -935,10 +939,11 @@ esac
 subcommand="${1:-}"; shift || true
 number=""
 case "$subcommand" in
-  view|merge|checks) number="${1:-}"; shift || true ;;
+  view|merge|checks|ready) number="${1:-}"; shift || true ;;
 esac
 
 repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""; only_required=0
+draft=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}"; shift 2 ;;
@@ -949,6 +954,7 @@ while [ $# -gt 0 ]; do
     --json) json_fields="${2:-}"; shift 2 ;;
     --state) shift 2 ;;
     --auto) auto=1; shift ;;
+    --draft) draft=1; shift ;;
     --required) only_required=1; shift ;;
     *) shift ;;
   esac
@@ -1164,6 +1170,7 @@ case "$subcommand" in
       printf 'PR_BASE=%s\n' "$base"
       printf 'PR_HEAD_SHA=%s\n' "$head_sha"
       printf 'PR_MERGE_COMMIT=\n'
+      printf 'PR_DRAFT=%s\n' "$draft"
     } >"$STATE/pr-$next.env"
     printf '%s\n' "$title" >"$STATE/pr-$next.title"
     printf '%s\n' "$body" >"$STATE/pr-$next.body"
@@ -1185,17 +1192,17 @@ case "$subcommand" in
     if [ -n "$PR_MERGE_COMMIT" ]; then merge_commit="{\"oid\":\"$PR_MERGE_COMMIT\"}"; fi
     case "$malformed" in
       no-head)
-        printf '{"number":%s,"state":"%s","mergeCommit":null,"statusCheckRollup":[]}\n' \
+        printf '{"number":%s,"state":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":[]}\n' \
           "$PR_NUMBER" "$PR_STATE"
         exit 0 ;;
       rollup-not-a-list)
-        printf '{"number":%s,"state":"%s","headRefOid":"%s","mergeCommit":null,"statusCheckRollup":"soon"}\n' \
+        printf '{"number":%s,"state":"%s","headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":"soon"}\n' \
           "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA"
         exit 0 ;;
       no-state)
         # Its checks are answered as usual, so the publication reaches the merge —
         # which is the call that has to know whether the change is already merged.
-        printf '{"number":%s,"headRefOid":"%s","mergeCommit":null,"statusCheckRollup":%s}\n' \
+        printf '{"number":%s,"headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":%s}\n' \
           "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
         exit 0 ;;
       misleading-refusal)
@@ -1220,9 +1227,24 @@ case "$subcommand" in
     if wanted state; then printf '%s"state":"%s"' "$separator" "$PR_STATE"; separator=","; fi
     if wanted mergeStateStatus; then printf '%s"mergeStateStatus":"CLEAN"' "$separator"; separator=","; fi
     if wanted headRefOid; then printf '%s"headRefOid":"%s"' "$separator" "$PR_HEAD_SHA"; separator=","; fi
+    # A host that answers the call and says nothing about the draft state, which is
+    # not the same as saying it is not one: whether the change may be asked to merge
+    # rests on this field, so its absence is a refusal rather than a `false`.
+    if wanted isDraft && [ "$malformed" != "no-draft-state" ]; then
+      is_draft=false
+      # A draft the host was asked to make ready for review is not one any more,
+      # which is what makes lifting it observable and lifting it twice a no-op.
+      if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then is_draft=true; fi
+      printf '%s"isDraft":%s' "$separator" "$is_draft"; separator=","
+    fi
     if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
     if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
     printf '}\n'
+    ;;
+  ready)
+    . "$STATE/pr-$number.env"
+    : >"$STATE/ready-$PR_NUMBER"
+    printf '%s is marked as "ready for review"\n' "$PR_URL"
     ;;
   merge)
     . "$STATE/pr-$number.env"

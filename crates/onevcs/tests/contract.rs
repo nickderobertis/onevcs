@@ -34,11 +34,11 @@ use onevcs::releases::{
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
-    Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy,
-    Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness, MergeOutcome,
-    MergePolicy, NetNegative, Phase, PreservedBranch, Provenance, Publication, PublishOutcome,
-    PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session, SessionHolder,
-    SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
+    DraftReason, Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub,
+    HeldBy, Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
+    MergeOutcome, MergePolicy, NetNegative, Phase, PreservedBranch, Provenance, Publication,
+    PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session,
+    SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -145,20 +145,31 @@ fn only_block(language: &str, region: &str, named: &str) -> String {
     matching.into_iter().next().expect("checked above")
 }
 
-/// Every span the contract wrote in backticks on the line introduced by `prefix`.
+/// Every span the contract wrote in backticks on the lines introduced by `prefix`.
+///
+/// Every such line, rather than the first: amendments accumulate, and each one that
+/// adds or retires an event kind says so where it is written. Reading only the first
+/// would make the second amendment to do it silently invisible — which is exactly the
+/// drift this reconciliation exists to catch.
 fn backticked_on_line(prefix: &str) -> Vec<String> {
     let doc = contract();
-    let line = doc
+    let lines: Vec<&str> = doc
         .lines()
-        .find(|line| line.starts_with(prefix))
-        .unwrap_or_else(|| panic!("the contract has no line starting with {prefix:?}"));
+        .filter(|line| line.starts_with(prefix))
+        .collect();
+    assert!(
+        !lines.is_empty(),
+        "the contract has no line starting with {prefix:?}"
+    );
     let mut spans = Vec::new();
-    let mut rest = line;
-    while let Some(start) = rest.find('`') {
-        rest = &rest[start + 1..];
-        let end = rest.find('`').expect("a backtick span must be closed");
-        spans.push(rest[..end].to_owned());
-        rest = &rest[end + 1..];
+    for line in lines {
+        let mut rest = line;
+        while let Some(start) = rest.find('`') {
+            rest = &rest[start + 1..];
+            let end = rest.find('`').expect("a backtick span must be closed");
+            spans.push(rest[..end].to_owned());
+            rest = &rest[end + 1..];
+        }
     }
     spans
 }
@@ -230,6 +241,8 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::CommitPreserved,
         EventKind::Push,
         EventKind::ChangeOpened,
+        EventKind::ChangeDrafted,
+        EventKind::DraftLifted,
         EventKind::ChangeCheck,
         EventKind::ChangeMerged,
         EventKind::MergeQueued,
@@ -251,6 +264,8 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::CommitPreserved
             | EventKind::Push
             | EventKind::ChangeOpened
+            | EventKind::ChangeDrafted
+            | EventKind::DraftLifted
             | EventKind::ChangeCheck
             | EventKind::ChangeMerged
             | EventKind::MergeQueued
@@ -1935,6 +1950,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         base: "main".to_owned(),
         title: "feat: add the seam".to_owned(),
         body: None,
+        draft: None,
     };
     assert_eq!(session.branch, "feature");
     assert_eq!(request.repo, "nickderobertis/onevcs");
@@ -2508,6 +2524,9 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         policy: Some(MergePolicy::ChangeOpen),
         title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
         body: Some("Why the seam is where it is.".to_owned()),
+        // The field the draft amendment added, declared there rather than here, which
+        // is why the assertion below reads the older amendment's declaration unchanged.
+        draft: None,
     };
     let publication = Publication {
         session: record.session.token.clone(),
@@ -2592,6 +2611,12 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
         policy: Some(MergePolicy::ChangeOpen),
         title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
         body: Some("Why the seam is where it is.".to_owned()),
+        draft: Some(DraftReason {
+            awaiting: "github.com/acme-corp/upstream".to_owned(),
+            target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+            reference: "feature/the-pinned-branch".to_owned(),
+            because: "the pin moves when the release lands".to_owned(),
+        }),
     };
     let serialized = serde_json::to_value(&request).expect("a request serializes");
     let fields: BTreeSet<String> = serialized
@@ -3432,6 +3457,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
     let outcomes = [
         PublishOutcome::Merged(Sha("0f1e2d3".to_owned())),
         PublishOutcome::ChangeOpen(url.clone()),
+        PublishOutcome::ChangeDraft(url.clone()),
         PublishOutcome::Queued(url),
         PublishOutcome::NothingToPublish,
         PublishOutcome::Failed {
@@ -3446,6 +3472,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
             // Exhaustive on purpose: this is what makes the list complete.
             PublishOutcome::Merged(_) => "Merged",
             PublishOutcome::ChangeOpen(_) => "ChangeOpen",
+            PublishOutcome::ChangeDraft(_) => "ChangeDraft",
             PublishOutcome::Queued(_) => "Queued",
             PublishOutcome::NothingToPublish => "NothingToPublish",
             PublishOutcome::Failed { .. } => "Failed",

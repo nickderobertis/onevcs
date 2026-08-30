@@ -140,6 +140,7 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
                 // real `gh pr create` is asked for a change request with an empty
                 // one, and this tier is where that call is actually made.
                 body: None,
+                draft: None,
             },
             providers.hosting,
         )

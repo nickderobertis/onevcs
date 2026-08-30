@@ -156,7 +156,14 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             // none, so a journey can tell "nobody drafted one" from "the body is
             // empty" — which is the distinction the real host draws too.
             if let Some(body) = req.body.clone() {
-                state.bodies.insert(id, body);
+                state.bodies.insert(id.clone(), body);
+            }
+            // Beside the body and for its reason: a change request opened as a draft
+            // records the reason it was drafted with, and one opened without a reason
+            // records nothing — which is how a journey tells a draft from an ordinary
+            // change request rather than from a flag nobody kept.
+            if let Some(reason) = req.draft.clone() {
+                state.drafts.insert(id, reason);
             }
             state.changes.push(change.clone());
             Ok(change)
@@ -241,6 +248,26 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
                 MergePolicy::ChangeDirect => landed(state),
             })
         })
+    }
+
+    /// Take the change request out of its draft state.
+    ///
+    /// The call itself is what is recorded, rather than a flag that would read the
+    /// same whether it was made once or twice: what a journey asks of this is whether
+    /// a second publication over an already-lifted change asked the host for
+    /// anything, and only the calls can answer that. A change already open for review
+    /// is already what this asks for, so it succeeds — the caller wanted it ready,
+    /// and it is.
+    fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()> {
+        self.store.with(|state| {
+            state.reviews_requested.push(cr.id.clone());
+            Ok(())
+        })
+    }
+
+    fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
+        let state = self.store.snapshot()?;
+        Ok(state.drafts.contains_key(&cr.id) && !state.reviews_requested.contains(&cr.id))
     }
 
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {

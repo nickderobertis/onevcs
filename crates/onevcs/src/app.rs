@@ -265,6 +265,10 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
             policy: args.policy,
             title,
             body,
+            // The command line takes no draft: the reason is four machine-readable
+            // fields a caller composes, and this surface is the library's. A CLI
+            // spelling of it is a public argument the contract does not name.
+            draft: None,
         },
     )?;
     let PublishOutcome::Failed {

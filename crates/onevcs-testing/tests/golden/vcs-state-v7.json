@@ -1,0 +1,67 @@
+{
+  "version": 7,
+  "identities": [
+    {
+      "origin": "github.com/acme-corp/widgets",
+      "workflow": "remote",
+      "repo_type": "team",
+      "gate": "just check"
+    }
+  ],
+  "sessions": [
+    {
+      "token": "s-testing-1",
+      "worktree": "/scratch/s-testing-1/worktree",
+      "branch": "feature/seeded",
+      "base": "main"
+    }
+  ],
+  "session_identities": {
+    "s-testing-1": "github.com/acme-corp/widgets"
+  },
+  "preserved": [
+    {
+      "identity": "github.com/acme-corp/widgets",
+      "branch": {
+        "branch": "feature/seeded",
+        "base": "main",
+        "provenance": "incomplete-step",
+        "change_url": "https://github.com/acme-corp/widgets/pull/7",
+        "change_base": "feature/below"
+      },
+      "checkout": "/scratch/widgets",
+      "stopped_because": "the run was interrupted",
+      "landed": {
+        "state": "no"
+      },
+      "recover_command": [
+        "onevcs",
+        "recover",
+        "feature/seeded"
+      ],
+      "held_by": {
+        "token": "s-testing-1",
+        "worktree": "/scratch/s-testing-1/worktree",
+        "holding": "owner-running"
+      },
+      "net_negative": {
+        "added": 3,
+        "removed": 481
+      }
+    }
+  ],
+  "closed_sessions": [
+    "s-testing-1"
+  ],
+  "policy": "change-auto",
+  "publications": [
+    {
+      "session": "s-testing-1",
+      "branch": "feature/seeded",
+      "policy": "change-auto",
+      "outcome": {
+        "merged": "abc123"
+      }
+    }
+  ]
+}

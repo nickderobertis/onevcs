@@ -19,6 +19,7 @@ fn spec(head: &str) -> ChangeSpec {
         base: "main".to_owned(),
         title: "feat: the thing".to_owned(),
         body: Some("## What\n\nthe thing\n".to_owned()),
+        draft: None,
     }
 }
 
