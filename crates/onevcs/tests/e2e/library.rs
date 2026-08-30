@@ -3463,3 +3463,56 @@ fn a_branch_keyed_verb_lifts_the_draft_the_session_that_cut_the_branch_opened() 
     );
     assert_eq!(host.state().changes[0].url, url);
 }
+
+#[test]
+fn a_real_host_that_will_not_say_during_a_lift_stops_the_publication() {
+    // The other side of the same rule, on the lift rather than on the draft: a host
+    // that would not say whether it is holding the change is not read as holding
+    // nothing. Reading it that way would carry straight on to the merge, which is the
+    // one thing a draft exists to prevent.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = worked(&world, "feature/unreadable-lift");
+
+    let drafted = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(awaiting_a_release()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(matches!(
+        drafted.outcome,
+        PublishOutcome::ChangeDraft { .. }
+    ));
+
+    world.answer_malformed("no-draft-state");
+    let refused = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the second publication runs and reports what stopped it");
+
+    let PublishOutcome::Failed { reason, .. } = &refused.outcome else {
+        panic!("a host that would not say is not read as holding nothing: {refused:?}");
+    };
+    assert!(
+        reason.contains("without saying whether it is a draft"),
+        "{reason}"
+    );
+    assert!(
+        world
+            .host_calls()
+            .iter()
+            .all(|call| !call.contains("pr ready") && !call.contains("pr merge")),
+        "nothing lifted or merged it: {:?}",
+        world.host_calls()
+    );
+}

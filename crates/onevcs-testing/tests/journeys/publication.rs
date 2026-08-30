@@ -664,3 +664,79 @@ fn a_seeded_draft_reason_nothing_could_have_carried_is_refused_when_it_is_read()
         "{refused}"
     );
 }
+
+#[test]
+fn a_host_that_cannot_say_whether_it_is_holding_a_draft_is_reported_rather_than_passed_over() {
+    // Three answers, and the middle one is the trap: a host that was never taught to
+    // draft has nothing to lift, and a host that *could not say* is a refusal. Reading
+    // the second as the first would land work somebody held back, so this provider
+    // tells them apart exactly as the crate next door does.
+    let _home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+    let session = open(&vcs, "feature/unreadable-draft");
+
+    // A host that opens the change and then will not say what state it is in — the
+    // credential was narrowed, or the host is having a bad day.
+    struct Unreadable;
+    impl onevcs::RemoteHost for Unreadable {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            Ok("tester".to_owned())
+        }
+        fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<onevcs::ChangeRequest> {
+            Ok(onevcs::ChangeRequest {
+                id: onevcs::ChangeId("1".to_owned()),
+                url: onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/1")
+                    .expect("a URL"),
+                head_sha: onevcs::Sha("0f1e2d3".to_owned()),
+                base: req.base,
+            })
+        }
+        fn find_changes(&self, _: &str, base: &str) -> onevcs::Result<Vec<onevcs::ChangeRequest>> {
+            // Already open, so the publication adopts it and reaches the lift.
+            Ok(vec![onevcs::ChangeRequest {
+                id: onevcs::ChangeId("1".to_owned()),
+                url: onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/1")
+                    .expect("a URL"),
+                head_sha: onevcs::Sha("0f1e2d3".to_owned()),
+                base: base.to_owned(),
+            }])
+        }
+        fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+            unreachable!("the publication stops at the lift")
+        }
+        fn check_log(
+            &self,
+            _: &onevcs::ChangeRequest,
+            _: &onevcs::Check,
+        ) -> onevcs::Result<onevcs::ArtifactId> {
+            unreachable!("the publication stops at the lift")
+        }
+        fn merge(
+            &self,
+            _: &onevcs::ChangeRequest,
+            _: MergePolicy,
+        ) -> onevcs::Result<onevcs::MergeOutcome> {
+            unreachable!("nothing may merge a change whose state could not be read")
+        }
+        fn is_draft(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<bool> {
+            Err(onevcs::Error::Invalid {
+                reason: "the host would not say whether it is a draft".to_owned(),
+            })
+        }
+    }
+    struct Only;
+    impl Hosting for Only {
+        fn for_repo(&self, _: &str) -> onevcs::Result<Box<dyn onevcs::RemoteHost>> {
+            Ok(Box::new(Unreadable))
+        }
+    }
+
+    let published = vcs
+        .publish(&session.token, &PublishRequest::default(), &Only)
+        .expect("the publication runs and reports what stopped it");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a host that would not say is not passed over: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Invalid);
+    assert!(reason.contains("would not say"), "{reason}");
+}

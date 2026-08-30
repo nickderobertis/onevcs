@@ -643,16 +643,23 @@ fn publish_as_change(
         return Ok((PublishOutcome::ChangeDraft(change.url.clone()), emissions));
     }
     // Publishing without a reason is what lifts a draft, and a change that is not one
-    // is asked for nothing — which is what makes a second publication idempotent. A
-    // host that cannot say was never taught to draft one, exactly as next door.
-    if matches!(host.is_draft(&change), Ok(true)) {
-        host.ready_for_review(&change)?;
-        emissions.push(Emission {
-            stream: token.0.clone(),
-            identity: Some(identity.to_owned()),
-            kind: EventKind::DraftLifted,
-            payload: object(json!({"url": change.url.to_string(), "id": change.id.0})),
-        });
+    // is asked for nothing — which is what makes a second publication idempotent.
+    // Three answers, told apart exactly as they are next door: a host that was never
+    // taught to draft one has nothing to lift and is passed over, and a host that
+    // *could not say* is a refusal rather than a change nobody is holding.
+    match host.is_draft(&change) {
+        Ok(true) => {
+            host.ready_for_review(&change)?;
+            emissions.push(Emission {
+                stream: token.0.clone(),
+                identity: Some(identity.to_owned()),
+                kind: EventKind::DraftLifted,
+                payload: object(json!({"url": change.url.to_string(), "id": change.id.0})),
+            });
+        }
+        Ok(false) => {}
+        Err(Error::NotImplemented { .. }) => {}
+        Err(unreadable) => return Err(unreadable),
     }
 
     if policy == MergePolicy::ChangeOpen {
