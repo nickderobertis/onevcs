@@ -202,7 +202,12 @@ impl World {
     ///
     /// Bounded and loud: a journey that waits forever reports nothing, and one that
     /// sleeps a fixed time and hopes is the flake this exists to replace.
-    pub fn until(what: &str, condition: impl Fn() -> bool) {
+    ///
+    /// The condition is `FnMut` so that a waiter can ask something of its own state
+    /// on every turn — whether the process it is waiting on is still running, say,
+    /// which is the difference between a timeout that names a cause and one that
+    /// reports a minute of nothing having happened.
+    pub fn until(what: &str, mut condition: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !condition() {
             assert!(

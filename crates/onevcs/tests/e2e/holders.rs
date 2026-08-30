@@ -96,9 +96,23 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
     // Somebody else's session, opened by a process that is still running: what a
     // caller asks this question to find out is who *else* is in the repository, so
     // the answer has to carry a session this process did not open.
-    let elsewhere = HeldOwner::open(&fixture.world, "feature/spawned");
+    let mut elsewhere = HeldOwner::open(&fixture.world, "feature/spawned");
+    let theirs_pid = elsewhere.pid();
 
     inhabit(&fixture.world);
+    // Waited for *before* this process opens its own session, deliberately: both
+    // opens fetch and clone the one execution checkout these two sessions are cut
+    // from, and what this journey exists to drive is the enumeration rather than two
+    // `session open`s racing over one checkout. Sequencing them leaves the held
+    // process free to name its own failure instead of arriving as a deadline nobody
+    // can read.
+    elsewhere.recorded(|| {
+        onevcs::session_holders("project")
+            .expect("the library enumerates the holders")
+            .iter()
+            .any(|holder| holder.owner_pid == theirs_pid)
+    });
+
     let providers = Providers::real();
     let embedded = Git
         .open_session(SessionRequest {
@@ -109,13 +123,6 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
         })
         .expect("the embedding process opens a real session")
         .token;
-
-    World::until("the held process has recorded its session", || {
-        onevcs::session_holders("project")
-            .expect("the library enumerates the holders")
-            .iter()
-            .any(|holder| holder.owner_pid == elsewhere.pid())
-    });
     let holders = onevcs::session_holders("project").expect("the library enumerates the holders");
     assert_eq!(holders.len(), 2);
     assert!(
@@ -139,7 +146,7 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
 
     let theirs = holders
         .iter()
-        .find(|holder| holder.owner_pid == elsewhere.pid())
+        .find(|holder| holder.owner_pid == theirs_pid)
         .expect("the session the other process opened is the other");
     assert_eq!(theirs.branch, "feature/spawned");
     assert_eq!(theirs.state, Lifecycle::Open);
@@ -367,10 +374,8 @@ fn holders_human_output_is_one_line_per_record_and_empty_means_no_output() {
 
     // A session whose owner is still running, because a record is only a line to
     // print while somebody can answer for it.
-    let owner = HeldOwner::open(&fixture.world, "feature/human");
-    World::until("the held process has recorded its session", || {
-        !reported(&fixture).is_empty()
-    });
+    let mut owner = HeldOwner::open(&fixture.world, "feature/human");
+    owner.recorded(|| !reported(&fixture).is_empty());
     let output = fixture
         .world
         .onevcs()
@@ -437,6 +442,32 @@ impl HeldOwner {
     /// The process the record it wrote names as its owner.
     fn pid(&self) -> u32 {
         self.process.id()
+    }
+
+    /// Wait until this process has recorded the session it opened, or fail saying
+    /// what became of it.
+    ///
+    /// The record is written before the process prints a word, so a held process
+    /// that has *exited* has either recorded its session already or failed to open
+    /// one at all — and a wait that only counts seconds reports the second of those
+    /// as a minute in which nothing happened. This asks the process itself on every
+    /// turn, so a `session open` that refused is named by its own stderr rather than
+    /// by a deadline.
+    fn recorded(&mut self, mut appeared: impl FnMut() -> bool) {
+        World::until("the held process has recorded its session", || {
+            if let Some(status) = self
+                .process
+                .try_wait()
+                .expect("the held process is askable")
+            {
+                panic!(
+                    "the held session open exited ({status}) before recording its session: {}",
+                    std::io::read_to_string(self.process.stderr.take().expect("piped"))
+                        .unwrap_or_default()
+                );
+            }
+            appeared()
+        });
     }
 
     /// Let it print what it was holding, finish, and exit — then answer the token it
@@ -516,11 +547,11 @@ fn a_holder_is_reported_while_its_owner_runs_and_forgotten_once_that_process_exi
     // nothing else, so this journey moves that one fact and leaves everything else
     // where it is.
     let fixture = Fixture::local(&local_direct());
-    let owner = HeldOwner::open(&fixture.world, "feature/owned");
+    let mut owner = HeldOwner::open(&fixture.world, "feature/owned");
     let pid = owner.pid();
 
     // Reported while that process runs, and reported as what it is.
-    World::until("the held process has recorded its session", || {
+    owner.recorded(|| {
         reported(&fixture)
             .iter()
             .any(|holder| holder.owner_pid == pid)
