@@ -122,6 +122,22 @@ impl Workspace {
         )
     }
 
+    /// Run the target's body the way an operator diagnosing it by hand does, as
+    /// `fingerprint` runs the fingerprint script: straight, with none of Nx between
+    /// the script and its caller. Nx's relay of a task's own streams is lossy — that
+    /// is the whole subject of `a_report_nx_relayed_none_of_is_read_back_from_the_record`
+    /// — so a journey about what this script *says* asks it directly, and only a
+    /// journey about the cache goes through the target.
+    fn judge(&self, environment: &[(&str, &str)]) -> Reported {
+        let mut command = Command::new(self.root.join("scripts/llmlint-judge.sh"));
+        self.wire(&mut command, environment);
+        Reported::from(
+            command
+                .output()
+                .expect("the judge script must be executable"),
+        )
+    }
+
     /// Run the cached target through `just nx`, this repository's own escape hatch
     /// for Nx — the entry point an operator who skipped the recipe uses, and the
     /// only one that reaches the target's own guards, since the recipe resolves the
@@ -686,6 +702,61 @@ fn findings_fail_the_tier_and_are_never_replayed() {
 }
 
 #[test]
+fn a_report_nx_relayed_none_of_is_read_back_from_the_record() {
+    let workspace = Workspace::new();
+    let base = workspace.head();
+    // llmlint: ignore-block[e2e_not_mocked] the layer under test is the driver,
+    // `scripts/llmlint-diff.sh`, and the state it has to answer for is one only Nx
+    // produces: a task whose own streams were dropped while Nx's framing around them
+    // survived. Nx offers no way to ask for that, so the judge — the driver's
+    // collaborator here, not the subject — is stood in for by one that leaves exactly
+    // that state behind: the record written, nothing relayed. It takes the marker
+    // from the real `scripts/llmlint-report-marker.sh` the shipped judge uses, so a
+    // spelling that drifted between the two ends fails this journey rather than
+    // silently disabling the read-back. Everything else is real: the recipe, Nx and
+    // its target declaration, and the driver whose branch this covers.
+    write_script(
+        &workspace.root.join("scripts/llmlint-judge.sh"),
+        &format!(
+            r#"cd "$(dirname -- "$0")/.."
+. scripts/llmlint-report-marker.sh
+mkdir -p .logs && chmod 700 .logs
+{{
+  {finding}
+  {summary}
+  llmlint_report_marker "$LLMLINT_DIFF_BASE_SHA"
+  echo "ACTION: clear each finding at the file and line it names, then rerun 'just lint-llm-diff <base>'"
+}} >{report}
+exit 1
+"#,
+            finding = echo_literally(FAIL_FINDING),
+            summary = echo_literally(FAIL_SUMMARY),
+            report = RECORDED_REPORT,
+        ),
+    );
+    // llmlint: ignore-end[e2e_not_mocked]
+
+    let lost = workspace.lint(&base, &[], &[]);
+    let relayed = Workspace::new();
+    let intact = relayed.lint(&relayed.head(), &[], &[("FAKE_LLMLINT_EXIT", "1")]);
+
+    // A tier that went red owes the operator what to clear. Nx relayed none of it, so
+    // the driver reads the record the judge kept and says where it came from.
+    lost.failed()
+        .says_on_stderr("Nx relayed none of the judge's report")
+        .says_on_stderr(RECORDED_REPORT)
+        .says_on_stderr(FAIL_FINDING)
+        .says_on_stderr(FAIL_SUMMARY)
+        .says_on_stderr("ACTION: clear each finding at the file and line it names");
+    // And when the relay arrived whole, the record is not read back over it: the same
+    // findings printed twice would read as two runs disagreeing about one diff.
+    intact
+        .failed()
+        .says(FAIL_FINDING)
+        .silent_about("Nx relayed none of the judge's report");
+}
+
+#[test]
 fn a_judge_that_never_reached_a_verdict_is_never_replayed() {
     let workspace = Workspace::new();
     let base = workspace.head();
@@ -820,13 +891,12 @@ fn a_missing_report_marker_helper_is_actionable() {
         .expect("the report marker helper was there to remove");
 
     let refused = workspace.lint(&workspace.head(), &[], &[]);
-    let refused_by_the_target =
-        workspace.run_nx_target(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
+    let refused_by_the_judge = workspace.judge(&[("LLMLINT_DIFF_BASE_SHA", &workspace.head())]);
 
     // Both ends of the tier take the marker from this one file, so both refuse
     // without it rather than falling back to a spelling of their own — which is the
     // drift that would disable the read-back in silence.
-    for run in [&refused, &refused_by_the_target] {
+    for run in [&refused, &refused_by_the_judge] {
         run.failed()
             .says("could not load scripts/llmlint-report-marker.sh")
             .says("git checkout -- scripts/llmlint-report-marker.sh");
