@@ -147,12 +147,15 @@ impl DraftReason {
         ] {
             if value.is_empty() {
                 return Err(crate::error::invalid(format!(
-                    "a draft change request must say {what}, and this one names none: a draft                      whose reason cannot be read is a change request nobody knows how to finish"
+                    "a draft change request must say {what}, and this one names none: a draft \
+                     whose reason cannot be read is a change request nobody knows how to finish"
                 )));
             }
             if value.chars().any(char::is_control) {
                 return Err(crate::error::invalid(format!(
-                    "{what} is {value:?}, which carries a control character: every field of a                      draft's reason is printed on one line, in a refusal and in the publication                      record, and a value that renders as something other than itself is not one"
+                    "{what} is {value:?}, which carries a control character: every field of a \
+                     draft's reason is printed on one line, in a refusal and in the publication \
+                     record, and a value that renders as something other than itself is not one"
                 )));
             }
         }
@@ -738,7 +741,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         reason.checked()?;
         if context.effective == MergePolicy::LocalDirect {
             return Err(crate::error::invalid(format!(
-                "{branch:?} was asked to publish as a draft awaiting {awaiting} {target}, and                  this identity publishes with local-direct, which squashes the branch onto                  {base:?} and opens no change request at all — so there is nothing to draft and                  the work would land with the very pin the draft exists to hold back. Publish it                  under a change-* policy, or publish it without a draft",
+                "{branch:?} was asked to publish as a draft awaiting {awaiting} {target}, and \
+                 this identity publishes with local-direct, which squashes the branch onto \
+                 {base:?} and opens no change request at all — so there is nothing to draft and \
+                 the work would land with the very pin the draft exists to hold back. Publish it \
+                 under a change-* policy, or publish it without a draft",
                 branch = context.branch,
                 awaiting = reason.awaiting,
                 target = reason.target,
