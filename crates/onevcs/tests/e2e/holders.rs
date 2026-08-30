@@ -7,7 +7,7 @@ use onevcs::{Git, Lifecycle, Liveness, Providers, SessionHolder, SessionRequest,
 use predicates::prelude::*;
 
 use crate::honesty::inhabit;
-use crate::lifecycle::{local_direct, Fixture};
+use crate::lifecycle::{local_direct, run_root_of, Fixture};
 use crate::world::token_of;
 
 fn files_beneath(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -188,7 +188,15 @@ fn the_library_refuses_a_repository_nothing_resolves_rather_than_answering_empty
 #[test]
 fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_state() {
     let fixture = Fixture::local(&local_direct());
-    let closed = fixture.open(&["--branch", "feature/closed"]).0;
+    let (closed, worktree) = fixture.open(&["--branch", "feature/closed"]);
+    // Work no origin has, which is what makes `reclaim` keep this session's run root
+    // when the next one opens. A closed session is a holder while its directories are
+    // there; one whose run root has already been reclaimed names nothing on this host
+    // and is forgotten instead, which is
+    // `a_record_that_names_nothing_on_this_host_is_forgotten_rather_than_reported`.
+    fixture
+        .world
+        .commit_file(&worktree, "a.txt", "a\n", "feat: what the close hands back");
     fixture
         .world
         .onevcs()
@@ -355,6 +363,94 @@ fn holders_human_output_is_one_line_per_record_and_empty_means_no_output() {
     assert_eq!(stdout.lines().count(), 1);
     assert!(stdout.contains(&token));
     assert!(stdout.contains("\topen\tstale\t"));
+}
+
+#[test]
+fn a_record_that_names_nothing_on_this_host_is_forgotten_rather_than_reported() {
+    // Seven of these above a launch is what made a real refusal arrive in the same
+    // shape as seven ignorable ones. A record is never removed on staleness alone —
+    // a session opened from the command line is stale from the instant the command
+    // exits, while an agent works in its worktree for hours — so what is dropped is
+    // the tombstone left after the run root has already been reclaimed.
+    let fixture = Fixture::local(&local_direct());
+    let spent = fixture.open(&["--branch", "feature/spent"]).0;
+    let spent_root = run_root_of(&fixture.world, &spent);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &spent])
+        .assert()
+        .success();
+
+    // A session this process owns, so its record has an owner that is still running.
+    inhabit(&fixture.world);
+    let live = Git
+        .open_session(SessionRequest {
+            repo: "project".to_owned(),
+            branch: Some("feature/live".to_owned()),
+            base: None,
+            execution_checkout: None,
+        })
+        .expect("the embedding process opens a real session")
+        .token;
+
+    // …and one more from the command line, whose run root is still on disk: opening
+    // it is also what reclaims the closed session's, which is the only way that
+    // directory ever goes.
+    let stale = fixture.open(&["--branch", "feature/stale"]).0;
+    assert!(
+        !spent_root.exists(),
+        "the premise: a later open reclaims the closed session's run root"
+    );
+
+    let rows = onevcs::session_holders("project").expect("the library enumerates the holders");
+    let named: Vec<&str> = rows.iter().map(|holder| holder.token.0.as_str()).collect();
+    assert!(
+        !named.contains(&spent.as_str()),
+        "a record naming a run root this host no longer has is not a holder: {named:?}"
+    );
+    assert!(
+        !record_path(&fixture, &spent).exists(),
+        "and it is forgotten rather than merely filtered out of one report"
+    );
+    assert!(
+        named.contains(&stale.as_str()),
+        "a stale owner whose run root is still there is reported exactly as before: {named:?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|holder| holder.token.0 == stale)
+            .expect("the stale row")
+            .liveness,
+        Liveness::Stale
+    );
+    assert!(named.contains(&live.0.as_str()), "{named:?}");
+
+    // What decided it, isolated: the same missing directory under a session whose
+    // owner is still running is kept, because that process can still answer for it.
+    //
+    // llmlint: ignore[tests_mirror_real_usage] a live session's run root is one
+    // `reclaim` protects and never removes, so no command can produce this state;
+    // removing the directory models the host it does happen on — an operator's own
+    // cleanup, or a temporary-directory reaper — and the real CLI reader then meets
+    // it.
+    std::fs::remove_dir_all(run_root_of(&fixture.world, &live.0))
+        .expect("a run root can go without its session's owner going");
+    let printed = fixture
+        .world
+        .onevcs()
+        .args(["session", "holders", "project", "--json"])
+        .output()
+        .expect("holders runs");
+    assert!(printed.status.success());
+    let rows: Vec<SessionHolder> =
+        serde_json::from_slice(&printed.stdout).expect("holders prints one JSON array");
+    let held = rows
+        .iter()
+        .find(|holder| holder.token == live)
+        .expect("a session whose owner is still running is still a holder");
+    assert_eq!(held.liveness, Liveness::Live);
+    onevcs::close_session(&Providers::real(), &live).ok();
 }
 
 #[test]

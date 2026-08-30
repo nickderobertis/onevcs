@@ -109,9 +109,12 @@ pub struct SessionRecord {
 ///
 /// A [`SessionRecord`] answers about a session somebody already has the token for;
 /// this answers the question before that one — *who is in this repository* — for
-/// every session the host has recorded, including the ones whose owner is gone. It
-/// is what `onevcs session holders` prints, so a caller reading the command's JSON
-/// and a caller embedding [`crate::session_holders`] read the same shape.
+/// every session the host has recorded, including the ones whose owner is gone.
+/// Not for one whose owner is gone *and* whose run root has been reclaimed: that
+/// record names nothing on this host any more, and enumeration forgets it rather
+/// than reporting it above every launch. It is what `onevcs session holders`
+/// prints, so a caller reading the command's JSON and a caller embedding
+/// [`crate::session_holders`] read the same shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHolder {
     /// The handle this session is addressed by, and the one every command that
