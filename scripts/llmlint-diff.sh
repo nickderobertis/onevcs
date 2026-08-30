@@ -115,9 +115,27 @@ LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
 # A failed run is all diagnostics — the judge's findings, and whatever Nx said about
 # the task — so all of it goes to stderr. Only the one line a clean run prints is an
 # answer, and that is the only thing this tier ever puts on stdout.
+#
+# Nx's relay of a task's own output is lossy, and it loses all of it rather than the
+# tail: with `usePty: false` Nx pipes the task's streams through JS stream transforms
+# and exits without flushing them, so on a busy host a fast task's whole report is
+# missing from the streams above while Nx's framing around it — the task line, the
+# duration, "Failed tasks" — survives intact. That reads as a tier that went red and
+# said nothing about what to clear, which is the one thing it exists to say. The
+# judge writes its report to a file for exactly this reason, so when the relay lost
+# it, it is read back from there. The marker is the last line the judge appends to
+# that record and it carries the base commit, so it can only match this run's judged
+# report and not a report some earlier base left behind.
+report=.logs/lint-llm-diff.log
 if [ "$status" -ne 0 ]; then
   cat "$verdict" >&2
   cat "$diagnostics" >&2
+  recorded="lint-llm-diff: the judge reported the above against base $base_sha"
+  if grep -qF -- "$recorded" "$report" 2>/dev/null &&
+    ! grep -qF -- "$recorded" "$verdict" "$diagnostics"; then
+    echo "lint-llm-diff: Nx relayed none of the judge's report, so it is read back from $report" >&2
+    cat "$report" >&2
+  fi
 fi
 
 # Provenance comes from Nx's own cache reporting: the annotation on the task line,
@@ -144,7 +162,6 @@ fi
 # The one line a clean run owes: llmlint's own count of what it judged, lifted from
 # the report the target recorded, and the path to the rest of it. A judge that
 # renames that line costs the summary, never the report or the provenance.
-report=.logs/lint-llm-diff.log
 if [ "$status" -eq 0 ]; then
   summary="$(grep -m1 -E '^[0-9]+ rules: ' "$report" 2>/dev/null || true)"
   echo "lint-llm-diff: ${provenance}${summary:+ — $summary} (full report: $report)"
