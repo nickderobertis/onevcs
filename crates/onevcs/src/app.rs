@@ -706,9 +706,23 @@ fn sync(args: &SyncArgs) -> Result<u8> {
             ),
         });
     }
+    let before = git::head_sha(checkout)?;
     git::fetch(checkout, "origin")?;
     git::merge_ff_only(checkout, &format!("origin/{branch}"))?;
-    println!("{branch} fast-forwarded to origin/{branch}");
+    let now = git::head_sha(checkout)?;
+    // Which repository, and which commit it is on now. A host runs this against
+    // several identities in a row and reads the answers together, and `main
+    // fast-forwarded to origin/main` says nothing about *which* main, or about
+    // whether anything moved.
+    println!(
+        "{identity}: {branch} {moved} origin/{branch} at {now}, in {checkout}",
+        identity = resolution.key,
+        moved = match now == before {
+            true => "was already level with",
+            false => "fast-forwarded to",
+        },
+        checkout = checkout.display(),
+    );
     Ok(0)
 }
 

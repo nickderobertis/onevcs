@@ -3744,6 +3744,19 @@ fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
     // What it says is which repository it acted on and the commit it moved to: a
     // host syncs several identities in a row and reads the answers together, and
     // `main fast-forwarded to origin/main` names neither of those.
+    let landed = fixture.world.git(&fixture.origin, &["rev-parse", "main"]);
+    // Asked of the tool rather than composed here: the identity is what an origin
+    // *normalizes* to, and a fixture that spelled it itself would assert the answer
+    // it made up.
+    let resolved = fixture
+        .world
+        .onevcs()
+        .args(["resolve", "project"])
+        .output()
+        .expect("resolve runs");
+    let identity: serde_json::Value =
+        serde_json::from_slice(&resolved.stdout).expect("resolve prints JSON");
+    let identity = identity["identity"].as_str().expect("an identity key");
     fixture
         .world
         .onevcs()
@@ -3751,13 +3764,28 @@ fn sync_only_ever_fast_forwards_the_branch_a_checkout_is_on() {
         .current_dir(&fixture.checkout)
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "main fast-forwarded to origin/main",
-        ));
+        .stdout(predicate::str::contains(format!(
+            "{identity}: main fast-forwarded to origin/main"
+        )))
+        .stdout(predicate::str::contains(landed.clone()));
     assert_eq!(
         fixture.world.git(&fixture.checkout, &["rev-parse", "HEAD"]),
-        fixture.world.git(&fixture.origin, &["rev-parse", "main"])
+        landed
     );
+
+    // …and a checkout nothing moved says so rather than reporting a fast-forward
+    // that did not happen, at the commit it is still on.
+    fixture
+        .world
+        .onevcs()
+        .arg("sync")
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "{identity}: main was already level with origin/main"
+        )))
+        .stdout(predicate::str::contains(landed));
 
     // A name git would not accept is refused before it spells a ref.
     fixture
