@@ -346,12 +346,21 @@ impl TryFrom<AnyPublication> for PublicationReport {
         if let Some(reason) = &value.draft {
             reason.checked().map_err(|refusal| refusal.to_string())?;
         }
-        if (value.state == Landing::Landed) != value.landed.is_landed() {
+        // The word and the answer are one decision, and a document is where the two
+        // could come apart. What holds them together is `fixed_word` — the same
+        // derivation `run` writes the word from — so this is the one rule read from
+        // both ends rather than a second statement of it. An answer a record decided
+        // fixes the word outright and is held to exactly that word; the two the
+        // comparison gives fix none, because which of the remaining words applies is
+        // the host's and this host's own record's to say.
+        let fixed = fixed_word(&value.landed);
+        let claims_a_record = matches!(value.state, Landing::Landed | Landing::LandedInPart);
+        if (fixed.is_some() || claims_a_record) && fixed != Some(value.state) {
             return Err(format!(
-                "a report says the work is {state:?} and that it landed is {landed}; those are \
-                 two answers to one question",
+                "a report says the work is {state:?} and that history decided {landed:?}; those \
+                 are two answers to one question",
                 state = spell_landing(value.state),
-                landed = value.landed.is_landed(),
+                landed = spell_landed(&value.landed),
             ));
         }
         Ok(PublicationReport {
@@ -945,7 +954,36 @@ enum Proposed {
     OpenedAndAskedToLand,
 }
 
-/// Which of the eight states the work is in.
+/// The publication word a landing answer *fixes*, where it fixes one.
+///
+/// The two answers a record decided each name their word outright, and nothing about
+/// the host or how far the branch is ahead can move it. The two the content
+/// comparison gives fix none: which of the remaining words applies is decided by the
+/// host, by what this host recorded about ever proposing the work, and by whether the
+/// branch is its own base.
+///
+/// One function, read from both ends — [`landing`] writes the word from it and the
+/// report's own readback refuses a document whose word it does not match — so the two
+/// cannot come apart.
+fn fixed_word(landed: &Landed) -> Option<Landing> {
+    match landed {
+        Landed::Yes { .. } => Some(Landing::Landed),
+        Landed::InPart { .. } => Some(Landing::LandedInPart),
+        Landed::No | Landed::Unknown => None,
+    }
+}
+
+/// The landing answer in the one word a rendering prints it as.
+fn spell_landed(landed: &Landed) -> &'static str {
+    match landed {
+        Landed::Yes { .. } => "yes",
+        Landed::InPart { .. } => "in part",
+        Landed::No => "no",
+        Landed::Unknown => "unknown",
+    }
+}
+
+/// Which of the nine states the work is in.
 ///
 /// History first, deliberately: what the base's own history records about this
 /// branch stays true whatever the host says and whoever merged it, and it is the
@@ -959,24 +997,21 @@ fn landing(
     host: OnTheHost,
     proposed: Proposed,
 ) -> Landing {
+    // An answer a record decided is the word whatever else is true of the branch,
+    // including a branch that is now its own base: `NothingToPublish` beside a
+    // landing would be a report this build writes and its own reader refuses.
+    if let Some(word) = verdict.and_then(fixed_word) {
+        return word;
+    }
     match verdict {
-        // A record of a landing is the answer whatever else is true of the branch,
-        // including a branch that is now its own base: the word and the answer are
-        // one decision, and `NothingToPublish` beside a landing would be a report
-        // this build writes and its own reader refuses.
-        Some(Landed::Yes { .. }) => return Landing::Landed,
-        // …and a landing that accounts for part of the branch is likewise the
-        // answer whatever else is true: the base carries what it carried, and the
-        // rest of the branch is still work. Above the host, for the reason every
-        // record is — what history says stays true whoever merged it.
-        Some(Landed::InPart { .. }) => return Landing::LandedInPart,
         // A branch that is the base has nothing to publish, which is the narrower
         // and more useful of the two things true of it.
         Some(Landed::Unknown) if ahead == Some(0) => return Landing::NothingToPublish,
         Some(Landed::Unknown) => return Landing::MaybeLanded,
         // Nothing holds the branch, or the base does not carry what it changed: the
         // host and this host's own record are what is left to say where it got to.
-        Some(Landed::No) | None => {}
+        // The two a record decided answered above.
+        Some(Landed::Yes { .. } | Landed::InPart { .. } | Landed::No) | None => {}
     }
     match (host, proposed) {
         (OnTheHost::Open, Proposed::OpenedAndAskedToLand) => Landing::Queued,
@@ -1959,12 +1994,7 @@ impl Report {
         // is the sentence beside it rather than a qualifier bolted onto the answer.
         out.push_str(&format!(
             "  landed: {}\n",
-            match &self.publication.landed {
-                Landed::Yes { .. } => "yes",
-                Landed::InPart { .. } => "in part",
-                Landed::No => "no",
-                Landed::Unknown => "unknown",
-            },
+            spell_landed(&self.publication.landed)
         ));
         out.push_str(&format!(
             "  decided by: {}\n",
@@ -2246,13 +2276,22 @@ mod round_trip {
         // The word and the answer are one decision, and a document is where they could
         // come apart: `state` says the work landed and `landed` says it did not, or the
         // other way about. Neither is a report this reads.
+        let in_part = json!({
+            "state": "in-part",
+            "evidence": {"tier": "trailer", "commit": "0f1e2d3"},
+            "unlanded": 2,
+        });
+        let landed = json!({"state": "yes", "evidence": {"tier": "trailer", "commit": "0f1e2d3"}});
         for (state, landed) in [
             ("landed", json!({"state": "no"})),
-            (
-                "unpublished",
-                json!({"state": "yes", "evidence": {"tier": "trailer",
-                                                                "commit": "0f1e2d3"}}),
-            ),
+            ("unpublished", landed.clone()),
+            // …and the same rule for the word a *partial* landing fixes, in both
+            // directions: a document may not claim one over an answer that is not
+            // `in-part`, and may not carry an `in-part` answer under any other word.
+            ("landed-in-part", json!({"state": "unknown"})),
+            ("landed-in-part", landed),
+            ("unpublished", in_part.clone()),
+            ("landed", in_part),
         ] {
             let mut document = parsed(FULL);
             document["publication"]["state"] = Value::from(state);
