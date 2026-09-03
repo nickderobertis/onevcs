@@ -912,6 +912,23 @@ fn a_landing_never_answers_for_work_the_branch_gained_after_it() {
         "a landing answers for the work it carried, and this branch has since gained \
          work it did not: {report}"
     );
+    // …and what it answers instead is the landing it *does* have, from the tier that
+    // found it. The recorded landing is tier 1, so this is that tier declining to
+    // fall through to a comparison that knows less than it does.
+    assert_eq!(
+        report["publication"]["landed"]["state"], "in-part",
+        "the landing recorded for this branch is still the landing it reached the \
+         base at: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "recorded-landing",
+        "and the answer names the tier that found it: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["unlanded"], 1,
+        "with the count of what it does not carry: {report}"
+    );
+    assert_eq!(report["publication"]["state"], "landed-in-part");
 
     // Which is the whole point: the row is in the report that says what is left to
     // publish, and it carries the command that publishes it.
@@ -1441,4 +1458,137 @@ fn a_branch_that_landed_and_then_took_more_commits_answers_with_its_landing_and_
         "the landing commit is on the base, so the release that carries it is waiting \
          on a person rather than on a merge that already happened: {release}"
     );
+    // …and a person records the release against that same commit. The verb reads the
+    // landing through the same tiers, so a branch it could not name a landing commit
+    // for is one it refuses.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "release",
+            "acknowledge",
+            "feature/landed-then-retried",
+            "--target",
+            "crate",
+            "--version",
+            "2026.9.3",
+        ])
+        .assert()
+        .success();
+    let released = release_status(&hosted.world, "feature/landed-then-retried");
+    assert_eq!(
+        released["state"], "released",
+        "the release recorded against this landing is the one that carries it: \
+         {released}"
+    );
+    assert_eq!(released["version"], "2026.9.3");
+
+    // The row's sentence about why the work stopped says the same thing the answer
+    // does, because an operator reading the listing rather than the document is the
+    // one being sent to publish.
+    assert!(
+        shown["stopped_because"]
+            .as_str()
+            .expect("a row says why the work stopped")
+            .contains("Part of this branch's work reached main"),
+        "and the row's own sentence names the landing: {shown}"
+    );
+
+    // The human rendering of the same report, which is what an operator actually
+    // reads. The word, the tier, the landing commit, the count, and the sentence
+    // under `next:` are one decision spelled five ways, so none of them may say
+    // something the others do not.
+    hosted
+        .world
+        .onevcs()
+        .args(["status", "feature/landed-then-retried"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: landed in part"))
+        .stdout(predicate::str::contains("landed: in part"))
+        .stdout(predicate::str::contains(format!(
+            "decided by: the change request's number in the base ({landing}), and 1 commit(s) of \
+             the branch are not in it"
+        )))
+        .stdout(predicate::str::contains(format!(
+            "landed in part: the change request's number in the base ({landing}) says work of it \
+             reached main, and it has 1 commit(s) since that the landing does not carry"
+        )));
+}
+
+#[test]
+fn a_landing_read_off_the_bases_trailer_answers_in_part_for_a_name_that_kept_committing() {
+    // The tier with nothing of this host's own to read, in the state a retry leaves.
+    // `import --as` moves a spent name aside, and the copy under the second name has
+    // no record anywhere — so what answers for it is the trailer the landing left on
+    // the base. Commit onto that copy and the trailer is still true of what it
+    // landed and silent about the rest, which is exactly the case the tier used to
+    // drop on the floor.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/kept-committing"]);
+    fixture
+        .world
+        .commit_file(&worktree, "g.txt", "g\n", "feat: land this under a name");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "import",
+            "feature/kept-committing",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+            "--as",
+            "preserved/kept-committing",
+        ])
+        .assert()
+        .success();
+
+    // Nothing this host recorded names the second copy, so tiers 1 and 2 have
+    // nothing to read — and then it takes a commit of its own.
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "preserved/kept-committing"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "h.txt",
+        "h\n",
+        "feat: and then more under the second name",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    let report = report(&fixture.world, "preserved/kept-committing");
+    assert_eq!(
+        report["publication"]["landed"]["state"], "in-part",
+        "the trailer on the base says what landed, and the commit above it is what \
+         did not: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "trailer",
+        "and the tier that found the landing is the one that answers: {report}"
+    );
+    assert_eq!(report["publication"]["landed"]["unlanded"], 1);
+    assert_eq!(report["publication"]["state"], "landed-in-part");
+
+    // The row is work to publish again, which is the half of the answer that keeps
+    // the commit above the landing from being hidden.
+    let shown = row(&rows(&fixture.world, &[]), "preserved/kept-committing")
+        .expect("a branch holding a commit its landing never carried is work to publish");
+    assert_eq!(shown["landed"]["state"], "in-part");
+    assert_eq!(shown["recover_command"][1], "publish-branch");
 }

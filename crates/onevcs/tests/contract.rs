@@ -19,6 +19,7 @@
 //! path this repository has.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
 use clap::CommandFactory;
@@ -2196,6 +2197,36 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         serde_json::to_value(Landed::Unknown).expect("an answer serializes"),
         json!({"state": "unknown"})
     );
+    // …and the fourth, which carries a count of what its landing does not cover.
+    // Zero is not one of the counts it can carry: a landing with nothing above it is
+    // a landing, so a document claiming otherwise is refused where it is read rather
+    // than becoming an in-part answer with nothing in part about it.
+    assert_eq!(
+        serde_json::to_value(Landed::InPart {
+            evidence: LandingEvidence::Trailer {
+                commit: Sha("0f1e2d3".to_owned()),
+            },
+            unlanded: NonZeroUsize::new(3).expect("three is not zero"),
+        })
+        .expect("an answer serializes"),
+        json!({
+            "state": "in-part",
+            "evidence": {"tier": "trailer", "commit": "0f1e2d3"},
+            "unlanded": 3,
+        })
+    );
+    let refused = serde_json::from_value::<Landed>(json!({
+        "state": "in-part",
+        "evidence": {"tier": "trailer", "commit": "0f1e2d3"},
+        "unlanded": 0,
+    }))
+    .expect_err("an in-part landing of nothing is not an answer this reads")
+    .to_string();
+    assert!(
+        refused.contains("nonzero"),
+        "the refusal says what was wrong with the count: {refused}"
+    );
+
     // The row is read to be pasted, so the one contradiction it could carry is not a
     // row this reads: an answer saying the work is on the base, beside the argv that
     // publishes it again.
@@ -2477,7 +2508,7 @@ fn the_record_names_every_word_the_landing_answer_travels_as() {
             evidence: LandingEvidence::RecordedLanding {
                 commit: Sha("0f1e2d3".to_owned()),
             },
-            unlanded: 2,
+            unlanded: NonZeroUsize::new(2).expect("two is not zero"),
         },
     ] {
         let value = serde_json::to_value(&answer).expect("an answer serializes");

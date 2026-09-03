@@ -38,6 +38,8 @@
 //! checkout every publication fast-forwards, and why the tier answers `unknown` when
 //! even that leaves it behind.
 
+use std::num::NonZeroUsize;
+
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -83,7 +85,14 @@ pub enum Landed {
         /// The count is what makes this readable as an amount of work rather than as
         /// a qualifier: one commit above a landing is a follow-up, and thirty is a
         /// branch whose landing says almost nothing about it.
-        unlanded: usize,
+        ///
+        /// Never zero, and the type is what says so rather than a rule somebody has
+        /// to remember: a landing with nothing above it *is* a landing, which is
+        /// [`Landed::Yes`]. So a document claiming an in-part landing of zero
+        /// unlanded commits does not deserialize at all, for the reason every other
+        /// contradiction in this crate's serialized shapes is refused where it is
+        /// read.
+        unlanded: NonZeroUsize,
     },
     /// Nothing records that it reached the base, and the base does not carry what
     /// it changed. The last tier — a comparison of content, not a record — so this
@@ -385,16 +394,25 @@ fn landed_all_of(repo: git::Asked<'_>, branch: &str, landing: &str) -> Result<bo
 /// and stopped at the first commit the landing already integrates, which costs one
 /// question per commit it counts rather than one per commit the branch has.
 ///
-/// Asked only where [`landed_all_of`] has already declined, so the answer is at least
-/// one and the walk always has somewhere to stop: the fork point, for a branch whose
-/// landing accounts for none of it.
-fn unlanded_above(repo: git::Asked<'_>, branch: &str, fork: &str, landing: &str) -> Result<usize> {
-    let mut unlanded = 0;
-    for commit in git::log_messages(repo, fork, branch)?.iter().rev() {
+/// **The tip is one of them, counted rather than asked about.** This is reached only
+/// where [`landed_all_of`] has already put that exact question — does the landing
+/// integrate the branch, which is its tip — and been told no. So the walk starts at
+/// one, skips the commit it would only be re-asking about, and is a
+/// [`NonZeroUsize`] by construction rather than by a check that could be forgotten:
+/// zero commits above a landing is a `yes`, and there is no spelling of this that
+/// could hand [`Landed::InPart`] one.
+fn unlanded_above(
+    repo: git::Asked<'_>,
+    branch: &str,
+    fork: &str,
+    landing: &str,
+) -> Result<NonZeroUsize> {
+    let mut unlanded = NonZeroUsize::MIN;
+    for commit in git::log_messages(repo, fork, branch)?.iter().rev().skip(1) {
         if git::already_integrates(repo, landing, &commit.sha)? {
             break;
         }
-        unlanded += 1;
+        unlanded = unlanded.saturating_add(1);
     }
     Ok(unlanded)
 }
