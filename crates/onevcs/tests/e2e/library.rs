@@ -2314,6 +2314,56 @@ fn a_session_read_gains_the_releases_that_carried_its_own_landing_long_after_it_
     assert!(reader.read().expect("nothing new").is_empty());
 }
 
+#[test]
+fn a_session_whose_branch_kept_committing_after_it_landed_still_gains_that_landings_releases() {
+    // The correlation asks one question — what commit did this session's work reach
+    // its base at — and a branch a retry continued still has that answer: the landing
+    // is on the base and the commits above it are simply not in it. A reader that
+    // took "there is work left to publish" for "nothing landed" would leave a
+    // consumer waiting on a release that has already happened, which is the failure
+    // this whole answer exists for, reached through the third of its readers.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+
+    let session = landed(&world, "feature/released-then-more", "one.txt");
+    // …and the name is picked up again, in the checkout the branch was preserved
+    // into, carrying something the landing above never saw.
+    let checkout = world.path("hosted");
+    world.git(&checkout, &["checkout", "-q", "feature/released-then-more"]);
+    world.commit_file(&checkout, "two.txt", "two\n", "feat: and then the rest");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+
+    let mut reader = EventStream::open(&session.token).expect("the session's stream");
+    let opening = reader.read().expect("everything through the close");
+    assert!(
+        opening.iter().all(|event| event.stream == session.token.0),
+        "nothing of another stream is in the session's own read yet"
+    );
+
+    let container = "container".parse().expect("a target name");
+    let acknowledged = onevcs::acknowledge_release(&session.token.0, &container, "3.0.0", false)
+        .expect("the release of what this session landed is recorded");
+    let fresh = reader.read().expect("what the release added");
+    assert_eq!(
+        fresh.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        vec![
+            onevcs::EventKind::ReleaseAcknowledged,
+            onevcs::EventKind::ReleaseObserved
+        ],
+        "the release that carried this session's landing reaches its reader, whatever \
+         the branch has done since"
+    );
+    for event in &fresh {
+        assert_eq!(
+            event.payload["landing_commit"],
+            acknowledged.landing_commit.as_str(),
+            "and it is correlated by the landing the tiers named: {event:?}"
+        );
+    }
+}
+
 /// Which of the two halves of a correlation a reader saw first.
 ///
 /// A release is recorded where it happens and a landing becomes readable where the

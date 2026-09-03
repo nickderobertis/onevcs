@@ -562,7 +562,11 @@ pub fn status(
     let located = for_repository(registry, &landing.identity)?;
     let target = located.releases.select(named)?;
     let commit = match &landing.landed {
-        Landed::Yes { evidence } => evidence.commit().to_owned(),
+        // Both answers a record decided name the commit the work reached the base at,
+        // and that is the whole of what a release is compared against: a branch that
+        // has gone on since landed what it landed at exactly this commit, so a
+        // consumer waiting on its release is answered rather than held for ever.
+        Landed::Yes { evidence } | Landed::InPart { evidence, .. } => evidence.commit().to_owned(),
         Landed::No => return Ok(ReleaseStatus::NotLanded),
         // Undecidable is not "not landed", and it is not a landing either: there is
         // no landing commit to have captured a baseline against, so there is nothing
@@ -846,7 +850,7 @@ pub fn acknowledge(
         )));
     }
     let commit = match &landing.landed {
-        Landed::Yes { evidence } => evidence.commit().to_owned(),
+        Landed::Yes { evidence } | Landed::InPart { evidence, .. } => evidence.commit().to_owned(),
         Landed::No => {
             return Err(error::invalid(format!(
                 "{reference:?} has not landed, so there is no release to acknowledge for it yet; \
