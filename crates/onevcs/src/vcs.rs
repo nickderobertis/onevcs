@@ -535,6 +535,14 @@ fn preserved_row(
                 }),
         },
     };
+    if let Landed::InPart { evidence, unlanded } = verdict {
+        stopped.push_str(&format!(
+            ". Part of this branch's work reached {base}, and {tier} ({commit}) says so — the \
+             {unlanded} commit(s) it has gained since are what is left to publish",
+            tier = verdict.tier(),
+            commit = evidence.commit(),
+        ));
+    }
     if *verdict == Landed::Unknown {
         stopped.push_str(&format!(
             ". Whether it landed cannot be decided from history: nothing records that it \

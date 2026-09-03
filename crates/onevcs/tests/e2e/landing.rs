@@ -1259,3 +1259,186 @@ fn a_copy_no_store_can_be_lent_to_answers_unknown_rather_than_no() {
          that reads as an instruction to publish it: {listed}"
     );
 }
+
+#[test]
+fn a_branch_that_landed_and_then_took_more_commits_answers_with_its_landing_and_the_work_above_it()
+{
+    // The failure this exists for, in the shape a host that retries makes most often.
+    // A session lands the branch through the host, the next session continues the same
+    // name, and the tiers that found the landing all declined it — because the landing
+    // does not account for the commits added since — and fell through to the content
+    // comparison, which reported `landed: no`. Two lines above that verdict the same
+    // report printed the merged change request's URL. A hold on a release that had
+    // already happened could never clear.
+    let hosted = Hosted::new(REVIEWED);
+    // Declared before anything lands, for the reason the journey above declares one:
+    // a target the landing predates has no baseline, and what is under test here is
+    // which commit the release side is answered from.
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+         default_target: crate\n    targets:\n      - {name: crate, style: human-step, action: \
+         push the tag}\n",
+    )
+    .expect("a release-targets file");
+    let opened = hosted
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/landed-then-retried",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let token = token_of(&opened);
+    hosted.world.commit_file(
+        &worktree_of(&opened),
+        "first.txt",
+        "first\n",
+        "feat: add the first half",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("change request open at"));
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // The host merges it, writing its own number into the squash commit — which is the
+    // strongest thing history has to say about this branch, and the tier that reads it.
+    landed_on_the_host_saying(
+        &hosted,
+        "feature/landed-then-retried",
+        "feat: add the first half (#1)",
+    );
+    // …and GitHub deletes the head branch as it merges, so the ref that tracked it is
+    // pruned and the local copy is the only one left.
+    hosted.world.git(
+        &hosted.checkout,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "--delete",
+            "feature/landed-then-retried",
+        ],
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+    hosted
+        .world
+        .git(&hosted.checkout, &["fetch", "-q", "--prune", "origin"]);
+
+    // And then the retry picks the name up again and commits onto it. The landing
+    // above is still on the base and still says what it said; what it does not say is
+    // anything about this.
+    hosted.world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "feature/landed-then-retried"],
+    );
+    hosted.world.commit_file(
+        &hosted.checkout,
+        "second.txt",
+        "second\n",
+        "feat: and then the second half",
+    );
+    hosted
+        .world
+        .git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+    let report = report(&hosted.world, "feature/landed-then-retried");
+    assert_eq!(
+        report["publication"]["landed"]["state"], "in-part",
+        "a landing the base carries and commits above it is neither a landing nor a \
+         branch nothing published: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "change-request",
+        "and it is the tier that found the landing that answers, not the comparison \
+         below it: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["change_url"],
+        "https://github.com/acme-corp/hosted/pull/1",
+        "the merged change request the old report printed two lines above its own \
+         wrong verdict is the evidence now: {report}"
+    );
+    let landing = report["publication"]["landed"]["evidence"]["commit"]
+        .as_str()
+        .expect("the answer names the commit the work reached the base at")
+        .to_owned();
+    assert_eq!(
+        report["publication"]["landed"]["unlanded"], 1,
+        "and it says how much of the branch that landing does not carry: {report}"
+    );
+    assert_eq!(
+        report["publication"]["state"], "landed-in-part",
+        "the word is derived from the answer, so the two cannot disagree: {report}"
+    );
+    assert!(
+        report["next"]["command"]
+            .as_str()
+            .expect("there is work left, so there is a command")
+            .contains("publish-branch"),
+        "the work above the landing is still work to publish: {report}"
+    );
+
+    // The row is in the report that says what is left to publish — the whole reason
+    // this is not a landing — and it keeps the line that is read as "paste this".
+    let shown = row(&rows(&hosted.world, &[]), "feature/landed-then-retried")
+        .expect("a branch holding commits its landing never carried is work left to publish");
+    assert_eq!(shown["landed"]["state"], "in-part");
+    assert_eq!(shown["landed"]["evidence"]["tier"], "change-request");
+    assert_eq!(
+        shown["recover_command"][1], "publish-branch",
+        "so the row is still an instruction: {shown}"
+    );
+    let listed = hosted
+        .world
+        .onevcs()
+        .arg("recoverable")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed = String::from_utf8_lossy(&listed).into_owned();
+    assert!(
+        listed.contains("feature/landed-then-retried") && listed.contains("Resume:"),
+        "the branch is listed with the command that lands the rest: {listed}"
+    );
+    assert!(
+        listed.contains("landed in part") && listed.contains(&landing),
+        "and the landing it already has is named beside it, so nobody publishes the \
+         rest without seeing what the base carries: {listed}"
+    );
+
+    // The reader the wrong answer cost the most. A release is sequenced against the
+    // commit a landing is on, and `not-landed` there is a hold that can never clear —
+    // for work that merged. The landing this answer carries is what it is decided
+    // from.
+    let release = release_status(&hosted.world, "feature/landed-then-retried");
+    assert_eq!(
+        release["state"], "awaiting-human-step",
+        "the landing commit is on the base, so the release that carries it is waiting \
+         on a person rather than on a merge that already happened: {release}"
+    );
+}

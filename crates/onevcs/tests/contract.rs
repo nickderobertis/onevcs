@@ -2473,6 +2473,12 @@ fn the_record_names_every_word_the_landing_answer_travels_as() {
                 commit: Sha("0f1e2d3".to_owned()),
             },
         },
+        Landed::InPart {
+            evidence: LandingEvidence::RecordedLanding {
+                commit: Sha("0f1e2d3".to_owned()),
+            },
+            unlanded: 2,
+        },
     ] {
         let value = serde_json::to_value(&answer).expect("an answer serializes");
         let state = value["state"].as_str().expect("an answer says which it is");
@@ -2485,8 +2491,11 @@ fn the_record_names_every_word_the_landing_answer_travels_as() {
         }
     }
     // The state a report gives a branch the base carries and nothing records, which
-    // is the value version 2 of that document added beside the seven it had.
+    // is the value version 2 of that document added beside the seven it had — and
+    // the one version 5 added beside those eight, for a branch whose landing a record
+    // found and whose commits have gone on past it.
     spellings.push("maybe-landed".to_owned());
+    spellings.push("landed-in-part".to_owned());
     for spelling in spellings {
         assert!(
             record.contains(&format!("`{spelling}`")),

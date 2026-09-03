@@ -527,6 +527,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         let mut marks: Vec<String> = Vec::new();
         match &row.landed {
             Landed::Yes { .. } => marks.push(format!("landed — {}", row.landed.tier())),
+            Landed::InPart { .. } => marks.push(format!("landed in part — {}", row.landed.tier())),
             Landed::Unknown => marks.push("may have landed".to_owned()),
             Landed::No => {}
         }
@@ -584,6 +585,20 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
                 base = row.branch.base,
             );
             continue;
+        }
+        // …and a row whose landing accounts for part of the branch keeps the label
+        // that reads as "paste this", because the commits above the landing are work
+        // nobody published. What it gains is the landing beside it, so an operator
+        // publishing the rest can see what is already there.
+        if let Landed::InPart { evidence, unlanded } = &row.landed {
+            println!(
+                "    Landed in part: {tier} ({commit}) says work of this branch reached {base}, \
+                 and it has {unlanded} commit(s) since that the landing does not carry. Those \
+                 are what publishing it now would land",
+                tier = row.landed.tier(),
+                commit = evidence.commit(),
+                base = row.branch.base,
+            );
         }
         if row.landed == Landed::Unknown {
             println!(

@@ -15,6 +15,17 @@
 //!    first only from a base history that reaches the one this host knows the base
 //!    to stand at.
 //!
+//! A tier that *finds* a landing does not always answer `yes`. Each of the first
+//! three guards its answer with [`landed_all_of`], which asks whether the landing
+//! commit already integrates everything the branch carries — and a branch a retried
+//! dispatch continued carries commits its landing never saw. That state is
+//! [`Landed::InPart`]: the tier that found the landing answers with it, naming the
+//! landing commit and how many commits sit above it, rather than declining into a
+//! comparison that knows less. Falling through was the defect: the strongest
+//! evidence there is — a merged change request whose URL the same report prints two
+//! lines above — was discarded for a content comparison that cannot survive a squash
+//! merge, and the branches a retry continued are the ordinary case.
+//!
 //! Three constraints the code cannot show. `git cherry` and patch ids are no help
 //! here: publication squashes many commits into one, so no patch id matches
 //! afterwards. Tier 4 must never answer `yes` — it is a comparison, not a record,
@@ -39,8 +50,8 @@ use crate::provenance::{self, Trailers};
 ///
 /// The evidence travels *inside* the answer rather than beside it, so a `yes` with
 /// nothing behind it and a `no` naming a landing commit are both unrepresentable:
-/// only tiers 1 to 3 answer `yes`, and only the content comparison answers the
-/// other two.
+/// only tiers 1 to 3 answer `yes` or `in-part`, and only the content comparison
+/// answers the other two.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum Landed {
@@ -48,6 +59,31 @@ pub enum Landed {
     Yes {
         /// Which tier decided it, and the commit that is the evidence.
         evidence: LandingEvidence,
+    },
+    /// A tier found the landing, and the branch has gone on since: the landing
+    /// commit is on the base and does not account for everything the branch now
+    /// carries.
+    ///
+    /// Two answers in one, because both are true and each has its own reader. There
+    /// is work left to publish — so this is not a landing for
+    /// [`is_landed`](Self::is_landed), the row keeps its resume command, and
+    /// `recoverable` keeps the row. And the work that *did* land reached the base at
+    /// the commit named here — so a release is sequenced against it rather than
+    /// held on a question nothing will ever close.
+    ///
+    /// What a retried dispatch leaves behind, which is the ordinary shape of a
+    /// branch on a host that retries: a session lands, the next session continues
+    /// the same name, and the commits it adds are the ones the landing never saw.
+    InPart {
+        /// Which tier found the landing, and the commit that is the evidence — the
+        /// same value the tier would have answered `yes` with.
+        evidence: LandingEvidence,
+        /// How many commits the branch holds that the landing does not integrate.
+        ///
+        /// The count is what makes this readable as an amount of work rather than as
+        /// a qualifier: one commit above a landing is a follow-up, and thirty is a
+        /// branch whose landing says almost nothing about it.
+        unlanded: usize,
     },
     /// Nothing records that it reached the base, and the base does not carry what
     /// it changed. The last tier — a comparison of content, not a record — so this
@@ -68,7 +104,13 @@ pub enum Landed {
 }
 
 impl Landed {
-    /// Whether this answer is a landing, which is the one thing every caller acts on.
+    /// Whether the work is *finished*: it reached the base and the branch holds
+    /// nothing the landing did not carry.
+    ///
+    /// The question every caller acts on is "is there work left to publish", and
+    /// this is its inverse — which is why [`Landed::InPart`] answers `false` here
+    /// while naming a landing commit. A row whose branch went on after its landing
+    /// keeps the command that lands the rest.
     pub fn is_landed(&self) -> bool {
         matches!(self, Landed::Yes { .. })
     }
@@ -78,7 +120,7 @@ impl Landed {
     /// place they are read is a sentence.
     pub fn tier(&self) -> &'static str {
         match self {
-            Landed::Yes { evidence } => evidence.tier(),
+            Landed::Yes { evidence } | Landed::InPart { evidence, .. } => evidence.tier(),
             Landed::No | Landed::Unknown => "content comparison",
         }
     }
@@ -147,7 +189,7 @@ pub(crate) struct Recorded {
     pub change: Option<Url>,
 }
 
-/// Which of the three answers a branch's history gives, and what decided it.
+/// Which of the four answers a branch's history gives, and what decided it.
 ///
 /// `compared` is the comparison target the caller resolved — the base as this
 /// repository can see it, which is the base as the *host* knows it wherever the
@@ -179,13 +221,23 @@ pub(crate) fn decide(
             !git::trees_differ(repo, compared, branch)?,
         );
     };
+    // The landing the most certain tier found and the guard declined, kept rather
+    // than dropped. A tier below may still answer `yes` — a branch that landed twice
+    // has a second landing that does account for all of it — so this is what answers
+    // only once none of them has, and it is what stands between a continued branch
+    // and the comparison at the bottom.
+    let mut partial: Option<(LandingEvidence, String)> = None;
     // Tier 1. Exact and permanent: a commit somebody recorded as this branch's
     // landing, which the base can reach. Nothing edited afterwards changes it.
     if let Some(commit) = recorded.landing.as_ref().map(ObjectId::as_str) {
-        if git::known_to_reach(repo, commit, compared)? && landed_all_of(repo, branch, commit)? {
-            return Ok(landed(LandingEvidence::RecordedLanding {
+        if git::known_to_reach(repo, commit, compared)? {
+            let evidence = LandingEvidence::RecordedLanding {
                 commit: Sha(commit.to_owned()),
-            }));
+            };
+            if landed_all_of(repo, branch, commit)? {
+                return Ok(landed(evidence));
+            }
+            partial.get_or_insert((evidence, commit.to_owned()));
         }
     }
     let base_history = git::log_messages(repo, &fork, compared)?;
@@ -194,12 +246,14 @@ pub(crate) fn decide(
     // ours required, and true however far the base has moved since.
     if let Some(url) = recorded.change.as_ref() {
         if let Some(commit) = names_the_change(&base_history, url.as_str()) {
+            let evidence = LandingEvidence::ChangeRequest {
+                commit: Sha(commit.clone()),
+                change_url: url.clone(),
+            };
             if landed_all_of(repo, branch, &commit)? {
-                return Ok(landed(LandingEvidence::ChangeRequest {
-                    commit: Sha(commit),
-                    change_url: url.clone(),
-                }));
+                return Ok(landed(evidence));
             }
+            partial.get_or_insert((evidence, commit));
         }
     }
     // Tier 3. A landing with no change request at all. The trailer names a commit
@@ -208,14 +262,27 @@ pub(crate) fn decide(
     // wears it now.
     for commit in &base_history {
         for carried in trailer_values(&commit.message, trailers.landed()) {
-            if git::known_to_reach(repo, carried.as_str(), branch)?
-                && landed_all_of(repo, branch, &commit.sha)?
-            {
-                return Ok(landed(LandingEvidence::Trailer {
-                    commit: Sha(commit.sha.clone()),
-                }));
+            if !git::known_to_reach(repo, carried.as_str(), branch)? {
+                continue;
             }
+            let evidence = LandingEvidence::Trailer {
+                commit: Sha(commit.sha.clone()),
+            };
+            if landed_all_of(repo, branch, &commit.sha)? {
+                return Ok(landed(evidence));
+            }
+            partial.get_or_insert((evidence, commit.sha.clone()));
         }
+    }
+    // A landing that accounts for part of the branch, answered by the tier that
+    // found it. Above tier 4 deliberately: the comparison below knows less than the
+    // record here does, and the answer it gives a continued branch — `no`, or
+    // `unknown` — throws away a landing commit that is on the base and nameable.
+    if let Some((evidence, landing)) = partial {
+        return Ok(Landed::InPart {
+            unlanded: unlanded_above(repo, branch, &fork, &landing)?,
+            evidence,
+        });
     }
     // Tier 4, and only ever `no` or `unknown`. Scoped to the paths the branch
     // actually touched rather than the whole tree, so unrelated work landing on the
@@ -297,13 +364,39 @@ fn already_took_this_change(
 /// same branch, and a row that read that as finished would hide unpublished work —
 /// the one direction this must never fail in. So the landing commit is asked whether
 /// it carries everything the branch changed since it forked, and a branch holding
-/// anything it did not falls through to the comparison below.
+/// anything it did not is [`Landed::InPart`] rather than a `yes`.
+///
+/// Declining is *not* falling through to a lower tier's answer. The tier that found
+/// the landing keeps it; what the guard decides is which of the two answers that tier
+/// gives.
 ///
 /// Asked of the *landing* commit rather than of the base as it stands now, which is
 /// what keeps this from being the inference it replaces: the base moves, and the
 /// commit that landed this work does not.
 fn landed_all_of(repo: git::Asked<'_>, branch: &str, landing: &str) -> Result<bool> {
     git::already_integrates(repo, landing, branch)
+}
+
+/// How many commits the branch holds above the landing — the ones it does not
+/// integrate.
+///
+/// A squash lands the commits the branch carried when it was made, so what a landing
+/// does not account for is a *suffix* of the branch's history. Walked newest first
+/// and stopped at the first commit the landing already integrates, which costs one
+/// question per commit it counts rather than one per commit the branch has.
+///
+/// Asked only where [`landed_all_of`] has already declined, so the answer is at least
+/// one and the walk always has somewhere to stop: the fork point, for a branch whose
+/// landing accounts for none of it.
+fn unlanded_above(repo: git::Asked<'_>, branch: &str, fork: &str, landing: &str) -> Result<usize> {
+    let mut unlanded = 0;
+    for commit in git::log_messages(repo, fork, branch)?.iter().rev() {
+        if git::already_integrates(repo, landing, &commit.sha)? {
+            break;
+        }
+        unlanded += 1;
+    }
+    Ok(unlanded)
 }
 
 fn landed(evidence: LandingEvidence) -> Landed {

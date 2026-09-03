@@ -82,7 +82,7 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 4;
+pub const REPORT_VERSION: u32 = 5;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -383,6 +383,13 @@ pub enum Landing {
     /// A change request was opened, and the host could not be asked what became
     /// of it.
     Published,
+    /// A landing this branch's work reached the base at is recorded, and the branch
+    /// has gone on since: part of it is on the base and part of it is not.
+    ///
+    /// Not `Landed`, because there is work left to publish; not `Unpublished`,
+    /// because the base carries what the landing carried and a consumer waiting on
+    /// its release can be answered.
+    LandedInPart,
     /// The base carries everything this branch changed, and nothing in history
     /// records that it reached it — neither a landing, nor a change request's
     /// number, nor a landing trailer. Consistent with a landing nobody here
@@ -686,15 +693,22 @@ fn judge(
 /// branch — so where two copies disagree, the copy still holding work is the one
 /// whose answer is true of the *work*. Each tier already guards its own answer that
 /// way: a copy reads anything but `yes` exactly when it carries something no record
-/// covers. Ranking the three and taking the least certain is what carries that guard
+/// covers. Ranking the four and taking the least certain is what carries that guard
 /// across copies, so a spent run clone's landing cannot answer for a checkout holding
 /// commits nobody published — the one direction this must never fail in. Ties go to
 /// the first holder.
+///
+/// `in-part` ranks under `yes` and over the two the comparison gives, which is the
+/// same ordering read as *how much of the branch a landing accounts for*: none of it,
+/// then some of it, then all of it. So a copy still holding work wins over one whose
+/// landing covers everything, and a copy that at least found the landing wins over
+/// one that found nothing.
 fn carrier_of(judged: &[(PathBuf, String, Landed)]) -> Option<&(PathBuf, String, Landed)> {
     judged.iter().min_by_key(|(_, _, verdict)| match verdict {
         Landed::No => 0,
         Landed::Unknown => 1,
-        Landed::Yes { .. } => 2,
+        Landed::InPart { .. } => 2,
+        Landed::Yes { .. } => 3,
     })
 }
 
@@ -951,6 +965,11 @@ fn landing(
         // one decision, and `NothingToPublish` beside a landing would be a report
         // this build writes and its own reader refuses.
         Some(Landed::Yes { .. }) => return Landing::Landed,
+        // …and a landing that accounts for part of the branch is likewise the
+        // answer whatever else is true: the base carries what it carried, and the
+        // rest of the branch is still work. Above the host, for the reason every
+        // record is — what history says stays true whoever merged it.
+        Some(Landed::InPart { .. }) => return Landing::LandedInPart,
         // A branch that is the base has nothing to publish, which is the narrower
         // and more useful of the two things true of it.
         Some(Landed::Unknown) if ahead == Some(0) => return Landing::NothingToPublish,
@@ -1143,7 +1162,7 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
             "{change} was opened for this branch, and the host could not be asked what became of \
              it; the checks section says why"
         )),
-        Landing::Closed | Landing::Unpublished => {
+        Landing::LandedInPart | Landing::Closed | Landing::Unpublished => {
             if nobody_has_it {
                 return says(format!(
                     "no checkout or run clone of identity {key:?} holds branch {branch:?}, so there \
@@ -1191,6 +1210,19 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
                          incomplete marker: only `recover` may publish it, because publishing it \
                          means attesting that verification cleared the step that stopped",
                         branch = work.branch,
+                    )
+                } else if let Landed::InPart { evidence, unlanded } = landed {
+                    // The one row whose landing and whose work are both real. Naming
+                    // the landing is what keeps this from reading as "nothing here
+                    // ever published": part of it did, and the commit that says so
+                    // is on the base.
+                    format!(
+                        "branch {branch:?} landed in part: {tier} ({commit}) says work of it \
+                         reached {base}, and it has {unlanded} commit(s) since that the landing \
+                         does not carry",
+                        branch = work.branch,
+                        tier = landed.tier(),
+                        commit = evidence.commit(),
                     )
                 } else {
                     format!(
@@ -1929,6 +1961,7 @@ impl Report {
             "  landed: {}\n",
             match &self.publication.landed {
                 Landed::Yes { .. } => "yes",
+                Landed::InPart { .. } => "in part",
                 Landed::No => "no",
                 Landed::Unknown => "unknown",
             },
@@ -1938,6 +1971,15 @@ impl Report {
             match &self.publication.landed {
                 Landed::Yes { evidence } => format!(
                     "{tier} ({commit})",
+                    tier = self.publication.landed.tier(),
+                    commit = evidence.commit(),
+                ),
+                // The count belongs on this line rather than beside the word above:
+                // what the reader is being told is what the record accounts for, and
+                // "and 3 commit(s) of the branch are not in it" is the other half of
+                // that sentence.
+                Landed::InPart { evidence, unlanded } => format!(
+                    "{tier} ({commit}), and {unlanded} commit(s) of the branch are not in it",
                     tier = self.publication.landed.tier(),
                     commit = evidence.commit(),
                 ),
@@ -2023,6 +2065,7 @@ fn spell_landing(state: Landing) -> &'static str {
         Landing::MaybeLanded => {
             "maybe landed (the base carries it and nothing records that it did)"
         }
+        Landing::LandedInPart => "landed in part (the branch has gone on since)",
         Landing::NothingToPublish => "nothing to publish",
         Landing::Unpublished => "unpublished",
     }
@@ -2082,8 +2125,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v4.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v4-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v5.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v5-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
