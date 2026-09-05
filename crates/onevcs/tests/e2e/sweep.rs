@@ -2111,3 +2111,475 @@ fn a_session_record_whose_work_is_still_only_in_its_own_worktree_is_never_reaped
         "the work it made is handed back on its branch"
     );
 }
+
+/// A complete branch of the local fixture carrying one named change, handed back by
+/// a session that closed without publishing.
+///
+/// The subject is the journey's rather than this helper's, because what a landing of
+/// a branch would be *called* is one of the things history says about whether it
+/// landed: the base having already taken a change under that very subject is the last
+/// thing history has to say, and it is what makes a landing undecidable rather than
+/// absent.
+fn branch_carrying(fixture: &Fixture, branch: &str, file: &str, subject: &str) {
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    fixture.world.commit_file(&worktree, file, "one\n", subject);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+}
+
+/// Publish a branch the repository's own verifier turns down, leaving the run root
+/// and the verdict recorded under it behind.
+fn rejected_publish_branch(fixture: &Fixture, branch: &str) {
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        // 1 is the contract's code for a gate that rejected the change.
+        .code(1);
+}
+
+/// Every run root under either family, and the branch its publication was about.
+///
+/// Read off the worktree that publication cut, which git has that branch checked out
+/// in — asked of git rather than taken off the run root's own name, because the name
+/// carries a *slug* and two branches can share one.
+fn run_roots_by_branch(fixture: &Fixture) -> Vec<(PathBuf, String)> {
+    let mut found = Vec::new();
+    for family in [publications(&fixture.world), recoveries(&fixture.world)] {
+        for run_root in run_roots(&family) {
+            let worktree = run_root.join("worktree");
+            if !worktree.is_dir() {
+                continue;
+            }
+            let branch = fixture
+                .world
+                .git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .trim()
+                .to_owned();
+            found.push((run_root, branch));
+        }
+    }
+    found
+}
+
+/// Every branch `onevcs recoverable` offers for recovery right now, and the commit
+/// the copy it answered about stands at.
+///
+/// The commit as well as the name, because a name in two repositories is two copies
+/// and this crate treats them as two: a copy whose work the base carries and a copy
+/// still holding commits nobody published wear one name and are not one piece of work.
+fn offered_for_recovery(fixture: &Fixture) -> Vec<(String, String)> {
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .success();
+    let rows: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("`recoverable --json` prints one JSON document");
+    rows.as_array()
+        .expect("an array of rows")
+        .iter()
+        .map(|row| {
+            let branch = row["branch"]["branch"]
+                .as_str()
+                .expect("every row names its branch");
+            let checkout = Path::new(
+                row["checkout"]
+                    .as_str()
+                    .expect("every row names the copy it answered about"),
+            );
+            (branch.to_owned(), tip_of(fixture, checkout, branch))
+        })
+        .collect()
+}
+
+/// The commit one repository holds a branch at.
+fn tip_of(fixture: &Fixture, repo: &Path, branch: &str) -> String {
+    fixture
+        .world
+        .git(repo, &["rev-parse", &format!("refs/heads/{branch}")])
+        .trim()
+        .to_owned()
+}
+
+/// What one row says became of a branch's work, or `None` where no row names it.
+fn landing_reported_for(fixture: &Fixture, branch: &str) -> Option<String> {
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--all", "--json"])
+        .assert()
+        .success();
+    let rows: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("`recoverable --all --json` prints one JSON document");
+    rows.as_array()
+        .expect("an array of rows")
+        .iter()
+        .find(|row| row["branch"]["branch"] == branch)
+        .map(|row| {
+            row["landed"]["state"]
+                .as_str()
+                .expect("every row says what became of the work")
+                .to_owned()
+        })
+}
+
+/// What a sweep decided about one run root, where it reached the landing question at
+/// all.
+///
+/// A workspace kept for being fresh, occupied, or ungated was never asked whether its
+/// branch landed — the cheaper questions retained it first — so those answer `None`
+/// and are no evidence either way about a branch.
+#[derive(Debug, PartialEq, Eq)]
+enum Decided {
+    /// Its clone holds nothing left to publish.
+    NothingLeft,
+    /// Its clone holds work no origin has, named.
+    HoldsWork,
+}
+
+fn decided_about(report: &str, run_root: &Path) -> Option<Decided> {
+    let opens = format!("  {} — ", run_root.display());
+    let mut section = "";
+    for line in report.lines() {
+        if !line.starts_with("  ") {
+            section = line;
+            continue;
+        }
+        if !line.starts_with(&opens) {
+            continue;
+        }
+        return match (section, &line[opens.len()..]) {
+            ("Reclaimed:", _) => Some(Decided::NothingLeft),
+            ("Retained:", why) if why.starts_with("its clone holds work no origin has on") => {
+                Some(Decided::HoldsWork)
+            }
+            _ => None,
+        };
+    }
+    None
+}
+
+/// How many workspaces holding work the rule keeps, as the report itself states it.
+///
+/// Read out of the report rather than restated here: it is the crate's own number, and
+/// a second copy of it in a test is exactly the drift that having one source prevents.
+/// A report stating none kept nothing for holding work at all, so the bound cannot
+/// have reclaimed anything either.
+fn bound_stated(report: &str) -> Option<usize> {
+    report.lines().find_map(|line| {
+        let (_, tail) = line.split_once("and it is one of the ")?;
+        let (number, _) = tail.split_once(' ')?;
+        number.parse().ok()
+    })
+}
+
+/// The one rule `sweep` and `recoverable` may never break: they answer the same
+/// question about one piece of work, so work the report offers for recovery and the
+/// retention rule calls finished — or the reverse — is a tree this refuses.
+///
+/// `sweep::unpublished_work`'s own doc comment forbids that divergence outright, and
+/// nothing detected it: the evidence tiers were added to `vcs::collect` and not to the
+/// retention rule, which left a branch a recorded landing settles being retained on a
+/// comparison of content that cannot see the record. So the check is asked of the two
+/// real reports, through the real binary, over whatever run roots the tree holds.
+///
+/// **Two directions, and they are not the same assertion.** A workspace retained for
+/// holding unpublished work is checked by *name*: if this host is keeping a directory
+/// because work on that branch is unpublished, a listing that drops the branch as
+/// landed is false whichever copy it read. A workspace *reclaimed* is checked by name
+/// and commit together, because a name in two repositories is two copies and this
+/// crate treats them as two — a spent copy of a name whose work the base carries is
+/// reclaimable while another copy still holding commits nobody published is offered,
+/// and both answers are true.
+///
+/// The sweep is a rehearsal, so asking removes nothing and the answer is the one the
+/// real run would take. And the premise the reclaim direction needs is asserted rather
+/// than assumed: past the bound the rule keeps, the oldest workspace holding work is
+/// reclaimed *because of the bound* rather than because anything decided its branch
+/// landed, and a reclaim would then be no evidence about a landing at all.
+fn the_two_reports_answer_one_piece_of_work_one_way(fixture: &Fixture) {
+    let report = swept(fixture, &["--dry-run"]);
+    let offered = offered_for_recovery(fixture);
+    let roots = run_roots_by_branch(fixture);
+    let holding = roots
+        .iter()
+        .filter(|(run_root, _)| decided_about(&report, run_root) == Some(Decided::HoldsWork))
+        .count();
+    if let Some(bound) = bound_stated(&report) {
+        assert!(
+            holding < bound,
+            "the premise: fewer workspaces hold work than the bound keeps, so a reclaim here \
+             is the landing decision and never the bound:\n{report}"
+        );
+    }
+    for (run_root, branch) in roots {
+        let Some(decided) = decided_about(&report, &run_root) else {
+            continue;
+        };
+        let tip = tip_of(fixture, &run_root.join("clone"), &branch);
+        let says = match decided {
+            // By name: something on this branch is unpublished, so a listing that
+            // drops the branch entirely has dropped it.
+            Decided::HoldsWork => offered.iter().any(|(named, _)| *named == branch),
+            // By name and commit: this exact copy is what was called finished.
+            Decided::NothingLeft => offered
+                .iter()
+                .any(|(named, at)| *named == branch && *at == tip),
+        };
+        assert_eq!(
+            decided == Decided::HoldsWork,
+            says,
+            "the retention rule and the recovery listing disagree about {branch} at {tip}: the \
+             sweep decided {decided:?} about {run_root}, and `onevcs recoverable` {said} it. One \
+             of those two answers is false.\n{report}\noffered: {offered:?}",
+            run_root = run_root.display(),
+            said = match says {
+                true => "offers",
+                false => "does not offer",
+            },
+        );
+    }
+}
+
+#[test]
+fn the_retention_rule_and_the_recovery_listing_answer_one_branch_one_way() {
+    // Three branches, one of each answer history can give, and both reports asked
+    // about all three. The landed one is the row that used to be wrong in both
+    // places at once: publication squashes, so its clone keeps commits no origin ref
+    // names for ever, and a rule reading that as unpublished work keeps the workspace
+    // while the report beside it offers the same finished work for recovery.
+    let fixture = Fixture::local(&local_direct());
+    // The subject two of these branches share. The base taking a change under it is
+    // the last thing history has to say about a landing nothing recorded, and it is
+    // what makes one of the three undecidable rather than absent.
+    let shared = "feat: the change made twice";
+
+    // Until the verifier is replaced below, every publication is turned down: what it
+    // leaves is a run root with a verdict recorded under it and nothing on the base.
+    fixture.verified_by("exit 1");
+    branch_carrying(&fixture, "feature/undecided", "undecided.txt", shared);
+    rejected_publish_branch(&fixture, "feature/undecided");
+    branch_carrying(
+        &fixture,
+        "feature/unlanded",
+        "unlanded.txt",
+        "feat: the change nobody landed",
+    );
+    rejected_publish_branch(&fixture, "feature/unlanded");
+
+    // …and now one that lands, under the subject the first of them shares.
+    fixture.verified_by("exit 0");
+    branch_carrying(&fixture, "feature/landed", "landed.txt", shared);
+    publish_branch(&fixture, "feature/landed");
+    assert!(
+        fixture.origin_log().contains(&shared.to_owned()),
+        "the premise: the base has taken a change under the subject a landing of \
+         feature/undecided would carry too: {:?}",
+        fixture.origin_log()
+    );
+
+    let roots = run_roots_by_branch(&fixture);
+    assert_eq!(
+        roots.len(),
+        3,
+        "three publications cut three run roots: {roots:?}"
+    );
+    for (run_root, _) in &roots {
+        backdate(run_root, 72);
+    }
+
+    // What history says about each of the three, read off the report that says it.
+    assert_eq!(
+        landing_reported_for(&fixture, "feature/landed").as_deref(),
+        Some("yes"),
+        "a landing trailer on the base says this one finished"
+    );
+    assert_eq!(
+        landing_reported_for(&fixture, "feature/unlanded").as_deref(),
+        Some("no"),
+        "nothing records this one, and the base does not carry what it changed"
+    );
+    assert_eq!(
+        landing_reported_for(&fixture, "feature/undecided").as_deref(),
+        Some("unknown"),
+        "the base already took a change under the subject a landing of this one would \
+         have carried, so whether it landed cannot be decided"
+    );
+
+    // The rule, over the tree those three left.
+    the_two_reports_answer_one_piece_of_work_one_way(&fixture);
+
+    // …and what each of the three answers is, stated rather than left to the rule
+    // above, which would pass just as happily on three branches that all agreed the
+    // wrong way.
+    let offered = offered_for_recovery(&fixture);
+    let named: Vec<&str> = offered.iter().map(|(branch, _)| branch.as_str()).collect();
+    assert!(
+        !named.contains(&"feature/landed"),
+        "work the base carries is not offered for recovery: {named:?}"
+    );
+    for held in ["feature/unlanded", "feature/undecided"] {
+        assert!(
+            named.contains(&held),
+            "{held} is work nobody published, or work nothing can decide about — both are \
+             offered: {named:?}"
+        );
+    }
+
+    let report = swept(&fixture, &[]);
+    for (run_root, branch) in &roots {
+        match branch.as_str() {
+            "feature/landed" => assert!(
+                !run_root.exists(),
+                "the workspace of a branch the base carries is reclaimable:\n{report}"
+            ),
+            _ => assert!(
+                run_root.is_dir(),
+                "the workspace of {branch} holds work an operator could still want:\n{report}"
+            ),
+        }
+    }
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 1 workspace(s), "),
+        "exactly the one finished workspace went:\n{report}"
+    );
+}
+
+#[test]
+fn a_workspace_whose_branch_landed_in_part_keeps_the_commits_the_landing_never_carried() {
+    // The branch a retry continued: it landed, and it went on afterwards. A rule that
+    // read the landing alone would reclaim a workspace holding commits nobody
+    // published — the one direction this must never fail in — and the tiers answer
+    // `in-part` for exactly that, which is not a landing for this question.
+    let fixture = Fixture::local(&local_direct());
+    branch_carrying(
+        &fixture,
+        "feature/continued",
+        "first.txt",
+        "feat: the half that landed",
+    );
+    publish_branch(&fixture, "feature/continued");
+    let landed = only_run_root(&publications(&fixture.world));
+
+    // The same name, continued: a second session commits onto the branch its landing
+    // never saw.
+    let (token, worktree) = fixture.open(&["--branch", "feature/continued"]);
+    fixture.world.commit_file(
+        &worktree,
+        "second.txt",
+        "two\n",
+        "feat: the half that did not",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    fixture.verified_by("exit 1");
+    rejected_publish_branch(&fixture, "feature/continued");
+    let continued = run_roots(&publications(&fixture.world))
+        .into_iter()
+        .find(|root| root != &landed)
+        .expect("the second publication cut a run root of its own");
+
+    for run_root in [&landed, &continued] {
+        backdate(run_root, 72);
+    }
+    assert_eq!(
+        landing_reported_for(&fixture, "feature/continued").as_deref(),
+        Some("in-part"),
+        "the landing is on the base and the branch has gone on since"
+    );
+
+    the_two_reports_answer_one_piece_of_work_one_way(&fixture);
+
+    let report = swept(&fixture, &[]);
+    assert!(
+        continued.is_dir(),
+        "a landing that carried half the branch leaves the other half unpublished, and \
+         the workspace holding it stays:\n{report}"
+    );
+    assert!(
+        retained_reason(&report, &continued).contains("its clone holds work no origin has on"),
+        "…and the report says so:\n{report}"
+    );
+}
+
+#[test]
+fn a_workspace_left_by_a_failed_publication_goes_once_the_branch_lands_by_another_route() {
+    // The shape the operator met, and the one a comparison of content cannot answer.
+    // A publication is turned down and leaves its workspace; the branch lands
+    // afterwards, so that workspace's clone never fetched the base it landed on and
+    // its own `origin/main` still predates the landing. Judged against *that*, its
+    // branch is work nobody published for ever — and the listing beside it, which asks
+    // the base as this host knows it, drops the branch as landed. One report keeps
+    // dozens of workspaces the other says are finished.
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 1");
+    branch_carrying(
+        &fixture,
+        "feature/late",
+        "late.txt",
+        "feat: the change that landed on the second attempt",
+    );
+    rejected_publish_branch(&fixture, "feature/late");
+    let refused = only_run_root(&publications(&fixture.world));
+
+    fixture.verified_by("exit 0");
+    publish_branch(&fixture, "feature/late");
+    let landed = run_roots(&publications(&fixture.world))
+        .into_iter()
+        .find(|root| root != &refused)
+        .expect("the second publication cut a run root of its own");
+
+    // The premise: the refused workspace's clone never saw the landing, so its own
+    // view of the base is the one it had before the branch reached it.
+    let stale = fixture
+        .world
+        .git(&refused.join("clone"), &["rev-parse", "origin/main"]);
+    let now = fixture.world.git(&fixture.origin, &["rev-parse", "main"]);
+    assert_ne!(
+        stale.trim(),
+        now.trim(),
+        "the premise: the workspace a refused publication left never fetched the base its \
+         branch went on to land on"
+    );
+    assert_eq!(
+        landing_reported_for(&fixture, "feature/late").as_deref(),
+        Some("yes"),
+        "a landing trailer on the base says the branch finished, whatever any one clone \
+         has fetched"
+    );
+
+    for run_root in [&refused, &landed] {
+        backdate(run_root, 72);
+    }
+    the_two_reports_answer_one_piece_of_work_one_way(&fixture);
+
+    let report = swept(&fixture, &[]);
+    for gone in [&refused, &landed] {
+        assert!(
+            !gone.exists(),
+            "{} holds no unpublished work: its branch reached the base, and a clone that \
+             has not fetched since does not make that untrue:\n{report}",
+            gone.display()
+        );
+    }
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 2 workspace(s), "),
+        "both workspaces of the finished branch went:\n{report}"
+    );
+}

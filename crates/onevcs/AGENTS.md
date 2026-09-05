@@ -250,8 +250,9 @@ correct, and the absent-hook journey is what holds that.
 ## `status` and `import`, and the three things easy to undo
 
 - **A landing is decided from the base's own history, never from content alone**
-  (`landed.rs`, asked by both `status` and `vcs::collect` so the two cannot disagree
-  about one branch). Four tiers, most certain first, and the answer names the one that
+  (`landed.rs`, asked by `status`, by `vcs::collect`, by `sweep`'s retention rule, and
+  by the `landing_status` library read, so no two of them can disagree about one
+  branch). Four tiers, most certain first, and the answer names the one that
   decided it; the comparison of content is last and never answers `yes`. Three answers
   rather than two, because calling an undecidable landing `no` is what puts a
   paste-ready `publish-branch` under work the base already carries. What `status`
@@ -722,8 +723,15 @@ Six rules govern how it decides.
   lifecycle clones there and of the landings' workspaces here.
 - **What "no origin has" means is `vcs::collect`'s question and not a second one**,
   so the report that offers work for recovery and the rule that keeps its workspace
-  cannot come to disagree. Publication squashes, which is why neither half of it can
-  be dropped.
+  cannot come to disagree. Publication squashes, which is why ancestry alone cannot
+  answer it — and whether the work reached the base is `landed::decide`'s four tiers
+  rather than a comparison of trees, which is that module's last tier and the one it
+  says must never answer `yes`. A branch decided landed is reclaimable, one landed
+  **in part** is retained for the commits above the landing, and `no` and undecidable
+  retain.
+  `the_two_reports_answer_one_piece_of_work_one_way` in `tests/e2e/sweep.rs` is what
+  detects the divergence the doc comment forbids, and it is asked of both real
+  reports through the real binary.
 - **Reclaiming a workspace stops what it left running** (`processes.rs`), because
   unlinking files a live process holds open frees none of their blocks — a
   publication runs the repository's own verification, and verifications start daemons

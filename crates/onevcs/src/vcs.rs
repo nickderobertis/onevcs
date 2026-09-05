@@ -705,7 +705,7 @@ fn net_negative<'a>(
 }
 
 /// The change request a preserved branch recorded, when one was opened for it.
-fn change_url_of<'a>(
+pub fn change_url_of<'a>(
     repo: impl Into<git::Asked<'a>>,
     base: &str,
     branch: &str,

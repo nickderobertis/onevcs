@@ -58,7 +58,10 @@ use filetime::FileTime;
 
 use crate::branch::Verb;
 use crate::error::{self, Result};
+use crate::landed;
 use crate::processes::{self, Holder};
+use crate::provenance;
+use crate::store;
 use crate::{git, home, ids, lock, merge_path, workspace};
 
 /// How many dead run roots holding work no origin has are kept past the age floor.
@@ -158,12 +161,15 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
         .skipped
         .sort_by(|a, b| a.path.cmp(&b.path).then(a.reason.cmp(&b.reason)));
 
+    // Read once, before the first family, so every workspace this pass judges is
+    // judged against the one view of what this host recorded.
+    let landings = landings()?;
     let mut families: Vec<Verb> = Verb::ALL.to_vec();
     // By the directory's own name rather than by the enum's order, so the report
     // reads the same however the verbs come to be declared.
     families.sort_by_key(|verb| verb.runs());
     for verb in families {
-        family(&mut report, verb, min_age)?;
+        family(&mut report, verb, min_age, &landings)?;
     }
     records(&mut report, dry_run, min_age)?;
     Ok(report)
@@ -239,7 +245,7 @@ pub fn enforce(verb: Verb) -> Result<()> {
         // asked about and where what became of one is said.
         records: Vec::new(),
     };
-    family(&mut report, verb, min_age)?;
+    family(&mut report, verb, min_age, &landings()?)?;
     // A family this pass could not read is a pass that did not happen, and the caller
     // is told so: the verb has a report to say it in and this has only its answer, so
     // silence here would be a landing leaving the disk to fill with nothing said.
@@ -253,7 +259,7 @@ pub fn enforce(verb: Verb) -> Result<()> {
     }
 }
 
-fn family(report: &mut Report, verb: Verb, min_age: Duration) -> Result<()> {
+fn family(report: &mut Report, verb: Verb, min_age: Duration, landings: &Landings) -> Result<()> {
     let directory = report.root.join(verb.runs());
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
@@ -300,7 +306,7 @@ fn family(report: &mut Report, verb: Verb, min_age: Duration) -> Result<()> {
     // judged: which of them to keep is a question about the *set*.
     let mut holding: Vec<Holding> = Vec::new();
     for run_root in run_roots {
-        match judge(&run_root, min_age)? {
+        match judge(&run_root, min_age, landings)? {
             Verdict::Retain(why) => report.retained.push(Retained {
                 path: run_root,
                 why,
@@ -530,7 +536,7 @@ struct Holding {
 /// about the host rather than about the workspace; and what the clone still holds
 /// comes last, because it is the only question that runs a `git` of its own and
 /// every answer above it has already kept the workspace without needing one.
-fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
+fn judge(run_root: &Path, min_age: Duration, landings: &Landings) -> Result<Verdict> {
     if !run_root.is_dir() {
         return Ok(Verdict::Retain(Kept::OwnerUnproven(
             "it is not a directory, and every run root is one",
@@ -566,7 +572,7 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
     }
     // What the clone still holds. Bounded rather than kept forever, and bounded by
     // the caller — this workspace's place in that bound is a fact about the family.
-    match unpublished_work(&run_root.join("clone")) {
+    match unpublished_work(&run_root.join("clone"), landings) {
         Ok(branches) if branches.is_empty() => Ok(Verdict::Reclaim(lease)),
         Ok(branches) => Ok(Verdict::Holds(Holding {
             path: run_root.to_path_buf(),
@@ -589,25 +595,127 @@ fn judge(run_root: &Path, min_age: Duration) -> Result<Verdict> {
 ///
 /// The same two questions `vcs::collect` answers a `recoverable` row with, and
 /// deliberately the same two: a branch carries commits no `origin` ref has, *and*
-/// the base does not already carry what it changed. Either alone is the wrong
-/// answer here. Ancestry cannot say a landing finished — publication squashes, so
-/// the branch a landing pushed is an ancestor of nothing afterwards and every
-/// finished workspace would look like unpublished work — and content alone would
-/// call a branch spent whose commits happen to change nothing.
+/// nothing says its work reached the base. Either alone is the wrong answer here.
+/// Ancestry cannot say a landing finished — publication squashes, so the branch a
+/// landing pushed is an ancestor of nothing afterwards and every finished workspace
+/// would look like unpublished work — and a branch whose commits happen to change
+/// nothing the base does not already have is not thereby spent.
+///
+/// **The second question is [`landed::decide`]'s, and asking it any other way is the
+/// defect this closes.** It used to be a bare comparison of trees, which is that
+/// module's *last* tier and the one it says must never answer `yes`: a recorded
+/// landing, the change request's own number in the base's history, and a landing
+/// trailer all say what a comparison cannot, and a branch a retry continued lands in
+/// part and still holds work. So a workspace whose branch is decided landed is
+/// reclaimable, one decided landed **in part** is retained — the commits above the
+/// landing are work nobody published — and `no` and undecidable retain, the second
+/// most of all, because a workspace that may hold the only copy of somebody's work
+/// must never go on an answer nothing could decide.
 ///
 /// So a workspace this keeps is one whose clone holds work an operator could still
 /// want, and the report that offers such work for recovery cannot come to disagree
 /// with the rule that keeps its workspace.
-fn unpublished_work(clone: &Path) -> Result<Vec<String>> {
+fn unpublished_work(clone: &Path, landings: &Landings) -> Result<Vec<String>> {
     let base = git::default_branch(clone, "origin")?;
-    let compared = crate::vcs::base_ref(clone, &base);
+    let known = landings.known(clone, &base);
+    let asked = git::Asked::borrowing(clone, known.lent.as_deref());
+    let compared = crate::vcs::judged_against(asked, &base, known.base.as_ref());
     let mut holding = Vec::new();
     for branch in git::unpublished_branches(clone)? {
-        if git::trees_differ(clone, &compared, &branch)? {
+        let recorded = crate::status::recorded_for(
+            &landings.streams,
+            known.identity.as_deref().unwrap_or_default(),
+            &branch,
+            None,
+        );
+        let recorded = landed::Recorded {
+            change: recorded.change.or_else(|| {
+                crate::vcs::change_url_of(asked, &compared, &branch, &landings.trailers)
+            }),
+            ..recorded
+        };
+        let verdict = landed::decide(
+            asked,
+            &compared,
+            known.base.as_ref(),
+            &branch,
+            &recorded,
+            &landings.trailers,
+        )?;
+        if !verdict.is_landed() {
             holding.push(branch);
         }
     }
     Ok(holding)
+}
+
+/// What the landing tiers are asked through, read once for a whole sweep.
+///
+/// The registry, the event streams and the configured trailer prefix are facts about
+/// the host rather than about any one run root, and reading them per workspace would
+/// walk every stream on the host once per directory. Read once here, and handed to
+/// every judgement, so a sweep decides every workspace from the one view — two run
+/// roots of the same branch answered from two reads of the streams is exactly the
+/// disagreement the tiers exist to end.
+struct Landings {
+    registry: crate::registry::Registry,
+    streams: Vec<crate::status::Recorded>,
+    trailers: provenance::Trailers,
+}
+
+/// What one run clone's landing question is judged against.
+struct Known {
+    /// The identity the clone belongs to, where this host knows it.
+    identity: Option<String>,
+    /// Where this host knows the base to stand: the base commit of the publication
+    /// checkout every landing fast-forwards.
+    base: Option<crate::host::Sha>,
+    /// That checkout's object store, lent to the clone — which is what lets a clone
+    /// that never fetched since read the commit a landing's evidence is in.
+    lent: Option<PathBuf>,
+}
+
+impl Landings {
+    /// Everything this host knows about the base a run clone's branches are judged
+    /// against.
+    ///
+    /// A clone whose origin names no registered repository is answered from itself
+    /// alone: no identity, so no recorded landing and no recorded change request, and
+    /// no known base tip, which is what makes the tiers below a record answer `no`
+    /// rather than close the question from a history that may stop short of the
+    /// evidence. Both of those retain, which is the answer every unknown in this
+    /// module resolves to.
+    fn known(&self, clone: &Path, base: &str) -> Known {
+        let Some(resolution) = git::remote_url(clone, "origin")
+            .ok()
+            .and_then(|origin| store::resolve(&self.registry, &origin).ok())
+        else {
+            return Known {
+                identity: None,
+                base: None,
+                lent: None,
+            };
+        };
+        Known {
+            identity: Some(resolution.key),
+            base: crate::vcs::base_commit(&resolution.publication, base),
+            lent: git::objects_dir(&resolution.publication).ok(),
+        }
+    }
+}
+
+/// Read the host's view of every landing once, for one sweep.
+fn landings() -> Result<Landings> {
+    let registry = store::load()?;
+    let (rules, _source) = crate::policy::load(&registry)?;
+    Ok(Landings {
+        trailers: provenance::from_rules(&rules),
+        // A stream this pass could not read costs certainty rather than correctness:
+        // the branch it belonged to falls to a lower tier and is judged from the
+        // base's own history, which retains wherever nothing decides.
+        streams: crate::status::recorded_streams(&mut Vec::new())?,
+        registry,
+    })
 }
 
 /// Remove one proven-dead run root, or record why the removal did not happen.

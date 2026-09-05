@@ -27,9 +27,9 @@
 
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, EventFilter, EventMatcher,
-    EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, MergeOutcome, MergePolicy,
-    Phase, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope, Session,
-    SessionRequest, SessionToken, Source, TargetName, Vcs,
+    EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, Landed, MergeOutcome,
+    MergePolicy, Phase, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope,
+    Session, SessionRequest, SessionToken, Source, TargetName, Vcs,
 };
 use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -3822,5 +3822,131 @@ fn the_real_host_refuses_an_unusable_reason_before_it_reaches_the_host_at_all() 
         world.host_calls().is_empty(),
         "it is refused at the boundary, so the host is never asked: {:?}",
         world.host_calls()
+    );
+}
+
+#[test]
+fn the_landing_read_answers_a_repository_that_releases_nothing_and_the_release_read_cannot() {
+    // The landing on its own, and the reason it is a read of its own. `release_status`
+    // decides the landing first and *then* selects a release target, so a repository
+    // declaring none is refused — and a refusal is undecided, not "not landed". A
+    // caller sequencing work behind a landing was left with no answer at all for every
+    // repository that publishes nothing, which is most of them.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    // Nothing is written to `$ONEVCS_HOME/releases.yml` and the checkout carries no
+    // `release-targets.toml`: this repository releases nothing, and says so by silence.
+
+    let landed = open(&Git, "feature/finished");
+    world.commit_file(
+        &landed.worktree,
+        "done.txt",
+        "done\n",
+        "feat: the finished work",
+    );
+    let publication = onevcs::publish(
+        &Providers::real(),
+        &landed.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let landing = match publication.outcome {
+        PublishOutcome::Merged(sha) => sha,
+        other => panic!("a local-direct publication merges: {other:?}"),
+    };
+    onevcs::close_session(&Providers::real(), &landed.token).expect("the session closes");
+
+    // The release read cannot answer at all: there is no target to select.
+    let refused = onevcs::release_status("feature/finished", None)
+        .expect_err("a repository declaring no release target has none to be asked about");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains("target"),
+        "the refusal is about there being no target: {reason}"
+    );
+
+    // The landing read answers it, with the tier that decided it inside the answer.
+    match onevcs::landing_status("feature/finished", None).expect("the landing is decided") {
+        Landed::Yes { evidence } => assert_eq!(
+            evidence.commit(),
+            landing.0,
+            "the evidence names the commit the work reached the base at"
+        ),
+        other => panic!("a local-direct landing writes its own trailer onto the base: {other:?}"),
+    }
+
+    // …and the other answer, from the same read, for work nobody published.
+    let held = open(&Git, "feature/unfinished");
+    world.commit_file(
+        &held.worktree,
+        "held.txt",
+        "held\n",
+        "feat: the work nobody landed",
+    );
+    // Read while the worktree is still there: closing one takes it away, and the commit
+    // is one of the four spellings this read is asked through below.
+    let by_commit = world
+        .git(&held.worktree, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    onevcs::close_session(&Providers::real(), &held.token).expect("the session closes");
+    assert_eq!(
+        onevcs::landing_status("feature/unfinished", None).expect("the landing is decided"),
+        Landed::No,
+        "nothing records that it reached the base, and the base does not carry what it changed"
+    );
+
+    // The four spellings `release_status` takes, on the read beside it: the same
+    // answer whichever names the work.
+    for spelling in [
+        held.token.0.as_str(),
+        "feature/unfinished",
+        by_commit.as_str(),
+    ] {
+        assert_eq!(
+            onevcs::landing_status(spelling, None).expect("the landing is decided"),
+            Landed::No,
+            "{spelling} names the same work, so it gets the same answer"
+        );
+    }
+
+    // The repository, named. It narrows the question rather than widening it, so a
+    // reference belonging to another identity is refused instead of being answered
+    // under the name of the one asked about.
+    assert_eq!(
+        onevcs::landing_status("feature/unfinished", Some("hosted"))
+            .expect("the landing is decided"),
+        Landed::No,
+        "naming the repository the work is in answers exactly as naming none does"
+    );
+    let other = world.bare_origin("other");
+    let checkout = world.clone_of(&other, "other");
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/other.git",
+            ],
+            Providers::real(),
+        ),
+        0,
+        "a second repository registers"
+    );
+    let refused = onevcs::landing_status("feature/unfinished", Some("other"))
+        .expect_err("work in another repository is refused rather than answered");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains("feature/unfinished") && reason.contains("other"),
+        "the refusal names the work and the repository it was asked about: {reason}"
+    );
+    let unregistered = onevcs::landing_status("feature/unfinished", Some("nobody/registered-this"))
+        .expect_err("a repository this host does not know is refused rather than ignored");
+    assert!(
+        unregistered.to_string().contains("registered"),
+        "the refusal says the repository is not one: {unregistered}"
     );
 }
