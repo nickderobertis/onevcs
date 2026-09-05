@@ -1322,21 +1322,6 @@ fn a_close_refuses_while_a_process_is_working_anywhere_inside_the_session_run_ro
     assert_eq!(fixture.world.events_of(&token, "session-closed").len(), 1);
 }
 
-/// Every word a refusal may use for what a holder is doing, read from the outside.
-///
-/// Which of them a given host answers with is that host's business — between them
-/// Linux and macOS name overlapping subsets, and a state neither table has a word for
-/// is `unanswered` — so this is the set a reader of the message may meet, and what the
-/// journey below holds the refusal to.
-const STATES_A_HOLDER_IS_NAMED_IN: [&str; 6] = [
-    "starting",
-    "running",
-    "sleeping",
-    "waiting on the host",
-    "stopped",
-    "stopped by a tracer",
-];
-
 #[test]
 fn a_refused_close_says_enough_about_a_holder_to_tell_an_orphan_from_a_live_dispatch() {
     // The failure, as it happened: a copy process orphaned to pid 1 held a run root
@@ -1385,12 +1370,15 @@ fn a_refused_close_says_enough_about_a_holder_to_tell_an_orphan_from_a_live_disp
         // Which word that is, is the host's own answer and not the same word on both:
         // Linux calls a process waiting in a `sleep` sleeping, while macOS answered
         // `SRUN` — process-level — for that same `sleep` on the `cross` job. So what is
-        // held here is that the host named a state this crate has a word for, since
-        // `state unanswered` in a refusal a host could answer is the failure that
-        // matters.
+        // held here is that the host answered at all, which is the failure that matters:
+        // `state unanswered` in a refusal a host could have answered. The vocabulary
+        // itself is `processes::State`'s and stays there — its `Display` matches every
+        // variant, so a word added or renamed is a compile error at the one place that
+        // spells them, and a copy of the list here would be a second place to keep.
         assert!(
-            STATES_A_HOLDER_IS_NAMED_IN.contains(&state),
-            "and names what it is doing in the vocabulary a reader can act on: {state:?}\n{said}"
+            !state.is_empty() && state != "unanswered",
+            "and names what it is doing, rather than declining a question this host can \
+             answer: {state:?}\n{said}"
         );
         assert!(
             window.ends_with("second(s)"),
