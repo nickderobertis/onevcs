@@ -622,6 +622,10 @@ fn unpublished_work(clone: &Path, landings: &Landings) -> Result<Vec<String>> {
     let compared = crate::vcs::judged_against(asked, &base, known.base.as_ref());
     let mut holding = Vec::new();
     for branch in git::unpublished_branches(clone)? {
+        // What this host's own runs recorded about this branch — read exactly as
+        // `vcs::collect` reads it. A clone whose identity is not one this host knows
+        // matches no stream, which leaves the tiers below a record to answer: no
+        // identity is no record rather than another repository's.
         let recorded = crate::status::recorded_for(
             &landings.streams,
             known.identity.as_deref().unwrap_or_default(),
