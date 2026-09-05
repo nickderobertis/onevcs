@@ -62,6 +62,32 @@ impl fmt::Display for Pid {
     }
 }
 
+/// The process a holder was started by, as a refusal names it.
+///
+/// A type of its own beside [`Pid`] because the two answer different questions. A
+/// `Pid` is one a *signal* may name, which is why it refuses `1` — and `1` is exactly
+/// the answer that matters here, since a holder reparented to init is one whose
+/// dispatch has already gone. What this refuses instead is `0`, which names no process
+/// an operator could go and look at: a parent a host reports as `0` is a parent it did
+/// not answer, and it reads as unanswered rather than as a pid nobody has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParentPid(u32);
+
+/// Made only where a host answers a parent at all, which is every host with a process
+/// table.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl ParentPid {
+    fn new(raw: u32) -> Option<Self> {
+        (raw > 0).then_some(ParentPid(raw))
+    }
+}
+
+impl fmt::Display for ParentPid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "parent pid {}", self.0)
+    }
+}
+
 /// What this crate asks a process to do, which is the whole of what it ever asks.
 ///
 /// Two, and no way to spell a third: what a reclamation may do to a process it did
@@ -103,11 +129,7 @@ impl Holder {
 #[derive(Debug, Clone, Default)]
 struct Vitals {
     /// The process that started it, as this host reports it now.
-    ///
-    /// Deliberately not a [`Pid`]: `1` is exactly the answer that matters here — a
-    /// holder reparented to init is one whose dispatch has already gone — and `Pid`
-    /// exists to make that number unrepresentable, for a *signal*.
-    parent: Option<u32>,
+    parent: Option<ParentPid>,
     /// What it is doing, where this host named a state this crate has a word for.
     state: Option<State>,
     /// How long it has been running.
@@ -187,7 +209,7 @@ impl fmt::Display for Holder {
             cwd = self.cwd.display(),
             parent = self.vitals.parent.map_or_else(
                 || "parent unanswered".to_owned(),
-                |parent| format!("parent pid {parent}"),
+                |parent| parent.to_string()
             ),
             state = self.vitals.state.map_or_else(
                 || "state unanswered".to_owned(),
@@ -422,7 +444,8 @@ fn vitals(pid: Pid) -> Vitals {
     Vitals {
         parent: fields
             .get(PARENT_FIELD)
-            .and_then(|parent| parent.parse().ok()),
+            .and_then(|parent| parent.parse().ok())
+            .and_then(ParentPid::new),
         state: fields.get(STATE_FIELD).and_then(|state| {
             STATES
                 .iter()
@@ -597,7 +620,7 @@ fn vitals(pid: Pid) -> Vitals {
         return Vitals::default();
     };
     Vitals {
-        parent: Some(info.pbi_ppid),
+        parent: ParentPid::new(info.pbi_ppid),
         state: STATES
             .iter()
             .find(|(status, _)| *status == info.pbi_status)
