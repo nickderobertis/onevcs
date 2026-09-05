@@ -28,6 +28,7 @@ use std::time::{Duration, SystemTime};
 use predicates::prelude::*;
 
 use crate::lifecycle::{local_direct, Fixture};
+use crate::registry::configure_rules;
 use crate::world::World;
 
 const USAGE_ERROR: i32 = 2;
@@ -1293,6 +1294,63 @@ fn an_age_floor_no_window_can_hold_is_refused_at_the_boundary() {
             .stderr(predicate::str::contains("--min-age-hours"))
             .stderr(predicate::str::contains("hours"));
     }
+}
+
+#[test]
+fn a_sweep_whose_registry_this_host_cannot_read_refuses_rather_than_judging_blind() {
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/landed");
+    publish_branch(&fixture, "feature/landed");
+    let run_root = only_run_root(&publications(&fixture.world));
+    backdate(&run_root, 72);
+
+    // Every workspace this verb reclaims is reclaimed on a landing decided from what
+    // this host recorded about the work, and the registry is where that record starts:
+    // which repository a run clone belongs to, and where its publication checkout is.
+    // A registry nothing can read is therefore not one directory this pass may report
+    // and walk past — it is the whole pass having no evidence — and reclaiming on an
+    // answer nothing decided is how a workspace holding the only copy of somebody's
+    // work goes.
+    std::fs::write(fixture.world.home().join("registry.json"), "{not json")
+        .expect("a broken registry");
+    fixture
+        .world
+        .onevcs()
+        .arg("sweep")
+        .assert()
+        .code(USAGE_ERROR)
+        .stderr(predicate::str::contains("is not JSON"));
+    assert!(
+        run_root.is_dir(),
+        "a sweep that could not decide a landing removes nothing"
+    );
+}
+
+#[test]
+fn a_sweep_whose_rules_are_malformed_refuses_rather_than_judging_blind() {
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/landed");
+    publish_branch(&fixture, "feature/landed");
+    let run_root = only_run_root(&publications(&fixture.world));
+    backdate(&run_root, 72);
+
+    // The rules name the trailer a landing is recorded under, which is one of the
+    // tiers a branch is decided by — so a rules file this host cannot make sense of
+    // silently disarms a tier rather than leaving the answer unchanged. It is refused
+    // for the same reason the registry is: the operator is told their configuration is
+    // broken, rather than handed a sweep that judged without it.
+    configure_rules(&fixture.world, "version: 1\nrules: not-a-list\n");
+    fixture
+        .world
+        .onevcs()
+        .arg("sweep")
+        .assert()
+        .code(USAGE_ERROR)
+        .stderr(predicate::str::contains("is malformed"));
+    assert!(
+        run_root.is_dir(),
+        "a sweep that could not decide a landing removes nothing"
+    );
 }
 
 /// Whether a process this journey started is still running.

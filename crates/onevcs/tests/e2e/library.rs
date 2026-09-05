@@ -4082,6 +4082,34 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
         "the refusal names the repository it was asked about: {refused}"
     );
 
+    // …and once nothing on this host holds that branch any more — the run clone it was
+    // written in reclaimed by a sweep, the checkout it was published from pruned after
+    // the merge — the URL still resolves to a branch and the search comes back empty.
+    // Asking without naming a repository is the case that used to be reported as an
+    // ambiguity over nought candidates, which told a reader neither what was wrong nor
+    // what to do next.
+    let run_root = keyed
+        .worktree
+        .parent()
+        .expect("a session worktree sits inside its run root")
+        .to_path_buf();
+    std::fs::remove_dir_all(&run_root).expect("the workspace holding the branch is reclaimed");
+    world.git(
+        &world.path("hosted"),
+        &["branch", "-D", "feature/branch-keyed"],
+    );
+    let gone = onevcs::landing_status(opened.as_str(), None)
+        .expect_err("a branch no checkout holds answers about no work");
+    let reason = gone.to_string();
+    assert!(
+        reason.contains("feature/branch-keyed") && reason.contains("no checkout or run clone"),
+        "the refusal names the branch and says nothing on this host holds it: {reason}"
+    );
+    assert!(
+        reason.contains("onevcs recoverable"),
+        "the refusal says where the preserved branches are listed: {reason}"
+    );
+
     // A URL no change request `onevcs` opened here answers to is refused rather than
     // resolved: nothing on this host records which branch it carries.
     let unknown = onevcs::landing_status("https://github.com/acme-corp/hosted/pull/4242", None)
