@@ -983,12 +983,14 @@ resolves it from the reference alone, exactly as `release_status` does; a refere
 belonging to another identity is refused rather than answered under the name of the one
 asked about.
 
-`Landed` and `LandingEvidence` are the values `Recoverable.landed` and `status --json`
-already carry, and this hands back that same value with the evidence tier that decided
-it inside it; their shape is the one in the inferred-surface record. The tiers are
-`landed.rs`'s and nowhere else's — `landing_status`, `recoverable`, and the retention
-rule `onevcs sweep` applies all reach the one decision — so no two of them can come to
-answer differently about one branch.
+`Landed` is `yes` carrying its evidence, `in-part` carrying its evidence and the count
+of commits the landing does not integrate, `no`, or `unknown`; `LandingEvidence` is
+`recorded-landing`, `change-request`, or `trailer`, each naming the commit that is the
+evidence. Those are the values `Recoverable.landed` and `status --json` already carry,
+and this hands back that same value unchanged, so the tier that decided an answer
+travels inside it. The tiers themselves are `landed.rs`'s and nowhere else's —
+`landing_status`, `recoverable`, and the retention rule `onevcs sweep` applies all reach
+the one decision — so no two of them can come to answer differently about one branch.
 
 `ReleaseStatus::NotReleased` carries the *baseline* rather than a bare string, so
 "no release at landing" is a state it can express, and `now` is empty where there is
