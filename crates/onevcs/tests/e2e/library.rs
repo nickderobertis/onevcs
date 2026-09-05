@@ -27,9 +27,9 @@
 
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, EventFilter, EventMatcher,
-    EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, MergeOutcome, MergePolicy,
-    Phase, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope, Session,
-    SessionRequest, SessionToken, Source, TargetName, Vcs,
+    EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, Landed, MergeOutcome,
+    MergePolicy, Phase, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope,
+    Session, SessionRequest, SessionToken, Source, TargetName, Vcs,
 };
 use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -3822,5 +3822,300 @@ fn the_real_host_refuses_an_unusable_reason_before_it_reaches_the_host_at_all() 
         world.host_calls().is_empty(),
         "it is refused at the boundary, so the host is never asked: {:?}",
         world.host_calls()
+    );
+}
+
+#[test]
+fn the_landing_read_answers_a_repository_that_releases_nothing_and_the_release_read_cannot() {
+    // The landing on its own, and the reason it is a read of its own. `release_status`
+    // decides the landing first and *then* selects a release target, so a repository
+    // declaring none is refused — and a refusal is undecided, not "not landed". A
+    // caller sequencing work behind a landing was left with no answer at all for every
+    // repository that publishes nothing, which is most of them.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    // Nothing is written to `$ONEVCS_HOME/releases.yml` and the checkout carries no
+    // `release-targets.toml`: this repository releases nothing, and says so by silence.
+
+    let landed = open(&Git, "feature/finished");
+    world.commit_file(
+        &landed.worktree,
+        "done.txt",
+        "done\n",
+        "feat: the finished work",
+    );
+    let publication = onevcs::publish(
+        &Providers::real(),
+        &landed.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let landing = match publication.outcome {
+        PublishOutcome::Merged(sha) => sha,
+        other => panic!("a local-direct publication merges: {other:?}"),
+    };
+    onevcs::close_session(&Providers::real(), &landed.token).expect("the session closes");
+
+    // The release read cannot answer at all: there is no target to select.
+    let refused = onevcs::release_status("feature/finished", None)
+        .expect_err("a repository declaring no release target has none to be asked about");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains("target"),
+        "the refusal is about there being no target: {reason}"
+    );
+
+    // The landing read answers it, with the tier that decided it inside the answer.
+    match onevcs::landing_status("feature/finished", None).expect("the landing is decided") {
+        Landed::Yes { evidence } => assert_eq!(
+            evidence.commit(),
+            landing.0,
+            "the evidence names the commit the work reached the base at"
+        ),
+        other => panic!("a local-direct landing writes its own trailer onto the base: {other:?}"),
+    }
+
+    // …and the other answer, from the same read, for work nobody published.
+    let held = open(&Git, "feature/unfinished");
+    world.commit_file(
+        &held.worktree,
+        "held.txt",
+        "held\n",
+        "feat: the work nobody landed",
+    );
+    // Read while the worktree is still there: closing one takes it away, and the commit
+    // is one of the spellings this read is asked through below.
+    let by_commit = world
+        .git(&held.worktree, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    onevcs::close_session(&Providers::real(), &held.token).expect("the session closes");
+    assert_eq!(
+        onevcs::landing_status("feature/unfinished", None).expect("the landing is decided"),
+        Landed::No,
+        "nothing records that it reached the base, and the base does not carry what it changed"
+    );
+
+    // Three of the four spellings `release_status` takes, on the read beside it: the
+    // same answer whichever names the work. The fourth is a change request's URL, which
+    // a local-direct publication never opens — the journey below opens one and asks
+    // this read through it.
+    for spelling in [
+        held.token.0.as_str(),
+        "feature/unfinished",
+        by_commit.as_str(),
+    ] {
+        assert_eq!(
+            onevcs::landing_status(spelling, None).expect("the landing is decided"),
+            Landed::No,
+            "{spelling} names the same work, so it gets the same answer"
+        );
+    }
+
+    // The repository, named. It narrows the question rather than widening it, so a
+    // reference belonging to another identity is refused instead of being answered
+    // under the name of the one asked about.
+    assert_eq!(
+        onevcs::landing_status("feature/unfinished", Some("hosted"))
+            .expect("the landing is decided"),
+        Landed::No,
+        "naming the repository the work is in answers exactly as naming none does"
+    );
+    let other = world.bare_origin("other");
+    let checkout = world.clone_of(&other, "other");
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/other.git",
+            ],
+            Providers::real(),
+        ),
+        0,
+        "a second repository registers"
+    );
+    // Each spelling, because each resolves differently and a narrowing that only held
+    // for one of them would answer another repository's work under the name of the one
+    // asked about: a branch and a commit are *searched* for within the identity, and a
+    // session token names its own repository outright.
+    for spelling in [
+        "feature/unfinished",
+        held.token.0.as_str(),
+        by_commit.as_str(),
+    ] {
+        let refused = onevcs::landing_status(spelling, Some("other"))
+            .expect_err("work in another repository is refused rather than answered");
+        let reason = refused.to_string();
+        assert!(
+            reason.contains(spelling) && reason.contains("other"),
+            "the refusal names the work and the repository it was asked about: {reason}"
+        );
+    }
+    let unregistered = onevcs::landing_status("feature/unfinished", Some("nobody/registered-this"))
+        .expect_err("a repository this host does not know is refused rather than ignored");
+    assert!(
+        unregistered.to_string().contains("registered"),
+        "the refusal says the repository is not one: {unregistered}"
+    );
+}
+
+#[test]
+fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch() {
+    // The fourth spelling, and the one that resolves through nothing but the event
+    // stream: nothing on a branch carries the host's name for the change, so a URL is
+    // answerable only for a change request `onevcs` itself opened. A caller holding a
+    // `Publication` has exactly that URL and nothing else, which is why the read takes
+    // one at all.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/reviewed");
+    world.commit_file(
+        &session.worktree,
+        "reviewed.txt",
+        "one\n",
+        "feat: the work under review",
+    );
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let PublishOutcome::ChangeOpen(url) = &published.outcome else {
+        panic!("change-open must open a change request, not {published:?}");
+    };
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+
+    // Open rather than merged, so the change request exists and its work has not
+    // reached the base: the answer is the one the branch's own name gets.
+    assert_eq!(
+        onevcs::landing_status(url.as_str(), None).expect("the landing is decided"),
+        onevcs::landing_status("feature/reviewed", None).expect("the landing is decided"),
+        "a change request's URL and the branch it carries name one piece of work"
+    );
+    assert_eq!(
+        onevcs::landing_status(url.as_str(), None).expect("the landing is decided"),
+        Landed::No,
+        "the change request is open, so nothing has reached the base yet"
+    );
+    // …and the repository narrows it, exactly as it narrows every other spelling.
+    assert_eq!(
+        onevcs::landing_status(url.as_str(), Some("hosted")).expect("the landing is decided"),
+        Landed::No
+    );
+
+    let second = world.clone_of(&world.bare_origin("second"), "second");
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &second.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/second.git",
+            ],
+            Providers::real(),
+        ),
+        0,
+        "a second repository registers"
+    );
+    let refused = onevcs::landing_status(url.as_str(), Some("second"))
+        .expect_err("a change request in another repository is refused rather than answered");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains(url.as_str()) && reason.contains("second"),
+        "the refusal names the change request and the repository it was asked about: {reason}"
+    );
+
+    // The other half of the URL spelling, and the one a repository has to *narrow*
+    // rather than merely check: a change request a branch-keyed verb opened leaves a
+    // stream with no identity on it, so the URL is resolved by searching the
+    // identities whose checkouts hold the branch. Searching all of them under an
+    // explicit repository would refuse a name two of them hold as ambiguous, for an
+    // ambiguity the caller has already answered.
+    let keyed = open(&Git, "feature/branch-keyed");
+    world.commit_file(
+        &keyed.worktree,
+        "keyed.txt",
+        "one\n",
+        "feat: the work a branch-keyed verb publishes",
+    );
+    onevcs::close_session(&Providers::real(), &keyed.token).expect("the session closes");
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "publish-branch",
+                "feature/branch-keyed",
+                "--repo",
+                &world.path("hosted").to_string_lossy(),
+            ],
+            Providers::real(),
+        ),
+        0,
+        "the branch-keyed verb opens a change request for it"
+    );
+    let rows = Git.recoverable(Scope::All).expect("the preserved branches");
+    let opened = rows
+        .iter()
+        .find(|row| row.branch.branch == "feature/branch-keyed")
+        .unwrap_or_else(|| panic!("the branch is still unpublished: {rows:#?}"))
+        .branch
+        .change_url
+        .clone()
+        .expect("the branch-keyed publication opened a change request");
+    assert_eq!(
+        onevcs::landing_status(opened.as_str(), Some("hosted")).expect("the landing is decided"),
+        Landed::No,
+        "a stream with no identity on it is narrowed by the search, not after it"
+    );
+    let refused = onevcs::landing_status(opened.as_str(), Some("second"))
+        .expect_err("a repository that holds no such branch answers about no work");
+    assert!(
+        refused.to_string().contains("second"),
+        "the refusal names the repository it was asked about: {refused}"
+    );
+
+    // …and once nothing on this host holds that branch any more — the run clone it was
+    // written in reclaimed by a sweep, the checkout it was published from pruned after
+    // the merge — the URL still resolves to a branch and the search comes back empty.
+    // Asking without naming a repository is the case that used to be reported as an
+    // ambiguity over nought candidates, which told a reader neither what was wrong nor
+    // what to do next.
+    let run_root = keyed
+        .worktree
+        .parent()
+        .expect("a session worktree sits inside its run root")
+        .to_path_buf();
+    std::fs::remove_dir_all(&run_root).expect("the workspace holding the branch is reclaimed");
+    world.git(
+        &world.path("hosted"),
+        &["branch", "-D", "feature/branch-keyed"],
+    );
+    let gone = onevcs::landing_status(opened.as_str(), None)
+        .expect_err("a branch no checkout holds answers about no work");
+    let reason = gone.to_string();
+    assert!(
+        reason.contains("feature/branch-keyed") && reason.contains("no checkout or run clone"),
+        "the refusal names the branch and says nothing on this host holds it: {reason}"
+    );
+    assert!(
+        reason.contains("onevcs recoverable"),
+        "the refusal says where the preserved branches are listed: {reason}"
+    );
+
+    // A URL no change request `onevcs` opened here answers to is refused rather than
+    // resolved: nothing on this host records which branch it carries.
+    let unknown = onevcs::landing_status("https://github.com/acme-corp/hosted/pull/4242", None)
+        .expect_err("a change request nobody opened through onevcs names no work here");
+    assert!(
+        unknown.to_string().contains("4242"),
+        "the refusal names the change request it was asked about: {unknown}"
     );
 }

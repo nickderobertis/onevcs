@@ -1125,6 +1125,10 @@ fn the_amendment_declares_the_release_surface_it_added() {
         "pub fn acknowledge_release(reference: &str, target: &TargetName, version: &str,",
         "supersede: bool) -> Result<Acknowledgement>;",
         "pub fn adoption_for(repo: &str) -> Result<Adoption>;",
+        // The landing read the release surface's own refusal made necessary, declared
+        // here because the repository consuming it is written against this document
+        // rather than against the implementation.
+        "pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed>;",
     ] {
         assert!(
             declarations.contains(declared),

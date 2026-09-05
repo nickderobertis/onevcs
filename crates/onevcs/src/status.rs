@@ -744,9 +744,30 @@ pub(crate) struct LandingOf {
 }
 
 pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<LandingOf> {
+    landing_of_within(registry, reference, None)
+}
+
+/// The landing of one reference, narrowed to the repository a caller named.
+///
+/// [`landing_of`] is this with no repository, which is what every caller that has
+/// only a reference asks. The narrowed form exists because one branch name can belong
+/// to two identities, and a caller that knows which one it means should not be refused
+/// for an ambiguity it has already resolved.
+pub(crate) fn landing_of_within(
+    registry: &Registry,
+    reference: &str,
+    repo: Option<&str>,
+) -> Result<LandingOf> {
+    // Resolved before anything is searched, so a repository this host does not know is
+    // refused as the unregistered repository it is rather than silently widening the
+    // question to every identity there is.
+    let scope = repo
+        .map(|repo| store::resolve(registry, repo).map(|resolution| resolution.key))
+        .transpose()?;
+    let within = scope.as_deref();
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
-    let (work, _) = resolve(registry, reference, &streams)?;
+    let (work, _) = resolve(registry, reference, &streams, within)?;
     let resolution = store::resolve(registry, &work.identity)?;
     let (file, _) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
@@ -793,7 +814,7 @@ pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<Landing
 pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
-    let (work, kind) = resolve(registry, reference, &streams)?;
+    let (work, kind) = resolve(registry, reference, &streams, None)?;
 
     let resolution = store::resolve(registry, &work.identity)?;
     let (file, source) = policy::load(registry)?;
@@ -1736,41 +1757,85 @@ pub(crate) fn recorded_for(
 /// branch of that name exists. Ambiguity is *within* a spelling: one branch name
 /// can belong to two identities, and answering about whichever came first would be
 /// a report about work nobody asked after.
-fn resolve(registry: &Registry, reference: &str, streams: &[Recorded]) -> Result<(Work, RefKind)> {
+///
+/// `within` is the identity an explicit repository narrowed the question to, and it
+/// is applied to every spelling rather than to the two that search: a caller that
+/// named a repository is answered about *that* repository or refused, so a session
+/// token or a change request belonging to another identity cannot come back under the
+/// name of the one asked about.
+fn resolve(
+    registry: &Registry,
+    reference: &str,
+    streams: &[Recorded],
+    within: Option<&str>,
+) -> Result<(Work, RefKind)> {
     if reference.starts_with("http://") || reference.starts_with("https://") {
-        return change_url(registry, reference, streams).map(|work| (work, RefKind::ChangeUrl));
+        return change_url(registry, reference, streams, within)
+            .and_then(|work| in_scope(work, reference, within))
+            .map(|work| (work, RefKind::ChangeUrl));
     }
     if let Ok(record) = workspace::load(reference) {
-        return Ok((
+        return in_scope(
             Work {
                 identity: record.identity,
                 branch: record.branch.clone(),
             },
-            RefKind::SessionToken,
-        ));
+            reference,
+            within,
+        )
+        .map(|work| (work, RefKind::SessionToken));
     }
     // Through the conversion that decides branch names, so what is searched for is a
     // ref rather than the part of a command line that sat where one would.
     if let Ok(named) = Ref::try_from(reference.to_owned()) {
-        let found = by_branch(registry, &named)?;
+        let found = by_branch(registry, &named, within)?;
         if !found.is_empty() {
             return one(found, reference, "branch").map(|work| (work, RefKind::Branch));
         }
     }
     if reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit()) {
-        let found = by_commit(registry, reference)?;
+        let found = by_commit(registry, reference, within)?;
         if !found.is_empty() {
             return one(found, reference, "commit").map(|work| (work, RefKind::Commit));
         }
     }
     Err(Error::Invalid {
-        reason: format!(
-            "{reference:?} names no work this host knows: it is not a change request `onevcs` \
-             opened, a session token it printed, a branch any checkout or run clone of a \
-             registered identity holds, or a commit one of those branches carries. `onevcs repos` \
-             lists the identities and `onevcs recoverable` lists the preserved branches"
-        ),
+        reason: match within {
+            Some(key) => format!(
+                "{reference:?} names no work this host knows in repository {key:?}: it is not a \
+                 change request `onevcs` opened there, a session token it printed for it, a \
+                 branch any checkout or run clone of that identity holds, or a commit one of \
+                 those branches carries. `onevcs recoverable` lists the preserved branches"
+            ),
+            None => format!(
+                "{reference:?} names no work this host knows: it is not a change request \
+                 `onevcs` opened, a session token it printed, a branch any checkout or run clone \
+                 of a registered identity holds, or a commit one of those branches carries. \
+                 `onevcs repos` lists the identities and `onevcs recoverable` lists the \
+                 preserved branches"
+            ),
+        },
     })
+}
+
+/// The work, where an explicit repository admits it — and a refusal naming both
+/// identities where it does not.
+///
+/// Silently widening to the identity the reference actually belongs to is the one
+/// answer this must not give: a caller that named a repository is deciding something
+/// about *that* repository, and an answer about another one reads exactly like an
+/// answer about theirs.
+fn in_scope(work: Work, reference: &str, within: Option<&str>) -> Result<Work> {
+    match within {
+        Some(key) if key != work.identity => Err(Error::Invalid {
+            reason: format!(
+                "{reference:?} names work in repository {found:?}, not in {key:?}; ask about it \
+                 without naming a repository, or name the one it belongs to",
+                found = work.identity,
+            ),
+        }),
+        _ => Ok(work),
+    }
 }
 
 /// The one candidate, or a refusal naming every one of them.
@@ -1795,7 +1860,12 @@ fn one(found: Vec<Work>, reference: &str, spelling: &str) -> Result<Work> {
 }
 
 /// The work whose change request one URL names.
-fn change_url(registry: &Registry, url: &str, streams: &[Recorded]) -> Result<Work> {
+fn change_url(
+    registry: &Registry,
+    url: &str,
+    streams: &[Recorded],
+    within: Option<&str>,
+) -> Result<Work> {
     let recorded = streams
         .iter()
         .find(|record| {
@@ -1839,14 +1909,37 @@ fn change_url(registry: &Registry, url: &str, streams: &[Recorded]) -> Result<Wo
         }
     }
     // A branch-keyed verb's stream carries no identity label, so the identity is the
-    // one whose checkouts hold the branch — the same search everything else here uses.
-    one(by_branch(registry, &branch)?, url, "change request")
+    // one whose checkouts hold the branch — the same search everything else here uses,
+    // narrowed the same way. Searching every identity under an explicit repository
+    // would refuse a name two of them hold as ambiguous, for an ambiguity the caller
+    // has already resolved.
+    let found = by_branch(registry, &branch, within)?;
+    // Nothing found is not an ambiguity, and saying so is the whole of the difference:
+    // the next move is to widen the question or to look for the branch, and "0 pieces
+    // of work answer to it" tells a reader neither.
+    if found.is_empty() {
+        return Err(Error::Invalid {
+            reason: match within {
+                Some(key) => format!(
+                    "the change request at {url} carries branch {branch}, which no checkout or \
+                     run clone of repository {key:?} holds; ask about it without naming a \
+                     repository, or name the one it belongs to"
+                ),
+                None => format!(
+                    "the change request at {url} carries branch {branch}, which no checkout or \
+                     run clone of any registered identity holds, so nothing here can say which \
+                     work it was. `onevcs recoverable` lists the preserved branches"
+                ),
+            },
+        });
+    }
+    one(found, url, "change request")
 }
 
 /// Every identity holding a branch of this name.
-fn by_branch(registry: &Registry, branch: &Ref) -> Result<Vec<Work>> {
+fn by_branch(registry: &Registry, branch: &Ref, within: Option<&str>) -> Result<Vec<Work>> {
     let mut found = Vec::new();
-    for identity in identities(registry) {
+    for identity in identities(registry, within) {
         let resolution = store::resolve(registry, &identity)?;
         for path in workspace::checkouts_of(registry, &resolution)? {
             if git::is_repo(&path) && git::branch_exists(&path, branch) {
@@ -1866,9 +1959,9 @@ fn by_branch(registry: &Registry, branch: &Ref) -> Result<Vec<Work>> {
 /// The identity's own root base is not one of them: every branch that ever landed
 /// is reachable from it, so answering with the base would report the repository
 /// rather than the work.
-fn by_commit(registry: &Registry, commit: &str) -> Result<Vec<Work>> {
+fn by_commit(registry: &Registry, commit: &str, within: Option<&str>) -> Result<Vec<Work>> {
     let mut found: Vec<Work> = Vec::new();
-    for identity in identities(registry) {
+    for identity in identities(registry, within) {
         let resolution = store::resolve(registry, &identity)?;
         let root = git::default_branch(&resolution.publication, "origin").ok();
         for path in workspace::checkouts_of(registry, &resolution)? {
@@ -1902,12 +1995,18 @@ fn by_commit(registry: &Registry, commit: &str) -> Result<Vec<Work>> {
     Ok(found)
 }
 
-/// Every identity with a registered checkout, in key order.
-fn identities(registry: &Registry) -> Vec<String> {
+/// Every identity with a registered checkout, in key order — or the one an explicit
+/// repository named.
+///
+/// The filter is applied to the *resolved* identity key rather than to the spelling a
+/// caller used, so `--repo` given as a path, an alias, an origin URL or the key itself
+/// all narrow to the same identity.
+fn identities(registry: &Registry, within: Option<&str>) -> Vec<String> {
     let mut keys: Vec<String> = registry
         .checkouts
         .values()
         .map(|checkout| checkout.identity.clone())
+        .filter(|identity| within.is_none_or(|key| key == identity))
         .collect();
     keys.sort_unstable();
     keys.dedup();

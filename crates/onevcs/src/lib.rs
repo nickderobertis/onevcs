@@ -267,6 +267,37 @@ pub fn release_status(reference: &str, target: Option<&TargetName>) -> Result<Re
     release::status(&store::load()?, reference, target)
 }
 
+/// Whether one piece of work reached its base, and what says so.
+///
+/// The landing decision on its own, which is what [`release_status`] answers *before*
+/// it selects a release target — and the reason this exists beside it. A repository
+/// that declares no release target has no target to select, so `release_status`
+/// refuses it; a refusal is undecided rather than "not landed", and a caller that
+/// only wanted to know whether the work is on the base was left with no answer at
+/// all. This takes no target, reads no release configuration, and answers every
+/// repository the same way.
+///
+/// `reference` is the four-spelling reference [`release_status`] takes: a change
+/// request's URL, a session token, a branch name, or a commit. `repo` is the
+/// repository the question is narrowed to — an identity key, a registered alias, an
+/// origin URL, or a path, exactly as every other repository-taking read here takes one
+/// — and `None` resolves the repository from the reference alone. Naming one is how a
+/// branch name two identities both hold is asked about; a reference belonging to
+/// another identity is refused rather than answered under the name of the one asked
+/// about.
+///
+/// The tiers are decided in one private place — `landed::decide` — and nowhere else,
+/// so this, `onevcs status` and `onevcs recoverable` cannot come to disagree about one
+/// branch. Which tier decided travels inside the [`Landed`] value, so a caller acting
+/// on a `yes` can say what it acted on.
+///
+/// It takes no [`Providers`] for the reason [`release_targets`] does not: a landing is
+/// decided from the history of the repositories under this host's own state root, and
+/// there is nothing here for an implementation of either interface to answer.
+pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
+    Ok(status::landing_of_within(&store::load()?, reference, repo)?.landed)
+}
+
 /// Record that somebody performed a human-step release, and what they released.
 ///
 /// The library form of `onevcs release acknowledge`. It refuses an automated target
