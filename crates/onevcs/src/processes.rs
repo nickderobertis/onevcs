@@ -606,6 +606,14 @@ fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
 /// The values themselves are libc's, so this host's half of the vocabulary is derived
 /// rather than copied: what is stated here is only which of them a holder can be in,
 /// and `SZOMB` is left out for the reason `Z` is above.
+///
+/// `pbi_status` is the *process's* status and not a thread's, and it answers more
+/// coarsely than Linux's letter does: a `sleep` waiting out its argument on the
+/// `cross` job read `SRUN`, where `/proc/[pid]/stat` calls the same process `S`. Both
+/// are the host's own answer to "what is this doing", which is the question a reader
+/// of the refusal is asking, so neither is corrected towards the other — a state this
+/// crate synthesised would be exactly the plausible-looking value [`Vitals`] exists to
+/// keep out.
 #[cfg(target_os = "macos")]
 const STATES: [(u32, State); 4] = [
     (libc::SIDL, State::Starting),

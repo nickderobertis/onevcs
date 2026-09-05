@@ -1322,6 +1322,21 @@ fn a_close_refuses_while_a_process_is_working_anywhere_inside_the_session_run_ro
     assert_eq!(fixture.world.events_of(&token, "session-closed").len(), 1);
 }
 
+/// Every word a refusal may use for what a holder is doing, read from the outside.
+///
+/// Which of them a given host answers with is that host's business — between them
+/// Linux and macOS name overlapping subsets, and a state neither table has a word for
+/// is `unanswered` — so this is the set a reader of the message may meet, and what the
+/// journey below holds the refusal to.
+const STATES_A_HOLDER_IS_NAMED_IN: [&str; 6] = [
+    "starting",
+    "running",
+    "sleeping",
+    "waiting on the host",
+    "stopped",
+    "stopped by a tracer",
+];
+
 #[test]
 fn a_refused_close_says_enough_about_a_holder_to_tell_an_orphan_from_a_live_dispatch() {
     // The failure, as it happened: a copy process orphaned to pid 1 held a run root
@@ -1355,13 +1370,28 @@ fn a_refused_close_says_enough_about_a_holder_to_tell_an_orphan_from_a_live_disp
     // init — which is the whole of what "the dispatch that started it has gone" looks
     // like from outside.
     for (holder, parent) in [(live, std::process::id()), (orphan, 1)] {
-        let named =
-            format!("pid {holder} in {inside}, parent pid {parent}, state sleeping, running for ");
+        let named = format!("pid {holder} in {inside}, parent pid {parent}, state ");
         let after = said
             .split(&named)
             .nth(1)
             .unwrap_or_else(|| panic!("the refusal names {holder} in full:\n{said}"));
-        let window = after.split('"').next().expect("the entry ends");
+        let entry = after.split('"').next().expect("the entry ends");
+        let (state, window) = entry.split_once(", running for ").unwrap_or_else(|| {
+            panic!(
+                "and says how long it has been running, which is what tells a process that has \
+                 been spinning for twelve minutes from one that just started: {entry:?}\n{said}"
+            )
+        });
+        // Which word that is, is the host's own answer and not the same word on both:
+        // Linux calls a process waiting in a `sleep` sleeping, while macOS answered
+        // `SRUN` — process-level — for that same `sleep` on the `cross` job. So what is
+        // held here is that the host named a state this crate has a word for, since
+        // `state unanswered` in a refusal a host could answer is the failure that
+        // matters.
+        assert!(
+            STATES_A_HOLDER_IS_NAMED_IN.contains(&state),
+            "and names what it is doing in the vocabulary a reader can act on: {state:?}\n{said}"
+        );
         assert!(
             window.ends_with("second(s)"),
             "and says how long it has been running, which is what tells a process that \
