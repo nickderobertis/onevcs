@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2](https://github.com/nickderobertis/onevcs/compare/v0.19.1...v0.19.2) - 2026-09-05
+
+### Fixed
+
+- *(processes)* let a refused session close name an orphan as one ([#131](https://github.com/nickderobertis/onevcs/pull/131))
+
 ## [0.19.1](https://github.com/nickderobertis/onevcs/compare/v0.19.0...v0.19.1) - 2026-09-05
 
 ### Fixed
