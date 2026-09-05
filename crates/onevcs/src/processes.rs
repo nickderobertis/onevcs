@@ -13,6 +13,12 @@
 //! parent — those would each be this crate guessing which of a host's processes are
 //! its business.
 //!
+//! A holder's parent, its state and how long it has been running are *reported*, and
+//! that is a different question from which processes these are: nothing here is
+//! selected, spared or signalled on the strength of one. What they are for is the
+//! refusal — see [`Holder`]'s rendering — and a host that will not answer one of them
+//! says so there rather than having it guessed.
+//!
 //! That one answer serves two verbs. The sweep asks it of a run root it has already
 //! proven finished, and stops what it finds. [`crate::workspace::close`] asks it of
 //! a session and **refuses** on any answer at all: a session somebody is working in
@@ -33,6 +39,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::guidance;
+
 /// A process id a signal can name exactly one process by.
 ///
 /// `0` and every negative value are how `kill` spells a whole process *group*, and
@@ -51,6 +59,33 @@ impl Pid {
 impl fmt::Display for Pid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "pid {}", self.0)
+    }
+}
+
+/// The process a holder was started by, as a refusal names it.
+///
+/// A type of its own beside [`Pid`] because the two answer different questions. A
+/// `Pid` is one a *signal* may name, which is why it refuses `1` — and `1` is exactly
+/// the answer that matters here, since a holder reparented to init is one whose
+/// dispatch has already gone. What this refuses instead is `0`, which names no process
+/// an operator could go and look at: a parent a host reports as `0` is a parent it did
+/// not answer, and it reads as unanswered rather than as a pid nobody has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParentPid(u32);
+
+/// Made only where a host answers a parent at all — which is every host with a process
+/// table, and any test build, where the fixtures below drive one host's reading from
+/// another.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+impl ParentPid {
+    fn new(raw: u32) -> Option<Self> {
+        (raw > 0).then_some(ParentPid(raw))
+    }
+}
+
+impl fmt::Display for ParentPid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "parent pid {}", self.0)
     }
 }
 
@@ -75,6 +110,7 @@ enum Signal {
 pub struct Holder {
     pid: Pid,
     cwd: PathBuf,
+    vitals: Vitals,
 }
 
 impl Holder {
@@ -82,14 +118,117 @@ impl Holder {
     pub fn pid(&self) -> Pid {
         self.pid
     }
+}
 
-    /// The directory it is working in, which is *why* it holds the run root.
-    ///
-    /// Reported as well as the pid, because a refusal that names only a number
-    /// leaves an operator to work out what that process is doing here — and the
-    /// directory is the whole of the answer this module ever had.
-    pub fn cwd(&self) -> &Path {
-        &self.cwd
+/// What this host could establish about a holder besides where it is working.
+///
+/// Every field is its own answer, because a host's is not all-or-nothing: a process
+/// table can name a parent and decline a start time, and one that answered nothing at
+/// all is a process that exited between being listed and being asked about. What is
+/// unanswered stays unanswered all the way into the refusal — this is the one place a
+/// plausible-looking number would be indistinguishable from a real one.
+#[derive(Debug, Clone, Default)]
+struct Vitals {
+    /// The process that started it, as this host reports it now.
+    parent: Option<ParentPid>,
+    /// What it is doing, where this host named a state this crate has a word for.
+    state: Option<State>,
+    /// How long it has been running.
+    running_for: Option<Duration>,
+}
+
+/// What a process is doing, in the one vocabulary both supported hosts answer in.
+///
+/// The states a *holder* can be in and no others, which is why neither host's dead or
+/// zombie value is here and why Linux's idle is not: a holder is a process whose
+/// working directory one of these hosts answered a moment ago, and an idle one is a
+/// kernel thread that has no working directory to answer. A value neither table below
+/// names — the ones left out, and whatever a later kernel adds — is *unanswered*
+/// rather than given a word, so drift in either vocabulary costs an answer and can
+/// never produce a wrong one.
+/// A Linux test build is the one configuration that constructs all six, because it
+/// compiles the macOS half of the vocabulary beside its own in order to drive it from
+/// the recorded values in `tests` — so there the expectation would go unfulfilled.
+#[cfg_attr(
+    not(all(test, target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "each host names a subset — `Starting` is macOS's alone, `WaitingOnTheHost` \
+                  and `StoppedByATracer` are Linux's, and a build with no process table to \
+                  read names none — so which variants a target constructs is a fact about \
+                  that target"
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// Made, and not yet running. macOS names this; Linux has no letter for it.
+    Starting,
+    Running,
+    Sleeping,
+    /// In a sleep no signal interrupts, which is where a process waiting on the disk
+    /// sits. Linux names this; macOS has no value for it.
+    WaitingOnTheHost,
+    Stopped,
+    /// Stopped by a tracer rather than by a signal, which Linux distinguishes.
+    StoppedByATracer,
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            State::Starting => "starting",
+            State::Running => "running",
+            State::Sleeping => "sleeping",
+            State::WaitingOnTheHost => "waiting on the host",
+            State::Stopped => "stopped",
+            State::StoppedByATracer => "stopped by a tracer",
+        })
+    }
+}
+
+/// How a refusal names one holder.
+///
+/// The pid a signal reaches it by, the directory that is *why* it holds the run root,
+/// and then everything else this host could establish about it. Those last three are
+/// what a refusal used to leave out, and leaving them out is what made an orphan
+/// unreadable: a copy process reparented to init and spinning for twelve minutes was
+/// named as a number and a directory, which is exactly how a live dispatch is named,
+/// and the operator's move is opposite in the two cases. Each is answered or
+/// *unanswered*; none is guessed.
+impl fmt::Display for Holder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // llmlint: ignore-block[changed_behavior_has_e2e] the three *answered* readings
+        // are driven end to end, by
+        // `a_refused_close_says_enough_about_a_holder_to_tell_an_orphan_from_a_live_dispatch`
+        // over two real processes holding a real run root. The three fallbacks beside
+        // them are unbuildable as a journey on either platform this suite runs on: a
+        // holder is by construction a process whose working directory `holding` read a
+        // moment earlier, and a host that answered that answers the rest of the same
+        // process table entry. What reaches them is the Windows build, which reads no
+        // process table at all and whose journeys `tests/e2e/world.rs` does not exist
+        // for, and a host that declined between the two reads. The unit test below
+        // holds them for that reason, and it holds the thing that matters: that an
+        // absent parent does not read as `parent pid 0` and an absent start does not
+        // read as a process that began this second.
+        write!(
+            f,
+            "{pid} in {cwd}, {parent}, {state}, {running}",
+            pid = self.pid,
+            cwd = self.cwd.display(),
+            parent = self.vitals.parent.map_or_else(
+                || "parent unanswered".to_owned(),
+                |parent| parent.to_string()
+            ),
+            state = self.vitals.state.map_or_else(
+                || "state unanswered".to_owned(),
+                |state| format!("state {state}"),
+            ),
+            running = self.vitals.running_for.map_or_else(
+                || "running time unanswered".to_owned(),
+                |window| format!("running for {}", guidance::describe_duration(window)),
+            ),
+        )
+        // llmlint: ignore-end[changed_behavior_has_e2e]
     }
 }
 
@@ -112,8 +251,16 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
         .into_iter()
         .filter(|pid| !ours.contains(pid))
         .filter_map(Pid::new)
-        .filter_map(|pid| working_dir(pid).map(|cwd| Holder { pid, cwd }))
-        .filter(|holder| holder.cwd.starts_with(run_root))
+        .filter_map(|pid| working_dir(pid).map(|cwd| (pid, cwd)))
+        .filter(|(_, cwd)| cwd.starts_with(run_root))
+        // Asked of the holders alone, rather than of every process on the host: this
+        // is a second read per process, and the answer is only ever reported about
+        // one that turned out to be working inside the run root.
+        .map(|(pid, cwd)| Holder {
+            pid,
+            cwd,
+            vitals: vitals(pid),
+        })
         .collect();
     found.sort_by_key(|holder| holder.pid.0);
     found
@@ -242,16 +389,106 @@ fn working_dir(pid: Pid) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn parent_of(pid: u32) -> Option<u32> {
+    stat_fields(pid)?.get(PARENT_FIELD)?.parse().ok()
+}
+
+/// The fields of `/proc/<pid>/stat` that follow the command name.
+///
+/// The command name is parenthesized and may itself contain spaces or `)`, so the
+/// fields after it are counted from the final closing parenthesis — as
+/// `workspace::process_started` counts the same file's.
+#[cfg(target_os = "linux")]
+fn stat_fields(pid: u32) -> Option<Vec<String>> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // The command name is parenthesized and may itself contain spaces or `)`, so the
-    // fields after it are counted from the final closing parenthesis — as
-    // `workspace::process_started` counts the same file's.
-    stat.rsplit_once(')')?
-        .1
+    Some(
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// What `proc(5)` states about the file above: where the three fields this module
+/// reads sit after the command name, and which state letters mean what.
+///
+/// Named here and read below rather than spelled at each reading, so the two readers
+/// cannot come to disagree about which number is the parent, and a table rather than a
+/// match arm apiece, so this host's vocabulary and the other's read as the same shape.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] `proc(5)` is the
+// only statement of either — the kernel ships no header for them and `libc` declares
+// no constant — so this is where a Rust program spells them or it does not read the
+// file at all, unlike the macOS values below, which are libc's own `<sys/proc.h>`
+// constants and are taken from there rather than restated. What a second source would
+// protect against is also not what either of these can do: `/proc/<pid>/stat` is an
+// append-only ABI that has added fields since 2.6 and moved none, and a letter this
+// table does not name is answered *unanswered* rather than given a word — so a
+// vocabulary that grows costs an answer here and can never produce a wrong one, which
+// is the same answer this module gives on a host it cannot ask at all.
+#[cfg(target_os = "linux")]
+const STATE_FIELD: usize = 0;
+
+#[cfg(target_os = "linux")]
+const PARENT_FIELD: usize = 1;
+
+#[cfg(target_os = "linux")]
+const STARTED_FIELD: usize = 19;
+
+#[cfg(target_os = "linux")]
+const STATES: [(&str, State); 5] = [
+    ("R", State::Running),
+    ("S", State::Sleeping),
+    ("D", State::WaitingOnTheHost),
+    ("T", State::Stopped),
+    ("t", State::StoppedByATracer),
+];
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+#[cfg(target_os = "linux")]
+fn vitals(pid: Pid) -> Vitals {
+    let Some(fields) = u32::try_from(pid.0).ok().and_then(stat_fields) else {
+        return Vitals::default();
+    };
+    Vitals {
+        parent: fields
+            .get(PARENT_FIELD)
+            .and_then(|parent| parent.parse().ok())
+            .and_then(ParentPid::new),
+        state: fields.get(STATE_FIELD).and_then(|state| {
+            STATES
+                .iter()
+                .find(|(letter, _)| *letter == state.as_str())
+                .map(|(_, named)| *named)
+        }),
+        running_for: fields
+            .get(STARTED_FIELD)
+            .and_then(|ticks| ticks.parse().ok())
+            .and_then(running_since_boot),
+    }
+}
+
+/// How long a process this host dated in clock ticks since boot has been running.
+///
+/// Two answers asked of the host separately — how fast it counts, and how long it has
+/// been up — and a duration measured against either of them missing would be a
+/// number with nothing behind it, so it is unanswered instead. Whole seconds of
+/// uptime, because the fraction `/proc/uptime` carries is finer than anything this is
+/// rendered at and parsing it is one more way the read can fail. A start this host
+/// dates in the future is unanswered too, rather than a process that began now.
+#[cfg(target_os = "linux")]
+fn running_since_boot(start_ticks: u64) -> Option<Duration> {
+    // SAFETY: `sysconf` reads one of this host's own constants and borrows nothing.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let hz = u64::try_from(hz).ok().filter(|hz| *hz > 0)?;
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    let uptime: u64 = uptime
         .split_whitespace()
-        .nth(1)?
+        .next()?
+        .split('.')
+        .next()?
         .parse()
-        .ok()
+        .ok()?;
+    Duration::from_secs(uptime).checked_sub(Duration::from_secs(start_ticks / hz))
 }
 
 /// Every process id this host is running right now.
@@ -264,13 +501,16 @@ fn parent_of(pid: u32) -> Option<u32> {
 /// the larger reading, is zeroed before the call, and is read to its end. A slot the
 /// kernel did not fill holds `0`, which is not a pid any signal may name and which
 /// [`Pid`] refuses.
-// llmlint: ignore-block[changed_behavior_has_e2e] every refusal these three answers
-// can meet — a listing the kernel would not size, a size no `c_int` can hold, a call
-// that failed, a short read — is a question this host declined, and each answers by
-// naming one process fewer. None is buildable as a journey: they are the kernel
-// refusing, not an input any interface here takes. What they *do* is covered, and by
-// the same journeys the Linux answers are: no daemon journey in `tests/e2e/sweep.rs`
-// is gated by platform, and CI's `cross` job runs that suite on macOS.
+// llmlint: ignore-block[changed_behavior_has_e2e] every refusal these answers can meet
+// — a listing the kernel would not size, a size no `c_int` can hold, a call that
+// failed, a short read — is a question this host declined, and each answers by naming
+// one process fewer. None is buildable as a journey: they are the kernel refusing, not
+// an input any interface here takes. What they *do* is covered, and by the same
+// journeys the Linux answers are: no daemon journey in `tests/e2e/sweep.rs` is gated by
+// platform, and CI's `cross` job runs that suite on macOS. The one thing here that is
+// not the kernel — what the three fields an entry carries say about a holder — is
+// separated out into `macos_vitals` and driven from recorded fields by
+// `a_macos_holder_is_named_...` below, on whatever host runs the suite.
 #[cfg(target_os = "macos")]
 fn live_pids() -> Vec<u32> {
     use std::ffi::c_int;
@@ -344,6 +584,12 @@ fn working_dir(pid: Pid) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn parent_of(pid: u32) -> Option<u32> {
+    Some(bsd_info(pid)?.pbi_ppid)
+}
+
+/// What this host says about one process, in the one call that answers all of it.
+#[cfg(target_os = "macos")]
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     use std::ffi::c_int;
 
     let pid = c_int::try_from(pid).ok().filter(|pid| *pid > 0)?;
@@ -363,7 +609,75 @@ fn parent_of(pid: u32) -> Option<u32> {
         return None;
     }
     // SAFETY: the call above filled every byte of it.
-    Some(unsafe { info.assume_init() }.pbi_ppid)
+    Some(unsafe { info.assume_init() })
+}
+
+/// The `p_stat` values `<sys/proc.h>` names, as [`State`] spells them.
+///
+/// What is stated here is which of them a holder can be in, and `SZOMB` is left out for
+/// the reason `Z` is above. The numbers are recorded rather than read from `libc::SIDL`
+/// and its three neighbours, because those declarations exist only on macOS and this
+/// table is compiled — and driven — on hosts that are not one: what a Mac's refusal
+/// says about a holder is then answerable by whatever host runs the suite, rather than
+/// only by the one job that has a Mac. `the_recorded_macos_state_values_are_this_hosts_own`
+/// is the drift gate, and it asks the question where libc's own declarations are the
+/// authority.
+///
+/// `pbi_status` is the *process's* status and not a thread's, and it answers more
+/// coarsely than Linux's letter does: a `sleep` waiting out its argument on the
+/// `cross` job read `SRUN`, where `/proc/[pid]/stat` calls the same process `S`. Both
+/// are the host's own answer to "what is this doing", which is the question a reader
+/// of the refusal is asking, so neither is corrected towards the other — a state this
+/// crate synthesised would be exactly the plausible-looking value [`Vitals`] exists to
+/// keep out.
+#[cfg(any(target_os = "macos", test))]
+const MACOS_STATES: [(u32, State); 4] = [
+    (1, State::Starting),
+    (2, State::Running),
+    (3, State::Sleeping),
+    (4, State::Stopped),
+];
+
+#[cfg(target_os = "macos")]
+fn vitals(pid: Pid) -> Vitals {
+    let Some(info) = u32::try_from(pid.0).ok().and_then(bsd_info) else {
+        return Vitals::default();
+    };
+    macos_vitals(info.pbi_ppid, info.pbi_status, info.pbi_start_tvsec)
+}
+
+/// What a macOS process table entry's three fields say about a holder.
+///
+/// Apart from the call that fills them, because the entry is three numbers and what
+/// this crate does with them is the part an operator reads: which status word is which
+/// state, that a parent of `0` is a parent nobody answered, and that a start this host
+/// dates in the future is unanswered. Filling them needs a Mac; reading them does not,
+/// and reading them is where an orphan either is or is not distinguishable from a live
+/// dispatch — so it is proven from recorded fields on every host the suite runs on
+/// rather than on the one that has the process table this shape came from.
+#[cfg(any(target_os = "macos", test))]
+fn macos_vitals(parent: u32, status: u32, started: u64) -> Vitals {
+    Vitals {
+        parent: ParentPid::new(parent),
+        state: MACOS_STATES
+            .iter()
+            .find(|(value, _)| *value == status)
+            .map(|(_, named)| *named),
+        running_for: running_since_epoch(started),
+    }
+}
+
+/// How long a process this host dated from the epoch has been running.
+///
+/// A start later than now is unanswered rather than nothing-at-all: a clock that has
+/// been set backwards since the process began is the ordinary way that happens, and
+/// "running for 0 second(s)" would name a process that had just started.
+#[cfg(any(target_os = "macos", test))]
+fn running_since_epoch(started: u64) -> Option<Duration> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .checked_sub(Duration::from_secs(started))
 }
 
 // llmlint: ignore-end[changed_behavior_has_e2e]
@@ -416,6 +730,137 @@ fn parent_of(_pid: u32) -> Option<u32> {
     None
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn vitals(_pid: Pid) -> Vitals {
+    Vitals::default()
+}
+
 #[cfg(not(unix))]
 fn signal_to(_pid: Pid, _signal: Signal) {}
 // llmlint: ignore-end[changed_behavior_has_e2e]
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::{macos_vitals, Holder, Pid, Vitals};
+
+    /// The refusal's own words for one holder, which is what an operator reads.
+    ///
+    /// Held here rather than the three fields it was built from, for the same reason
+    /// the journey holds the whole sentence: what failed the operator was a sentence
+    /// that read like a live dispatch, and a field is not a sentence.
+    fn named(vitals: Vitals) -> String {
+        Holder {
+            pid: Pid::new(4242).expect("a pid a signal may name"),
+            cwd: std::path::PathBuf::from("/runs/one/worktree"),
+            vitals,
+        }
+        .to_string()
+    }
+
+    /// A start this host would date that many seconds back, as macOS dates one.
+    fn started(ago: Duration) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a host whose clock is after the epoch")
+            .checked_sub(ago)
+            .expect("a host that has been up since the epoch")
+            .as_secs()
+    }
+
+    /// A holder this host would answer nothing about beyond where it is working.
+    ///
+    /// Not reachable as a journey, which is why it is here: every host these run on
+    /// answers a live process's parent, state and start, and a holder is by
+    /// construction a process whose working directory one of them answered a moment
+    /// ago. What it holds is the fallback — on a host that declines one of the three,
+    /// or on the Windows build that answers none of them, an absent parent must not
+    /// read as `parent pid 0` and an absent start must not read as a process that
+    /// began this second. Those are the two readings an operator would act on, and
+    /// both are the opposite of what happened.
+    #[test]
+    fn a_holder_this_host_could_not_answer_for_reads_as_unanswered_rather_than_as_a_value() {
+        assert_eq!(
+            named(Vitals::default()),
+            "pid 4242 in /runs/one/worktree, parent unanswered, state unanswered, running time \
+             unanswered"
+        );
+    }
+
+    /// The two cases a refusal has to tell apart, from a macOS process table entry.
+    ///
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` fills three fields this reads — `pbi_ppid`,
+    /// `pbi_status` and `pbi_start_tvsec` — and every host but a Mac declines to fill
+    /// them, which is why they are supplied here: the *filling* needs macOS and the
+    /// reading does not, and the reading is the whole of what an operator is being
+    /// given. The status values are `<sys/proc.h>`'s own, held to libc's below on the
+    /// host that has them.
+    ///
+    /// An orphan is `SRUN` with `pbi_ppid` of `1` — the kernel reparents what is left
+    /// of a dispatch to init — and has been running far longer than a dispatch that
+    /// just started one. A live dispatch names a parent an operator can go and look at.
+    /// Told apart in the sentence, which is what was missing.
+    #[test]
+    fn a_macos_holder_reads_as_an_orphan_or_as_a_live_dispatch_rather_than_as_either() {
+        assert_eq!(
+            named(macos_vitals(1, 2, started(Duration::from_secs(750)))),
+            "pid 4242 in /runs/one/worktree, parent pid 1, state running, running for 12 \
+             minute(s)",
+        );
+        assert_eq!(
+            named(macos_vitals(90210, 3, started(Duration::from_secs(3900)))),
+            "pid 4242 in /runs/one/worktree, parent pid 90210, state sleeping, running for 1 \
+             hour(s) 5 minute(s)",
+        );
+        assert_eq!(
+            named(macos_vitals(90210, 1, started(Duration::from_secs(3600)))),
+            "pid 4242 in /runs/one/worktree, parent pid 90210, state starting, running for 1 \
+             hour(s)",
+        );
+    }
+
+    /// What that host declines to answer, answered as declined.
+    ///
+    /// Three declinations in one entry, because they are one property: a `pbi_ppid` of
+    /// `0` names no process an operator could go and look at; `SZOMB` is a value this
+    /// table deliberately does not name, standing for every value macOS may add to a
+    /// vocabulary this crate does not follow; and a start this host dates in the future
+    /// is what a clock set backwards since the process began leaves behind. Each must
+    /// read as unanswered — `parent pid 0`, a synthesised state, or "running for 0
+    /// second(s)" are the three plausible-looking values an operator would act on.
+    #[test]
+    fn a_macos_field_this_host_declines_reads_as_unanswered_rather_than_as_a_value() {
+        let ahead = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a host whose clock is after the epoch")
+            + Duration::from_secs(3600);
+        assert_eq!(
+            named(macos_vitals(0, 5, ahead.as_secs())),
+            "pid 4242 in /runs/one/worktree, parent unanswered, state unanswered, running time \
+             unanswered",
+        );
+    }
+
+    /// The recorded status values are still this host's own.
+    ///
+    /// The one question about that table a host without `<sys/proc.h>` cannot ask, so
+    /// it is asked where libc's declarations are the authority — the `cross` job's
+    /// macOS runner. `SZOMB` is held *out* by the same gate: a zombie holds no working
+    /// directory, so it is not a state a holder is ever found in, and naming it would
+    /// be this crate reporting a process that has already gone as one still working.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_recorded_macos_state_values_are_this_hosts_own() {
+        assert_eq!(
+            super::MACOS_STATES.map(|(value, _)| value),
+            [libc::SIDL, libc::SRUN, libc::SSLEEP, libc::SSTOP],
+        );
+        assert!(
+            !super::MACOS_STATES
+                .iter()
+                .any(|(value, _)| *value == libc::SZOMB),
+            "a zombie holds no working directory, so it is no state a holder is found in",
+        );
+    }
+}

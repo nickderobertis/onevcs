@@ -62,7 +62,7 @@ use crate::landed;
 use crate::processes::{self, Holder};
 use crate::provenance;
 use crate::store;
-use crate::{git, home, ids, lock, merge_path, workspace};
+use crate::{git, guidance, home, ids, lock, merge_path, workspace};
 
 /// How many dead run roots holding work no origin has are kept past the age floor.
 ///
@@ -903,8 +903,8 @@ impl Forgetting {
             Forgetting::Forgotten => "forgotten".to_owned(),
             Forgetting::Fresh { age, floor } => format!(
                 "kept: it was written {} ago, inside the {} the age floor leaves alone",
-                describe_duration(*age),
-                describe_duration(*floor),
+                guidance::describe_duration(*age),
+                guidance::describe_duration(*floor),
             ),
             Forgetting::Kept(why) => {
                 format!("kept: this host would not remove it: {why}")
@@ -1016,8 +1016,8 @@ impl Kept {
             Kept::NoVerdict => NO_VERDICT.replace("{}", merge_path::PRESERVED_LOG_DIRNAME),
             Kept::Fresh { age, floor } => format!(
                 "it was written {} ago, inside the {} the age floor leaves alone",
-                describe_duration(*age),
-                describe_duration(*floor),
+                guidance::describe_duration(*age),
+                guidance::describe_duration(*floor),
             ),
             Kept::Unproven => format!("this host cannot show it may remove it: {UNPROVEN}"),
             Kept::WorkUnknown => WORK_UNKNOWN.to_owned(),
@@ -1087,7 +1087,7 @@ impl fmt::Display for Report {
             "onevcs sweep: {verb} {} workspace(s), {}, keeping anything written inside the last {}.",
             self.reclaimed.len(),
             describe_bytes(self.bytes()),
-            describe_duration(self.min_age),
+            guidance::describe_duration(self.min_age),
         )?;
         if self.dry_run {
             writeln!(f, "Nothing was removed: this was a rehearsal.")?;
@@ -1205,15 +1205,4 @@ fn describe_bytes(bytes: u64) -> String {
         }
     }
     format!("{bytes} bytes")
-}
-
-/// A window as a reader of the report meets it.
-fn describe_duration(window: Duration) -> String {
-    let seconds = window.as_secs();
-    match (seconds / 3600, (seconds % 3600) / 60) {
-        (0, 0) => format!("{seconds} second(s)"),
-        (0, minutes) => format!("{minutes} minute(s)"),
-        (hours, 0) => format!("{hours} hour(s)"),
-        (hours, minutes) => format!("{hours} hour(s) {minutes} minute(s)"),
-    }
 }

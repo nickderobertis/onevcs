@@ -769,6 +769,16 @@ same destruction reached one verb along. Whatever the worktree still holds
 uncommitted is committed behind the incomplete-step marker first, since `git
 worktree remove` forces past an unclean tree.
 
+**Naming a holder is naming its parent, its state and how long it has been running**,
+which is `processes::Holder`'s own rendering and the reason `Vitals` exists. A refusal
+carrying only a pid and a directory named a copy process orphaned to init and spinning
+for twelve minutes in the words it names a live dispatch in, and the operator's move is
+opposite in the two cases. Two rules hold it: a detail this host would not answer reads
+as *unanswered* rather than as a value, and none of the three selects, spares or
+signals anything — occupancy is still the working directory and nothing else. The
+refusal stays a refusal, with no flag past it and no path that stops a holder: which of
+"let it finish" and "stop it" is wanted is not this crate's to decide.
+
 **A record is forgotten when nobody is left to answer for it, which takes two
 answers.** `workspace::holders` drops one whose recorded owner is no longer that same
 running process **and** whose run root no live process is working inside, so the list a

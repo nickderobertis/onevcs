@@ -1640,11 +1640,16 @@ fn occupants(record: &Record) -> Vec<processes::Holder> {
 /// then arrives while the replacement is working in the tree. Which of the two the
 /// operator wants is a question this crate cannot answer, so it names both ways
 /// forward and takes neither.
+///
+/// **And it says enough about each holder to tell them apart**, which is
+/// [`processes::Holder`]'s own rendering: its parent, its state, and how long it has
+/// been running, beside the pid and the directory. A refusal carrying the last two
+/// alone named a copy process orphaned to init and spinning for twelve minutes in the
+/// words it names a live dispatch in, so the operator read the process table by hand
+/// and the session stayed open until they killed it. Choosing between the two moves is
+/// still theirs — this names neither and stops nothing.
 fn occupied(record: &Record, holders: &[processes::Holder]) -> Error {
-    let inside: Vec<String> = holders
-        .iter()
-        .map(|holder| format!("{} in {}", holder.pid(), holder.cwd().display()))
-        .collect();
+    let inside: Vec<String> = holders.iter().map(ToString::to_string).collect();
     let inside: Vec<&str> = inside.iter().map(String::as_str).collect();
     error::invalid(format!(
         "session {token:?} was not closed: {count} still working inside its run root {root} — \
