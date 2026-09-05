@@ -167,6 +167,19 @@ impl fmt::Display for State {
 /// *unanswered*; none is guessed.
 impl fmt::Display for Holder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // llmlint: ignore-block[changed_behavior_has_e2e] the three *answered* readings
+        // are driven end to end, by
+        // `a_refused_close_says_enough_about_a_holder_to_tell_an_orphan_from_a_live_dispatch`
+        // over two real processes holding a real run root. The three fallbacks beside
+        // them are unbuildable as a journey on either platform this suite runs on: a
+        // holder is by construction a process whose working directory `holding` read a
+        // moment earlier, and a host that answered that answers the rest of the same
+        // process table entry. What reaches them is the Windows build, which reads no
+        // process table at all and whose journeys `tests/e2e/world.rs` does not exist
+        // for, and a host that declined between the two reads. The unit test below
+        // holds them for that reason, and it holds the thing that matters: that an
+        // absent parent does not read as `parent pid 0` and an absent start does not
+        // read as a process that began this second.
         write!(
             f,
             "{pid} in {cwd}, {parent}, {state}, {running}",
@@ -185,6 +198,7 @@ impl fmt::Display for Holder {
                 |window| format!("running for {}", guidance::describe_duration(window)),
             ),
         )
+        // llmlint: ignore-end[changed_behavior_has_e2e]
     }
 }
 
@@ -345,7 +359,7 @@ fn working_dir(pid: Pid) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn parent_of(pid: u32) -> Option<u32> {
-    stat_fields(pid)?.get(1)?.parse().ok()
+    stat_fields(pid)?.get(PARENT_FIELD)?.parse().ok()
 }
 
 /// The fields of `/proc/<pid>/stat` that follow the command name.
@@ -365,19 +379,31 @@ fn stat_fields(pid: u32) -> Option<Vec<String>> {
     )
 }
 
-/// The state letters `proc(5)` names, as [`State`] spells them.
+/// What `proc(5)` states about the file above: where the three fields this module
+/// reads sit after the command name, and which state letters mean what.
 ///
-/// A table rather than a match arm apiece, so this host's vocabulary and the other's
-/// read as the same shape.
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] there is no second source
-// of these letters to derive from or gate against, unlike the macOS values below,
-// which are libc's own `<sys/proc.h>` constants: Linux states them in `proc(5)` alone
-// — the kernel ships no header for them and `libc` declares no constant — so this is
-// where a Rust program spells them or it does not read the field at all. What the rule
-// protects against cannot happen here either: a letter this table does not name is
-// *unanswered*, which is what a stale copy of a vocabulary costs when the reading
-// degrades to silence rather than to a claim. That is the same answer this module
-// gives on a host it cannot ask at all.
+/// Named here and read below rather than spelled at each reading, so the two readers
+/// cannot come to disagree about which number is the parent, and a table rather than a
+/// match arm apiece, so this host's vocabulary and the other's read as the same shape.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] `proc(5)` is the
+// only statement of either — the kernel ships no header for them and `libc` declares
+// no constant — so this is where a Rust program spells them or it does not read the
+// file at all, unlike the macOS values below, which are libc's own `<sys/proc.h>`
+// constants and are taken from there rather than restated. What a second source would
+// protect against is also not what either of these can do: `/proc/<pid>/stat` is an
+// append-only ABI that has added fields since 2.6 and moved none, and a letter this
+// table does not name is answered *unanswered* rather than given a word — so a
+// vocabulary that grows costs an answer here and can never produce a wrong one, which
+// is the same answer this module gives on a host it cannot ask at all.
+#[cfg(target_os = "linux")]
+const STATE_FIELD: usize = 0;
+
+#[cfg(target_os = "linux")]
+const PARENT_FIELD: usize = 1;
+
+#[cfg(target_os = "linux")]
+const STARTED_FIELD: usize = 19;
+
 #[cfg(target_os = "linux")]
 const STATES: [(&str, State); 5] = [
     ("R", State::Running),
@@ -386,6 +412,7 @@ const STATES: [(&str, State); 5] = [
     ("T", State::Stopped),
     ("t", State::StoppedByATracer),
 ];
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 #[cfg(target_os = "linux")]
 fn vitals(pid: Pid) -> Vitals {
@@ -393,15 +420,17 @@ fn vitals(pid: Pid) -> Vitals {
         return Vitals::default();
     };
     Vitals {
-        parent: fields.get(1).and_then(|parent| parent.parse().ok()),
-        state: fields.first().and_then(|state| {
+        parent: fields
+            .get(PARENT_FIELD)
+            .and_then(|parent| parent.parse().ok()),
+        state: fields.get(STATE_FIELD).and_then(|state| {
             STATES
                 .iter()
                 .find(|(letter, _)| *letter == state.as_str())
                 .map(|(_, named)| *named)
         }),
         running_for: fields
-            .get(19)
+            .get(STARTED_FIELD)
             .and_then(|ticks| ticks.parse().ok())
             .and_then(running_since_boot),
     }
