@@ -108,10 +108,52 @@ struct Vitals {
     /// holder reparented to init is one whose dispatch has already gone — and `Pid`
     /// exists to make that number unrepresentable, for a *signal*.
     parent: Option<u32>,
-    /// What it is doing, in the one word this crate has for the state this host named.
-    state: Option<&'static str>,
+    /// What it is doing, where this host named a state this crate has a word for.
+    state: Option<State>,
     /// How long it has been running.
     running_for: Option<Duration>,
+}
+
+/// What a process is doing, in the one vocabulary both supported hosts answer in.
+///
+/// The states a *holder* can be in and no others, which is why neither host's dead or
+/// zombie value is here and why Linux's idle is not: a holder is a process whose
+/// working directory one of these hosts answered a moment ago, and an idle one is a
+/// kernel thread that has no working directory to answer. A value neither table below
+/// names — the ones left out, and whatever a later kernel adds — is *unanswered*
+/// rather than given a word, so drift in either vocabulary costs an answer and can
+/// never produce a wrong one.
+#[expect(
+    dead_code,
+    reason = "each host names a subset — `Starting` is macOS's alone, `WaitingOnTheHost` and \
+              `StoppedByATracer` are Linux's, and a build with no process table to read names \
+              none — so which variants a target constructs is a fact about that target"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// Made, and not yet running. macOS names this; Linux has no letter for it.
+    Starting,
+    Running,
+    Sleeping,
+    /// In a sleep no signal interrupts, which is where a process waiting on the disk
+    /// sits. Linux names this; macOS has no value for it.
+    WaitingOnTheHost,
+    Stopped,
+    /// Stopped by a tracer rather than by a signal, which Linux distinguishes.
+    StoppedByATracer,
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            State::Starting => "starting",
+            State::Running => "running",
+            State::Sleeping => "sleeping",
+            State::WaitingOnTheHost => "waiting on the host",
+            State::Stopped => "stopped",
+            State::StoppedByATracer => "stopped by a tracer",
+        })
+    }
 }
 
 /// How a refusal names one holder.
@@ -323,21 +365,26 @@ fn stat_fields(pid: u32) -> Option<Vec<String>> {
     )
 }
 
-/// The state letters `proc(5)` names, and the one word this crate has for each.
+/// The state letters `proc(5)` names, as [`State`] spells them.
 ///
 /// A table rather than a match arm apiece, so this host's vocabulary and the other's
-/// read as the same shape. `Z` and `X` are deliberately absent, along with whatever a
-/// later kernel adds: a holder is a process whose working directory this host answered
-/// a moment ago, so it is in none of the states those letters name, and a word made up
-/// for one would be this crate telling an operator something no host said.
+/// read as the same shape.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] there is no second source
+// of these letters to derive from or gate against, unlike the macOS values below,
+// which are libc's own `<sys/proc.h>` constants: Linux states them in `proc(5)` alone
+// — the kernel ships no header for them and `libc` declares no constant — so this is
+// where a Rust program spells them or it does not read the field at all. What the rule
+// protects against cannot happen here either: a letter this table does not name is
+// *unanswered*, which is what a stale copy of a vocabulary costs when the reading
+// degrades to silence rather than to a claim. That is the same answer this module
+// gives on a host it cannot ask at all.
 #[cfg(target_os = "linux")]
-const STATES: [(&str, &str); 6] = [
-    ("R", "running"),
-    ("S", "sleeping"),
-    ("D", "waiting on the host"),
-    ("T", "stopped"),
-    ("t", "stopped by a tracer"),
-    ("I", "idle"),
+const STATES: [(&str, State); 5] = [
+    ("R", State::Running),
+    ("S", State::Sleeping),
+    ("D", State::WaitingOnTheHost),
+    ("T", State::Stopped),
+    ("t", State::StoppedByATracer),
 ];
 
 #[cfg(target_os = "linux")]
@@ -351,7 +398,7 @@ fn vitals(pid: Pid) -> Vitals {
             STATES
                 .iter()
                 .find(|(letter, _)| *letter == state.as_str())
-                .map(|(_, word)| *word)
+                .map(|(_, named)| *named)
         }),
         running_for: fields
             .get(19)
@@ -502,17 +549,17 @@ fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     Some(unsafe { info.assume_init() })
 }
 
-/// The `p_stat` values `<sys/proc.h>` names, and the one word this crate has for each.
+/// The `p_stat` values `<sys/proc.h>` names, as [`State`] spells them.
 ///
-/// The same table as the Linux one above, and `SZOMB` is left out for the same reason
-/// `Z` is: a holder is not in it. `SIDL` is a process this host has made but not yet
-/// started running, which is a state Linux has no letter for.
+/// The values themselves are libc's, so this host's half of the vocabulary is derived
+/// rather than copied: what is stated here is only which of them a holder can be in,
+/// and `SZOMB` is left out for the reason `Z` is above.
 #[cfg(target_os = "macos")]
-const STATES: [(u32, &str); 4] = [
-    (1, "starting"),
-    (2, "running"),
-    (3, "sleeping"),
-    (4, "stopped"),
+const STATES: [(u32, State); 4] = [
+    (libc::SIDL, State::Starting),
+    (libc::SRUN, State::Running),
+    (libc::SSLEEP, State::Sleeping),
+    (libc::SSTOP, State::Stopped),
 ];
 
 #[cfg(target_os = "macos")]
@@ -525,7 +572,7 @@ fn vitals(pid: Pid) -> Vitals {
         state: STATES
             .iter()
             .find(|(status, _)| *status == info.pbi_status)
-            .map(|(_, word)| *word),
+            .map(|(_, named)| *named),
         running_for: running_since_epoch(info.pbi_start_tvsec),
     }
 }
