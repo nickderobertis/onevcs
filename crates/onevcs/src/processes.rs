@@ -13,6 +13,12 @@
 //! parent — those would each be this crate guessing which of a host's processes are
 //! its business.
 //!
+//! A holder's parent, its state and how long it has been running are *reported*, and
+//! that is a different question from which processes these are: nothing here is
+//! selected, spared or signalled on the strength of one. What they are for is the
+//! refusal — see [`Holder`]'s rendering — and a host that will not answer one of them
+//! says so there rather than having it guessed.
+//!
 //! That one answer serves two verbs. The sweep asks it of a run root it has already
 //! proven finished, and stops what it finds. [`crate::workspace::close`] asks it of
 //! a session and **refuses** on any answer at all: a session somebody is working in
@@ -32,6 +38,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use crate::guidance;
 
 /// A process id a signal can name exactly one process by.
 ///
@@ -75,6 +83,7 @@ enum Signal {
 pub struct Holder {
     pid: Pid,
     cwd: PathBuf,
+    vitals: Vitals,
 }
 
 impl Holder {
@@ -82,14 +91,58 @@ impl Holder {
     pub fn pid(&self) -> Pid {
         self.pid
     }
+}
 
-    /// The directory it is working in, which is *why* it holds the run root.
+/// What this host could establish about a holder besides where it is working.
+///
+/// Every field is its own answer, because a host's is not all-or-nothing: a process
+/// table can name a parent and decline a start time, and one that answered nothing at
+/// all is a process that exited between being listed and being asked about. What is
+/// unanswered stays unanswered all the way into the refusal — this is the one place a
+/// plausible-looking number would be indistinguishable from a real one.
+#[derive(Debug, Clone, Default)]
+struct Vitals {
+    /// The process that started it, as this host reports it now.
     ///
-    /// Reported as well as the pid, because a refusal that names only a number
-    /// leaves an operator to work out what that process is doing here — and the
-    /// directory is the whole of the answer this module ever had.
-    pub fn cwd(&self) -> &Path {
-        &self.cwd
+    /// Deliberately not a [`Pid`]: `1` is exactly the answer that matters here — a
+    /// holder reparented to init is one whose dispatch has already gone — and `Pid`
+    /// exists to make that number unrepresentable, for a *signal*.
+    parent: Option<u32>,
+    /// What it is doing, in the one word this crate has for the state this host named.
+    state: Option<&'static str>,
+    /// How long it has been running.
+    running_for: Option<Duration>,
+}
+
+/// How a refusal names one holder.
+///
+/// The pid a signal reaches it by, the directory that is *why* it holds the run root,
+/// and then everything else this host could establish about it. Those last three are
+/// what a refusal used to leave out, and leaving them out is what made an orphan
+/// unreadable: a copy process reparented to init and spinning for twelve minutes was
+/// named as a number and a directory, which is exactly how a live dispatch is named,
+/// and the operator's move is opposite in the two cases. Each is answered or
+/// *unanswered*; none is guessed.
+impl fmt::Display for Holder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{pid} in {cwd}, {parent}, {state}, {running}",
+            pid = self.pid,
+            cwd = self.cwd.display(),
+            parent = self.vitals.parent.map_or_else(
+                || "parent unanswered".to_owned(),
+                |parent| format!("parent pid {parent}"),
+            ),
+            state = self.vitals.state.map_or_else(
+                || "state unanswered".to_owned(),
+                |state| format!("state {state}"),
+            ),
+            running = self.vitals.running_for.map_or_else(
+                || "running time unanswered".to_owned(),
+                |window| format!("running for {}", guidance::describe_duration(window)),
+            ),
+        )
     }
 }
 
@@ -112,8 +165,16 @@ pub fn holding(run_root: &Path) -> Vec<Holder> {
         .into_iter()
         .filter(|pid| !ours.contains(pid))
         .filter_map(Pid::new)
-        .filter_map(|pid| working_dir(pid).map(|cwd| Holder { pid, cwd }))
-        .filter(|holder| holder.cwd.starts_with(run_root))
+        .filter_map(|pid| working_dir(pid).map(|cwd| (pid, cwd)))
+        .filter(|(_, cwd)| cwd.starts_with(run_root))
+        // Asked of the holders alone, rather than of every process on the host: this
+        // is a second read per process, and the answer is only ever reported about
+        // one that turned out to be working inside the run root.
+        .map(|(pid, cwd)| Holder {
+            pid,
+            cwd,
+            vitals: vitals(pid),
+        })
         .collect();
     found.sort_by_key(|holder| holder.pid.0);
     found
@@ -242,16 +303,85 @@ fn working_dir(pid: Pid) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn parent_of(pid: u32) -> Option<u32> {
+    stat_fields(pid)?.get(1)?.parse().ok()
+}
+
+/// The fields of `/proc/<pid>/stat` that follow the command name.
+///
+/// The command name is parenthesized and may itself contain spaces or `)`, so the
+/// fields after it are counted from the final closing parenthesis — as
+/// `workspace::process_started` counts the same file's.
+#[cfg(target_os = "linux")]
+fn stat_fields(pid: u32) -> Option<Vec<String>> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // The command name is parenthesized and may itself contain spaces or `)`, so the
-    // fields after it are counted from the final closing parenthesis — as
-    // `workspace::process_started` counts the same file's.
-    stat.rsplit_once(')')?
-        .1
+    Some(
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// The state letters `proc(5)` names, and the one word this crate has for each.
+///
+/// A table rather than a match arm apiece, so this host's vocabulary and the other's
+/// read as the same shape. `Z` and `X` are deliberately absent, along with whatever a
+/// later kernel adds: a holder is a process whose working directory this host answered
+/// a moment ago, so it is in none of the states those letters name, and a word made up
+/// for one would be this crate telling an operator something no host said.
+#[cfg(target_os = "linux")]
+const STATES: [(&str, &str); 6] = [
+    ("R", "running"),
+    ("S", "sleeping"),
+    ("D", "waiting on the host"),
+    ("T", "stopped"),
+    ("t", "stopped by a tracer"),
+    ("I", "idle"),
+];
+
+#[cfg(target_os = "linux")]
+fn vitals(pid: Pid) -> Vitals {
+    let Some(fields) = u32::try_from(pid.0).ok().and_then(stat_fields) else {
+        return Vitals::default();
+    };
+    Vitals {
+        parent: fields.get(1).and_then(|parent| parent.parse().ok()),
+        state: fields.first().and_then(|state| {
+            STATES
+                .iter()
+                .find(|(letter, _)| *letter == state.as_str())
+                .map(|(_, word)| *word)
+        }),
+        running_for: fields
+            .get(19)
+            .and_then(|ticks| ticks.parse().ok())
+            .and_then(running_since_boot),
+    }
+}
+
+/// How long a process this host dated in clock ticks since boot has been running.
+///
+/// Two answers asked of the host separately — how fast it counts, and how long it has
+/// been up — and a duration measured against either of them missing would be a
+/// number with nothing behind it, so it is unanswered instead. Whole seconds of
+/// uptime, because the fraction `/proc/uptime` carries is finer than anything this is
+/// rendered at and parsing it is one more way the read can fail. A start this host
+/// dates in the future is unanswered too, rather than a process that began now.
+#[cfg(target_os = "linux")]
+fn running_since_boot(start_ticks: u64) -> Option<Duration> {
+    // SAFETY: `sysconf` reads one of this host's own constants and borrows nothing.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let hz = u64::try_from(hz).ok().filter(|hz| *hz > 0)?;
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    let uptime: u64 = uptime
         .split_whitespace()
-        .nth(1)?
+        .next()?
+        .split('.')
+        .next()?
         .parse()
-        .ok()
+        .ok()?;
+    Duration::from_secs(uptime).checked_sub(Duration::from_secs(start_ticks / hz))
 }
 
 /// Every process id this host is running right now.
@@ -344,6 +474,12 @@ fn working_dir(pid: Pid) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn parent_of(pid: u32) -> Option<u32> {
+    Some(bsd_info(pid)?.pbi_ppid)
+}
+
+/// What this host says about one process, in the one call that answers all of it.
+#[cfg(target_os = "macos")]
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     use std::ffi::c_int;
 
     let pid = c_int::try_from(pid).ok().filter(|pid| *pid > 0)?;
@@ -363,7 +499,48 @@ fn parent_of(pid: u32) -> Option<u32> {
         return None;
     }
     // SAFETY: the call above filled every byte of it.
-    Some(unsafe { info.assume_init() }.pbi_ppid)
+    Some(unsafe { info.assume_init() })
+}
+
+/// The `p_stat` values `<sys/proc.h>` names, and the one word this crate has for each.
+///
+/// The same table as the Linux one above, and `SZOMB` is left out for the same reason
+/// `Z` is: a holder is not in it. `SIDL` is a process this host has made but not yet
+/// started running, which is a state Linux has no letter for.
+#[cfg(target_os = "macos")]
+const STATES: [(u32, &str); 4] = [
+    (1, "starting"),
+    (2, "running"),
+    (3, "sleeping"),
+    (4, "stopped"),
+];
+
+#[cfg(target_os = "macos")]
+fn vitals(pid: Pid) -> Vitals {
+    let Some(info) = u32::try_from(pid.0).ok().and_then(bsd_info) else {
+        return Vitals::default();
+    };
+    Vitals {
+        parent: Some(info.pbi_ppid),
+        state: STATES
+            .iter()
+            .find(|(status, _)| *status == info.pbi_status)
+            .map(|(_, word)| *word),
+        running_for: running_since_epoch(info.pbi_start_tvsec),
+    }
+}
+
+/// How long a process this host dated from the epoch has been running.
+///
+/// A start later than now is unanswered rather than nothing-at-all: a clock that has
+/// been set backwards since the process began is the ordinary way that happens, and
+/// "running for 0 second(s)" would name a process that had just started.
+#[cfg(target_os = "macos")]
+fn running_since_epoch(started: u64) -> Option<Duration> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .checked_sub(Duration::from_secs(started))
 }
 
 // llmlint: ignore-end[changed_behavior_has_e2e]
@@ -416,6 +593,40 @@ fn parent_of(_pid: u32) -> Option<u32> {
     None
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn vitals(_pid: Pid) -> Vitals {
+    Vitals::default()
+}
+
 #[cfg(not(unix))]
 fn signal_to(_pid: Pid, _signal: Signal) {}
 // llmlint: ignore-end[changed_behavior_has_e2e]
+
+#[cfg(test)]
+mod tests {
+    use super::{Holder, Pid, Vitals};
+
+    /// A holder this host would answer nothing about beyond where it is working.
+    ///
+    /// Not reachable as a journey, which is why it is here: every host these run on
+    /// answers a live process's parent, state and start, and a holder is by
+    /// construction a process whose working directory one of them answered a moment
+    /// ago. What it holds is the fallback — on a host that declines one of the three,
+    /// or on the Windows build that answers none of them, an absent parent must not
+    /// read as `parent pid 0` and an absent start must not read as a process that
+    /// began this second. Those are the two readings an operator would act on, and
+    /// both are the opposite of what happened.
+    #[test]
+    fn a_holder_this_host_could_not_answer_for_reads_as_unanswered_rather_than_as_a_value() {
+        let holder = Holder {
+            pid: Pid::new(4242).expect("a pid a signal may name"),
+            cwd: std::path::PathBuf::from("/runs/one/worktree"),
+            vitals: Vitals::default(),
+        };
+        assert_eq!(
+            holder.to_string(),
+            "pid 4242 in /runs/one/worktree, parent unanswered, state unanswered, running time \
+             unanswered"
+        );
+    }
+}

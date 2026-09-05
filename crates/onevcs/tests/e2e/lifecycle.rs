@@ -1185,6 +1185,46 @@ pub fn working_in(directory: &std::path::Path) -> std::process::Child {
         .expect("a process that works inside a directory")
 }
 
+/// A process working inside a directory whose own parent has already gone.
+///
+/// Started through a shell that backgrounds it and exits, which is how the copy
+/// process in the report came to be one: the kernel reparents what is left of a
+/// dispatch to init. Its descriptors are redirected because the shell hands its child
+/// the pipe this reads the pid back through, and a `sleep` still holding that pipe
+/// open is one this read would wait five minutes for.
+pub fn orphan_working_in(directory: &std::path::Path) -> u32 {
+    let left = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"sleep 300 </dev/null >/dev/null 2>&1 & printf %s "$!""#)
+        .current_dir(directory)
+        .output()
+        .expect("a shell that leaves a process working behind it");
+    String::from_utf8(left.stdout)
+        .expect("a pid is text")
+        .trim()
+        .parse()
+        .expect("the shell names the process it left")
+}
+
+/// Whether this host still has that process, asked the way a signal asks.
+fn is_running(pid: u32) -> bool {
+    let pid = libc::pid_t::try_from(pid).expect("a pid this host listed");
+    // SAFETY: signal `0` delivers nothing and borrows nothing — it asks whether the
+    // process is there to be signalled at all.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Stop one this journey started that is nobody's child to wait on.
+fn stop_orphan(pid: u32) {
+    let signalled = libc::pid_t::try_from(pid).expect("a pid this host listed");
+    // SAFETY: as above, on the one pid this journey started and named.
+    unsafe { libc::kill(signalled, libc::SIGKILL) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while is_running(pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Stop one this journey started, and wait for the OS to be finished with it.
 pub fn stop(mut process: std::process::Child) {
     process
@@ -1280,6 +1320,80 @@ fn a_close_refuses_while_a_process_is_working_anywhere_inside_the_session_run_ro
         .stdout(predicate::str::contains(format!("{token} closed")));
     assert!(!worktree.exists(), "the worktree is released");
     assert_eq!(fixture.world.events_of(&token, "session-closed").len(), 1);
+}
+
+#[test]
+fn a_refused_close_says_enough_about_a_holder_to_tell_an_orphan_from_a_live_dispatch() {
+    // The failure, as it happened: a copy process orphaned to pid 1 held a run root
+    // open and spun for over twelve minutes, and the refusal naming it read identically
+    // to one naming a live dispatch — a number and a directory, and nothing else — so
+    // the only way to learn otherwise was to go and read the process table by hand, and
+    // the session stayed open until the process was killed there.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/held-open"]);
+
+    // Two holders that are the two cases: one whose parent is this process and still
+    // running, which is what a live dispatch looks like, and one whose parent exited
+    // and which the kernel therefore reparented to init.
+    let dispatch = working_in(&worktree);
+    let live = dispatch.id();
+    let orphan = orphan_working_in(&worktree);
+    let inside = worktree.to_string_lossy().into_owned();
+
+    let refusal = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("was not closed"))
+        .stderr(predicate::str::contains("2 processes are"));
+    let said = String::from_utf8(refusal.get_output().stderr.clone()).expect("text");
+
+    // Each is named with what this host could establish about it, and the two differ in
+    // the refusal itself: the parent of one is this test, the parent of the other is
+    // init — which is the whole of what "the dispatch that started it has gone" looks
+    // like from outside.
+    for (holder, parent) in [(live, std::process::id()), (orphan, 1)] {
+        let named =
+            format!("pid {holder} in {inside}, parent pid {parent}, state sleeping, running for ");
+        let after = said
+            .split(&named)
+            .nth(1)
+            .unwrap_or_else(|| panic!("the refusal names {holder} in full:\n{said}"));
+        let window = after.split('"').next().expect("the entry ends");
+        assert!(
+            window.ends_with("second(s)"),
+            "and says how long it has been running, which is what tells a process that \
+             has been spinning for twelve minutes from one that just started: {window:?}\n{said}"
+        );
+    }
+
+    // It is still a refusal, and it stopped nothing: which of "let it finish" and "stop
+    // it" the operator wants is what the detail above is for, and is still theirs.
+    assert!(worktree.is_dir(), "a refused close removes nothing");
+    assert!(
+        is_running(live) && is_running(orphan),
+        "and signals nothing it named"
+    );
+    assert!(
+        fixture.world.events_of(&token, "session-closed").is_empty(),
+        "a session that was not closed is not reported closed"
+    );
+    let offered = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", "--help"])
+        .assert()
+        .success();
+    let offered = String::from_utf8(offered.get_output().stdout.clone()).expect("text");
+    assert!(
+        !offered.contains("force"),
+        "and the close offers no way past it:\n{offered}"
+    );
+
+    stop_orphan(orphan);
+    stop(dispatch);
 }
 
 #[test]

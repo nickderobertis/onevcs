@@ -8,6 +8,8 @@
 //! as. A command that has to be repaired before it works is a refusal that names
 //! no command, which is the thing this whole surface exists to stop.
 
+use std::time::Duration;
+
 use icu_properties::props::GeneralCategory;
 use icu_properties::CodePointMapData;
 
@@ -107,4 +109,21 @@ pub fn quoted_output(value: &str) -> String {
 /// it did not already have and cannot drift from Unicode's.
 fn formatting(c: char) -> bool {
     CodePointMapData::<GeneralCategory>::new().get(c) == GeneralCategory::Format
+}
+
+/// A window of time as a reader of a report or a refusal meets it.
+///
+/// Here rather than beside the byte describer it was written next to, because a
+/// duration is now spoken by two verbs — the sweep says how much of the age floor a
+/// workspace was inside, and a refused close says how long a process has been holding
+/// a run root — and the two must not drift into saying it differently. Bytes are still
+/// the sweep's own subject and stay there.
+pub fn describe_duration(window: Duration) -> String {
+    let seconds = window.as_secs();
+    match (seconds / 3600, (seconds % 3600) / 60) {
+        (0, 0) => format!("{seconds} second(s)"),
+        (0, minutes) => format!("{minutes} minute(s)"),
+        (hours, 0) => format!("{hours} hour(s)"),
+        (hours, minutes) => format!("{hours} hour(s) {minutes} minute(s)"),
+    }
 }
