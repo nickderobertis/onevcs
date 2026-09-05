@@ -286,10 +286,10 @@ pub fn release_status(reference: &str, target: Option<&TargetName>) -> Result<Re
 /// another identity is refused rather than answered under the name of the one asked
 /// about.
 ///
-/// The tiers are [`landed::decide`]'s and nowhere else's, so this, `onevcs status` and
-/// `onevcs recoverable` cannot come to disagree about one branch. Which tier decided
-/// travels inside the [`Landed`] value, so a caller acting on a `yes` can say what it
-/// acted on.
+/// The tiers are decided in one private place — `landed::decide` — and nowhere else,
+/// so this, `onevcs status` and `onevcs recoverable` cannot come to disagree about one
+/// branch. Which tier decided travels inside the [`Landed`] value, so a caller acting
+/// on a `yes` can say what it acted on.
 ///
 /// It takes no [`Providers`] for the reason [`release_targets`] does not: a landing is
 /// decided from the history of the repositories under this host's own state root, and
