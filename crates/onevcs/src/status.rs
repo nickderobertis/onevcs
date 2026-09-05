@@ -1770,7 +1770,7 @@ fn resolve(
     within: Option<&str>,
 ) -> Result<(Work, RefKind)> {
     if reference.starts_with("http://") || reference.starts_with("https://") {
-        return change_url(registry, reference, streams)
+        return change_url(registry, reference, streams, within)
             .and_then(|work| in_scope(work, reference, within))
             .map(|work| (work, RefKind::ChangeUrl));
     }
@@ -1860,7 +1860,12 @@ fn one(found: Vec<Work>, reference: &str, spelling: &str) -> Result<Work> {
 }
 
 /// The work whose change request one URL names.
-fn change_url(registry: &Registry, url: &str, streams: &[Recorded]) -> Result<Work> {
+fn change_url(
+    registry: &Registry,
+    url: &str,
+    streams: &[Recorded],
+    within: Option<&str>,
+) -> Result<Work> {
     let recorded = streams
         .iter()
         .find(|record| {
@@ -1904,8 +1909,31 @@ fn change_url(registry: &Registry, url: &str, streams: &[Recorded]) -> Result<Wo
         }
     }
     // A branch-keyed verb's stream carries no identity label, so the identity is the
-    // one whose checkouts hold the branch — the same search everything else here uses.
-    one(by_branch(registry, &branch, None)?, url, "change request")
+    // one whose checkouts hold the branch — the same search everything else here uses,
+    // narrowed the same way. Searching every identity under an explicit repository
+    // would refuse a name two of them hold as ambiguous, for an ambiguity the caller
+    // has already resolved.
+    let found = by_branch(registry, &branch, within)?;
+    // Nothing found is not an ambiguity, and saying so is the whole of the difference:
+    // the next move is to widen the question or to look for the branch, and "0 pieces
+    // of work answer to it" tells a reader neither.
+    if found.is_empty() {
+        return Err(Error::Invalid {
+            reason: match within {
+                Some(key) => format!(
+                    "the change request at {url} carries branch {branch}, which no checkout or \
+                     run clone of repository {key:?} holds; ask about it without naming a \
+                     repository, or name the one it belongs to"
+                ),
+                None => format!(
+                    "the change request at {url} carries branch {branch}, which no checkout or \
+                     run clone of any registered identity holds, so nothing here can say which \
+                     work it was. `onevcs recoverable` lists the preserved branches"
+                ),
+            },
+        });
+    }
+    one(found, url, "change request")
 }
 
 /// Every identity holding a branch of this name.

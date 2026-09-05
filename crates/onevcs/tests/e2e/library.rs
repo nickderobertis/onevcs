@@ -4010,9 +4010,6 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
         Landed::No
     );
 
-    // …and naming a *different* repository refuses rather than answering this one's
-    // work under that name. A URL resolves through the event stream rather than by
-    // searching a repository, so the narrowing has to be applied to it too.
     let second = world.clone_of(&world.bare_origin("second"), "second");
     assert_eq!(
         run(
@@ -4034,6 +4031,55 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
     assert!(
         reason.contains(url.as_str()) && reason.contains("second"),
         "the refusal names the change request and the repository it was asked about: {reason}"
+    );
+
+    // The other half of the URL spelling, and the one a repository has to *narrow*
+    // rather than merely check: a change request a branch-keyed verb opened leaves a
+    // stream with no identity on it, so the URL is resolved by searching the
+    // identities whose checkouts hold the branch. Searching all of them under an
+    // explicit repository would refuse a name two of them hold as ambiguous, for an
+    // ambiguity the caller has already answered.
+    let keyed = open(&Git, "feature/branch-keyed");
+    world.commit_file(
+        &keyed.worktree,
+        "keyed.txt",
+        "one\n",
+        "feat: the work a branch-keyed verb publishes",
+    );
+    onevcs::close_session(&Providers::real(), &keyed.token).expect("the session closes");
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "publish-branch",
+                "feature/branch-keyed",
+                "--repo",
+                &world.path("hosted").to_string_lossy(),
+            ],
+            Providers::real(),
+        ),
+        0,
+        "the branch-keyed verb opens a change request for it"
+    );
+    let rows = Git.recoverable(Scope::All).expect("the preserved branches");
+    let opened = rows
+        .iter()
+        .find(|row| row.branch.branch == "feature/branch-keyed")
+        .unwrap_or_else(|| panic!("the branch is still unpublished: {rows:#?}"))
+        .branch
+        .change_url
+        .clone()
+        .expect("the branch-keyed publication opened a change request");
+    assert_eq!(
+        onevcs::landing_status(opened.as_str(), Some("hosted")).expect("the landing is decided"),
+        Landed::No,
+        "a stream with no identity on it is narrowed by the search, not after it"
+    );
+    let refused = onevcs::landing_status(opened.as_str(), Some("second"))
+        .expect_err("a repository that holds no such branch answers about no work");
+    assert!(
+        refused.to_string().contains("second"),
+        "the refusal names the repository it was asked about: {refused}"
     );
 
     // A URL no change request `onevcs` opened here answers to is refused rather than

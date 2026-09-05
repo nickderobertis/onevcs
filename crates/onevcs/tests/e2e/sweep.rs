@@ -2418,7 +2418,6 @@ fn the_retention_rule_and_the_recovery_listing_answer_one_branch_one_way() {
          have carried, so whether it landed cannot be decided"
     );
 
-    // The rule, over the tree those three left.
     the_two_reports_answer_one_piece_of_work_one_way(&fixture);
 
     // …and what each of the three answers is, stated rather than left to the rule
