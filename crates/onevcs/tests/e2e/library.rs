@@ -3938,13 +3938,23 @@ fn the_landing_read_answers_a_repository_that_releases_nothing_and_the_release_r
         0,
         "a second repository registers"
     );
-    let refused = onevcs::landing_status("feature/unfinished", Some("other"))
-        .expect_err("work in another repository is refused rather than answered");
-    let reason = refused.to_string();
-    assert!(
-        reason.contains("feature/unfinished") && reason.contains("other"),
-        "the refusal names the work and the repository it was asked about: {reason}"
-    );
+    // Each spelling, because each resolves differently and a narrowing that only held
+    // for one of them would answer another repository's work under the name of the one
+    // asked about: a branch and a commit are *searched* for within the identity, and a
+    // session token names its own repository outright.
+    for spelling in [
+        "feature/unfinished",
+        held.token.0.as_str(),
+        by_commit.as_str(),
+    ] {
+        let refused = onevcs::landing_status(spelling, Some("other"))
+            .expect_err("work in another repository is refused rather than answered");
+        let reason = refused.to_string();
+        assert!(
+            reason.contains(spelling) && reason.contains("other"),
+            "the refusal names the work and the repository it was asked about: {reason}"
+        );
+    }
     let unregistered = onevcs::landing_status("feature/unfinished", Some("nobody/registered-this"))
         .expect_err("a repository this host does not know is refused rather than ignored");
     assert!(
@@ -3998,6 +4008,32 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
     assert_eq!(
         onevcs::landing_status(url.as_str(), Some("hosted")).expect("the landing is decided"),
         Landed::No
+    );
+
+    // …and naming a *different* repository refuses rather than answering this one's
+    // work under that name. A URL resolves through the event stream rather than by
+    // searching a repository, so the narrowing has to be applied to it too.
+    let second = world.clone_of(&world.bare_origin("second"), "second");
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &second.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/second.git",
+            ],
+            Providers::real(),
+        ),
+        0,
+        "a second repository registers"
+    );
+    let refused = onevcs::landing_status(url.as_str(), Some("second"))
+        .expect_err("a change request in another repository is refused rather than answered");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains(url.as_str()) && reason.contains("second"),
+        "the refusal names the change request and the repository it was asked about: {reason}"
     );
 
     // A URL no change request `onevcs` opened here answers to is refused rather than
