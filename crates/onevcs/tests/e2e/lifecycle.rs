@@ -410,6 +410,377 @@ fn a_session_is_cut_from_origins_tip_rather_than_from_the_execution_checkouts_ow
     );
 }
 
+/// Land commits on the origin from a checkout of its own, leaving the fixture's
+/// registered checkout behind — which is where an execution checkout sits between one
+/// publication and the next. Answers origin's new tip.
+fn land_on_origin(fixture: &Fixture, subjects: &[&str]) -> String {
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    for (nth, subject) in subjects.iter().enumerate() {
+        fixture.world.commit_file(
+            &elsewhere,
+            &format!("landed-{nth}.txt"),
+            "landed\n",
+            subject,
+        );
+    }
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+    fixture.world.git(&fixture.origin, &["rev-parse", "main"])
+}
+
+/// The clone's own copy of the base, and the same name as the session's worktree
+/// resolves it — which is what anybody working in that tree types.
+fn base_in(fixture: &Fixture, worktree: &std::path::Path, base: &str) -> (String, String) {
+    let clone = worktree.parent().expect("a run root").join("clone");
+    (
+        fixture
+            .world
+            .git(&clone, &["rev-parse", &format!("refs/heads/{base}")]),
+        fixture.world.git(worktree, &["rev-parse", base]),
+    )
+}
+
+#[test]
+fn a_sessions_own_base_branch_is_brought_up_to_the_origin_ref_it_is_judged_against() {
+    let fixture = Fixture::local(&local_direct());
+    let tip = land_on_origin(&fixture, &["feat: land somebody else's change"]);
+    let stale = fixture.world.git(&fixture.checkout, &["rev-parse", "main"]);
+    assert_ne!(
+        stale, tip,
+        "the premise: the lender's own base is behind origin, and the clone takes that copy"
+    );
+
+    let (_token, worktree) = fixture.open(&["--branch", "feature/on-a-fresh-base"]);
+    let clone = worktree.parent().expect("a run root").join("clone");
+
+    // `origin/main` was already right, and everything this crate computes goes
+    // through it. The bare name is what a worker types, and it was the commit the
+    // clone was cut with until it was brought up here.
+    assert_eq!(
+        base_in(&fixture, &worktree, "main"),
+        (tip.clone(), tip.clone()),
+        "the local base resolves, in the clone and in the worktree, to origin's commit"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&clone, &["rev-parse", "refs/remotes/origin/main"]),
+        tip,
+        "which is the same ref the session's own diffs are addressed from"
+    );
+
+    // Moved rather than replaced: what the lender's copy carried is carried still.
+    assert_eq!(
+        fixture
+            .world
+            .git(&clone, &["rev-list", "--count", &format!("{stale}..main")]),
+        "1",
+        "the base moved forward onto origin's commit, over the one it stood at"
+    );
+
+    // Nothing had that branch checked out while it moved: the session's worktree is
+    // on the session's own branch, and the clone — cut `--no-checkout` — hands the
+    // name back rather than standing on a commit its index no longer describes.
+    let worktrees = fixture
+        .world
+        .git(&clone, &["worktree", "list", "--porcelain"]);
+    assert!(
+        !worktrees.contains("branch refs/heads/main"),
+        "the base must be checked out nowhere in the clone: {worktrees}"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feature/on-a-fresh-base"
+    );
+    assert_eq!(
+        fixture.world.git(&worktree, &["status", "--porcelain"]),
+        "",
+        "a ref moved under a populated tree would read as changes nobody made"
+    );
+
+    // And the lender is left exactly as it was: other sessions read this checkout.
+    assert_eq!(
+        fixture.world.git(&fixture.checkout, &["rev-parse", "main"]),
+        stale
+    );
+}
+
+#[test]
+fn judging_a_branch_from_its_base_inside_a_session_counts_only_its_own_commits() {
+    let fixture = Fixture::local(&local_direct());
+    // Seven commits of already-landed work, which is the number this cost: a worker
+    // ran its repository's judged-lint tier against `main` inside its own session and
+    // judged twelve commits where its branch had five, because the `main` it named
+    // was the commit its clone had been cut with.
+    let subjects: Vec<String> = (0..7)
+        .map(|nth| format!("feat: land change {nth}"))
+        .collect();
+    let landed: Vec<&str> = subjects.iter().map(String::as_str).collect();
+    land_on_origin(&fixture, &landed);
+
+    let (_token, worktree) = fixture.open(&["--branch", "feature/measured"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: the first half");
+    fixture
+        .world
+        .commit_file(&worktree, "two.txt", "two\n", "feat: the second half");
+
+    assert_eq!(
+        fixture
+            .world
+            .git(&worktree, &["rev-list", "--count", "main..HEAD"]),
+        "2",
+        "the branch is judged over its own work and none of what its base already carried"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&worktree, &["log", "--format=%s", "main..HEAD"]),
+        "feat: the second half\nfeat: the first half"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&worktree, &["rev-list", "--count", "main..HEAD"]),
+        fixture
+            .world
+            .git(&worktree, &["rev-list", "--count", "origin/main..HEAD"]),
+        "the base by its bare name and the base by its origin ref are one base"
+    );
+}
+
+#[test]
+fn a_continued_sessions_base_branch_is_brought_up_to_the_origin_ref_too() {
+    let fixture = Fixture::local(&local_direct());
+    // A branch the identity already carries, in the checkout an operator cut it in.
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/carried-on", "main"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "carried.txt",
+        "the work\n",
+        "feat: the work a later session continues",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let tip = land_on_origin(&fixture, &["feat: land somebody else's change"]);
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/carried-on"]);
+    assert_eq!(
+        fixture.world.events_of(&token, "session-opened")[0]["payload"]["continued"],
+        true,
+        "the premise: this session continued the branch rather than cutting one"
+    );
+    assert!(
+        worktree.join("carried.txt").is_file(),
+        "and it opened on the work that branch already held"
+    );
+    assert_eq!(
+        base_in(&fixture, &worktree, "main"),
+        (tip.clone(), tip),
+        "a continued session's base is origin's commit too"
+    );
+}
+
+#[test]
+fn a_resumed_sessions_base_branch_is_brought_up_to_the_origin_it_left_behind() {
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/resumed-on-a-fresh-base"]);
+    fixture.world.commit_file(
+        &worktree,
+        "one.txt",
+        "one\n",
+        "feat: the half that was done",
+    );
+    let opened_at = fixture.world.git(&worktree, &["rev-parse", "main"]);
+
+    // The base moves while the run is down, which is the state a retry arrives in.
+    let tip = land_on_origin(&fixture, &["feat: land somebody else's change"]);
+    assert_ne!(
+        opened_at, tip,
+        "the premise: the base moved under the session"
+    );
+
+    let (resumed, tree) = fixture.open(&["--branch", "feature/resumed-on-a-fresh-base"]);
+    assert_eq!(resumed, token, "the premise: the session was resumed");
+    assert_eq!(tree, worktree);
+    assert_eq!(
+        base_in(&fixture, &worktree, "main"),
+        (tip.clone(), tip),
+        "resuming brings the base the worktree names up to date as well as the origin ref"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&worktree, &["rev-list", "--count", "main..HEAD"]),
+        "1",
+        "so the work in it is judged against the base as it stands"
+    );
+}
+
+#[test]
+fn a_base_origin_has_never_seen_opens_the_session_and_is_left_where_it_was() {
+    let fixture = Fixture::local(&local_direct());
+    // A base of the lender's own, on a branch nothing has ever pushed: there is no
+    // origin copy of it to bring anything up to.
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/private-base", "main"],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "private.txt",
+        "unpublished\n",
+        "feat: a base origin has never seen",
+    );
+    let private = fixture
+        .world
+        .git(&fixture.checkout, &["rev-parse", "feature/private-base"]);
+
+    let (_token, worktree) = fixture.open(&[
+        "--base",
+        "feature/private-base",
+        "--branch",
+        "feature/stacked-on-private",
+    ]);
+
+    assert_eq!(
+        base_in(&fixture, &worktree, "feature/private-base"),
+        (private.clone(), private.clone()),
+        "the base is exactly where the lender had it"
+    );
+    assert_eq!(
+        fixture.world.git(&worktree, &["rev-parse", "HEAD"]),
+        private,
+        "and the session was cut at it"
+    );
+}
+
+#[test]
+fn a_base_carrying_work_origin_has_not_seen_is_kept_and_the_session_says_so() {
+    let fixture = Fixture::local(&local_direct());
+    // The lender's own `main` holds a commit nobody pushed, and origin's has moved on
+    // under it: neither copy carries the other.
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "unpushed.txt",
+        "unpushed\n",
+        "feat: work only this checkout has",
+    );
+    let unpushed = fixture.world.git(&fixture.checkout, &["rev-parse", "main"]);
+    let tip = land_on_origin(&fixture, &["feat: land somebody else's change"]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/on-a-kept-base",
+        ])
+        .assert()
+        .success();
+    let worktree = worktree_of(&assert.get_output().stdout);
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+
+    assert_eq!(
+        base_in(&fixture, &worktree, "main"),
+        (unpushed.clone(), unpushed.clone()),
+        "a base holding work origin has not seen is neither rewritten nor moved backwards"
+    );
+    assert_eq!(
+        fixture.world.git(&worktree, &["rev-parse", "origin/main"]),
+        tip,
+        "and what the session computes is addressed from origin's ref regardless"
+    );
+    assert_eq!(
+        fixture.world.git(&worktree, &["rev-parse", "HEAD"]),
+        tip,
+        "so the worktree is still cut at origin's tip"
+    );
+
+    // What it found is legible to whoever reads the session afterwards: both commits,
+    // where the copy came from, and what publishing it would take.
+    assert!(stderr.contains(&unpushed), "{stderr}");
+    assert!(stderr.contains(&tip), "{stderr}");
+    assert!(
+        stderr.contains("left where it was")
+            && stderr.contains(&format!(
+                "git -C {} push origin main",
+                fixture.checkout.display()
+            )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_session_whose_identity_has_no_origin_remote_stands_at_the_lenders_own_base() {
+    let world = World::new();
+    let origin = world.bare_origin("detached");
+    let checkout = world.clone_of(&origin, "detached");
+    // No remote at all: nothing to fetch, and the lender's own copy of the base is
+    // the only evidence of where the base is. `edges.rs` drives the whole life cycle
+    // of such an identity; this one is about the commit it opens at.
+    world.git(&checkout, &["remote", "remove", "origin"]);
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            &format!("file://{}", origin.display()),
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        "version: 1\nrules: []\n\
+         default: {publication: local-direct, approvals: none}\n",
+    );
+    world.commit_file(
+        &checkout,
+        "offline.txt",
+        "offline\n",
+        "feat: work with nowhere to push it",
+    );
+    let held = world.git(&checkout, &["rev-parse", "main"]);
+
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "detached",
+            "--branch",
+            "feature/offline-base",
+        ])
+        .assert()
+        .success();
+    let worktree = worktree_of(&assert.get_output().stdout);
+    let clone = worktree.parent().expect("a run root").join("clone");
+
+    assert_eq!(
+        world.git(&worktree, &["rev-parse", "HEAD"]),
+        held,
+        "the session stands at the commit the lender's own copy of the base carries"
+    );
+    assert_eq!(world.git(&clone, &["rev-parse", "refs/heads/main"]), held);
+    assert_eq!(world.git(&worktree, &["rev-parse", "main"]), held);
+    assert!(
+        worktree.join("offline.txt").is_file(),
+        "including the work that had nowhere to go"
+    );
+}
+
 #[test]
 fn a_pinned_branch_a_session_already_holds_resumes_it_rather_than_cutting_a_second_worktree() {
     let fixture = Fixture::local(&local_direct());
