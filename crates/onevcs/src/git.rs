@@ -881,7 +881,10 @@ pub fn has_remote(cwd: &Path, remote: &str) -> bool {
 /// objects and `--no-checkout` skips a working tree the caller never uses, because
 /// every task tree is a linked worktree. The result costs little more than its
 /// refs, so one per run is affordable where one shared clone per repository is not.
-pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<()> {
+///
+/// What comes back is what became of the clone's own copy of the base — see
+/// [`carry_base`] — which the caller opening a session is the one that can report.
+pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<BaseCarried> {
     let source_arg = git_path(source).to_string_lossy();
     let dest_arg = git_path(dest).to_string_lossy();
     let origin_arg = git_location(origin);
@@ -893,9 +896,9 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
         &["remote", "set-url", "origin", origin_arg.as_ref()],
         Some(dest),
     )?;
-    carry_remote_refs(source, dest, base)?;
+    let carried = carry_remote_refs(source, dest, base)?;
     carry_hooks(source, dest)?;
-    Ok(())
+    Ok(carried)
 }
 
 /// Give the clone the lender's *remote-tracking* refs rather than its local branches.
@@ -912,7 +915,7 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
 /// A ref update and not a second download: the lender has just fetched and the clone
 /// borrows its object store, so every commit these refs name is already reachable
 /// and git transfers nothing.
-pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<()> {
+pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<BaseCarried> {
     if has_remote(source, "origin") {
         let source_arg = git_path(source).to_string_lossy();
         checked(
@@ -944,7 +947,74 @@ pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<()> {
         ],
         Some(dest),
     )?;
-    Ok(())
+    carry_base(dest, base)
+}
+
+/// What became of a clone's own local copy of the base once origin's view of it had
+/// been carried in.
+///
+/// Only [`Kept`](BaseCarried::Kept) is anything an operator has to hear about, and
+/// that is why this is a value rather than a line printed here: the caller that
+/// opened the session is the one that can say which session found it and what to do
+/// about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseCarried {
+    /// Nothing to bring the local branch up to, or nothing to bring it up *by*: it
+    /// stood at origin's commit already, the clone has no local branch of that name —
+    /// where the bare name resolves to the remote-tracking ref anyway — or the clone
+    /// carries no `origin/<base>` at all.
+    Aligned,
+    /// It was behind, and was fast-forwarded onto origin's commit.
+    Advanced,
+    /// It carries a commit `origin/<base>` does not, so it was left exactly where it
+    /// was found.
+    Kept {
+        /// The commit the local branch holds.
+        local: String,
+        /// The one `origin/<base>` holds.
+        origin: String,
+    },
+}
+
+/// Bring the clone's own `refs/heads/<base>` up to the `origin/<base>` beside it.
+///
+/// The clone got that local branch from the lender at clone time and nothing touched
+/// it afterwards, so it carries whatever the lender's own checkout of the base
+/// happened to stand at — which is exactly what [`carry_remote_refs`] has just
+/// corrected for the remote-tracking refs. Every ref this crate computes from goes
+/// through `origin/<base>` and is unaffected; what is not is the bare name, which is
+/// what a person working in the session's worktree types. A `main` that resolves to a
+/// commit origin left days ago judges already-landed work as the session's own.
+///
+/// **Forward only.** A local base holding a commit origin's does not is somebody's
+/// unpushed work, reachable from nothing else once the clone is let go, so it is
+/// neither rewritten nor discarded — the answer comes back and the caller says what
+/// was found.
+fn carry_base(cwd: &Path, base: &str) -> Result<BaseCarried> {
+    let local_ref = format!("refs/heads/{base}");
+    let (Some(local), Some(origin)) = (
+        tip(cwd, &local_ref),
+        tip(cwd, &format!("refs/remotes/origin/{base}")),
+    ) else {
+        return Ok(BaseCarried::Aligned);
+    };
+    if local == origin {
+        return Ok(BaseCarried::Aligned);
+    }
+    if !is_ancestor(cwd, &local, &origin)? {
+        return Ok(BaseCarried::Kept { local, origin });
+    }
+    // Nothing may have the branch checked out while it moves, or that worktree's
+    // index and tree would go on describing a commit it no longer stands at. The
+    // clone's own HEAD is the one thing that can name it — `git clone` leaves HEAD on
+    // the branch it cloned — and the clone is cut `--no-checkout`, so handing the
+    // name back costs it nothing it uses; every populated worktree of a session or a
+    // landing is on the branch being worked or detached, never on the base.
+    if current_branch(cwd)? == base {
+        detach_head(cwd)?;
+    }
+    update_ref(cwd, &local_ref, &origin)?;
+    Ok(BaseCarried::Advanced)
 }
 
 /// Give the clone the hook *configuration* its published content expects.

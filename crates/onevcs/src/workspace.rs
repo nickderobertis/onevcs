@@ -18,7 +18,11 @@
 //! lender's local branches into the clone's `refs/remotes/origin/*`, so origin's own
 //! refs — which are what a session is cut at or continued from, and what every diff
 //! of it afterwards is addressed from — are copied over separately, by
-//! [`git::carry_remote_refs`].
+//! [`git::carry_remote_refs`]. That is also where the clone's *own* copy of the base
+//! is brought forward onto the origin ref beside it: the clone took that local branch
+//! from the lender at clone time, so without it the bare name a worker types in the
+//! worktree is a commit from whenever the clone was made rather than the one every
+//! command here addresses.
 //!
 //! A clone is disposable, so anything that must outlive it — a preserved branch, a
 //! pushed branch, a recovery attestation — is copied back into the execution
@@ -915,7 +919,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
 
     let origin = git::remote_url(&execution, "origin")
         .unwrap_or_else(|_| execution.to_string_lossy().into_owned());
-    git::clone_sharing(&execution, &clone, &origin, &base)?;
+    let carried = git::clone_sharing(&execution, &clone, &origin, &base)?;
     // A refusal here is a refusal to open at all, so the run root goes with it: the
     // branch itself is untouched wherever it was found, and a clone and a worktree
     // left behind under a token no record names is litter nothing would come back
@@ -969,9 +973,45 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     if continued.is_some() {
         supersede(&record)?;
     }
+    note_base(
+        &carried,
+        &record.base,
+        &record.worktree,
+        &record.execution_checkout,
+    );
     stream.emit(EventKind::SessionOpened, opened(&record, reuse));
     drop(lease);
     Ok((record, stream))
+}
+
+/// Say what a session found when it could not bring its base up to origin's.
+///
+/// A clone's local base is the lender's copy of it, taken at clone time, and
+/// [`git::carry_remote_refs`] brings it forward onto `origin/<base>` so the bare name
+/// a worker types in the worktree is the commit everything else addresses. One base
+/// it cannot bring forward: one carrying a commit origin has never seen, which is
+/// unpushed work whose only other copy is the lender's. That branch is left exactly
+/// where it was found — and a session that moved nothing and said nothing would leave
+/// a worker comparing against a commit they have no way to learn about, which is the
+/// staleness this exists to end, wearing a different hat.
+///
+/// Nothing is said about a base that needed nothing or was brought forward: a session
+/// opening on the base every one of its own commands already uses is the ordinary
+/// case, and a line per session about it is a line nobody reads.
+fn note_base(carried: &git::BaseCarried, base: &Ref, worktree: &Path, execution: &Path) {
+    let git::BaseCarried::Kept { local, origin } = carried else {
+        return;
+    };
+    let at = execution.to_string_lossy();
+    eprintln!(
+        "onevcs: warning: this session's base {base:?} stands at {local}, which origin/{base} at \
+         {origin} does not carry, so it was left where it was rather than moved off work nothing \
+         else holds. A `{base}` typed in {tree} names that commit; what onevcs computes is \
+         addressed from origin/{base} either way. The copy came from {at}, so publish it from \
+         there with `{push}` — or reconcile it against origin — and open this session again",
+        tree = worktree.display(),
+        push = guidance::command(["git", "-C", &at, "push", "origin", base]),
+    );
 }
 
 /// Record, on every session this one continued the branch of, that it did.
@@ -1143,8 +1183,10 @@ fn resume(held: &Record, lease: lock::Guard, execution: &Path) -> Result<(Record
     refresh(execution, &mut stream)?;
     // The clone's view of origin is as old as the session, which for a resumed one
     // is as old as the work in it. The lender has just been fetched, so this is
-    // where that becomes the session's view too.
-    git::carry_remote_refs(execution, &record.clone, &record.base)?;
+    // where that becomes the session's view too — the base the session's own worktree
+    // names included.
+    let carried = git::carry_remote_refs(execution, &record.clone, &record.base)?;
+    note_base(&carried, &record.base, &record.worktree, execution);
     stream.emit(EventKind::SessionOpened, opened(&record, Reuse::Resumed));
     Ok((record, stream))
 }
