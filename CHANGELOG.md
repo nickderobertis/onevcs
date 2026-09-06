@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.3](https://github.com/nickderobertis/onevcs/compare/v0.19.2...v0.19.3) - 2026-09-06
+
+### Fixed
+
+- *(session)* bring a session clone's local base branch up to the origin ref the clone carries ([#134](https://github.com/nickderobertis/onevcs/pull/134))
+
 ## [0.19.2](https://github.com/nickderobertis/onevcs/compare/v0.19.1...v0.19.2) - 2026-09-05
 
 ### Fixed
