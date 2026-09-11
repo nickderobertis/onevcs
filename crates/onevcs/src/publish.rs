@@ -61,15 +61,18 @@ pub struct PublishRequest {
     /// Open the change request as a **draft**, and why it is not ready.
     ///
     /// Absent is every publication that came before this field: an ordinary change
-    /// request, opened for review. Present is a change whose work is as far along as
-    /// it can go while something outside this repository has not happened yet — and
-    /// the reason travels with it, because a draft nobody can read the reason for is
-    /// a change request nobody knows how to finish.
+    /// request, opened for review. Present is one of two things, and the reason
+    /// says which: a change whose work is as far along as it can go while something
+    /// outside this repository has not happened yet, or a change the session that
+    /// opened it is still making. The reason travels with it, because a draft
+    /// nobody can read the reason for is a change request nobody knows how to
+    /// finish.
     ///
     /// A draft is unmergeable in that state, and this crate keeps it so: nothing
     /// merges it, arms the host's own merge on it, or advances a base from it while
     /// the draft stands. A publication of the same branch carrying **no**
-    /// `DraftReason` is what lifts it.
+    /// `DraftReason` is what lifts it — and so is `onevcs change ready`, for a
+    /// session that wants its draft lifted without landing anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReason>,
 }
