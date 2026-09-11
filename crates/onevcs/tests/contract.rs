@@ -34,13 +34,14 @@ use onevcs::releases::{
 };
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
-    ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
-    DraftReason, Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub,
-    HeldBy, Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
-    MergeOutcome, MergePolicy, NetNegative, Phase, PreservedBranch, ProtectionSource, Provenance,
-    Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks,
-    Retention, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
-    Source, Subject, Url, Vcs,
+    ArtifactId, ArtifactRef, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest, ChangeSpec,
+    Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter, EventKind,
+    EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, Labels, Landed, LandingEvidence,
+    Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative, Phase,
+    PreservedBranch, ProtectionSource, Provenance, Providers, Publication, PublishOutcome,
+    PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Session,
+    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source,
+    Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -3861,6 +3862,123 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
             "a reason that would not render as itself is not one: {unusable:?}"
         );
     }
+}
+
+#[test]
+fn the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_methods() {
+    // The three calls over a session's own change request, the two types they
+    // exchange with a caller, and the two host methods behind them are declared in
+    // one amendment — and the shape it declares is the shape the code has, or a
+    // consumer compiling against the document links against something else.
+    let declared = amendment_declaring("pub enum DraftReason");
+    for line in [
+        "pub struct ChangeDescription { pub title: Option<Subject>, pub body: String }",
+        "pub struct Description { pub title: String, pub body: String }",
+        "pub struct SessionChange { pub url: Url, pub id: ChangeId, pub base: String,",
+        "pub draft: bool, pub title: String, pub body: String }",
+        "pub fn session_change(providers: &Providers<'_>, token: &SessionToken) -> Result<Option<SessionChange>>;",
+        "pub fn describe_change(providers: &Providers<'_>, token: &SessionToken, description: &ChangeDescription) -> Result<SessionChange>;",
+        "pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionChange>;",
+        "fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()>;",
+        "fn change_description(&self, cr: &ChangeRequest) -> Result<Description>;",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the held-draft amendment no longer declares: {line}"
+        );
+    }
+
+    // The types, built with exactly the declared fields, and the three functions
+    // referenced at exactly the declared signatures — which is what fails to compile
+    // if either moves.
+    let description = ChangeDescription {
+        title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
+        body: "## What\n\nThe seam.\n".to_owned(),
+    };
+    let written = serde_json::to_value(&description).expect("a description serializes");
+    assert_eq!(
+        written
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<String>>(),
+        ["title", "body"].map(str::to_owned).into_iter().collect()
+    );
+    let answered = Description {
+        title: "feat: add the seam".to_owned(),
+        body: String::new(),
+    };
+    let change = SessionChange {
+        url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL"),
+        id: ChangeId("42".to_owned()),
+        base: "main".to_owned(),
+        draft: true,
+        title: answered.title.clone(),
+        body: answered.body.clone(),
+    };
+    assert_eq!(
+        serde_json::to_value(&change)
+            .expect("a change serializes")
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<String>>(),
+        ["url", "id", "base", "draft", "title", "body"]
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
+    );
+    let _read: fn(&Providers<'_>, &SessionToken) -> onevcs::Result<Option<SessionChange>> =
+        onevcs::session_change;
+    let _write: fn(
+        &Providers<'_>,
+        &SessionToken,
+        &ChangeDescription,
+    ) -> onevcs::Result<SessionChange> = onevcs::describe_change;
+    let _lift: fn(&Providers<'_>, &SessionToken) -> onevcs::Result<SessionChange> =
+        onevcs::ready_change;
+
+    // Both host methods are defaulted, so the seam stays additive — and to the
+    // refusal this repository reserves for a seam with no body, never to an answer:
+    // a host that was never taught to describe a change has not described one, and
+    // one never taught to read a description has not read an empty one.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let cr = ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        url: change.url.clone(),
+        head_sha: Sha("0f1e2d3".to_owned()),
+        base: "main".to_owned(),
+    };
+    assert!(matches!(
+        Earlier.describe_change(&cr, None, "a body"),
+        Err(Error::NotImplemented { operation }) if operation.contains("describe_change")
+    ));
+    assert!(matches!(
+        Earlier.change_description(&cr),
+        Err(Error::NotImplemented { operation }) if operation.contains("change_description")
+    ));
 }
 
 fn all_publish_outcomes() -> Vec<&'static str> {
