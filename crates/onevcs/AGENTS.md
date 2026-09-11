@@ -138,9 +138,13 @@ Now the train is allowed exactly when the resolved `publication` is `local-direc
 the merge-path coverage verdict asks the same policy whether a change request will
 ever exist for the host to check, `recover`'s handoff names the train for exactly the
 identities the train takes, and the review requirement is the rules file's
-`approvals`. A registry a previous build wrote still carries the two keys; `store`
-reads past them and hands them back untouched, and nothing consults them. Do not
-bring an inference back: a rule matching `host` and `owner` is the organisation's
+`approvals`. A registry a previous build wrote still carries the two keys, and that
+is registry version 6's whole reason: `store::migrate` reads a 2–5 document past
+them, drops exactly those two from each identity, keeps every other unknown key,
+and rewrites the document on that first read — `tests/golden/registry-v5.json` and
+`registry-v6.json` are the before and after, held byte for byte by `registry.rs`.
+They are spent rather than unknown, which is why the remainder mechanism is not
+what handles them. Do not bring an inference back: a rule matching `host` and `owner` is the organisation's
 default and one adding `name` is the per-repository override, which is all the
 configuration this needs.
 

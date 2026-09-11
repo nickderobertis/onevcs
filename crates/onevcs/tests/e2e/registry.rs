@@ -319,6 +319,110 @@ fn merge_path_coverage_is_decided_by_the_resolved_policy_and_not_by_the_origin()
         ));
 }
 
+/// What a version 5 build wrote, with the two inferred fields beside an identity and
+/// unknown keys at both levels; and what this build writes it back as.
+const REGISTRY_V5: &str = include_str!("../golden/registry-v5.json");
+const REGISTRY_V6: &str = include_str!("../golden/registry-v6.json");
+
+#[test]
+fn a_version_5_registry_follows_the_configured_policy_and_is_rewritten_without_its_inference() {
+    // Versions 2 through 5 wrote a `workflow` and a `repo_type` beside each identity,
+    // inferred at registration from whether the origin had a host and settable by
+    // nothing afterwards. A host that already holds them must not go on being routed
+    // by them, and must not go on holding them either: the rules file is the routing,
+    // and the next write drops the inference while keeping every key this build has
+    // no opinion on — which is what separates a spent field from an unknown one.
+    let world = World::new();
+    let origin = world.bare_origin("legacy");
+    let checkout = world.clone_of(&origin, "legacy");
+    let root = world.path("");
+    let root = root.to_string_lossy();
+    let root = root.trim_end_matches('/');
+    let rules = world.path("rules-elsewhere.yml");
+    std::fs::write(
+        &rules,
+        "version: 3\nrules:\n  - match: {host: github.com, owner: acme-corp}\n    \
+         publication: local-direct\n    approvals: none\ndefault: {publication: \
+         change-open, approvals: required}\n",
+    )
+    .expect("a rules file the registry names");
+    std::fs::create_dir_all(world.home()).expect("a state root");
+    std::fs::write(
+        world.home().join("registry.json"),
+        REGISTRY_V5.replace("<root>", root),
+    )
+    .expect("a registry a version 5 build wrote");
+    assert_eq!(
+        checkout,
+        world.path("legacy"),
+        "the golden names this checkout"
+    );
+
+    // The organisation's rule decides, and the stored inference decides nothing.
+    let assert = world
+        .onevcs()
+        .args(["resolve", "legacy"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
+    assert_eq!(value["publication"], "local-direct", "{value}");
+    assert_eq!(value["gate"], "just gate");
+    assert!(
+        value.get("workflow").is_none() && value.get("repo_type").is_none(),
+        "nothing inferred is reported: {value}"
+    );
+
+    // …and that first read rewrote the document: at this build's version, without
+    // either inferred field, and with the rules reference and both unknown keys —
+    // one beside the identity, one at the top — exactly as they were.
+    assert_eq!(
+        std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+        REGISTRY_V6.replace("<root>", root),
+        "the migrated document is its checked-in golden; re-make \
+         crates/onevcs/tests/golden/registry-v6.json if the shape moved"
+    );
+
+    // The verb the inference used to refuse runs: this hosted identity's rules
+    // publish locally, so the train lands its branch.
+    world.git(&checkout, &["checkout", "-q", "-b", "claude/one", "main"]);
+    world.commit_file(&checkout, "one.txt", "one\n", "feat: land locally");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+    world
+        .onevcs()
+        .args(["integrate", "claude/one"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude/one: merged"))
+        .stdout(predicate::str::contains("Base advanced: yes"));
+
+    // A second write — `register` rewrites the whole document — changes nothing the
+    // migration settled: the version stays, the inference stays gone, the unknown
+    // keys stay.
+    let second = world.bare_origin("alongside");
+    let alongside = world.clone_of(&second, "alongside");
+    world
+        .onevcs()
+        .args(["register", &alongside.to_string_lossy()])
+        .assert()
+        .success();
+    let written: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    )
+    .expect("the registry is JSON");
+    assert_eq!(written["version"], 6);
+    let legacy = &written["identities"]["github.com/acme-corp/legacy"];
+    assert!(
+        legacy.get("workflow").is_none() && legacy.get("repo_type").is_none(),
+        "{written}"
+    );
+    assert_eq!(legacy["release_channel"], "nightly");
+    assert_eq!(written["policies"]["stacking"], "always");
+    assert_eq!(written["rules"], rules.to_string_lossy().into_owned());
+    assert!(written["checkouts"].get("alongside").is_some());
+}
+
 #[test]
 fn a_version_4_registry_migrates_lazily_on_the_first_read() {
     let world = World::new();
@@ -362,22 +466,29 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 5);
+    assert_eq!(stored["version"], 6);
     assert_eq!(stored["identities"][&key]["gate"], "make check");
+    assert!(
+        stored["identities"][&key].get("workflow").is_none()
+            && stored["identities"][&key].get("repo_type").is_none(),
+        "the inference is dropped on the way through: {stored}"
+    );
 }
 
 #[test]
 fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() {
     // The registry is **shared host state**: every `onevcs` on a machine reads the
     // one document, and a read that migrates rewrites it in place. So what this
-    // holds is not only that an older document still loads — it is that this build
-    // does not *touch* it. A version an already-released build cannot read, written
-    // into a host whose operator configured no release targets, stops every verb on
-    // that host; this suite put one into `~/.onevcs` once and every `onevcs` command
-    // there refused until it was restored by hand.
+    // holds is not only that a document at this build's own version still loads — it
+    // is that this build does not *touch* it: nothing about release targets is a
+    // reason to rewrite a registry, because nothing about them lives in it. A version
+    // an already-released build cannot read, written into a host whose operator
+    // configured no release targets, stops every verb on that host; this suite put
+    // one into `~/.onevcs` once and every `onevcs` command there refused until it was
+    // restored by hand.
     let world = World::new();
-    let origin = world.bare_origin("v5");
-    let checkout = world.clone_of(&origin, "v5");
+    let origin = world.bare_origin("current");
+    let checkout = world.clone_of(&origin, "current");
     let key = std::fs::canonicalize(&origin)
         .expect("the origin exists")
         .to_string_lossy()
@@ -390,12 +501,9 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
     )
     .expect("a rules file the registry names");
     let document = serde_json::json!({
-        "version": 5,
-        "identities": {
-            &key: {"origin": &key, "workflow": "local", "repo_type": "single-owner",
-                   "gate": "just gate"}
-        },
-        "checkouts": {"v5": {"path": checkout.to_string_lossy(), "identity": &key}},
+        "version": 6,
+        "identities": {&key: {"origin": &key, "gate": "just gate"}},
+        "checkouts": {"current": {"path": checkout.to_string_lossy(), "identity": &key}},
         "rules": rules.to_string_lossy(),
     });
     write_registry(&world, &document);
@@ -403,7 +511,7 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
 
     world
         .onevcs()
-        .args(["rules", "check", "v5"])
+        .args(["rules", "check", "current"])
         .assert()
         .success()
         .stdout(predicate::str::contains("publication: local-direct"))
@@ -422,7 +530,7 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
     // global adoption rung.
     let assert = world
         .onevcs()
-        .args(["release", "targets", "v5", "--json"])
+        .args(["release", "targets", "current", "--json"])
         .assert()
         .success();
     let targets: serde_json::Value =
@@ -612,9 +720,10 @@ fn a_registry_missing_a_field_this_build_requires_is_refused_and_names_it() {
 }
 
 /// A registry a build from the future left on this host: a version this one has
-/// never heard of, a key beside the ones it knows, and a key inside a record it
-/// does know — alongside the two an *older* build wrote, which this one reads past
-/// the same way.
+/// never heard of, a key beside the ones it knows, and keys inside a record it does
+/// know — two of them spelled like the fields versions 2 through 5 inferred, which
+/// at a version this build does not know are keys like any other rather than the
+/// spent ones the migration drops.
 fn from_a_later_build(key: &str, checkout: &std::path::Path) -> serde_json::Value {
     serde_json::json!({
         "version": 99,
@@ -719,7 +828,9 @@ fn a_verb_that_rewrites_the_registry_keeps_what_it_did_not_understand() {
     );
     assert_eq!(
         written["identities"][&key]["workflow"], "local",
-        "…and so does a key an older build wrote there, which this one no longer reads"
+        "…and at a version this build does not know, so does one spelled like a field \
+         the migration drops: only a document *below* this build's version carries a \
+         spent inference"
     );
     assert!(
         written["checkouts"].get("alongside").is_some(),

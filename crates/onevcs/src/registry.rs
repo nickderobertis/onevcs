@@ -1,18 +1,18 @@
 //! The registry document: which repository identities exist, which checkouts
 //! belong to each, and where the rules file lives.
 //!
-//! Version 5 is version 4's identities and checkouts plus a rules reference. The
-//! document is replaced atomically under process-shared locks, and a v2–v4 document
-//! is migrated lazily on read.
+//! Version 6 is version 5's identities, checkouts, and rules reference, with the
+//! two inferred identity fields taken away. The document is replaced atomically
+//! under process-shared locks, and a v2–v5 document is migrated lazily on read.
 //!
 //! **An identity records no publication classification.** Versions 2 through 5
 //! wrote a `workflow` and a `repo_type` beside each identity, both inferred at
 //! registration from one fact — whether the origin had a host — and neither
 //! settable afterwards. Every decision they made is the resolved publication policy's
 //! now, which the rules file configures per organisation or per repository, so
-//! this shape does not name them: a document that still carries them is read past
-//! them (`store` keeps the keys it has no opinion on and writes them back
-//! untouched) and nothing consults what they say.
+//! this shape does not name them: a document that still carries them is migrated
+//! past them — `store` drops exactly those two keys on the rewrite and keeps every
+//! other key it has no opinion on — and nothing consults what they said.
 //!
 //! **Release targets are deliberately not reachable from here.** The release-targets
 //! document is found at its conventional path under the state root and nowhere else,
@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 /// The registry document as it is stored on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registry {
-    /// The schema version. `5` is the shape declared here; `2`–`4` are migrated
+    /// The schema version. `6` is the shape declared here; `2`–`5` are migrated
     /// lazily on read, and a version a later build declared is read as this shape
     /// and written back at the number it arrived under.
     // llmlint: ignore[boundary_inputs_validated] which versions are readable is the

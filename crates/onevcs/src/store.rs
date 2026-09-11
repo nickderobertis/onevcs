@@ -29,13 +29,19 @@ use crate::{git, home, lock};
 
 /// The version this build writes.
 ///
-/// It did not move when an identity stopped recording a `workflow` and a
-/// `repo_type` either, and the shape narrowed rather than grew: both were inferred
-/// from whether the origin had a host and consulted where the resolved publication
-/// policy should have been, so this build writes neither and reads past both. A
-/// document that still carries them is untouched — the keys are a remainder this
-/// build has no opinion on, kept and written back — which is what lets a build that
-/// still requires them go on reading every identity it registered itself.
+/// `6` is an identity without the `workflow` and `repo_type` that versions 2 through
+/// 5 wrote beside it. Both were inferred at registration from whether the origin
+/// had a host, settable by nothing afterwards, and consulted where the resolved
+/// publication policy should have been — so a document that carries them is a
+/// document whose routing is wrong, and the version moved so that the next write
+/// *removes* them rather than handing them back as keys this build merely has no
+/// opinion on. They are spent, not unknown: [`migrate`] strips exactly those two
+/// from each identity of a document below `6` before the remainder is computed, so
+/// everything else the document carried beyond this shape still comes back. The
+/// cost is the one every bump here pays — a build that still requires the two fields
+/// stops reading a registry this one has migrated — and it is paid deliberately,
+/// because leaving the inference in place is leaving the defect in place on every
+/// host that already has it.
 ///
 /// It did **not** move for the release-targets work, and neither did the shape: the
 /// releases document is found at its conventional path under the state root, so
@@ -46,7 +52,7 @@ use crate::{git, home, lock};
 /// does not degrade that build: it stops it, for every verb, on a host whose
 /// operator opted into nothing. Those builds declare `deny_unknown_fields` and
 /// always will, which is why the key was withdrawn rather than made optional.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// The oldest document this build still migrates.
 pub const OLDEST_VERSION: u32 = 2;
@@ -259,11 +265,21 @@ fn migrate(path: &Path, value: Value) -> Result<Read> {
                 carried,
             })
         }
-        2..=4 => {
-            let registry = legacy(path, object, version as u32)?;
+        // Version 5 is this shape plus the two inferred fields, so it is read as
+        // this shape; the versions before it are read by `legacy`. Either way the
+        // inference is stripped before the remainder is taken, so the rewrite drops
+        // it and keeps everything else the document carried.
+        2..=5 => {
+            let mut registry = if version == 5 {
+                serde_json::from_value(value.clone())
+                    .map_err(error::at("read the registry at", path))?
+            } else {
+                legacy(path, object, version as u32)?
+            };
+            registry.version = VERSION;
             coherent(path, &registry)?;
             let carried = Remainder::between(
-                &value,
+                &without_inference(&value),
                 &serde_json::to_value(&registry)
                     .map_err(error::at("read the registry at", path))?,
             );
@@ -281,6 +297,31 @@ fn migrate(path: &Path, value: Value) -> Result<Read> {
             ),
         }),
     }
+}
+
+/// The keys versions 2 through 5 inferred beside each identity, which the migration
+/// to 6 removes rather than carries.
+const INFERRED_KEYS: [&str; 2] = ["workflow", "repo_type"];
+
+/// A pre-6 document with the inferred identity fields taken out, so that what the
+/// remainder keeps is what the document carried beyond this shape *and* beyond the
+/// shape it was written at: an unknown key beside an identity survives the migration,
+/// and a spent one does not.
+fn without_inference(value: &Value) -> Value {
+    let mut stripped = value.clone();
+    if let Some(identities) = stripped
+        .get_mut("identities")
+        .and_then(Value::as_object_mut)
+    {
+        for identity in identities.values_mut() {
+            if let Some(fields) = identity.as_object_mut() {
+                for key in INFERRED_KEYS {
+                    fields.remove(key);
+                }
+            }
+        }
+    }
+    stripped
 }
 
 /// Reject a document whose records disagree with each other.
@@ -315,7 +356,7 @@ fn coherent(path: &Path, registry: &Registry) -> Result<()> {
     Ok(())
 }
 
-/// Read a version 2, 3, or 4 document into the version 5 shape.
+/// Read a version 2, 3, or 4 document into this build's shape.
 ///
 /// One field is filled in, and its answer is evidence rather than a guess:
 /// **`gate`** (absent before 4) becomes `<no-op>`, which is what an identity that
@@ -325,8 +366,8 @@ fn coherent(path: &Path, registry: &Registry) -> Result<()> {
 /// added, are read past rather than validated: they were inferences from whether the
 /// origin had a host, and what they decided is the resolved publication policy's
 /// decision now. A document that spelled either one wrongly is not refused for it —
-/// there is nothing here the value could be wrong *for* — and both travel through the
-/// migration as keys this build has no opinion on, untouched.
+/// there is nothing here the value could be wrong *for* — and [`migrate`] drops both
+/// on the way through, so the rewritten document carries neither.
 fn legacy(path: &Path, object: &Map<String, Value>, version: u32) -> Result<Registry> {
     let mut identities = BTreeMap::new();
     for (key, value) in object

@@ -1780,9 +1780,9 @@ fn a_baseline_is_persisted_as_one_of_three_states_rather_than_a_bare_version() {
 }
 
 #[test]
-fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
+fn a_v6_registry_round_trips_and_carries_the_rules_reference() {
     let document = json!({
-        "version": 5,
+        "version": 6,
         "identities": {
             "github.com/nickderobertis/onevcs": {
                 "origin": "https://github.com/nickderobertis/onevcs",
@@ -1803,8 +1803,8 @@ fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
     });
 
     let registry: Registry =
-        serde_json::from_value(document.clone()).expect("a v5 document must deserialize");
-    assert_eq!(registry.version, 5);
+        serde_json::from_value(document.clone()).expect("a v6 document must deserialize");
+    assert_eq!(registry.version, 6);
     assert_eq!(
         registry.identities["github.com/acme-corp/service"],
         Identity {
@@ -1830,7 +1830,7 @@ fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
 
 #[test]
 fn a_registry_without_a_rules_reference_omits_the_field() {
-    let document = json!({"version": 5, "identities": {}, "checkouts": {}});
+    let document = json!({"version": 6, "identities": {}, "checkouts": {}});
     let registry: Registry = serde_json::from_value(document.clone()).expect("rules is optional");
     assert_eq!(registry.rules, None);
     assert_eq!(
@@ -1848,7 +1848,7 @@ fn the_registry_names_no_release_targets_reference_at_any_version() {
     // the first host to configure a target would stop every older build on it, for
     // every verb. Withdrawing the key is what makes that failure stop existing rather
     // than be postponed — and the version does not move either, for the same reason.
-    let written = json!({"version": 5, "identities": {}, "checkouts": {}});
+    let written = json!({"version": 6, "identities": {}, "checkouts": {}});
     let registry: Registry =
         serde_json::from_value(written.clone()).expect("a registry without a rules key loads");
     assert_eq!(
@@ -1858,7 +1858,7 @@ fn the_registry_names_no_release_targets_reference_at_any_version() {
     );
 
     let fields = serde_json::to_value(Registry {
-        version: 5,
+        version: 6,
         identities: BTreeMap::new(),
         checkouts: BTreeMap::new(),
         rules: Some(PathBuf::from("/home/agent/.config/onevcs/rules.yaml")),
@@ -1880,11 +1880,11 @@ fn the_registry_names_no_release_targets_reference_at_any_version() {
 fn a_malformed_registry_is_rejected_at_the_boundary() {
     let cases = [
         // An identity with no gate.
-        json!({"version": 5, "identities": {"k": {"origin": "o"}}, "checkouts": {}}),
+        json!({"version": 6, "identities": {"k": {"origin": "o"}}, "checkouts": {}}),
         // An identity with no origin.
-        json!({"version": 5, "identities": {"k": {"gate": "g"}}, "checkouts": {}}),
+        json!({"version": 6, "identities": {"k": {"gate": "g"}}, "checkouts": {}}),
         // A checkout pointing nowhere.
-        json!({"version": 5, "identities": {}, "checkouts": {"a": {"path": "/tmp/x"}}}),
+        json!({"version": 6, "identities": {}, "checkouts": {"a": {"path": "/tmp/x"}}}),
     ];
     for case in cases {
         assert!(

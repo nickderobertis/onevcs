@@ -1536,8 +1536,9 @@ fn a_registry_written_before_this_build_is_read_by_the_resolved_policy_and_never
     // inferred at registration from whether the origin had a host and settable by
     // nothing afterwards. A host that already holds them must not go on being
     // routed by them: the rules file is the routing everywhere, and a document that
-    // still carries the inference is read past it — and left carrying it, since a
-    // key this build has no opinion on is written back untouched.
+    // still carries the inference is read past it and rewritten without it. The
+    // version 2 shape here, and the version 5 one in `registry.rs`, are the two ends
+    // of the range the migration covers.
     let world = World::new();
     let origin = world.bare_origin("v2-remote");
     let checkout = world.clone_of(&origin, "v2-remote");
@@ -1577,15 +1578,17 @@ fn a_registry_written_before_this_build_is_read_by_the_resolved_policy_and_never
         "nothing inferred is reported: {value}"
     );
 
-    // …and the migrated document still carries what it carried, untouched.
+    // …and the migrated document is at this build's version, with the inference gone.
     let stored: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 5);
-    assert_eq!(
-        stored["identities"]["github.com/acme-corp/v2"]["workflow"], "remote",
-        "a key this build has no opinion on is written back as it was found"
+    assert_eq!(stored["version"], 6);
+    assert!(
+        stored["identities"]["github.com/acme-corp/v2"]
+            .get("workflow")
+            .is_none(),
+        "a spent inference is dropped on the rewrite rather than carried: {stored}"
     );
 
     // The verb the inference used to refuse runs: this hosted identity's rules
