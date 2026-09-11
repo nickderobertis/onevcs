@@ -3901,6 +3901,13 @@ fn the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_m
          different change requests",
         "on a stacked session `change show` therefore answers the change request the stack \
          publishes onto, and its `base` is that resolved base",
+        // …and `status` is held to the same one, because the rule is the session's
+        // rather than the four operations': a `status` that derived the base its own
+        // way named, on a stacked session, a change request nobody opened.
+        "`onevcs status`, asked of a session token or of a branch a session record holds, \
+         names the same change request `change show` answers for that session — the one \
+         `publish` would open or adopt, into the base `publish` resolves — and never one \
+         derived a second way",
     ] {
         assert!(
             amendments.contains(sentence),

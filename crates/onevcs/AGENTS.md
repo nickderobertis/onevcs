@@ -121,7 +121,18 @@ work is still being made. Seven things are easy to undo.
   interface has no word for it. A session a supplied `Vcs` opened has no such record
   and publishes into the base its own record names. Reading the recorded base here
   instead is how `change show` answered *none* for a change request the draft
-  publication had just opened.
+  publication had just opened. `status` is the fifth reader of the same computation:
+  asked of a session token or of a branch a session record holds, `status::run`
+  asks the host about that resolution's base rather than the one it derives for a
+  URL or a commit (the `Change-Base` trailer, then the root) — which on a stacked
+  session whose change below is still open named a change request nobody opened and
+  reported a held draft as *closed without landing*. It takes the read-side form,
+  `standing_target`, because a read must not move the copy it reads: `status`
+  fetching the session's clone turned a landing that was undecidable from a copy
+  that had not seen the base move into a decided one for the very next read
+  (`landing::a_copy_no_store_can_be_lent_to_answers_unknown_rather_than_no`). Where
+  that resolution refuses, the host is not asked about some other change request;
+  the checks section says why, naming the session.
 - **A replay moves the record, so the stack is not resolved twice.** Replaying a
   stacked branch onto the root takes the tip it was cut from out of its history, and
   nothing can recognise the stack on that branch again — so `run_for_session` writes

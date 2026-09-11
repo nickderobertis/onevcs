@@ -38,7 +38,7 @@ use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
-use crate::publish::DraftReason;
+use crate::publish::{self, DraftReason};
 use crate::registry::Registry;
 use crate::releases::TargetName;
 use crate::rules::{Approvals, MergePolicy};
@@ -955,8 +955,40 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         verdict = Some(Landed::Unknown);
     }
 
-    let target = change_base.clone().unwrap_or_else(|| base.clone());
-    let host = ask_the_host(&resolution.key, &work.branch, &target, hosting);
+    let host = match &answering.session {
+        // Work a session holds is asked about *that session's* change request — the
+        // one `publish` would open or adopt for it and `change show` answers, into
+        // the base `publish` resolves — through the one computation all of them make.
+        // A stacked session is where a second derivation shows: its publication
+        // targets the branch below until the root carries the change below, and a
+        // base read off the branch's own history or off the root would ask the host
+        // about a change request nobody opened and report the host holding nothing,
+        // for a draft the session is holding open right now.
+        //
+        // The read-side form, from the clone's own refs: this is a read, and a read
+        // that fetched would move the copy's view of the base under every later
+        // read of it — a landing that was undecidable from a copy that had not seen
+        // the base move became decided, from `status` having looked. `change show`
+        // makes the same resolution over refs its own fetch refreshed, so the two
+        // name one change request wherever the clone has seen what the host has.
+        Some(record) => match publish::standing_target(record) {
+            Ok(target) => ask_the_host(&resolution.key, &work.branch, target.base(), hosting),
+            // Where the session's own target cannot be resolved, the host is not
+            // asked about some other one: that is the answer this section has, said
+            // in the place the host's own refusals are said.
+            Err(error) => HostAnswer::Unasked {
+                because: format!(
+                    "the base session {token} publishes into could not be resolved, so the \
+                     host was not asked about its change request: {error}",
+                    token = record.token,
+                ),
+            },
+        },
+        None => {
+            let target = change_base.clone().unwrap_or_else(|| base.clone());
+            ask_the_host(&resolution.key, &work.branch, &target, hosting)
+        }
+    };
     let state = landing(
         verdict.as_ref(),
         ahead,

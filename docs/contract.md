@@ -1837,7 +1837,12 @@ change request exists, and it writes exactly the caller's bytes.
 `onevcs status` names the session's change request, says whether the host holds it
 as a draft and — when this host's own record holds a reason — under which kind, and
 names the last `change-described` on the stream; its landing decision is untouched,
-because a draft is not a landing.
+because a draft is not a landing. The rule above is a property of the session rather
+than of four operations: `onevcs status`, asked of a session token or of a branch a
+session record holds, names the same change request `change show` answers for that
+session — the one `publish` would open or adopt, into the base `publish` resolves —
+and never one derived a second way. Asked of a change request URL or of a commit,
+references that name no session, it keeps its own derivation.
 
 Event kinds added: `change-described`.
 

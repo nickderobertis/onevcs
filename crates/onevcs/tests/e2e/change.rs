@@ -731,6 +731,14 @@ fn a_stacked_session_whose_root_carries_the_stack_names_one_change_request_throu
     assert_eq!(before["url"], "https://github.com/acme-corp/hosted/pull/1");
     assert_eq!(before["base"], "main");
     assert_eq!(before["draft"], true);
+    // …and `status` names that same change request, asked of the host about the
+    // same resolved base rather than one derived a second way.
+    let report = status(&hosted, &token);
+    assert_eq!(
+        report["publication"]["change_url"], before["url"],
+        "{report}"
+    );
+    assert_eq!(report["publication"]["held_as_draft"], true, "{report}");
 
     // The description reaches the same change request, and its record names the
     // same base.
@@ -801,5 +809,114 @@ fn a_stacked_session_whose_root_carries_the_stack_names_one_change_request_throu
             "feat: write the engine",
             "chore: seed the repository",
         ]
+    );
+}
+
+#[test]
+fn status_names_the_change_request_change_show_answers_for_a_stacked_session() {
+    // The rule is a property of the session rather than of four verbs: `status`,
+    // asked of the token or of the branch its record holds, names the change request
+    // `change show` answers — the one `publish` opened, into the base it resolved.
+    // A stacked session whose change below is still open is where a second
+    // derivation shows: its publication targets the branch below, and a `status`
+    // that derived the base on its own — off the root — would ask the host about a
+    // change request nobody opened and report the host holding nothing.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("open as a draft"));
+    let drafted = hosted.world.events_of(&token, "change-drafted");
+    assert_eq!(drafted.len(), 1, "{drafted:?}");
+    assert_eq!(
+        drafted[0]["payload"]["base"], "feature/engine",
+        "the draft is opened against the change below while that is still open: {drafted:?}"
+    );
+
+    let change = shown(&hosted, &token);
+    assert_eq!(change["url"], "https://github.com/acme-corp/hosted/pull/1");
+    assert_eq!(change["base"], "feature/engine");
+    assert_eq!(change["draft"], true);
+
+    for reference in [token.as_str(), "feature/filter"] {
+        let report = status(&hosted, reference);
+        assert_eq!(
+            report["publication"]["change_url"], change["url"],
+            "`status {reference}` names the change request `change show` answers: {report}"
+        );
+        assert_eq!(
+            report["publication"]["held_as_draft"], true,
+            "…and asked the host about that one, so it says the host holds it as a draft: \
+             {report}"
+        );
+        assert_eq!(report["publication"]["draft"]["kind"], "held");
+        assert_eq!(
+            report["publication"]["state"], "open",
+            "a change request the host holds open is not one closed without landing: {report}"
+        );
+    }
+
+    // The change below lands and the session's next publication moves onto the
+    // root; `status` follows the same resolution there, before and after.
+    squash_the_change_below(&hosted, true);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let change = shown(&hosted, &token);
+    assert_eq!(change["base"], "main");
+    let report = status(&hosted, &token);
+    assert_eq!(
+        report["publication"]["change_url"], change["url"],
+        "{report}"
+    );
+    assert_eq!(report["publication"]["held_as_draft"], false, "{report}");
+}
+
+#[test]
+fn status_of_a_stacked_session_whose_target_cannot_be_resolved_does_not_ask_about_another() {
+    // The one computation can refuse: a stacked record names the commit its branch
+    // was cut from, and a clone that no longer has it cannot say which commits are
+    // the change below's. `status` then does not fall back to asking the host about
+    // some other change request — that would be the second derivation the rule
+    // forbids — but says, where the host's own refusals are said, why it was not
+    // asked, naming the session.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success();
+    let clone = status(&hosted, &token)["session"]["clone"]
+        .as_str()
+        .expect("the session's clone")
+        .to_owned();
+    std::fs::remove_dir_all(&clone).expect("the clone is removable");
+
+    let report = status(&hosted, &token);
+    assert_eq!(
+        report["checks"]["state"], "unavailable",
+        "the host was not asked: {report}"
+    );
+    let because = report["checks"]["because"].as_str().unwrap_or_default();
+    assert!(
+        because.contains(&format!(
+            "session {token} publishes into could not be resolved"
+        )) && because.contains("does not have it"),
+        "the section says why, naming the session and what the clone lacks: {because}"
+    );
+    assert_eq!(
+        report["publication"]["held_as_draft"],
+        Value::Null,
+        "{report}"
     );
 }
