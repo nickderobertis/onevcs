@@ -25,7 +25,7 @@ use std::path::{Component, Path, PathBuf};
 use clap::CommandFactory;
 use onevcs::cli::Cli;
 use onevcs::declaration::{self, Declaration, RepositoryPath};
-use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
+use onevcs::registry::{Checkout, Identity, Registry};
 use onevcs::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
     Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
@@ -1786,14 +1786,10 @@ fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
         "identities": {
             "github.com/nickderobertis/onevcs": {
                 "origin": "https://github.com/nickderobertis/onevcs",
-                "workflow": "remote",
-                "repo_type": "single-owner",
                 "gate": "just gate",
             },
             "github.com/acme-corp/service": {
                 "origin": "https://github.com/acme-corp/service",
-                "workflow": "remote",
-                "repo_type": "team",
                 "gate": "just check",
             },
         },
@@ -1813,8 +1809,6 @@ fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
         registry.identities["github.com/acme-corp/service"],
         Identity {
             origin: "https://github.com/acme-corp/service".to_owned(),
-            workflow: Workflow::Remote,
-            repo_type: RepoType::Team,
             gate: "just check".to_owned(),
         }
     );
@@ -1885,12 +1879,10 @@ fn the_registry_names_no_release_targets_reference_at_any_version() {
 #[test]
 fn a_malformed_registry_is_rejected_at_the_boundary() {
     let cases = [
-        // A repository type nobody declared.
-        json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "remote", "repo_type": "solo", "gate": "g"}}, "checkouts": {}}),
-        // A workflow nobody declared.
-        json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "hybrid", "repo_type": "team", "gate": "g"}}, "checkouts": {}}),
         // An identity with no gate.
-        json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "remote", "repo_type": "team"}}, "checkouts": {}}),
+        json!({"version": 5, "identities": {"k": {"origin": "o"}}, "checkouts": {}}),
+        // An identity with no origin.
+        json!({"version": 5, "identities": {"k": {"gate": "g"}}, "checkouts": {}}),
         // A checkout pointing nowhere.
         json!({"version": 5, "identities": {}, "checkouts": {"a": {"path": "/tmp/x"}}}),
     ];
@@ -3634,6 +3626,51 @@ fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
         ),
         "a host that was never taught to answer must refuse rather than say `not yet`"
     );
+}
+
+#[test]
+fn the_required_checks_read_is_recorded_as_an_inference_and_defaulted_to_a_refusal() {
+    // `RemoteHost::required_checks_on` is not in the approved text: it is recorded in
+    // docs/inferred-surface.md as an inference awaiting confirmation, in the words
+    // the code has, so a reader of the record and a reader of the trait learn the
+    // same signature.
+    let record = repo_file("docs/inferred-surface.md");
+    assert!(
+        record.contains(
+            "`RemoteHost::required_checks_on(&self, base: &str) -> Result<BTreeSet<String>>`"
+        ),
+        "docs/inferred-surface.md no longer records the required-checks read"
+    );
+
+    // Defaulted, so an implementation written against the earlier surface still
+    // compiles — and to the refusal this repository reserves for a seam with no body,
+    // never to an empty set: "could not look" reported as "requires nothing" is how a
+    // consumer stops waiting on a check that is still coming.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    assert!(matches!(
+        Earlier.required_checks_on("main"),
+        Err(Error::NotImplemented { operation }) if operation.contains("required_checks_on")
+    ));
 }
 
 #[test]

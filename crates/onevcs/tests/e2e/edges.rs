@@ -142,39 +142,20 @@ fn a_legacy_registry_whose_records_contradict_themselves_is_refused_by_field() {
     for (document, expected) in [
         (
             serde_json::json!({
-                "version": 3,
-                "identities": {"host/o/n": {"origin": "host/o/n", "workflow": "sideways",
-                                            "repo_type": "team"}},
-                "checkouts": {}
-            }),
-            "which is not 'local' or 'remote'",
-        ),
-        (
-            serde_json::json!({
-                "version": 3,
-                "identities": {"host/o/n": {"origin": "host/o/n", "workflow": "remote",
-                                            "repo_type": "committee"}},
-                "checkouts": {}
-            }),
-            "which is not 'single-owner' or 'team'",
-        ),
-        (
-            serde_json::json!({
-                "version": 3,
-                "identities": {"host/o/n": {"origin": "host/o/n", "workflow": "local",
-                                            "repo_type": "team"}},
-                "checkouts": {}
-            }),
-            "combines repo_type=team with workflow=local",
-        ),
-        (
-            serde_json::json!({
                 "version": 4,
                 "identities": {"host/o/n": {"origin": "host/o/n", "workflow": "local",
                                             "repo_type": "single-owner"}},
                 "checkouts": {}
             }),
             "missing its gate",
+        ),
+        (
+            serde_json::json!({
+                "version": 3,
+                "identities": {"host/o/n": {"workflow": "local", "repo_type": "single-owner"}},
+                "checkouts": {}
+            }),
+            "missing its origin",
         ),
         (
             serde_json::json!({
@@ -1158,7 +1139,7 @@ fn a_candidate_whose_content_the_base_already_carries_adds_no_second_commit() {
 }
 
 #[test]
-fn a_train_refuses_a_single_owner_identity_that_publishes_through_its_host() {
+fn a_train_refuses_an_identity_whose_rules_publish_through_a_change_request() {
     let world = World::new();
     let origin = world.bare_origin("remote-owner");
     let checkout = world.clone_of(&origin, "remote-owner");
@@ -1167,24 +1148,15 @@ fn a_train_refuses_a_single_owner_identity_that_publishes_through_its_host() {
         .args(["register", &checkout.to_string_lossy()])
         .assert()
         .success();
-    // Single-owner, but publishing through the host: the train is still the wrong
-    // verb, because its whole model is advancing a local base.
-    let path = world.home().join("registry.json");
-    let mut value: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).expect("a registry"))
-            .expect("the registry is JSON");
-    for identity in value["identities"]
-        .as_object_mut()
-        .expect("identities")
-        .values_mut()
-    {
-        identity["workflow"] = serde_json::Value::String("remote".to_owned());
-    }
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&value).expect("a document"),
-    )
-    .expect("a registry");
+    // A local origin whose rules nonetheless publish through a change request: the
+    // train is the wrong verb, because its whole model is advancing a local base,
+    // and the rules — not where the origin happens to be — are what say so.
+    configure_rules(
+        &world,
+        "version: 3\nrules:\n  - match: {path: \"*/remote-owner\"}\n    publication: \
+         change-auto\n    approvals: none\ndefault: {publication: local-direct, approvals: \
+         none}\n",
+    );
 
     world.git(&checkout, &["branch", "claude/one", "main"]);
     world
@@ -1193,7 +1165,12 @@ fn a_train_refuses_a_single_owner_identity_that_publishes_through_its_host() {
         .current_dir(&checkout)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("workflow: remote"))
+        // The refusal names the policy, the rule that decided it, and the file it is
+        // in — which is the entry an operator edits to land this identity locally.
+        .stderr(predicate::str::contains(
+            "resolves to change-auto (from rule 1; rules: ",
+        ))
+        .stderr(predicate::str::contains("rules.yml"))
         // …and the verb that *is* right for it is named with the arguments that
         // run it, so the refusal is a route rather than a dead end.
         .stderr(predicate::str::contains(format!(
@@ -1493,7 +1470,12 @@ fn an_ssh_spelling_of_an_origin_resolves_to_the_same_hosted_identity() {
         .assert()
         .success()
         .stdout(predicate::str::contains("github.com/acme-corp/widgets"))
-        .stdout(predicate::str::contains("repo_type: team"));
+        // What registration reports about how it publishes is the resolved policy —
+        // the built-in default, on a host that has configured no rules — and never
+        // something derived from the spelling of the origin.
+        .stdout(predicate::str::contains(
+            "publication: change-open (from the default)",
+        ));
 }
 
 #[test]
@@ -1549,7 +1531,13 @@ fn a_rules_pattern_with_more_than_one_star_matches_around_each_of_them() {
 }
 
 #[test]
-fn a_version_2_registry_leaves_a_remote_workflow_in_the_narrower_classification() {
+fn a_registry_written_before_this_build_is_read_by_the_resolved_policy_and_never_its_inference() {
+    // Versions 2 through 5 wrote a `workflow` and a `repo_type` beside each identity,
+    // inferred at registration from whether the origin had a host and settable by
+    // nothing afterwards. A host that already holds them must not go on being
+    // routed by them: the rules file is the routing everywhere, and a document that
+    // still carries the inference is read past it — and left carrying it, since a
+    // key this build has no opinion on is written back untouched.
     let world = World::new();
     let origin = world.bare_origin("v2-remote");
     let checkout = world.clone_of(&origin, "v2-remote");
@@ -1566,6 +1554,12 @@ fn a_version_2_registry_leaves_a_remote_workflow_in_the_narrower_classification(
         .expect("a document"),
     )
     .expect("a registry");
+    configure_rules(
+        &world,
+        "version: 3\nrules:\n  - match: {host: github.com, owner: acme-corp}\n    \
+         publication: local-direct\n    approvals: none\ndefault: {publication: \
+         change-open, approvals: required}\n",
+    );
 
     let assert = world
         .onevcs()
@@ -1574,10 +1568,39 @@ fn a_version_2_registry_leaves_a_remote_workflow_in_the_narrower_classification(
         .success();
     let value: serde_json::Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
-    // Migrating into the *narrower* policy is the failure that cannot be undone by
-    // review, so a workflow that is not affirmative single-owner evidence stays a
-    // team's.
-    assert_eq!(value["repo_type"], "team");
+    assert_eq!(
+        value["publication"], "local-direct",
+        "the organisation's rule decides, not the stored inference: {value}"
+    );
+    assert!(
+        value.get("workflow").is_none() && value.get("repo_type").is_none(),
+        "nothing inferred is reported: {value}"
+    );
+
+    // …and the migrated document still carries what it carried, untouched.
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    )
+    .expect("the registry is JSON");
+    assert_eq!(stored["version"], 5);
+    assert_eq!(
+        stored["identities"]["github.com/acme-corp/v2"]["workflow"], "remote",
+        "a key this build has no opinion on is written back as it was found"
+    );
+
+    // The verb the inference used to refuse runs: this hosted identity's rules
+    // publish locally, so the train lands its branch.
+    world.git(&checkout, &["checkout", "-q", "-b", "claude/one", "main"]);
+    world.commit_file(&checkout, "one.txt", "one\n", "feat: land locally");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+    world
+        .onevcs()
+        .args(["integrate", "claude/one"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude/one: merged"))
+        .stdout(predicate::str::contains("Base advanced: yes"));
 }
 
 #[test]
@@ -3023,8 +3046,8 @@ fn a_registry_whose_records_disagree_is_rejected_however_it_was_versioned() {
             .expect("the registry is JSON");
 
     // A version 5 document gets the same reading a migrated one does: a checkout
-    // naming an identity nobody holds, a relative path, and a team that publishes
-    // locally are all well-formed JSON and none is a repository to act on.
+    // naming an identity nobody holds and a relative path are both well-formed JSON
+    // and neither is a repository to act on.
     for (broken, expected) in [
         (
             {
@@ -3053,20 +3076,6 @@ fn a_registry_whose_records_disagree_is_rejected_however_it_was_versioned() {
                 value
             },
             "not an absolute path",
-        ),
-        (
-            {
-                let mut value = original.clone();
-                for identity in value["identities"]
-                    .as_object_mut()
-                    .expect("identities")
-                    .values_mut()
-                {
-                    identity["repo_type"] = serde_json::json!("team");
-                }
-                value
-            },
-            "combining repo_type=team with workflow=local",
         ),
     ] {
         std::fs::write(

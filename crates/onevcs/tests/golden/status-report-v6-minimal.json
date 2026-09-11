@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "ref": {
     "given": "feature/plain",
     "kind": "branch"
@@ -7,8 +7,6 @@
   "identity": {
     "key": "github.com/acme-corp/hosted",
     "publication_checkout": "<root>/hosted",
-    "workflow": "remote",
-    "repo_type": "team",
     "approvals": "required"
   },
   "branch": {

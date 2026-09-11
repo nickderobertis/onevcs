@@ -5,6 +5,15 @@
 //! document is replaced atomically under process-shared locks, and a v2–v4 document
 //! is migrated lazily on read.
 //!
+//! **An identity records no publication classification.** Versions 2 through 5
+//! wrote a `workflow` and a `repo_type` beside each identity, both inferred at
+//! registration from one fact — whether the origin had a host — and neither
+//! settable afterwards. Every decision they made is the resolved publication policy's
+//! now, which the rules file configures per organisation or per repository, so
+//! this shape does not name them: a document that still carries them is read past
+//! them (`store` keeps the keys it has no opinion on and writes them back
+//! untouched) and nothing consults what they say.
+//!
 //! **Release targets are deliberately not reachable from here.** The release-targets
 //! document is found at its conventional path under the state root and nowhere else,
 //! so this document is byte for byte the same whether or not a host configures any —
@@ -31,8 +40,8 @@ pub struct Registry {
     // llmlint: ignore[boundary_inputs_validated] which versions are readable is the
     // loader's question rather than this type's, and `store::migrate` answers it: a
     // document below the oldest readable version is refused by number, and an older one
-    // is migrated. Everything the shape can reject — an unknown workflow or repo_type, a
-    // missing gate — is rejected here and asserted in tests/contract.rs.
+    // is migrated. Everything the shape can reject — a missing origin or gate — is
+    // rejected here and asserted in tests/contract.rs.
     pub version: u32,
     /// Every known repository identity, keyed by its normalized origin
     /// (`github.com/owner/name`, or a path for a local one).
@@ -50,10 +59,6 @@ pub struct Registry {
 pub struct Identity {
     /// The normalized origin this identity is keyed by.
     pub origin: String,
-    /// Whether work publishes locally or through the remote host.
-    pub workflow: Workflow,
-    /// Whether the repository is one person's or a team's.
-    pub repo_type: RepoType,
     /// The command that verifies a change before it may be published.
     pub gate: String,
 }
@@ -65,24 +70,4 @@ pub struct Checkout {
     pub path: PathBuf,
     /// The identity key it belongs to.
     pub identity: String,
-}
-
-/// Whether an identity's work publishes locally or through the remote host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Workflow {
-    /// Merged in a local checkout and pushed.
-    Local,
-    /// Published as a change request on the remote host.
-    Remote,
-}
-
-/// Whether a repository is one person's or a team's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RepoType {
-    /// One owner, who may integrate their own work.
-    SingleOwner,
-    /// A team, whose work is reviewed before it lands.
-    Team,
 }

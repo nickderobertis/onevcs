@@ -239,8 +239,6 @@ fn the_real_commands_read_what_a_provider_wrote() {
     inhabit(&world);
     let identity = onevcs::Identity {
         origin: "github.com/acme-corp/hosted".to_owned(),
-        workflow: onevcs::registry::Workflow::Remote,
-        repo_type: onevcs::registry::RepoType::Team,
         gate: "just check".to_owned(),
     };
     let vcs = MemoryVcs::seeded(VcsState {

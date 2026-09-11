@@ -25,6 +25,18 @@
 //! the same words `onevcs register` uses: a publication of such an identity is not
 //! refused either, and a train that refused where a publication does not would send
 //! an operator to raw `git merge`, which is verified by even less.
+//!
+//! # Which identities may run one
+//!
+//! Exactly those whose **resolved publication policy is `local-direct`** — the one
+//! policy under which a landing is a local merge and a push, which is what the train
+//! performs. The three change-request policies are refused, naming the policy and
+//! the rule that decided it, and each candidate is routed to `publish-branch`. The
+//! gate consults nothing stored about the identity: it used to refuse on two fields
+//! `onevcs register` inferred from whether the origin had a host, which no operator
+//! could change and which every hosted origin therefore failed, so a repository whose
+//! rules resolved `local-direct` was refused the one verb documented for that
+//! condition. The rules file is the routing everywhere else, and now here.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +44,7 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 use crate::event::EventKind;
-use crate::registry::{RepoType, Workflow};
+use crate::rules::MergePolicy;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::workspace::{object, Ref};
@@ -108,29 +120,32 @@ pub struct Outcome {
     pub ending: Ending,
 }
 
-/// Run the train against a registered local identity.
+/// Run the train against a registered identity whose rules publish locally.
 pub fn run(
     resolution: &Resolution,
     candidates: &[String],
     push: bool,
     stream: &mut Stream,
 ) -> Result<Outcome> {
-    if resolution.identity.repo_type == RepoType::Team {
+    // The rules are read once, here, and what they decide is carried into the
+    // train: a second load would report a spent `gate:` twice, and the policy this
+    // gate rules on has to be the policy the train's provenance vocabulary came
+    // from.
+    let registry = store::load()?;
+    let (file, source) = policy::load(&registry)?;
+    let resolved = policy::resolve_for(&file, &source, resolution);
+    let publication = resolved.policy.publication;
+    if publication != MergePolicy::LocalDirect {
         return Err(Error::Invalid {
             reason: format!(
-                "direct integration is refused for identity {:?} (repo_type: team); publish each \
-                 branch through its change-request path instead: {}",
+                "direct integration is refused for identity {:?}: its publication policy \
+                 resolves to {} (from {}; rules: {}), and the train lands only an identity \
+                 whose policy is local-direct. Set publication: local-direct for it there to \
+                 land locally, or publish each branch through its change-request path: {}",
                 resolution.key,
-                change_request_route(resolution, candidates),
-            ),
-        });
-    }
-    if resolution.identity.workflow == Workflow::Remote {
-        return Err(Error::Invalid {
-            reason: format!(
-                "direct integration is refused for identity {:?} (workflow: remote); publish each \
-                 branch through its change-request path instead: {}",
-                resolution.key,
+                policy::spell(publication),
+                resolved.publication_from,
+                resolved.source,
                 change_request_route(resolution, candidates),
             ),
         });
@@ -140,7 +155,7 @@ pub fn run(
     // operator who learns afterwards that nothing will ever judge what it landed has
     // already landed it. The same sentence `onevcs register` prints, because it is
     // the same fact and a second wording would read as a second problem.
-    if store::merge_path_coverage(resolution, root) == store::Coverage::None {
+    if store::merge_path_coverage(resolution, root, publication) == store::Coverage::None {
         eprintln!(
             "onevcs: warning: nothing on this identity's merge path runs a gate, so what this \
              train lands is unproven. Install an executable pre-push hook in {}, or confirm \
@@ -215,14 +230,15 @@ pub fn run(
         object(json!({"identity": identity})),
     );
 
-    let outcome = train(resolution, &base, candidates, push, stream);
+    let trailers = provenance::from_rules(&file);
+    let outcome = train(resolution, &base, candidates, push, &trailers, stream);
     drop(turn);
     outcome
 }
 
 /// The exact command that publishes each candidate the train may not land.
 ///
-/// The train is local-only and stays that way — it is built for cheap deterministic
+/// The train lands locally and stays that way — it is built for cheap deterministic
 /// candidates and must not absorb a publication's work — so this refusal is a
 /// routing signpost. It names the invocation per candidate rather than the shape of
 /// one, because a refusal that names no command is what leaves `git push` and `gh pr
@@ -259,6 +275,7 @@ fn train(
     base: &str,
     candidates: &[String],
     push: bool,
+    trailers: &provenance::Trailers,
     stream: &mut Stream,
 ) -> Result<Outcome> {
     let root = &resolution.publication;
@@ -272,9 +289,6 @@ fn train(
     }
     let remote_base = crate::vcs::base_ref(root, base);
     let environment = merge_path::comparison_env("origin", base);
-    let registry = store::load()?;
-    let (file, _) = policy::load(&registry)?;
-    let trailers = provenance::from_rules(&file);
 
     let initial = git::head_sha(root)?;
     let workspace = home::workspaces_dir()?
@@ -287,7 +301,7 @@ fn train(
         base,
         remote_base: &remote_base,
         workspace: &workspace,
-        trailers: &trailers,
+        trailers,
     };
     let mut branches = Vec::new();
     for branch in candidates {

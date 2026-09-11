@@ -213,6 +213,30 @@ pub trait RemoteHost {
             operation: "RemoteHost::is_draft",
         })
     }
+
+    /// The names of the checks the repository requires before anything merges into
+    /// `base`, asked of the branch itself rather than of a change request targeting
+    /// it.
+    ///
+    /// What `onevcs repos --audit-gates` names per identity. Which checks a
+    /// repository requires is a setting on that repository, and a consumer that
+    /// sequences its own work behind another repository's merge path had to keep a
+    /// copy of that list — which drifted the day the repository renamed a check, and
+    /// cost a whole gate to discover. The host holds the list; this is how it is
+    /// read. An empty set is an answer — the repository requires nothing — and a
+    /// host that cannot say must refuse rather than answer it, for the reason
+    /// [`change_checks`](RemoteHost::change_checks) may not answer with an empty
+    /// source list: "could not look" reported as "requires nothing" is how a consumer
+    /// stops waiting on a check that is still coming.
+    ///
+    /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
+    /// stays additive — and to the same refusal, which the audit reports as the
+    /// list being unreadable rather than as no check being required.
+    fn required_checks_on(&self, _base: &str) -> Result<BTreeSet<String>> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::required_checks_on",
+        })
+    }
 }
 
 /// Where a [`RemoteHost`] for one repository comes from.
@@ -764,17 +788,28 @@ impl GitHub {
     /// arrives and stops. Under-reporting what blocks holds a merge; over-reporting
     /// what has passed lets one through, and only one of those is recoverable.
     fn ruled_checks(&self, cr: &ChangeRequest) -> Result<BTreeSet<String>> {
-        addressable_branch(&cr.base, "the base branch")?;
+        self.required_on(&cr.base, cr.url.as_ref())
+    }
+
+    /// The names of the checks the repository's rulesets require before a merge into
+    /// `base` — the same read as [`GitHub::ruled_checks`], addressed to a branch
+    /// rather than to a change request targeting one, and what
+    /// [`RemoteHost::required_checks_on`] answers with. It is the rulesets' answer
+    /// and carries the rulesets' limit: a repository protected the classic way names
+    /// nothing here.
+    ///
+    fn required_on(&self, base: &str, about: &str) -> Result<BTreeSet<String>> {
+        addressable_branch(base, "the base branch")?;
         let value = self.api(&format!(
             "repos/{}/rules/branches/{}",
             self.repo,
-            path_segment(&cr.base)
+            path_segment(base)
         ))?;
         let rules = value.as_array().ok_or_else(|| {
             invalid(format!(
-                "the rules on {}'s base branch {:?} came back as something that is not a list of \
-                 them, so which of its checks block the merge cannot be read from it: {value}",
-                cr.url, cr.base
+                "the rules on {about}'s base branch {base:?} came back as something that is \
+                 not a list of them, so which of its checks block the merge cannot be read \
+                 from it: {value}"
             ))
         })?;
         let mut names = BTreeSet::new();
@@ -790,13 +825,13 @@ impl GitHub {
                 .get("parameters")
                 .and_then(|parameters| parameters.get("required_status_checks"))
                 .and_then(|value| value.as_array())
-                .ok_or_else(|| unsaid(&cr.url, &rule.to_string()))?;
+                .ok_or_else(|| unsaid_about(about, &rule.to_string()))?;
             for entry in required {
                 let name = entry
                     .get("context")
                     .and_then(|value| value.as_str())
                     .filter(|value| !value.is_empty())
-                    .ok_or_else(|| unsaid(&cr.url, &entry.to_string()))?;
+                    .ok_or_else(|| unsaid_about(about, &entry.to_string()))?;
                 names.insert(name.to_owned());
             }
         }
@@ -1337,6 +1372,10 @@ impl RemoteHost for GitHub {
         addressable(&cr.id.0, "change request id")?;
         merged_sha(&self.view(&cr.id.0, MERGE_FIELDS)?, cr)
     }
+
+    fn required_checks_on(&self, base: &str) -> Result<BTreeSet<String>> {
+        self.required_on(base, &self.repo)
+    }
 }
 
 /// The refusal for a host that will not say which of its checks block the merge.
@@ -1350,6 +1389,15 @@ fn unsaid(url: &Url, detail: &str) -> Error {
     invalid(format!(
         "gh pr checks --required answered about {url} with {detail}, so a check it reported does \
          not say whether it blocks the merge"
+    ))
+}
+
+/// The same refusal from the rulesets read, which is addressed to a base branch and
+/// names whatever asked about it — a change request's URL, or an identity.
+fn unsaid_about(about: &str, detail: &str) -> Error {
+    invalid(format!(
+        "the repository's rulesets answered about {about} with {detail}, so a check they \
+         reported does not say whether it blocks the merge"
     ))
 }
 

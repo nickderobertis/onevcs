@@ -5,9 +5,20 @@
 //! sets; anything it leaves unset comes from [`RulesFile::default`].
 //!
 //! What *verifies* a change is not here and never comes back. The repository's own
-//! merge path is the verifier — the host's required checks for a remote-first
-//! identity, the `pre-push` hook for a local-first one — and a second tier beside
-//! it front-ran the real one and threw the answer away.
+//! merge path is the verifier — the host's required checks for an identity that
+//! publishes through a change request, the `pre-push` hook for one that publishes
+//! `local-direct` — and a second tier beside it front-ran the real one and threw the
+//! answer away.
+//!
+//! **These two fields are the whole of how an identity publishes.** The registry
+//! records nothing about it: it used to infer a workflow and a repository type from
+//! whether the origin had a host, and every verb that routed on them — the merge
+//! train's gate, the merge-path coverage verdict, the handoff naming the verb for a
+//! complete branch — routes on `publication` now, with `approvals` carrying the
+//! review requirement the repository type never actually carried. A rule matching an
+//! organisation (`host` and `owner`) is that organisation's default, and one adding a
+//! `name` is the per-repository override; nothing else is needed to say that one
+//! hosted repository lands locally while its siblings open change requests.
 //!
 //! Nothing here declares `deny_unknown_fields`, so a file a *newer* build wrote
 //! loads on this one: the keys it understands decide the policy and the rest are
@@ -181,6 +192,10 @@ impl MergePolicy {
 }
 
 /// Whether a change needs someone else's approval before it may merge.
+///
+/// The review requirement, and the only place it is stated: a repository whose
+/// changes are reviewed before they land says so here, under a rule that matches it,
+/// and nothing infers it from where the repository is hosted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Approvals {

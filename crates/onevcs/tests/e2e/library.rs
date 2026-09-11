@@ -234,8 +234,6 @@ fn a_publication_through_the_providers_reports_a_failure_as_an_outcome() {
     // own exit code 70 and never a refusal to start.
     let elsewhere = Identity {
         origin: "gitlab.com/acme-corp/widgets".to_owned(),
-        workflow: onevcs::registry::Workflow::Remote,
-        repo_type: onevcs::registry::RepoType::Team,
         gate: "just check".to_owned(),
     };
     let vcs = MemoryVcs::seeded(VcsState {
@@ -283,8 +281,6 @@ fn the_command_says_nothing_about_a_branch_the_repository_side_never_held() {
     let vcs = MemoryVcs::seeded(VcsState {
         identities: vec![Identity {
             origin: "gitlab.com/acme-corp/widgets".to_owned(),
-            workflow: onevcs::registry::Workflow::Remote,
-            repo_type: onevcs::registry::RepoType::Team,
             gate: "just check".to_owned(),
         }],
         ..VcsState::default()

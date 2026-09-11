@@ -1045,8 +1045,8 @@ land_pr() {
     printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
     printf 'PR_URL=%s\n' "$PR_URL"
     printf 'PR_STATE=MERGED\n'
-    printf 'PR_HEAD=%s\n' "$PR_HEAD"
-    printf 'PR_BASE=%s\n' "$PR_BASE"
+    printf 'PR_HEAD=%q\n' "$PR_HEAD"
+    printf 'PR_BASE=%q\n' "$PR_BASE"
     printf 'PR_HEAD_SHA=%s\n' "$PR_HEAD_SHA"
     printf 'PR_MERGE_COMMIT=%s\n' "$oid"
   } >"$STATE/pr-$PR_NUMBER.env"
@@ -1191,8 +1191,9 @@ case "$subcommand" in
       printf 'PR_NUMBER=%s\n' "$next"
       printf 'PR_URL=https://github.com/%s/pull/%s\n' "$repo" "$next"
       printf 'PR_STATE=OPEN\n'
-      printf 'PR_HEAD=%s\n' "$head"
-      printf 'PR_BASE=%s\n' "$base"
+      # %q, because git lets a branch name carry a quote and this record is sourced.
+      printf 'PR_HEAD=%q\n' "$head"
+      printf 'PR_BASE=%q\n' "$base"
       printf 'PR_HEAD_SHA=%s\n' "$head_sha"
       printf 'PR_MERGE_COMMIT=\n'
       printf 'PR_DRAFT=%s\n' "$draft"

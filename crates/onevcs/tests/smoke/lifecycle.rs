@@ -11,7 +11,6 @@ use std::time::Duration;
 use clap::Parser;
 
 use onevcs::cli::Cli;
-use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
     Lifecycle, Provenance, Providers, PublishOutcome, PublishRequest, Scope, SessionRequest,
     SessionToken, Subject,
@@ -69,8 +68,6 @@ fn a_session_opens_preserves_publishes_and_the_change_lands_on_the_real_reposito
         format!("github.com/{slug}"),
         "the registered checkout resolves somewhere other than the scratch repository"
     );
-    assert_eq!(identity.workflow, Workflow::Remote);
-    assert_eq!(identity.repo_type, RepoType::Team);
 
     // The base is not named: the real remote is asked what it advertises, which is
     // the answer an operator's older git would otherwise have derived differently.

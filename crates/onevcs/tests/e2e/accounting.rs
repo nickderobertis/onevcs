@@ -40,8 +40,8 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v5.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v5-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v6.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v6-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
@@ -186,9 +186,16 @@ fn every_spelling_of_one_piece_of_work_resolves_to_the_same_report() {
     // What the report is for: the identity's resolved policy, where the branch is,
     // what was proposed for it, and what the host says its checks are doing.
     assert_eq!(by_token["identity"]["key"], "github.com/acme-corp/hosted");
-    assert_eq!(by_token["identity"]["workflow"], "remote");
-    assert_eq!(by_token["identity"]["repo_type"], "team");
+    // The identity says how much review its rules require and nothing about where
+    // it is hosted: the publication's `merge_policy` below is the one fact that
+    // says whether work lands locally or through the host.
     assert_eq!(by_token["identity"]["approvals"], "required");
+    assert!(
+        by_token["identity"].get("workflow").is_none()
+            && by_token["identity"].get("repo_type").is_none(),
+        "the report carries no inferred classification: {}",
+        by_token["identity"]
+    );
     assert_eq!(by_token["branch"]["ahead"], 1);
     assert_eq!(by_token["branch"]["provenance"], "complete");
     assert_eq!(by_token["publication"]["state"], "open");
@@ -1885,7 +1892,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&full, &hosted.world, Some(&token)),
         FULL,
         "the object `onevcs status --json` writes is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/status-report-v5.json from the run above, and bump \
+         crates/onevcs/tests/golden/status-report-v6.json from the run above, and bump \
          the version in docs/inferred-surface.md and src/status.rs if the shape moved"
     );
     for path in OPTIONAL {
@@ -1928,7 +1935,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&minimal, &plain.world, None),
         MINIMAL,
         "the object a report with nothing optional in it writes is its checked-in \
-         golden; re-make crates/onevcs/tests/golden/status-report-v5-minimal.json"
+         golden; re-make crates/onevcs/tests/golden/status-report-v6-minimal.json"
     );
     // Omitted rather than null: a consumer that has never heard of a field is not
     // handed one, and "no session" and "a session that is null" are different
