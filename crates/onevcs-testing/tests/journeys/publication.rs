@@ -392,9 +392,20 @@ fn a_file_backed_provider_publishes_and_closes_across_invocations() {
     assert_eq!(host.state().expect("readable").changes.len(), 1);
 }
 
+/// The reason a fast-adopting caller drafts a change request with, with the two
+/// fields a journey varies to make one unusable.
+fn awaiting_a_release_with(reference: &str, because: &str) -> DraftReason {
+    DraftReason::AwaitingRelease {
+        awaiting: "github.com/acme-corp/upstream".to_owned(),
+        target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+        reference: reference.to_owned(),
+        because: because.to_owned(),
+    }
+}
+
 /// The reason a fast-adopting caller drafts a change request with.
 fn awaiting_a_release() -> DraftReason {
-    DraftReason {
+    DraftReason::AwaitingRelease {
         awaiting: "github.com/acme-corp/upstream".to_owned(),
         target: TargetName::try_from("crate".to_owned()).expect("a target name"),
         reference: "feature/the-pinned-branch".to_owned(),
@@ -453,10 +464,22 @@ fn a_drafted_publication_opens_a_draft_here_the_way_it_opens_one_next_door() {
         .filter(|event| event["kind"] == "change-drafted")
         .collect();
     assert_eq!(drafted.len(), 1, "{drafted:?}");
-    assert_eq!(drafted[0]["payload"]["because"], reason.because);
-    assert_eq!(drafted[0]["payload"]["awaiting"], reason.awaiting);
-    assert_eq!(drafted[0]["payload"]["reference"], reason.reference);
-    assert_eq!(drafted[0]["payload"]["target"], reason.target.to_string());
+    // The reason's own serialized form, under the change request it holds: the
+    // `kind` tag and every field of that kind — the same payload next door writes.
+    assert_eq!(drafted[0]["payload"]["kind"], "awaiting-release");
+    let DraftReason::AwaitingRelease {
+        awaiting,
+        target,
+        reference,
+        because,
+    } = &reason
+    else {
+        panic!("the reason a fast-adopting caller drafts with awaits a release");
+    };
+    assert_eq!(drafted[0]["payload"]["because"], *because);
+    assert_eq!(drafted[0]["payload"]["awaiting"], *awaiting);
+    assert_eq!(drafted[0]["payload"]["reference"], *reference);
+    assert_eq!(drafted[0]["payload"]["target"], target.to_string());
     assert!(host.state().bodies.is_empty(), "no body was written");
 
     // Publishing again with no reason lifts it, and the change then lands under the
@@ -600,16 +623,18 @@ fn a_draft_reason_this_provider_could_not_publish_is_refused_where_it_arrives() 
     for (field, unusable) in [
         (
             "the reason the change is not ready",
-            DraftReason {
-                because: String::new(),
-                ..awaiting_a_release()
-            },
+            awaiting_a_release_with("feature/the-pinned-branch", ""),
         ),
         (
             "the reference the change is pinned to",
-            DraftReason {
-                reference: "feature/two\nlines".to_owned(),
-                ..awaiting_a_release()
+            awaiting_a_release_with("feature/two\nlines", "the pin moves when the release lands"),
+        ),
+        // The held kind is held to the same rule: its one field is printed on one
+        // line too.
+        (
+            "the reason the session is holding the change",
+            DraftReason::Held {
+                because: String::new(),
             },
         ),
     ] {
@@ -641,10 +666,7 @@ fn a_seeded_draft_reason_nothing_could_have_carried_is_refused_when_it_is_read()
     let drafted = state.changes[1].id.clone();
     state.drafts.insert(
         drafted,
-        DraftReason {
-            because: "carries\na newline".to_owned(),
-            ..awaiting_a_release()
-        },
+        awaiting_a_release_with("feature/the-pinned-branch", "carries\na newline"),
     );
 
     // Written as a document a hand-editing journey would leave behind, and read back

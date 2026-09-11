@@ -526,7 +526,9 @@ impl World {
     ///
     /// `no-draft-state` answers a `gh pr view` without the field that says whether
     /// the change request is a draft, which is what a host that will not say looks
-    /// like — never the same thing as a host saying it is not one.
+    /// like — never the same thing as a host saying it is not one. `no-description`
+    /// answers one without the change request's body, which is likewise a host that
+    /// will not say rather than a change request with an empty one.
     ///
     /// `classic-protection-refused` is a credential without administration rights
     /// meeting classic branch protection, which is every fine-grained token: the
@@ -582,6 +584,17 @@ impl World {
             .expect("a change request somebody closed without merging it");
     }
     // llmlint: ignore-end[tests_mirror_real_usage]
+
+    /// Make the substituted host refuse to replace a change request's description.
+    ///
+    /// The one write to a change request's prose after it exists, declined: the
+    /// credential may not edit it, or the host is having a bad day. Nothing is
+    /// described, and the command has to say so rather than record a description the
+    /// host never took.
+    pub fn refuse_to_describe(&self) {
+        std::fs::write(self.path("gh-state/refuse-edit"), "")
+            .expect("a host that will not edit a change request")
+    }
 
     /// Make the substituted host refuse to take a change out of its draft.
     ///
@@ -996,7 +1009,7 @@ esac
 subcommand="${1:-}"; shift || true
 number=""
 case "$subcommand" in
-  view|merge|checks|ready)
+  view|merge|checks|ready|edit)
     number="${1:-}"; shift || true
     # The number is what selects the per-change state this subcommand reads, so it
     # is argv reaching a path. Refuse anything but digits here, at the one place the
@@ -1010,14 +1023,15 @@ case "$subcommand" in
 esac
 
 repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""; only_required=0
-draft=0
+draft=0; body_file=""; titled=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}"; shift 2 ;;
     --head) head="${2:-}"; shift 2 ;;
     --base) base="${2:-}"; shift 2 ;;
-    --title) title="${2:-}"; shift 2 ;;
+    --title) title="${2:-}"; titled=1; shift 2 ;;
     --body) body="${2:-}"; shift 2 ;;
+    --body-file) body_file="${2:-}"; shift 2 ;;
     --json) json_fields="${2:-}"; shift 2 ;;
     --state) shift 2 ;;
     --auto) auto=1; shift ;;
@@ -1069,6 +1083,27 @@ verdict() {
   if [ "$red" = "1" ]; then printf 'red'
   elif [ "$total" -gt 0 ] && [ "$total" = "$settled" ]; then printf 'green'
   else printf 'pending'; fi
+}
+
+# One value as a JSON string, escaped the way `gh` prints its `--json` fields: a
+# change request's title and body are the two answers here that are prose rather
+# than this host's own words, and a body carries newlines and quotes.
+json_string() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
+
+# What one change request's record holds as its title or its body, as a JSON string,
+# with the one newline `printf '%s\n'` wrote after it taken back off — exactly one,
+# so a body that ends in a blank line still reads as one. Read and encoded in one
+# function, because a command substitution between the two would strip the trailing
+# newlines the body really carries.
+json_recorded() {
+  local text
+  text="$(cat "$1"; printf x)"
+  text="${text%x}"
+  json_string "${text%$'\n'}"
 }
 
 # Perform the merge of one change request, with real git against the real bare
@@ -1306,8 +1341,31 @@ case "$subcommand" in
       printf '%s"isDraft":%s' "$separator" "$is_draft"; separator=","
     fi
     if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
+    # The description, as `gh pr edit` last left it or `gh pr create` opened it.
+    if wanted title; then printf '%s"title":%s' "$separator" "$(json_recorded "$STATE/pr-$number.title")"; separator=","; fi
+    if wanted body && [ "$malformed" != "no-description" ]; then printf '%s"body":%s' "$separator" "$(json_recorded "$STATE/pr-$number.body")"; separator=","; fi
     if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
     printf '}\n'
+    ;;
+  edit)
+    # `gh pr edit`: the body arrives as a file, because a body is prose that does not
+    # survive an argument vector, and the title only when the call replaces it. Both
+    # land in the same records `pr create` wrote, so `pr view` answers the description
+    # as it now stands whichever call wrote it.
+    . "$STATE/pr-$number.env"
+    if [ -f "$STATE/refuse-edit" ]; then
+      printf 'the host declines to edit %s\n' "$PR_URL" >&2
+      exit 1
+    fi
+    if [ -n "$body_file" ]; then
+      if [ ! -f "$body_file" ]; then
+        printf 'could not read body file %s\n' "$body_file" >&2
+        exit 1
+      fi
+      { cat "$body_file"; printf '\n'; } >"$STATE/pr-$number.body"
+    fi
+    if [ "$titled" = "1" ]; then printf '%s\n' "$title" >"$STATE/pr-$number.title"; fi
+    printf '%s\n' "$PR_URL"
     ;;
   ready)
     . "$STATE/pr-$number.env"

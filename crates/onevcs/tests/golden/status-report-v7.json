@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "ref": {
     "given": "feature/full",
     "kind": "branch"
@@ -42,10 +42,17 @@
     },
     "change_url": "https://github.com/acme-corp/hosted/pull/1",
     "draft": {
+      "kind": "awaiting-release",
       "awaiting": "github.com/acme-corp/upstream",
       "target": "crate",
       "reference": "feature/the-pinned-branch",
       "because": "the dependency is pinned to a branch until crate 2.0 is released"
+    },
+    "held_as_draft": true,
+    "described": {
+      "at": "2026-01-01T00:00:00.000Z",
+      "artifact": "a-000000000000",
+      "title": "feat: add the whole thing, described"
     },
     "merge_policy": "change-open"
   },

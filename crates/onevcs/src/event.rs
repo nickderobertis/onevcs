@@ -112,9 +112,10 @@ pub enum EventKind {
     /// A change request was opened; carries its URL and the host kind.
     ChangeOpened,
     /// A change request was opened as a **draft**, and this is why it is not ready;
-    /// carries its URL, the host's identifier for it, and the reason's four fields —
-    /// the repository whose release is awaited, which target of it, the reference the
-    /// change is pinned to, and the one line a person reads.
+    /// carries its URL, the host's identifier for it, its base, and the reason — its
+    /// `kind`, and every field of that kind: for `awaiting-release` the repository
+    /// whose release is awaited, which target of it, the reference the change is
+    /// pinned to, and the one line a person reads; for `held` that one line alone.
     ///
     /// Beside [`ChangeOpened`](EventKind::ChangeOpened) rather than instead of it: the
     /// change request *was* opened, and the link from its URL back to the branch is
@@ -126,8 +127,18 @@ pub enum EventKind {
     /// The reason is not repeated here: it is on the
     /// [`ChangeDrafted`](EventKind::ChangeDrafted) this answers, and the publication
     /// that lifts a draft is a later one that never held the reason — it lifts the
-    /// draft *by* carrying none.
+    /// draft *by* carrying none. `onevcs change ready` emits the same kind, because it
+    /// is the same lift asked for as a verb.
     DraftLifted,
+    /// The change request's description was replaced after it was opened; carries
+    /// its URL, the host's identifier for it, its base, the title where the
+    /// description replaced it, and the artifact the body was stored as.
+    ///
+    /// The body is not inlined: it is prose of unbounded size, and the stream bounds
+    /// payload text. The artifact is the record — `onevcs artifact cat ID` reads back
+    /// exactly what was written — and the event references it as every other large
+    /// piece of evidence is referenced.
+    ChangeDescribed,
     /// A check moved; carries its name, whether it is required, the status
     /// transition, the conclusion, and its log as an artifact once complete.
     ChangeCheck,
@@ -345,8 +356,8 @@ pub enum Phase {
     /// the merge it completed, a base that moved out from under the publication,
     /// and a push of any branch but the session's own.
     Integrate,
-    /// The change request is open and being ruled on: it was opened, its checks
-    /// moved, and it merged.
+    /// The change request is open and being ruled on: it was opened, drafted and
+    /// lifted, described, its checks moved, and it merged.
     Review,
     /// What carries the landed change is being released: a probe was run, a person
     /// acknowledged a release, and a landing was observed as released.
@@ -404,6 +415,7 @@ impl Phase {
             EventKind::ChangeOpened
             | EventKind::ChangeDrafted
             | EventKind::DraftLifted
+            | EventKind::ChangeDescribed
             | EventKind::ChangeCheck
             | EventKind::ChangeMerged => Phase::Review,
             EventKind::ReleaseProbed
@@ -485,6 +497,7 @@ impl EventKind {
             EventKind::ChangeOpened => "change-opened",
             EventKind::ChangeDrafted => "change-drafted",
             EventKind::DraftLifted => "draft-lifted",
+            EventKind::ChangeDescribed => "change-described",
             EventKind::ChangeCheck => "change-check",
             EventKind::ChangeMerged => "change-merged",
             EventKind::MergeQueued => "merge-queued",

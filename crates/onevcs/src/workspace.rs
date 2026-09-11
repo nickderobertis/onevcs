@@ -182,7 +182,9 @@ pub struct Record {
     /// The branch this session's work is merged with and published into, which for
     /// a branch cut fresh is also the one it was cut from.
     pub base: Ref,
-    /// The change-request base, which for a stacked change is the branch below it.
+    /// The base publication decided this session publishes onto, where that is not
+    /// [`base`](Self::base): the root a stacked change was replayed onto once the root
+    /// carried the change below. Absent until a publication moves it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_base: Option<Ref>,
     /// The commit `base` was at when this session's branch was cut from it, recorded

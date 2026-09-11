@@ -42,6 +42,12 @@ pub enum Command {
     Publish(PublishArgs),
     /// Verify and publish a completed branch no session holds.
     PublishBranch(PublishBranchArgs),
+    /// Read, describe, or ready a session's own change request.
+    Change {
+        /// Which thing to do to the change request.
+        #[command(subcommand)]
+        command: ChangeCommand,
+    },
     /// Verify and publish a preserved branch that was left behind.
     Recover(RecoverArgs),
     /// List preserved work that has not been published.
@@ -180,6 +186,83 @@ pub struct PublishArgs {
     #[arg(long, value_name = "PATH")]
     pub body_file: Option<PathBuf>,
     // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// Open the change request as a draft the session holds while its work is still
+    /// being made. A later `publish` carrying no `--draft`, or `change ready`, lifts it.
+    #[arg(long)]
+    pub draft: bool,
+    /// Why the session is holding the change request as a draft, on one line.
+    /// Omitted, a sentence saying the session is holding it while its work is still
+    /// being made. Refused without `--draft`.
+    // llmlint: ignore[invalid_states_unrepresentable] a reason without `--draft` is
+    // deliberately representable and refused by name in `app::held_draft`, where the
+    // refusal can say which option was missing; a clap `requires` would answer the
+    // same mistake with usage text, and every other argument this command takes is
+    // checked at dispatch for that reason.
+    #[arg(long, value_name = "TEXT")]
+    pub draft_reason: Option<String>,
+}
+
+/// The `onevcs change` subcommands: a session's own change request, after it exists.
+///
+/// Every one takes a session token and nothing that names a change request: the
+/// change request is the one open from the session's branch into its base, so no
+/// caller ever names a URL.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ChangeCommand {
+    /// Report the session's change request as the host holds it.
+    Show(ChangeShowArgs),
+    /// Replace the session's change request's description.
+    Describe(ChangeDescribeArgs),
+    /// Mark the session's change request ready for review.
+    Ready(ChangeReadyArgs),
+}
+
+/// Arguments for `onevcs change show`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeShowArgs {
+    /// The token of the session whose change request to report.
+    pub token: String,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs change describe`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeDescribeArgs {
+    /// The token of the session whose change request to describe.
+    pub token: String,
+    // llmlint: ignore-block[invalid_states_unrepresentable] the same pair `PublishArgs`
+    // carries, representable together for the same reason — and representable *absent*
+    // together, because `app::described_body` is where the refusal can say that a
+    // description is a body and name the two ways to hand one over.
+    /// The change request's body, replacing what it has.
+    #[arg(long, value_name = "TEXT")]
+    pub body: Option<String>,
+    /// A file holding the change request's body. A body is prose, so this is the
+    /// form a caller with a real one uses.
+    #[arg(long, value_name = "PATH")]
+    pub body_file: Option<PathBuf>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// The change request's title, replacing what it has. Omitted, the title is left.
+    // llmlint: ignore[invalid_states_unrepresentable] typed text for the reason given on
+    // `PublishBranchArgs::title`: it becomes a `Subject` in `app::explicit_title`, where
+    // the refusal names the title the operator typed rather than clap's usage text.
+    #[arg(long, value_name = "T")]
+    pub title: Option<String>,
+    /// Report the change as it stands after the write as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs change ready`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeReadyArgs {
+    /// The token of the session whose change request to mark ready for review.
+    pub token: String,
+    /// Report the change as it stands as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs publish-branch`.

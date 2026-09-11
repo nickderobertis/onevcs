@@ -34,13 +34,14 @@ use onevcs::releases::{
 };
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
-    ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
-    DraftReason, Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub,
-    HeldBy, Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
-    MergeOutcome, MergePolicy, NetNegative, Phase, PreservedBranch, ProtectionSource, Provenance,
-    Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks,
-    Retention, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
-    Source, Subject, Url, Vcs,
+    ArtifactId, ArtifactRef, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest, ChangeSpec,
+    Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter, EventKind,
+    EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, Labels, Landed, LandingEvidence,
+    Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative, Phase,
+    PreservedBranch, ProtectionSource, Provenance, Providers, Publication, PublishOutcome,
+    PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Session,
+    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source,
+    Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -245,6 +246,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ChangeOpened,
         EventKind::ChangeDrafted,
         EventKind::DraftLifted,
+        EventKind::ChangeDescribed,
         EventKind::ChangeCheck,
         EventKind::ChangeMerged,
         EventKind::MergeQueued,
@@ -268,6 +270,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::ChangeOpened
             | EventKind::ChangeDrafted
             | EventKind::DraftLifted
+            | EventKind::ChangeDescribed
             | EventKind::ChangeCheck
             | EventKind::ChangeMerged
             | EventKind::MergeQueued
@@ -2289,10 +2292,18 @@ fn documented_commands() -> BTreeSet<String> {
         .collect()
 }
 
-/// Every usage block the two documents spell: the approved contract's, and the
-/// ones `docs/inferred-surface.md` records as an inference awaiting confirmation.
+/// Every usage block the two documents spell: the approved contract's, the ones its
+/// amendments spell for the verbs they add, and the ones `docs/inferred-surface.md`
+/// records as an inference awaiting confirmation.
 fn usage_blocks() -> Vec<String> {
     let mut blocks = vec![block("")];
+    let amended = usage_in(&regions().0);
+    assert!(
+        !amended.is_empty(),
+        "the amendments spell no command surface; the held-draft amendment did, and this \
+         reader is what has to move if that block moved"
+    );
+    blocks.extend(amended);
     let inferred = usage_in(&repo_file("docs/inferred-surface.md"));
     assert!(
         !inferred.is_empty(),
@@ -2328,7 +2339,12 @@ fn commands_in(usage: &str) -> BTreeSet<String> {
                 .strip_prefix("onevcs ")
                 .unwrap_or_else(|| alternative.trim());
             if let Some(name) = segment.split_whitespace().next() {
-                if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+                // A command name, never an option: `[--body TEXT | --body-file PATH]`
+                // puts an option first in an alternative, and it names no command.
+                if !name.is_empty()
+                    && !name.starts_with('-')
+                    && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                {
                     names.insert(name.to_owned());
                 }
             }
@@ -2696,7 +2712,7 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
         policy: Some(MergePolicy::ChangeOpen),
         title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
         body: Some("Why the seam is where it is.".to_owned()),
-        draft: Some(DraftReason {
+        draft: Some(DraftReason::AwaitingRelease {
             awaiting: "github.com/acme-corp/upstream".to_owned(),
             target: TargetName::try_from("crate".to_owned()).expect("a target name"),
             reference: "feature/the-pinned-branch".to_owned(),
@@ -2744,7 +2760,7 @@ fn the_inferred_surface_row_lists_the_fields_a_change_spec_actually_has() {
         base: "main".to_owned(),
         title: "feat: add the seam".to_owned(),
         body: Some("Why the seam is where it is.".to_owned()),
-        draft: Some(DraftReason {
+        draft: Some(DraftReason::AwaitingRelease {
             awaiting: "github.com/acme-corp/upstream".to_owned(),
             target: TargetName::try_from("crate".to_owned()).expect("a target name"),
             reference: "feature/the-pinned-branch".to_owned(),
@@ -2838,8 +2854,11 @@ fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_n
     // clap's own, on every command it generates — not part of anybody's contract.
     implemented.remove("help");
 
+    // Two amendments each add options to `publish`, and each says so on a line that
+    // opens with the command: the body's, and the held draft's.
     let amended: BTreeSet<String> = backticked_on_line("`onevcs publish` takes the body two ways")
         .into_iter()
+        .chain(backticked_on_line("`onevcs publish` takes a draft as"))
         .filter_map(|span| span.strip_prefix("--").map(str::to_owned))
         .collect();
     assert_eq!(
@@ -3712,11 +3731,12 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
     // A draft is new capability rather than a widening of one, so the amendment is
     // where a consumer reads it first — and the shape it declares is the shape the
     // code has, or the two teach different things about the same seam.
+    // The reason's shape moved once — from a struct to a two-kind enum — and the
+    // amendment that moved it is where its declaration is read now; the earlier
+    // amendment still declares the two host methods and the field on the two
+    // requests, which did not move.
     let declared = amendment_declaring("pub struct DraftReason");
     for line in [
-        "pub struct DraftReason { pub awaiting: String, pub target: TargetName,",
-        "pub reference: String, pub because: String }",
-        "impl DraftReason { pub fn checked(&self) -> Result<()>; }",
         "pub draft: Option<DraftReason>",
         "fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()>;",
         "fn is_draft(&self, cr: &ChangeRequest) -> Result<bool>;",
@@ -3726,6 +3746,33 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
             "the amendment no longer declares: {line}"
         );
     }
+    let widened = amendment_declaring("pub enum DraftReason");
+    for line in [
+        "#[serde(tag = \"kind\", rename_all = \"kebab-case\")]",
+        "AwaitingRelease { awaiting: String, target: TargetName, reference: String, because: String },",
+        "Held { because: String },",
+        "impl DraftReason { pub fn checked(&self) -> Result<()>; }",
+    ] {
+        assert!(
+            widened.contains(line),
+            "the held-draft amendment no longer declares: {line}"
+        );
+    }
+    // …and the tag is the wire: a reason serializes under `kind`, spelled as the
+    // amendment spells the two kinds, so a consumer routing on it reads the document.
+    let held = DraftReason::Held {
+        because: "the session is holding it while its work is still being made".to_owned(),
+    };
+    let written = serde_json::to_value(&held).expect("a reason serializes");
+    assert_eq!(written["kind"], "held");
+    assert_eq!(
+        written["because"],
+        "the session is holding it while its work is still being made"
+    );
+    assert_eq!(
+        serde_json::from_value::<DraftReason>(written).expect("a reason reads back"),
+        held
+    );
 
     // Both are defaulted, so the seam stays additive — and both default to the
     // refusal this repository reserves for a seam with no body rather than to an
@@ -3770,25 +3817,44 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
     // And the rule the amendment says is public really is the one a supplied
     // implementation can apply: a reason that would not render as the one line it is
     // printed on is refused by the crate's own check rather than by a restatement.
-    let usable = DraftReason {
-        awaiting: "github.com/acme-corp/upstream".to_owned(),
+    let awaiting = |awaiting: &str, reference: &str, because: &str| DraftReason::AwaitingRelease {
+        awaiting: awaiting.to_owned(),
         target: TargetName::try_from("crate".to_owned()).expect("a target name"),
-        reference: "feature/the-pinned-branch".to_owned(),
-        because: "the pin moves when the release lands".to_owned(),
+        reference: reference.to_owned(),
+        because: because.to_owned(),
     };
+    let usable = awaiting(
+        "github.com/acme-corp/upstream",
+        "feature/the-pinned-branch",
+        "the pin moves when the release lands",
+    );
     usable.checked().expect("a usable reason");
+    DraftReason::Held {
+        because: "the session is holding it while its work is still being made".to_owned(),
+    }
+    .checked()
+    .expect("a usable held reason");
     for unusable in [
-        DraftReason {
+        awaiting(
+            "github.com/acme-corp/upstream",
+            "feature/the-pinned-branch",
+            "",
+        ),
+        awaiting(
+            "github.com/acme-corp/\nupstream",
+            "feature/the-pinned-branch",
+            "the pin moves when the release lands",
+        ),
+        awaiting(
+            "github.com/acme-corp/upstream",
+            "",
+            "the pin moves when the release lands",
+        ),
+        DraftReason::Held {
             because: String::new(),
-            ..usable.clone()
         },
-        DraftReason {
-            awaiting: "github.com/acme-corp/\nupstream".to_owned(),
-            ..usable.clone()
-        },
-        DraftReason {
-            reference: String::new(),
-            ..usable.clone()
+        DraftReason::Held {
+            because: "held\nacross two lines".to_owned(),
         },
     ] {
         assert!(
@@ -3796,6 +3862,151 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
             "a reason that would not render as itself is not one: {unusable:?}"
         );
     }
+}
+
+#[test]
+fn the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_methods() {
+    // The three calls over a session's own change request, the two types they
+    // exchange with a caller, and the two host methods behind them are declared in
+    // one amendment — and the shape it declares is the shape the code has, or a
+    // consumer compiling against the document links against something else.
+    let declared = amendment_declaring("pub enum DraftReason");
+    for line in [
+        "pub struct ChangeDescription { pub title: Option<Subject>, pub body: String }",
+        "pub struct Description { pub title: String, pub body: String }",
+        "pub struct SessionChange { pub url: Url, pub id: ChangeId, pub base: String,",
+        "pub draft: bool, pub title: String, pub body: String }",
+        "pub fn session_change(providers: &Providers<'_>, token: &SessionToken) -> Result<Option<SessionChange>>;",
+        "pub fn describe_change(providers: &Providers<'_>, token: &SessionToken, description: &ChangeDescription) -> Result<SessionChange>;",
+        "pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionChange>;",
+        "fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()>;",
+        "fn change_description(&self, cr: &ChangeRequest) -> Result<Description>;",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the held-draft amendment no longer declares: {line}"
+        );
+    }
+    // Which change request the three calls address is a rule rather than a
+    // signature, and it is stated beside the declarations: the one `publish` would
+    // open or adopt for the same session, resolved the same way — so a stacked
+    // session cannot have `publish` and a `change` verb naming two different ones.
+    // `tests/e2e/change.rs` drives that rule; this holds the document to it.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "`session_change`, `describe_change` and `ready_change` address the change request \
+         `publish` would open or adopt for that same session — the branch `publish` pushes, \
+         into the base `publish` resolves for it, stacked or not — resolved through one \
+         computation, so no session can have `publish` and a `change` verb naming two \
+         different change requests",
+        "on a stacked session `change show` therefore answers the change request the stack \
+         publishes onto, and its `base` is that resolved base",
+        // …and `status` is held to the same one, because the rule is the session's
+        // rather than the four operations': a `status` that derived the base its own
+        // way named, on a stacked session, a change request nobody opened.
+        "`onevcs status`, asked of a session token or of a branch a session record holds, \
+         names the same change request `change show` answers for that session — the one \
+         `publish` would open or adopt, into the base `publish` resolves — and never one \
+         derived a second way",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the held-draft amendment no longer says which change request the calls \
+             address: {sentence}"
+        );
+    }
+
+    // The types, built with exactly the declared fields, and the three functions
+    // referenced at exactly the declared signatures — which is what fails to compile
+    // if either moves.
+    let description = ChangeDescription {
+        title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
+        body: "## What\n\nThe seam.\n".to_owned(),
+    };
+    let written = serde_json::to_value(&description).expect("a description serializes");
+    assert_eq!(
+        written
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<String>>(),
+        ["title", "body"].map(str::to_owned).into_iter().collect()
+    );
+    let answered = Description {
+        title: "feat: add the seam".to_owned(),
+        body: String::new(),
+    };
+    let change = SessionChange {
+        url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL"),
+        id: ChangeId("42".to_owned()),
+        base: "main".to_owned(),
+        draft: true,
+        title: answered.title.clone(),
+        body: answered.body.clone(),
+    };
+    assert_eq!(
+        serde_json::to_value(&change)
+            .expect("a change serializes")
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<String>>(),
+        ["url", "id", "base", "draft", "title", "body"]
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
+    );
+    let _read: fn(&Providers<'_>, &SessionToken) -> onevcs::Result<Option<SessionChange>> =
+        onevcs::session_change;
+    let _write: fn(
+        &Providers<'_>,
+        &SessionToken,
+        &ChangeDescription,
+    ) -> onevcs::Result<SessionChange> = onevcs::describe_change;
+    let _lift: fn(&Providers<'_>, &SessionToken) -> onevcs::Result<SessionChange> =
+        onevcs::ready_change;
+
+    // Both host methods are defaulted, so the seam stays additive — and to the
+    // refusal this repository reserves for a seam with no body, never to an answer:
+    // a host that was never taught to describe a change has not described one, and
+    // one never taught to read a description has not read an empty one.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let cr = ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        url: change.url.clone(),
+        head_sha: Sha("0f1e2d3".to_owned()),
+        base: "main".to_owned(),
+    };
+    assert!(matches!(
+        Earlier.describe_change(&cr, None, "a body"),
+        Err(Error::NotImplemented { operation }) if operation.contains("describe_change")
+    ));
+    assert!(matches!(
+        Earlier.change_description(&cr),
+        Err(Error::NotImplemented { operation }) if operation.contains("change_description")
+    ));
 }
 
 fn all_publish_outcomes() -> Vec<&'static str> {

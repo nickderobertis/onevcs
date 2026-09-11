@@ -1059,8 +1059,8 @@ base it is going onto, it is proposed and ruled on, and what carries it is relea
 development  session-opened fetch lock-wait lock-acquired commit-preserved
              recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
-review       change-opened change-drafted draft-lifted change-check
-             change-merged
+review       change-opened change-drafted draft-lifted change-described
+             change-check change-merged
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -1614,6 +1614,10 @@ pub trait RemoteHost {                       // the seven above, unchanged, plus
 }
 ```
 
+*(The `DraftReason` struct declared above is superseded by the held-draft amendment
+below, where it becomes a two-variant enum whose `awaiting-release` variant carries
+these four fields unchanged in meaning; everything else in this block stands.)*
+
 `PublishOutcome` gains one ending, `ChangeDraft(Url)`, deliberately not folded into
 `ChangeOpen`: the two differ in whether the change can land, which is the one thing a
 consumer acts on, and folding them would leave every exhaustive match compiling while
@@ -1644,7 +1648,11 @@ pin the draft exists to hold back.
 there is no separate verb for it: the caller that republishes with the pin moved is
 saying the reason no longer holds. It is idempotent because the host decides — a
 change that is not a draft is asked for nothing, so a second publication makes no call
-and reports exactly what the first one did.
+and reports exactly what the first one did. *(The clause "there is no separate verb
+for it" is superseded by the held-draft amendment below: a reasonless publication
+still lifts a draft exactly as stated, and `onevcs change ready` is the same lift asked
+for on its own, because a session holding its own draft needs to lift it without
+landing anything.)*
 
 **Where the reason lives: the publication record, and only there.** It is emitted as
 `change-drafted` beside `change-opened` on the session's own event stream, with
@@ -1656,7 +1664,11 @@ somebody looking at the draft change request without access to this host's state
 sees that it **is** a draft and not why.
 
 The command line takes no draft. The reason is four machine-readable fields a caller
-composes, and this surface is the library's.
+composes, and this surface is the library's. *(Superseded by the held-draft amendment
+below, which gives the command line one of the two kinds of draft: `onevcs publish
+TOKEN --draft` opens a draft the session itself holds, whose reason is one line a
+person types. The release-awaiting kind stays the library's, for the reason stated
+here.)*
 
 Event kinds added: `change-drafted`, `draft-lifted`.
 
@@ -1713,6 +1725,142 @@ required` only when both were read and both name nothing, the names marked
 that answered name nothing and one did not answer, and `unreadable` with the host's
 refusal — and a consumer deleting its own cached list reads the first two as answers
 and the last three as not having been told.
+
+**A session can open its own change request as a draft it holds, describe it after
+it exists, and lift the draft as a verb.** A change request's description is the one
+artifact a human reviewer reads, and it was written by a drafter that saw only the
+task and the diff: evidence the worker produced — a CI run it triggered, a comment a
+bot posted, a demonstration change it put up — never reached it, because nothing could
+open a change request before the worker was gone and nothing could edit one
+afterwards. This amendment is the half of that the version-control layer owns. Every
+call here is a thin one over the host, addressed at **the session's own change
+request** — the one open from its branch into its base — so no caller ever names a
+URL, and each is recorded on the session's own event stream in the `review` phase.
+
+```rust
+// onevcs::publish, exported from the crate root. The one draft concept, with two
+// reasons: the earlier struct's four fields become the `awaiting-release` variant,
+// unchanged in meaning, and `held` is new.
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DraftReason {
+    AwaitingRelease { awaiting: String, target: TargetName, reference: String, because: String },
+    Held { because: String },
+}
+impl DraftReason { pub fn checked(&self) -> Result<()>; }   // every field renders on one line
+
+// PublishRequest.draft and ChangeSpec.draft keep their names and become
+// Option<DraftReason> over the enum. PublishOutcome::ChangeDraft(Url) is unchanged.
+
+pub struct ChangeDescription { pub title: Option<Subject>, pub body: String }   // what a caller writes
+pub struct Description { pub title: String, pub body: String }                    // what a host answers
+pub struct SessionChange { pub url: Url, pub id: ChangeId, pub base: String,
+                           pub draft: bool, pub title: String, pub body: String }
+
+pub fn session_change(providers: &Providers<'_>, token: &SessionToken) -> Result<Option<SessionChange>>;
+pub fn describe_change(providers: &Providers<'_>, token: &SessionToken, description: &ChangeDescription) -> Result<SessionChange>;
+pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionChange>;
+
+pub trait RemoteHost {   // every existing method unchanged, plus two, both defaulted to Error::NotImplemented
+    fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()>;  // GitHub: gh pr edit ID --body-file … [--title …]
+    fn change_description(&self, cr: &ChangeRequest) -> Result<Description>;                      // GitHub: gh pr view ID --json title,body
+}
+```
+
+`session_change`, `describe_change` and `ready_change` address the change request
+`publish` would open or adopt for that same session — the branch `publish` pushes,
+into the base `publish` resolves for it, stacked or not — resolved through one
+computation, so no session can have `publish` and a `change` verb naming two different
+change requests; on a stacked session `change show` therefore answers the change
+request the stack publishes onto, and its `base` is that resolved base.
+`session_change` answers `None` when the host holds no open change request from the
+session's branch into that base, and never invents one. `describe_change` refuses a
+session with no change request rather than opening one; `ready_change` on a change
+request that is not a draft is a no-op that reports the change as it stands. A `title`
+handed to `describe_change` is a `Subject` and is held to the repository's own
+`commit-msg` hook exactly as a publication's is — it is the squash subject a
+`change-auto` merge lands under. `DraftReason::Held` is refused by name under
+`local-direct`, as `AwaitingRelease` already is: a draft is a state of a change
+request, and that policy opens none.
+
+```
+onevcs publish TOKEN [--policy P] [--title T] [--body TEXT | --body-file PATH] [--draft [--draft-reason TEXT]]
+onevcs change show TOKEN [--json]
+onevcs change describe TOKEN (--body TEXT | --body-file PATH) [--title T] [--json]
+onevcs change ready TOKEN [--json]
+```
+
+Each verb is a rendering of the library call beside it and no second reader of the
+store: `change show` renders `session_change` (`--json` prints the `SessionChange`
+fields; a session with no change request prints one line saying so and exits 0),
+`change describe` renders `describe_change` and prints the change as it stands after
+the write, `change ready` renders `ready_change`, and `publish --draft` renders
+`publish` with a `Held` reason.
+
+`onevcs publish` takes a draft as `--draft`, with `--draft-reason` beside it.
+The first composes `DraftReason::Held`; the second is its one line and defaults to a
+sentence saying the session that opened the change request is holding it as a draft
+while its work is still being made, and without `--draft` it is refused by name. The
+`--body` / `--body-file` pair is refused together exactly as `publish` already refuses
+it. `change ready` uses the existing `RemoteHost::ready_for_review` and emits the
+existing `draft-lifted`.
+
+Two sentences of the draft amendment above are superseded, and are marked there. *"The
+command line takes no draft"* is replaced by `--draft`, because the worker that opens
+a draft to keep working in is a person or an agent at a command line rather than a
+caller composing a release pin; the release-awaiting kind stays the library's for the
+reason the earlier text gives. *"There is no separate verb for lifting"* is replaced by
+`change ready`, because a session holding its own draft has to be able to lift it
+without publishing — the publication that lifts a release-awaiting draft is a landing,
+and a held draft's lift is not.
+
+**The session's own record.** A publication that ends in `ChangeDraft` under a `Held`
+reason leaves the session record `state: open` — the session is still being worked
+in, its worktree is still the dispatch's, and `session close` is what closes it. Every
+other successful publication closes the record as it always did, a draft held for a
+release included, where the next worker opens a session of its own. This matters
+because the run-root reclamation keeps a run root only while an open record names it:
+a draft publication that closed the record would let the next sibling `session open`
+reap the worktree the worker is committing in.
+
+**What republishing does.** A `publish` — with or without `--draft` — of a session
+whose change request is already open pushes the branch and adopts that change
+request; it never opens a second one. `publish --draft` over a change request the host
+holds as a draft records `change-drafted` again and ends `ChangeDraft`; over one open
+for review it is refused as today, spelled per variant. A `publish` carrying no reason
+over a held draft lifts it and lands under the policy, exactly as it lifts a
+release-awaiting draft today.
+
+**Where the reason lives.** As today: the publication record and nowhere in the
+change request's body. `change describe` is the one path that writes a body after the
+change request exists, and it writes exactly the caller's bytes.
+
+`onevcs status` names the session's change request, says whether the host holds it
+as a draft and — when this host's own record holds a reason — under which kind, and
+names the last `change-described` on the stream; its landing decision is untouched,
+because a draft is not a landing. The rule above is a property of the session rather
+than of four operations: `onevcs status`, asked of a session token or of a branch a
+session record holds, names the same change request `change show` answers for that
+session — the one `publish` would open or adopt, into the base `publish` resolves —
+and never one derived a second way. Asked of a change request URL or of a commit,
+references that name no session, it keeps its own derivation.
+
+Event kinds added: `change-described`.
+
+It belongs to the `review` phase, beside the two the draft amendment added.
+
+- `change-drafted` — gains a `kind` field, `awaiting-release` or `held`. The
+  `awaiting-release` payload is the earlier `{url, id, base, awaiting, target,
+  reference, because}` plus `kind`; the `held` payload is `{url, id, base, kind,
+  because}`.
+- `change-described` — `{url, id, base, title, artifact}`, where `title` is present
+  only when the description replaced it and `artifact` is the id the body was stored
+  under, so `onevcs artifact cat ID` reads back exactly what was written. The body is
+  not inlined: it is prose of unbounded size, and the stream bounds payload text.
+- `draft-lifted` — unchanged, emitted by `change ready` and by a publication that
+  carries no reason.
+
+The `onevcs-testing` hosts implement the two new methods and record what was
+described, so a consumer's journeys can drive a whole closeout against them.
 
 ---
 

@@ -32,7 +32,8 @@ really opened on the `Hosting` the publication was handed, really adopted when t
 host already holds one, and really merged under the policy. The **repository** side
 is not, and none of it is claimed — there is no origin to fetch, no tree to run a
 gate in, nothing to push, and no lock to queue behind, so a publication here emits
-`change-opened`, `change-merged`, and `merge-completed` and never `fetch`,
+`change-opened`, `change-drafted`, `draft-lifted`, `change-merged`, and
+`merge-completed` and never `fetch`,
 `gate-started`, `gate-verdict`, `push`, `lock-wait`, `lock-acquired`, or
 `merge-queued`. Two more things it cannot read, and states instead of inventing:
 the policy comes from `VcsState::policy` rather than a rules file (narrowed through
@@ -41,6 +42,13 @@ change-request title names the branch rather than a commit subject there is no
 commit to take. A *requested* title needs no check here — `PublishRequest::title`
 is a `Subject`, so one that could not be a commit subject never reaches a
 provider.
+
+The two description methods are host-side and performed: `describe_change` writes
+into the same `titles` and `bodies` `open_change` wrote and records the call in
+`described`, so `change_description` answers the description as it now stands
+whichever call wrote it — which is what lets a consumer drive a whole closeout
+(`session_change` → `describe_change` → `publish`) against these hosts and read
+back what it wrote.
 
 ## One behaviour, two stores
 

@@ -34,11 +34,11 @@ use time::{Date, Month, Time};
 use url::Url;
 
 use crate::error::{Error, Result};
-use crate::event::{EventKind, Line};
+use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
-use crate::publish::DraftReason;
+use crate::publish::{self, DraftReason};
 use crate::registry::Registry;
 use crate::releases::TargetName;
 use crate::rules::{Approvals, MergePolicy};
@@ -90,10 +90,18 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// `workflow` to tell a local landing from a hosted one reads `merge_policy`:
 /// `local-direct` is the local one.
 ///
+/// `7` is the held draft. `publication.draft` gains the reason's `kind` —
+/// `awaiting-release` or `held` — because a draft is held for one of two reasons now
+/// and a consumer routes on which; `publication.held_as_draft` is what the *host*
+/// says, where it could be asked, beside what this host's record says; and
+/// `publication.described` is the last description written to the change request
+/// through `change describe`, which is the one write to a change request's prose
+/// after it exists and was recorded nowhere a person could read it.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 6;
+pub const REPORT_VERSION: u32 = 7;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -324,8 +332,41 @@ pub struct PublicationReport {
     /// stream, which is what `onevcs events` is for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReason>,
+    /// Whether the host is holding the change request as a draft right now, as the
+    /// host itself answered.
+    ///
+    /// Beside [`draft`](Self::draft) rather than folded into it, because the two are
+    /// two facts: this host's record says why a draft was opened, and the host says
+    /// whether one stands. Omitted where the host could not be asked, or would not
+    /// say — never `false` for either, since "not a draft" is what lets a change be
+    /// asked to merge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held_as_draft: Option<bool>,
+    /// The last description written to the change request through `onevcs change
+    /// describe`, where one was.
+    ///
+    /// The readback of `change-described`: when it was written, the artifact the
+    /// body was stored as, and the title where the description replaced it. A change
+    /// request nobody described after opening it omits the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub described: Option<DescribedReport>,
     /// The policy this identity's rules publish under.
     pub merge_policy: MergePolicy,
+}
+
+/// One description written to a change request after it was opened, as the stream
+/// recorded it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DescribedReport {
+    /// When it was written, as the event stream stamped it.
+    pub at: Stamp,
+    /// The artifact the body was stored as, readable with `onevcs artifact cat`.
+    /// Absent where the write was recorded without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ArtifactId>,
+    /// The title the description replaced the change request's with, where it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// A publication section as a document spells it, before the two answers in it have
@@ -342,6 +383,10 @@ struct AnyPublication {
     change_url: Option<String>,
     #[serde(default)]
     draft: Option<DraftReason>,
+    #[serde(default)]
+    held_as_draft: Option<bool>,
+    #[serde(default)]
+    described: Option<DescribedReport>,
     merge_policy: MergePolicy,
 }
 
@@ -380,6 +425,8 @@ impl TryFrom<AnyPublication> for PublicationReport {
             landed: value.landed,
             change_url: value.change_url,
             draft: value.draft,
+            held_as_draft: value.held_as_draft,
+            described: value.described,
             merge_policy: value.merge_policy,
         })
     }
@@ -545,6 +592,8 @@ struct Told {
     /// one carrying no reason, and a branch-keyed verb writes its own stream, so the
     /// draft and the lift routinely sit in two different records of one branch.
     draft: Option<DraftReason>,
+    /// The newest `change-described` across every stream of this branch.
+    described: Option<DescribedReport>,
     asked_the_host_to_land: bool,
     merge_path: Option<MergePathReport>,
     recorded: landed::Recorded,
@@ -559,6 +608,11 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
     );
     Told {
         draft: standing_draft(&relevant),
+        described: latest(
+            relevant
+                .iter()
+                .filter_map(|record| record.described.clone()),
+        ),
         asked_the_host_to_land: relevant.iter().any(|record| record.asked_the_host_to_land),
         merge_path: latest(
             relevant
@@ -856,6 +910,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let told = from_streams(&streams, &work, held_by.as_deref());
     let change_url = told.change_url.clone();
     let draft = told.draft.clone();
+    let described = told.described.clone();
     let asked_the_host_to_land = told.asked_the_host_to_land;
     let merge_path = told.merge_path.clone();
 
@@ -900,8 +955,40 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         verdict = Some(Landed::Unknown);
     }
 
-    let target = change_base.clone().unwrap_or_else(|| base.clone());
-    let host = ask_the_host(&resolution.key, &work.branch, &target, hosting);
+    let host = match &answering.session {
+        // Work a session holds is asked about *that session's* change request — the
+        // one `publish` would open or adopt for it and `change show` answers, into
+        // the base `publish` resolves — through the one computation all of them make.
+        // A stacked session is where a second derivation shows: its publication
+        // targets the branch below until the root carries the change below, and a
+        // base read off the branch's own history or off the root would ask the host
+        // about a change request nobody opened and report the host holding nothing,
+        // for a draft the session is holding open right now.
+        //
+        // The read-side form, from the clone's own refs: this is a read, and a read
+        // that fetched would move the copy's view of the base under every later
+        // read of it — a landing that was undecidable from a copy that had not seen
+        // the base move became decided, from `status` having looked. `change show`
+        // makes the same resolution over refs its own fetch refreshed, so the two
+        // name one change request wherever the clone has seen what the host has.
+        Some(record) => match publish::standing_target(record) {
+            Ok(target) => ask_the_host(&resolution.key, &work.branch, target.base(), hosting),
+            // Where the session's own target cannot be resolved, the host is not
+            // asked about some other one: that is the answer this section has, said
+            // in the place the host's own refusals are said.
+            Err(error) => HostAnswer::Unasked {
+                because: format!(
+                    "the base session {token} publishes into could not be resolved, so the \
+                     host was not asked about its change request: {error}",
+                    token = record.token,
+                ),
+            },
+        },
+        None => {
+            let target = change_base.clone().unwrap_or_else(|| base.clone());
+            ask_the_host(&resolution.key, &work.branch, &target, hosting)
+        }
+    };
     let state = landing(
         verdict.as_ref(),
         ahead,
@@ -912,7 +999,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             (true, true) => Proposed::OpenedAndAskedToLand,
         },
     );
-    let (open, checks) = host.into_parts();
+    let (open, held_as_draft, checks) = host.into_parts();
     let change_url = open.or(change_url);
 
     let landed = verdict.unwrap_or(Landed::Unknown);
@@ -953,6 +1040,8 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             landed,
             change_url,
             draft,
+            held_as_draft,
+            described,
             merge_policy: resolved.policy.publication,
         },
         checks,
@@ -1071,6 +1160,8 @@ enum HostAnswer {
     Open {
         /// Where a human reads it.
         url: String,
+        /// Whether it is holding the change as a draft, where it would say.
+        draft: Option<bool>,
         /// Its checks, or why they could not be read.
         checks: ChecksReport,
     },
@@ -1086,16 +1177,17 @@ impl HostAnswer {
         }
     }
 
-    /// The change request it holds open, and the section the report prints.
-    fn into_parts(self) -> (Option<String>, ChecksReport) {
+    /// The change request it holds open, whether it holds it as a draft, and the
+    /// section the report prints.
+    fn into_parts(self) -> (Option<String>, Option<bool>, ChecksReport) {
         let reported = || ChecksReport::Reported {
             checks: Vec::new(),
             sources: Vec::new(),
         };
         match self {
-            HostAnswer::Unasked { because } => (None, ChecksReport::Unavailable { because }),
-            HostAnswer::NothingOpen => (None, reported()),
-            HostAnswer::Open { url, checks } => (Some(url), checks),
+            HostAnswer::Unasked { because } => (None, None, ChecksReport::Unavailable { because }),
+            HostAnswer::NothingOpen => (None, None, reported()),
+            HostAnswer::Open { url, draft, checks } => (Some(url), draft, checks),
         }
     }
 }
@@ -1126,6 +1218,11 @@ fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting)
         return HostAnswer::NothingOpen;
     };
     let url = change.url.to_string();
+    // Captured rather than raised, like everything else the host says here: a host
+    // that will not say whether it holds the change as a draft — one written before
+    // drafts, or one that answered without the field — leaves that line out rather
+    // than answering `false` for it.
+    let draft = host.is_draft(&change).ok();
     let checks = match host.change_checks(&change) {
         Ok(answer) => ChecksReport::Reported {
             checks: answer
@@ -1146,7 +1243,7 @@ fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting)
             because: error.to_string(),
         },
     };
-    HostAnswer::Open { url, checks }
+    HostAnswer::Open { url, draft, checks }
 }
 
 /// Everything the next step is decided from.
@@ -1385,8 +1482,39 @@ pub(crate) struct Recorded {
     /// stream from the draft it answers, so it has to be orderable against it rather
     /// than able only to clear the record it shares.
     lifted: Option<Stamp>,
+    /// The newest `change-described` on this stream: the one write to the change
+    /// request's prose after it was opened, which nothing but the stream records.
+    described: Option<Stamped<DescribedReport>>,
     asked_the_host_to_land: bool,
     merge_path: Option<Stamped<MergePathReport>>,
+}
+
+/// The reason a `change-drafted` payload records, read back field by field.
+///
+/// The `kind` tag says which reason it is, and a payload carrying none is one a build
+/// before the held draft wrote — every draft then was a release-awaiting one, so that
+/// is what the absence means rather than a gap. `target` goes through the conversion
+/// that decides what a target name is, for the reason the branch name and the landing
+/// commit go through theirs: a stream is a file whichever process wrote it, and a name
+/// this crate would not accept from a document is not one to render as though it had.
+///
+/// The publication's own rule is then applied where the record is read back rather
+/// than restated: a reason this crate would have refused to publish is one it must not
+/// render either — every field of it is printed on the line it is reported on.
+fn read_draft_reason(field: &dyn Fn(&str) -> Option<String>) -> Option<DraftReason> {
+    let reason = match field("kind").as_deref() {
+        Some("held") => DraftReason::Held {
+            because: field("because")?,
+        },
+        Some("awaiting-release") | None => DraftReason::AwaitingRelease {
+            awaiting: field("awaiting")?,
+            target: field("target").and_then(|name| TargetName::try_from(name).ok())?,
+            reference: field("reference")?,
+            because: field("because")?,
+        },
+        Some(_) => return None,
+    };
+    reason.checked().ok().map(|()| reason)
 }
 
 /// The moment an envelope was stamped, in the one form the shared envelope fixes:
@@ -1397,8 +1525,25 @@ pub(crate) struct Recorded {
 /// comparison: it is fixed width, so every field lines up. A value of another shape
 /// sorts against these arbitrarily, and what it would decide — which of two change
 /// requests a branch has is the newer — would be quietly wrong rather than absent.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Stamp(String);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Stamp(String);
+
+impl TryFrom<String> for Stamp {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, String> {
+        Stamp::parse(&value).ok_or_else(|| {
+            format!("{value:?} is not a moment spelled the way the event envelope spells one")
+        })
+    }
+}
+
+impl From<Stamp> for String {
+    fn from(stamp: Stamp) -> Self {
+        stamp.0
+    }
+}
 
 impl Stamp {
     /// The stamp a value spells, if it spells one at all.
@@ -1530,6 +1675,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         landing: None,
         draft: None,
         lifted: None,
+        described: None,
         asked_the_host_to_land: false,
         merge_path: None,
     };
@@ -1618,33 +1764,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // this is the *only* place it was written, because nothing of it goes into
             // the change request's body or reaches the host beyond `--draft`.
             EventKind::ChangeDrafted => {
-                let read = match (
-                    field("awaiting"),
-                    // Through the conversion that decides what a target name is, for
-                    // the reason the branch name and the landing commit above go
-                    // through theirs: a stream is a file whichever process wrote it,
-                    // and a name this crate would not accept from a document is not
-                    // one to render as though it had.
-                    field("target").and_then(|name| TargetName::try_from(name).ok()),
-                    field("reference"),
-                    field("because"),
-                ) {
-                    (Some(awaiting), Some(target), Some(reference), Some(because)) => {
-                        let reason = DraftReason {
-                            awaiting,
-                            target,
-                            reference,
-                            because,
-                        };
-                        // The publication's own rule, applied where the record is read
-                        // back rather than restated: a stream is a file whichever
-                        // process wrote it, so a reason this crate would have refused
-                        // to publish is one it must not render either — every field of
-                        // it is printed on the line it is reported on.
-                        reason.checked().ok().map(|()| reason)
-                    }
-                    _ => None,
-                };
+                let read = read_draft_reason(&field);
                 match read {
                     Some(reason) => record.draft = Some(Stamped { at, value: reason }),
                     // Said out loud rather than read as a change nobody drafted: the
@@ -1661,6 +1781,23 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                 }
             }
             EventKind::DraftLifted => record.lifted = Some(at),
+            // The description's own record: the body is the artifact the payload
+            // names, never inlined, so what is read back is where it can be read.
+            // The id goes through the check every artifact id meets before it names
+            // a file, for the reason the landing commit above goes through `ObjectId`:
+            // a stream is input, and this value is printed into a command.
+            EventKind::ChangeDescribed => {
+                record.described = Some(Stamped {
+                    at: at.clone(),
+                    value: DescribedReport {
+                        at,
+                        artifact: field("artifact")
+                            .filter(|id| crate::ids::is_safe_name(id))
+                            .map(ArtifactId),
+                        title: field("title"),
+                    },
+                });
+            }
             // Emitted with the change request's URL only where this crate went on to
             // ask the host to land it; the local merge train emits one without.
             EventKind::MergeQueued => {
@@ -2129,6 +2266,37 @@ impl Report {
                 .as_deref()
                 .unwrap_or("none recorded")
         ));
+        // Two lines about a draft, because they are two facts: what the host says
+        // stands, and what this host's record says holds it.
+        if let Some(held) = self.publication.held_as_draft {
+            out.push_str(&format!(
+                "  held as draft by the host: {}\n",
+                if held { "yes" } else { "no" }
+            ));
+        }
+        if let Some(reason) = &self.publication.draft {
+            out.push_str(&format!(
+                "  draft reason: {} — {}\n",
+                reason.kind(),
+                reason.because()
+            ));
+        }
+        if let Some(described) = &self.publication.described {
+            out.push_str(&format!(
+                "  described: {}{}{}\n",
+                described.at.0,
+                described
+                    .artifact
+                    .as_ref()
+                    .map(|id| format!(", body as artifact {}", id.0))
+                    .unwrap_or_default(),
+                described
+                    .title
+                    .as_ref()
+                    .map(|title| format!(", titled {title:?}"))
+                    .unwrap_or_default(),
+            ));
+        }
         out.push_str(&format!(
             "  merge policy: {}\n",
             policy::spell(self.publication.merge_policy)
@@ -2242,13 +2410,13 @@ fn spell_source(source: &CheckSource) -> &'static str {
 /// halves read the same two files, so neither can drift from the other.
 #[cfg(test)]
 mod round_trip {
-    use super::{Landing, Report, ReportVersion, REPORT_VERSION};
+    use super::{DraftReason, Landing, Report, ReportVersion, REPORT_VERSION};
     use serde_json::json;
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v6.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v6-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v7.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v7-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -2320,11 +2488,20 @@ mod round_trip {
             .draft
             .as_ref()
             .expect("the full golden's publication is the drafted one");
-        assert_eq!(held.awaiting, "github.com/acme-corp/upstream");
-        assert_eq!(&*held.target, "crate");
-        assert_eq!(held.reference, "feature/the-pinned-branch");
+        let DraftReason::AwaitingRelease {
+            awaiting,
+            target,
+            reference,
+            because,
+        } = held
+        else {
+            panic!("the full golden's draft awaits a release: {held:?}");
+        };
+        assert_eq!(awaiting, "github.com/acme-corp/upstream");
+        assert_eq!(&**target, "crate");
+        assert_eq!(reference, "feature/the-pinned-branch");
         assert_eq!(
-            held.because,
+            because,
             "the dependency is pinned to a branch until crate 2.0 is released"
         );
         // And it is a reason a publication could have carried, by the crate's own rule

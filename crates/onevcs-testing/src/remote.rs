@@ -12,12 +12,12 @@ use std::path::PathBuf;
 use url::Url;
 
 use onevcs::{
-    ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Error,
-    Hosting, MergeOutcome, MergePolicy, RemoteHost, Result, Sha,
+    ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description,
+    Error, Hosting, MergeOutcome, MergePolicy, RemoteHost, Result, Sha,
 };
 
 use crate::events;
-use crate::state::HostState;
+use crate::state::{Described, HostState};
 use crate::store::{FileStore, MemoryStore, Store};
 
 /// The host a change request's URL names, matching the one implementation the
@@ -282,6 +282,63 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
         let state = self.store.snapshot()?;
         Ok(state.drafts.contains_key(&cr.id) && !state.made_ready.contains(&cr.id))
+    }
+
+    /// Replace the description, recording the call.
+    ///
+    /// The title and body go where `open_change` put the ones it was given, so what
+    /// `change_description` reads back is the same record whichever call wrote it —
+    /// and the call itself is kept, for the reason `ready_for_review`'s is: a journey
+    /// about a closeout asks what was written and in what order, and the current
+    /// description cannot say. A title that names nothing is refused as the real host
+    /// refuses one; a body is prose, and an empty one is a description a caller may
+    /// mean.
+    fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()> {
+        if let Some(title) = title {
+            crate::state::titled(title)?;
+        }
+        self.store.with(|state| {
+            if !state.changes.iter().any(|change| change.id == cr.id) {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "no change request {:?} was opened on this host, so there is nothing to \
+                         describe",
+                        cr.id.0
+                    ),
+                });
+            }
+            if let Some(title) = title {
+                state.titles.insert(cr.id.clone(), title.to_owned());
+            }
+            state.bodies.insert(cr.id.clone(), body.to_owned());
+            state.described.push(Described {
+                id: cr.id.clone(),
+                title: title.map(str::to_owned),
+                body: body.to_owned(),
+            });
+            Ok(())
+        })
+    }
+
+    /// The description as this host holds it: the title it was opened or last
+    /// described with, and the body — empty where it was opened with none and never
+    /// described since, which is what the real host answers for one.
+    fn change_description(&self, cr: &ChangeRequest) -> Result<Description> {
+        let state = self.store.snapshot()?;
+        let title = state
+            .titles
+            .get(&cr.id)
+            .cloned()
+            .ok_or_else(|| Error::Invalid {
+                reason: format!(
+                    "no change request {:?} was opened on this host, so it has no description",
+                    cr.id.0
+                ),
+            })?;
+        Ok(Description {
+            title,
+            body: state.bodies.get(&cr.id).cloned().unwrap_or_default(),
+        })
     }
 
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {

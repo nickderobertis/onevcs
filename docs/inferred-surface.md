@@ -99,6 +99,21 @@ protects a branch two ways and a fine-grained token is refused the second on eve
 repository: an empty set that one source contributed to is not "requires nothing",
 and a consumer deleting its own cached list must be able to tell the two apart.
 
+**`RemoteHost::describe_change` and `RemoteHost::change_description` are an approved
+amendment, written into `docs/contract.md`** beside the three session-change calls
+they serve, and held to the code by
+`the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_methods`
+in `tests/contract.rs`. Recorded here is only why the shape is what it is. The write
+takes the title as an `Option<&str>` and the body as a `&str` rather than a
+`ChangeDescription`, because the `Subject` rule on a title is publication's and is
+applied where the description is composed — a host is handed the bytes it will
+write, and a second check of them at the seam would be a restatement. The read
+answers a `Description` of two plain strings rather than a `SessionChange`, because
+a host holds a title and a body and nothing else about the description: the URL, the
+id, the base, and the draft state come from the change request the read was asked
+about and from `is_draft`, and a type that had the host repeat them would let the
+two answers disagree.
+
 **A publication's repository side used to be git rather than `Vcs`, and no longer
 is.** The five methods covered identities, sessions, preserved work, and recovery,
 while the work `onevcs publish` does — fetch, merge, squash, push — sat beneath
@@ -128,7 +143,7 @@ for the same reason. -->
 | Type | Inferred shape | Why |
 | --- | --- | --- |
 | `SessionRecord` | `session`, `identity`, `lifecycle`, `provenance`, `retried_by` | What every command that takes a token needed off the private record and could not derive from a `Session`: which repository it belongs to, whether it is still open, and whether its branch carries an incomplete-step marker. `retried_by` is the fifth and arrived later: a branch outlives the run that cut it, so two records can hold one name, and this is the only thing that says which of them the work went on in. A `SessionToken` rather than a whole record, because that is what the rest of this surface takes. |
-| `PublishRequest` | `policy`, `title`, `body`, `draft` | Exactly the options a publication takes beyond the token — the first three are what `onevcs publish` accepts, and `draft` is the library's alone. `title` is a `Subject` rather than a `String`: a publication commits and merges before it composes a message, so the check has to be in the conversion that builds the request rather than where the message is composed. `body` is a plain `String` for the opposite reason — a host places no shape on prose, so there is nothing for a conversion to check and an unusable body does not exist. `draft` is a `DraftReason` rather than a flag and a sentence: what decides when the draft is lifted is which release is awaited, and a consumer that had to parse that back out of prose is the defect `PublishOutcome` already exists because of. |
+| `PublishRequest` | `policy`, `title`, `body`, `draft` | Exactly the options a publication takes beyond the token — the first three are what `onevcs publish` accepts, and `draft` is what `--draft` composes for the held kind and the library's alone for the release-awaiting kind. `title` is a `Subject` rather than a `String`: a publication commits and merges before it composes a message, so the check has to be in the conversion that builds the request rather than where the message is composed. `body` is a plain `String` for the opposite reason — a host places no shape on prose, so there is nothing for a conversion to check and an unusable body does not exist. `draft` is a `DraftReason` rather than a flag and a sentence: it is one of two kinds, and for the release-awaiting kind what decides when the draft is lifted is which release is awaited, and a consumer that had to parse that back out of prose is the defect `PublishOutcome` already exists because of. The held kind *is* a sentence, because the session holding it is what decides when it is lifted, and the `kind` tag is what tells a consumer which it is reading. |
 | `Publication` | `session`, `branch`, `policy`, `outcome` | What a caller journals about a publication: which session and branch, the policy it was actually taken under (after the rules file and any narrowing), and what happened. |
 | `PublishOutcome` | `merged` / `change-open` / `change-draft` / `queued` / `nothing-to-publish` / `failed` | The endings the CLI printed as prose, plus the failure it printed to stderr and reported as an exit code. The shape column beside this is the list, and `the_inferred_surface_row_lists_every_ending_publish_outcome_actually_has` holds it to the type — so the endings are counted in one place, by the suite, rather than restated as a number here that an amendment can leave behind. `Retention` is on the failure because the branch is the only record of the work, and whether it survived is the first thing a caller asks. `change-draft` came with the draft amendment and is deliberately not a shade of `change-open`: the two differ in whether the change can land, which is the one thing a caller acts on. |
 
@@ -320,7 +335,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `6`, and it is deliberately not a migration boundary
+The report's schema version is `7`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -338,6 +353,14 @@ made is the resolved publication policy's, which the report carries as
 `publication.merge_policy` beside the `identity.approvals` that carries the review
 requirement — `local-direct` is the local landing, and the three change-request
 policies are the hosted one.
+Version 7 is the held draft: `publication.draft` gains the reason's `kind`
+(`awaiting-release` or `held`), because a draft is held for one of two reasons now
+and a consumer routes on which; `publication.held_as_draft` is what the *host* says
+stands, where it could be asked, beside what this host's record says holds it; and
+`publication.described` is the last `change-described` on the stream — when, the
+artifact the body is readable under, and the title where the description replaced
+it — because that write is the one write to a change request's prose after it
+exists, and nothing else records it for a person.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -353,8 +376,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v6.json` and
-`status-report-v6-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v7.json` and
+`status-report-v7-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
@@ -392,7 +415,9 @@ name `onevcs status` is the fix, and it belongs to whoever owns the amendment.
 | `status REF` | one operand, four spellings, read in the documented order | A change request's URL, a session token, a branch name, and a commit are four names for one piece of work, and which one somebody has depends on where they are standing. Four options would make a caller say which they hold; one operand does not. First match wins, so a session token is a session token even where a branch of that name exists, and ambiguity is *within* a spelling — one branch name in two identities — which is refused naming every candidate. |
 | the sections | identity, session, branch, publication, checks, merge path, next | What an agent had to reach outside for, in one place. `next` is the surface the branch-keyed refusals already are: a report that diagnoses without naming the command that advances the work leaves an agent to invent one. |
 | `landed` | decided from the base's own history, in four tiers, naming the one that decided it | Publication squashes, so a branch that landed is an ancestor of nothing afterwards — and the content comparison that used to answer this is an inference that stops being true the moment anything else lands on the base. The tiers are recorded below. It is the same question `vcs::collect` excludes a branch on, which is what keeps the report and `recoverable` from disagreeing about one branch. |
-| `publication.draft` | the `DraftReason` currently holding the change back, omitted where nothing is | The one thing a draft change request cannot tell anybody. The approved amendment puts the reason in the publication record — the session's own event stream — and **nothing in the change request's body**, so a host renders that the change *is* a draft and never why. This report is where that record is read back, because it is the only place in this crate that reads a stream for a person. The reason is `DraftReason` itself rather than a second shape beside it: a consumer that routes on `awaiting`/`target`/`reference` to decide when to lift is reading the same four fields the publication was given. Omitted for a change nobody drafted **and** for one whose draft has been lifted, which are one answer — nothing is holding this back now — and the history of both is in `onevcs events`. |
+| `publication.draft` | the `DraftReason` currently holding the change back, omitted where nothing is | The one thing a draft change request cannot tell anybody. The approved amendment puts the reason in the publication record — the session's own event stream — and **nothing in the change request's body**, so a host renders that the change *is* a draft and never why. This report is where that record is read back, because it is the only place in this crate that reads a stream for a person. The reason is `DraftReason` itself rather than a second shape beside it, `kind` and all: a consumer that routes on `awaiting`/`target`/`reference` to decide when to lift is reading the same fields the publication was given, and one that reads `held` knows the session holding it is what lifts it. Omitted for a change nobody drafted **and** for one whose draft has been lifted, which are one answer — nothing is holding this back now — and the history of both is in `onevcs events`. |
+| `publication.held_as_draft` | what the host says, omitted where it could not be asked or would not say | The record above says why a draft was opened; the host says whether one stands, and the two are two facts — a draft lifted on the host by hand is one the record still holds a reason for. Never `false` for a host that would not say: "not a draft" is what lets a change be asked to merge. |
+| `publication.described` | the newest `change-described`, omitted where there is none | `change describe` is the one write to a change request's prose after it exists, and the stream is the only record of it. The report names when, the artifact the body is readable under, and the title where the description replaced it — never the body itself, which is prose of unbounded size and is what `onevcs artifact cat` is for. |
 | how a lift is read | the newest `change-drafted` held against the newest `draft-lifted`, across every stream of the branch | A publication carrying no reason is what lifts a draft, and a branch-keyed verb writes its own stream — so the draft and the lift routinely sit in two *different* records of one branch, and a reader that consulted only the drafting stream would report a reason nothing is holding. An equal stamp clears the draft: the two cannot be simultaneous, so it is a clock that could not tell them apart, and reporting a spent reason sends somebody to wait for a release that has arrived. |
 | the host section | degrades, never fails | `status` reaches the host for what a change request is doing now, and everything else it reports is answerable offline. A command that failed because a network call did would leave an operator with none of the answer. |
 | `--json` | the same object, on stdout | The scope note `recoverable` carries does not apply: `status` is asked about one piece of work by name, so there is no unstated scope for a reader to mistake. |
