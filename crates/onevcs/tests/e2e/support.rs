@@ -243,7 +243,11 @@ pub fn commands() -> Vec<String> {
             let segment = segment.strip_prefix("onevcs ").unwrap_or(segment);
             segment.split_whitespace().next()
         })
-        .filter(|name| name.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+        // A command name, never an option: `[--body TEXT | --body-file PATH]` puts an
+        // option first in an alternative, and it names no command.
+        .filter(|name| {
+            !name.starts_with('-') && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        })
         .map(str::to_owned)
         .collect();
     names.sort_unstable();

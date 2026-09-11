@@ -244,6 +244,62 @@ pub trait RemoteHost {
             operation: "RemoteHost::required_checks_on",
         })
     }
+
+    /// Replace a change request's description: its body, and its title when one is
+    /// given.
+    ///
+    /// The one write to a change request's prose after it exists. It writes exactly
+    /// the caller's bytes — nothing is composed around the body and nothing of a
+    /// draft's reason is rendered into it — because a body is what a reviewer reads
+    /// and what a drafting caller may rewrite, and `onevcs change describe` is where
+    /// a session's own evidence reaches it.
+    ///
+    /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
+    /// stays additive — and to the same refusal: a host that was never taught to
+    /// describe a change has not described one.
+    fn describe_change(
+        &self,
+        _cr: &ChangeRequest,
+        _title: Option<&str>,
+        _body: &str,
+    ) -> Result<()> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::describe_change",
+        })
+    }
+
+    /// What a change request's description is now: its title and its body, as the
+    /// host holds them.
+    ///
+    /// The read beside [`describe_change`](RemoteHost::describe_change), and what
+    /// `onevcs change show` answers with: a caller that wrote a description needs to
+    /// see what it wrote, and a caller finishing one off needs to see what it starts
+    /// from.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn change_description(&self, _cr: &ChangeRequest) -> Result<Description> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::change_description",
+        })
+    }
+}
+
+/// A change request's description as the host holds it.
+///
+/// What [`RemoteHost::change_description`] answers, and the other half of
+/// [`ChangeDescription`](crate::ChangeDescription): a caller writes a body and
+/// optionally a title, and reads back both. Both are plain strings, because both are
+/// prose a host places no shape on — a title *this crate lands* is a
+/// [`Subject`](crate::Subject), but a title a host already holds was composed by
+/// whoever opened the change request, and is reported as it is rather than refused.
+// llmlint: ignore[invalid_states_unrepresentable] the doc above: what a host answers,
+// reported rather than judged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Description {
+    /// The title, which under squash-merge becomes the commit subject.
+    pub title: String,
+    /// The body, verbatim. Empty where the change request carries none.
+    pub body: String,
 }
 
 /// One of the ways a host protects a branch, each of which may name required checks.
@@ -1450,6 +1506,68 @@ impl RemoteHost for GitHub {
     fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()> {
         addressable(&cr.id.0, "change request id")?;
         gh::invoke(&["pr", "ready", &cr.id.0, "--repo", &self.repo]).map(|_| ())
+    }
+
+    /// One `gh pr edit`, handing the body over as a file.
+    ///
+    /// A file rather than `--body`, because a body is prose of unbounded size and an
+    /// argument vector is not where multi-line Markdown belongs: the same reason
+    /// `onevcs publish` takes `--body-file`. The file is written under a scratch
+    /// directory that goes when this returns, and `gh` reads it before then.
+    fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()> {
+        addressable(&cr.id.0, "change request id")?;
+        let scratch = tempfile::tempdir().map_err(|failure| {
+            invalid(format!(
+                "could not create a scratch directory to hand the body of {} to gh: {failure}",
+                cr.url
+            ))
+        })?;
+        let file = scratch.path().join("body.md");
+        std::fs::write(&file, body).map_err(crate::error::at(
+            "write the change request's body to",
+            &file,
+        ))?;
+        let file = file.to_string_lossy().into_owned();
+        let mut args = vec![
+            "pr",
+            "edit",
+            &cr.id.0,
+            "--repo",
+            &self.repo,
+            "--body-file",
+            &file,
+        ];
+        if let Some(title) = title {
+            args.extend(["--title", title]);
+        }
+        gh::invoke(&args).map(|_| ())
+    }
+
+    /// One `gh pr view`, reading exactly the two fields a description is.
+    ///
+    /// A response missing either is refused rather than read as empty: "the change
+    /// request has no body" and "the host would not say what the body is" are
+    /// different facts, and a caller finishing a description off what it reads here
+    /// would otherwise start from a blank the host never answered.
+    fn change_description(&self, cr: &ChangeRequest) -> Result<Description> {
+        addressable(&cr.id.0, "change request id")?;
+        let view = self.view(&cr.id.0, "title,body")?;
+        let read = |name: &str| {
+            view.get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "gh pr view answered about {} without its {name}, so what the change \
+                         request says cannot be read",
+                        cr.url
+                    ))
+                })
+        };
+        Ok(Description {
+            title: read("title")?,
+            body: read("body")?,
+        })
     }
 
     /// One `gh pr view`, reading the one field the host decides a draft by.

@@ -28,6 +28,23 @@ onevcs events "$token"                             # everything it did, as NDJSO
 onevcs release status "$token"                     # …and whether a release carries it
 ```
 
+A session can also open its change request **as a draft it holds** while its work
+is still being made, and finish the description off once it has evidence to put in
+it:
+
+```console
+onevcs publish "$token" --draft                    # open it as a draft the session holds
+# …trigger a CI run, put up a demonstration change, gather what the reviewer needs…
+onevcs change describe "$token" --body-file pr.md  # replace the description with the evidence
+onevcs change show "$token" --json                 # what the host holds: url, id, base, draft, title, body
+onevcs change ready "$token"                       # lift the draft without landing anything
+onevcs publish "$token"                            # …or lift it and land it in one step
+```
+
+Each of those addresses the session's own change request — the one open from its
+branch into its base — so nothing names a URL. The library forms are
+`session_change`, `describe_change`, and `ready_change`.
+
 A branch that outlived the session that cut it is landed by name instead, under
 that same rules-resolved policy: `onevcs publish-branch feature/thing --repo
 ~/projects/widgets` for work that finished, and `onevcs recover` for a step that
@@ -158,7 +175,9 @@ let published = onevcs::publish(&providers, &token, &PublishRequest::default())?
 match published.outcome {
     PublishOutcome::Merged(sha) => journal.landed(sha),
     PublishOutcome::ChangeOpen(url) | PublishOutcome::Queued(url) => journal.awaiting(url),
-    // A draft cannot land while it stands; publishing again with no `draft` lifts it.
+    // A draft cannot land while it stands; publishing again with no `draft` lifts
+    // it, and so does `ready_change`. Whether it awaits a dependency's release or
+    // is held by the session still making it is the `DraftReason` the request carried.
     PublishOutcome::ChangeDraft(url) => journal.held_back(url),
     PublishOutcome::NothingToPublish => journal.nothing(),
     PublishOutcome::Failed { kind, reason, retained } => journal.failed(kind, reason, retained),
@@ -189,7 +208,8 @@ Every envelope carries the **phase** of a change's life its producer stamped it
 with — `development` (the work being made, including a push of the session's own
 branch), `integrate` (the merge queue, the merge, a sync conflict, and a push of
 any other branch), `review` (the change request opened, checked, and merged), and
-`release` (a probe, an acknowledgement, an observation). Naming a phase is how a
+`release` (a probe, an acknowledgement, an observation). `review` is also where a
+draft is opened, described, and lifted. Naming a phase is how a
 consumer asks for "the review of this change" without listing the kinds in it, so
 a kind added to that phase later arrives in the read that already wanted it.
 

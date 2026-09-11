@@ -40,8 +40,8 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v6.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v6-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v7.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v7-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
@@ -58,6 +58,8 @@ const OPTIONAL: &[&[&str]] = &[
     &["branch", "change_base"],
     &["publication", "change_url"],
     &["publication", "draft"],
+    &["publication", "held_as_draft"],
+    &["publication", "described"],
     &["merge_path"],
 ];
 
@@ -71,7 +73,7 @@ const AUTOMATED_POLICY: &str = "{publication: change-auto, approvals: required}"
 /// The reason a person actually reads is [`DraftReason::because`]; the three fields
 /// beside it are what decides when the draft may be lifted.
 fn held_for_a_release() -> onevcs::DraftReason {
-    onevcs::DraftReason {
+    onevcs::DraftReason::AwaitingRelease {
         awaiting: "github.com/acme-corp/upstream".to_owned(),
         target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
         reference: "feature/the-pinned-branch".to_owned(),
@@ -1561,12 +1563,20 @@ fn named(golden: &str, path: &[&str]) -> Option<Value> {
 /// All zeros because no run mints that one.
 const TOKEN: &str = "s-000000000000";
 
+/// The stand-ins a golden names a description's moment and its body artifact by —
+/// each a value its own type accepts, for the reason [`TOKEN`] is one: a stamp of
+/// the envelope's own shape at a moment no run stamps, and an artifact id no run
+/// mints.
+const STAMP: &str = "2026-01-01T00:00:00.000Z";
+const ARTIFACT: &str = "a-000000000000";
+
 /// One report with everything a run cannot repeat replaced by what it is.
 ///
-/// A scratch root and a session token differ on every machine and in every run;
-/// everything else in these bytes — the identity key, the workspace directory that
-/// is a digest of it, the change request's number, the commit counts — is the same
-/// wherever this runs, and is what the golden is for.
+/// A scratch root, a session token, and the moment and artifact of a description
+/// differ on every machine and in every run; everything else in these bytes — the
+/// identity key, the workspace directory that is a digest of it, the change request's
+/// number, the commit counts — is the same wherever this runs, and is what the
+/// golden is for.
 fn readable(report: &Value, world: &World, token: Option<&str>) -> String {
     let root = world.path("x");
     let root = root
@@ -1574,7 +1584,18 @@ fn readable(report: &Value, world: &World, token: Option<&str>) -> String {
         .expect("the scratch root")
         .to_string_lossy()
         .into_owned();
-    let rendered = serde_json::to_string_pretty(report).expect("a report");
+    let mut report = report.clone();
+    if let Some(described) = report
+        .get_mut("publication")
+        .and_then(|publication| publication.get_mut("described"))
+        .and_then(Value::as_object_mut)
+    {
+        described.insert("at".to_owned(), Value::from(STAMP));
+        if described.contains_key("artifact") {
+            described.insert("artifact".to_owned(), Value::from(ARTIFACT));
+        }
+    }
+    let rendered = serde_json::to_string_pretty(&report).expect("a report");
     let rendered = rendered.replace(&root, "<root>");
     let rendered = match token {
         Some(token) => rendered.replace(token, TOKEN),
@@ -1628,14 +1649,13 @@ fn a_drafted_publication_reports_why_it_is_held_and_a_lifted_one_reports_no_draf
 
     // Read back through the compiled binary, which is the surface an operator meets.
     let held = report(&hosted.world, "feature/held");
-    let reason = held_for_a_release();
-    assert_eq!(held["publication"]["draft"]["because"], reason.because);
-    assert_eq!(held["publication"]["draft"]["awaiting"], reason.awaiting);
+    // The reason as the publication was given it, `kind` and all: a consumer
+    // routing on which kind holds the change reads it off this object.
     assert_eq!(
-        held["publication"]["draft"]["target"],
-        reason.target.to_string()
+        held["publication"]["draft"],
+        serde_json::to_value(held_for_a_release()).expect("a reason serializes")
     );
-    assert_eq!(held["publication"]["draft"]["reference"], reason.reference);
+    assert_eq!(held["publication"]["draft"]["kind"], "awaiting-release");
     // The change request is open, and the draft is the only thing this report says
     // about it beyond that — the host's own answer has no room for a reason.
     assert_eq!(held["publication"]["state"], "open");
@@ -1845,6 +1865,24 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         matches!(published.outcome, onevcs::PublishOutcome::ChangeDraft(_)),
         "the golden's publication is the drafted one: {published:?}"
     );
+    // …and described after it was opened, which is the one write to a change
+    // request's prose the record holds and the report reads back.
+    let body = hosted.world.path("described.md");
+    std::fs::write(&body, "## What\n\nThe whole thing, described.\n").expect("a body file");
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "change",
+            "describe",
+            &token,
+            "--body-file",
+            &body.to_string_lossy(),
+            "--title",
+            "feat: add the whole thing, described",
+        ])
+        .assert()
+        .success();
 
     // Reachable from the checkout as well as the run clone, which is what makes the
     // holder list say more than one thing.
@@ -1892,7 +1930,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&full, &hosted.world, Some(&token)),
         FULL,
         "the object `onevcs status --json` writes is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/status-report-v6.json from the run above, and bump \
+         crates/onevcs/tests/golden/status-report-v7.json from the run above, and bump \
          the version in docs/inferred-surface.md and src/status.rs if the shape moved"
     );
     for path in OPTIONAL {
@@ -1935,7 +1973,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&minimal, &plain.world, None),
         MINIMAL,
         "the object a report with nothing optional in it writes is its checked-in \
-         golden; re-make crates/onevcs/tests/golden/status-report-v6-minimal.json"
+         golden; re-make crates/onevcs/tests/golden/status-report-v7-minimal.json"
     );
     // Omitted rather than null: a consumer that has never heard of a field is not
     // handed one, and "no session" and "a session that is null" are different

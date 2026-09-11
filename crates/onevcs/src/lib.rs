@@ -39,6 +39,7 @@ use std::path::Path;
 
 mod app;
 mod branch;
+mod change;
 pub mod cli;
 pub mod declaration;
 mod error;
@@ -76,6 +77,7 @@ mod sweep;
 mod vcs;
 mod workspace;
 
+pub use change::{ChangeDescription, SessionChange};
 pub use declaration::{
     Declaration, DeclaredTarget, InstructionTemplate, RegistryId, RetiredArtifact,
 };
@@ -84,8 +86,8 @@ pub use event::{
     ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Phase, Source,
 };
 pub use host::{
-    ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, GitHub, Hosting,
-    MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
+    ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description, GitHub,
+    Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
 pub use landed::{Landed, LandingEvidence};
 pub use providers::Providers;
@@ -154,6 +156,44 @@ pub fn publish(
 /// The library form of `onevcs session close`.
 pub fn close_session(providers: &Providers<'_>, token: &SessionToken) -> Result<Session> {
     providers.vcs.close_session(token)
+}
+
+/// The session's own change request — the one open from its branch into its base —
+/// as the host holds it, or `None` when the host holds none.
+///
+/// The library form of `onevcs change show`. It never invents one: a session that
+/// has not published has no change request, and [`publish`] is what opens one.
+pub fn session_change(
+    providers: &Providers<'_>,
+    token: &SessionToken,
+) -> Result<Option<SessionChange>> {
+    change::session_change(providers, token)
+}
+
+/// Replace the description of the session's own change request — its body, and its
+/// title when one is given — and report the change as it stands after the write.
+///
+/// The library form of `onevcs change describe`. It refuses a session with no change
+/// request rather than opening one. A title is a [`Subject`] and is held to the
+/// repository's own `commit-msg` hook exactly as a publication's is, because it is
+/// the squash subject a `change-auto` merge lands under. The body is written
+/// verbatim and recorded as an artifact the `change-described` event names.
+pub fn describe_change(
+    providers: &Providers<'_>,
+    token: &SessionToken,
+    description: &ChangeDescription,
+) -> Result<SessionChange> {
+    change::describe_change(providers, token, description)
+}
+
+/// Mark the session's own change request ready for review, and report it as it
+/// stands.
+///
+/// The library form of `onevcs change ready`: the lift a publication carrying no
+/// [`DraftReason`] performs, asked for on its own. A change request that is not a
+/// draft is asked for nothing and reported as it stands.
+pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionChange> {
+    change::ready_change(providers, token)
 }
 
 /// Every session recorded for one repository, live or not, in token order.

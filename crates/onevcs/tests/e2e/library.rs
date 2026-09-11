@@ -2789,10 +2789,21 @@ const AUTOMATED: &str = "{publication: change-auto, approvals: none}";
 /// A policy that asks the host to merge the change now.
 const DIRECT: &str = "{publication: change-direct, approvals: none}";
 
+/// The reason a fast-adopting caller drafts a change request with, with the two
+/// fields a journey varies to make one unusable.
+fn awaiting_a_release_with(reference: &str, because: &str) -> DraftReason {
+    DraftReason::AwaitingRelease {
+        awaiting: "github.com/acme-corp/upstream".to_owned(),
+        target: TargetName::try_from("crate".to_owned()).expect("a target name"),
+        reference: reference.to_owned(),
+        because: because.to_owned(),
+    }
+}
+
 /// The reason a fast-adopting caller drafts a change request with: the work is done
 /// and the dependency is still pinned to a branch.
 fn awaiting_a_release() -> DraftReason {
-    DraftReason {
+    DraftReason::AwaitingRelease {
         awaiting: "github.com/acme-corp/upstream".to_owned(),
         target: TargetName::try_from("crate".to_owned()).expect("a target name"),
         reference: "feature/the-pinned-branch".to_owned(),
@@ -2886,10 +2897,22 @@ fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
     // the caller drafted, byte for byte, with nothing of the reason appended to it.
     let drafted = world.events_of(&session.token.0, "change-drafted");
     assert_eq!(drafted.len(), 1, "{drafted:?}");
-    assert_eq!(drafted[0]["payload"]["awaiting"], reason.awaiting);
-    assert_eq!(drafted[0]["payload"]["target"], reason.target.to_string());
-    assert_eq!(drafted[0]["payload"]["reference"], reason.reference);
-    assert_eq!(drafted[0]["payload"]["because"], reason.because);
+    // Today's four fields, plus the kind that says which reason this is — so a
+    // consumer reading the record routes on `kind` and reads the fields of that kind.
+    let DraftReason::AwaitingRelease {
+        awaiting,
+        target,
+        reference,
+        because,
+    } = &reason
+    else {
+        panic!("a fast-adopting caller's reason awaits a release");
+    };
+    assert_eq!(drafted[0]["payload"]["kind"], "awaiting-release");
+    assert_eq!(drafted[0]["payload"]["awaiting"], *awaiting);
+    assert_eq!(drafted[0]["payload"]["target"], target.to_string());
+    assert_eq!(drafted[0]["payload"]["reference"], *reference);
+    assert_eq!(drafted[0]["payload"]["because"], *because);
     assert_eq!(drafted[0]["payload"]["url"], url.to_string());
     assert_eq!(drafted[0]["phase"], "review");
     assert_eq!(
@@ -2897,7 +2920,7 @@ fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
         Some(DRAFTED),
         "the body is the caller's, and the reason is not written into it"
     );
-    for span in [reason.because.as_str(), reason.awaiting.as_str()] {
+    for span in [because.as_str(), awaiting.as_str()] {
         assert!(
             !host.state().bodies[&opened.id].contains(span),
             "nothing of the reason is rendered into the change request body"
@@ -3141,26 +3164,28 @@ fn a_draft_reason_that_would_not_render_as_itself_is_refused_where_it_arrives() 
     let host = MemoryHost::new();
     let base = origin_tip(&world, &origin, "main");
 
-    for (field, unusable) in [
+    for (branch, field, unusable) in [
         (
+            "feature/unusable-because",
             "the reason the change is not ready",
-            DraftReason {
-                because: String::new(),
-                ..awaiting_a_release()
-            },
+            awaiting_a_release_with("feature/the-pinned-branch", ""),
         ),
         (
+            "feature/unusable-reference",
             "the reference the change is pinned to",
-            DraftReason {
-                reference: "feature/two\nlines".to_owned(),
-                ..awaiting_a_release()
+            awaiting_a_release_with("feature/two\nlines", "the pin moves when the release lands"),
+        ),
+        // The held kind is held to the same rule, at the same boundary: its one field
+        // is printed on one line too.
+        (
+            "feature/unusable-held",
+            "the reason the session is holding the change",
+            DraftReason::Held {
+                because: "held\nacross two lines".to_owned(),
             },
         ),
     ] {
-        let session = worked(
-            &world,
-            &format!("feature/unusable-{}", unusable.reference.len()),
-        );
+        let session = worked(&world, branch);
         let published = onevcs::publish(
             &Providers {
                 vcs: &Git,
@@ -3802,10 +3827,7 @@ fn the_real_host_refuses_an_unusable_reason_before_it_reaches_the_host_at_all() 
             base: "main".to_owned(),
             title: "feat: the thing".to_owned(),
             body: None,
-            draft: Some(DraftReason {
-                because: String::new(),
-                ..awaiting_a_release()
-            }),
+            draft: Some(awaiting_a_release_with("feature/the-pinned-branch", "")),
         })
         .expect_err("a reason nothing could render is not one to open a draft with");
     assert!(

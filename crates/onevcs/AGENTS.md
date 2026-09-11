@@ -98,6 +98,39 @@ and the filter grammar matches it. Four things about that are easy to undo.
   would answer from the last time the record moved and drop a release recorded while
   the landing could not yet be read.
 
+## A session's own change request, after it exists
+
+`change.rs` is three thin calls over the host — `session_change`, `describe_change`,
+`ready_change` — each addressed at **the session's own change request**, the one
+open from the session's branch into its base, so no caller names a URL. `onevcs
+change show|describe|ready` are renderings of them, and `onevcs publish TOKEN
+--draft` is how a session opens that change request as a draft it holds while its
+work is still being made. Five things are easy to undo.
+
+- **Nothing here opens a change request.** `describe_change` and `ready_change`
+  refuse a session with none, naming `publish --draft`; `session_change` answers
+  `None`. A verb that opened one on the way would be a second publication path.
+- **`DraftReason` is one enum with two kinds, and the kind is the wire.** The
+  `awaiting-release` variant is the four fields a fast-adoption publication always
+  carried; `held` is the session's own. `change-drafted` carries the reason's
+  serialized form — `kind` and the fields of that kind — and `status` reads it back
+  by `kind`, treating a payload with none as the one kind there was. Every refusal a
+  draft can meet (`local-direct`, a change already open for review) is spelled per
+  variant through `DraftReason::asked_for`.
+- **A held draft leaves the session record open.** `run_for_session` closes the
+  record on every successful publication except a `ChangeDraft` under `Held`: the
+  worker is still in the worktree, and `workspace::reclaim` protects a run root
+  only while an open record names it. A draft awaiting a release still closes the
+  record — that work is finished.
+- **A described body is an artifact, never a payload field.** `change-described`
+  names the artifact id and the title where one replaced it; the body is prose of
+  unbounded size. The host is handed exactly the caller's bytes.
+- **A title on `describe_change` is a `Subject`, held to the `commit-msg` hook
+  through the session's worktree** — the same `publish::hold_to_repository_policy`
+  a publication asks. A worktree that is not a git checkout (a supplied `Vcs`'s) has
+  no hook to ask and is asked nothing, which is the same rule the testing providers
+  publish a requested title under.
+
 ## A branch outlives its session, so a retried session says who continued it
 
 `workspace::Record::retried_by` names the session that continued this one's branch,

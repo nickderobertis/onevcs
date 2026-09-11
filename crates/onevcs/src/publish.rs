@@ -74,14 +74,19 @@ pub struct PublishRequest {
     pub draft: Option<DraftReason>,
 }
 
-/// Why a change request was opened as a draft, in the shape a machine reads it.
+/// Why a change request is a draft, in the shape a machine reads it.
 ///
-/// A draft is a change that has gone as far as it can and stopped short of the one
-/// step that would make something temporary permanent — a dependency pinned to a
-/// branch rather than to a release. What it is waiting for is therefore the whole of
-/// the reason: which repository, which of that repository's release targets, and the
-/// reference the change is pinned to in the meantime. [`because`](Self::because) is
-/// the same fact as a sentence, for whoever reads it rather than routes on it.
+/// A draft is a change request that must not land yet, and there are two reasons one
+/// is held. A change that has gone as far as it can and stopped short of the one step
+/// that would make something temporary permanent — a dependency pinned to a branch
+/// rather than to a release — is [`AwaitingRelease`](DraftReason::AwaitingRelease),
+/// and what it is waiting for is the whole of the reason: which repository, which of
+/// that repository's release targets, and the reference the change is pinned to in
+/// the meantime. A change whose work is *still being made* — evidence gathered, a
+/// description started — is [`Held`](DraftReason::Held) by the session that opened
+/// it, and the one line a person reads is the whole of that reason. The `kind` tag
+/// is what a consumer routes on; [`because`](DraftReason::because) is the same fact
+/// as a sentence, for whoever reads it rather than routes on it.
 ///
 /// It is recorded on the session's own event stream — the publication record — and
 /// nowhere else. **Nothing is written into the change request's body**, under a
@@ -91,34 +96,52 @@ pub struct PublishRequest {
 /// change request without access to this host sees that it **is** a draft and not
 /// why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DraftReason {
-    /// The repository identity whose release is awaited, as the registry keys one.
-    ///
-    /// A `String` rather than a newtype because an identity key is one everywhere this
-    /// crate spells one — `Identity::origin`, `Recoverable::identity`, the registry
-    /// document's own map key — so a narrower type here would disagree with every type
-    /// it is compared against. What must not be representable is a value that renders as
-    /// something *other* than itself in a refusal or an event payload, and `checked`
-    /// refuses exactly that at every boundary one arrives at.
-    // llmlint: ignore[invalid_states_unrepresentable] the doc above: the key's own type, checked.
-    pub awaiting: String,
-    /// Which release target of it is awaited.
-    pub target: TargetName,
-    /// The reference this change is pinned to until that release arrives — the
-    /// branch of the awaited repository the pin names.
-    ///
-    /// A `String` for the reason `awaiting` above is, and one more of its own: this is
-    /// the *awaited* repository's branch name rather than one this repository's git
-    /// could be asked about, so the parser that would decide it is not this host's.
-    /// `checked` refuses the values that would render as something else.
-    // llmlint: ignore[invalid_states_unrepresentable] the doc above: another host's name, checked.
-    pub reference: String,
-    /// One line a person reads, saying why the change is not ready.
-    ///
-    /// Prose, so there is nothing for a type to narrow. The one shape that matters is
-    /// where it lands — a single rendered line — and `checked` is what holds it to that.
-    // llmlint: ignore[invalid_states_unrepresentable] the doc above: prose, checked where it lands.
-    pub because: String,
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DraftReason {
+    /// A change pinned to a dependency's branch until that dependency releases —
+    /// what a fast-adoption publication carries.
+    AwaitingRelease {
+        /// The repository identity whose release is awaited, as the registry keys one.
+        ///
+        /// A `String` rather than a newtype because an identity key is one everywhere
+        /// this crate spells one — `Identity::origin`, `Recoverable::identity`, the
+        /// registry document's own map key — so a narrower type here would disagree
+        /// with every type it is compared against. What must not be representable is
+        /// a value that renders as something *other* than itself in a refusal or an
+        /// event payload, and `checked` refuses exactly that at every boundary one
+        /// arrives at.
+        // llmlint: ignore[invalid_states_unrepresentable] the doc above: the key's own type, checked.
+        awaiting: String,
+        /// Which release target of it is awaited.
+        target: TargetName,
+        /// The reference this change is pinned to until that release arrives — the
+        /// branch of the awaited repository the pin names.
+        ///
+        /// A `String` for the reason `awaiting` above is, and one more of its own:
+        /// this is the *awaited* repository's branch name rather than one this
+        /// repository's git could be asked about, so the parser that would decide it
+        /// is not this host's. `checked` refuses the values that would render as
+        /// something else.
+        // llmlint: ignore[invalid_states_unrepresentable] the doc above: another host's name, checked.
+        reference: String,
+        /// One line a person reads, saying why the change is not ready.
+        ///
+        /// Prose, so there is nothing for a type to narrow. The one shape that matters
+        /// is where it lands — a single rendered line — and `checked` is what holds it
+        /// to that.
+        // llmlint: ignore[invalid_states_unrepresentable] the doc above: prose, checked where it lands.
+        because: String,
+    },
+    /// A change request the session that opened it is holding open as a draft while
+    /// its work is still being made: evidence gathered, description started. Lifted
+    /// by a later publication of the same session carrying no reason, or by
+    /// `onevcs change ready`.
+    Held {
+        /// One line a person reads, saying why the session is holding it. Prose,
+        /// held to the one line it is printed on by `checked`, as the line above is.
+        // llmlint: ignore[invalid_states_unrepresentable] the doc above: prose, checked where it lands.
+        because: String,
+    },
 }
 
 impl DraftReason {
@@ -133,18 +156,29 @@ impl DraftReason {
     /// belongs to publication rather than to any one implementation of it, so a
     /// supplied [`Vcs`](crate::Vcs) applies *this* rule at its own boundary rather
     /// than a restatement of it that could accept what the real one refuses. It is a
-    /// method rather than a conversion because the contract fixes the four fields as
+    /// method rather than a conversion because the contract fixes the fields as
     /// public and settable, so there is no constructor for a check to live in.
     ///
     /// # Errors
     ///
     /// [`Error::Invalid`] naming the field that would not render as itself.
     pub fn checked(&self) -> Result<()> {
-        for (what, value) in [
-            ("the repository whose release is awaited", &self.awaiting),
-            ("the reference the change is pinned to", &self.reference),
-            ("the reason the change is not ready", &self.because),
-        ] {
+        let printed: Vec<(&str, &String)> = match self {
+            DraftReason::AwaitingRelease {
+                awaiting,
+                reference,
+                because,
+                ..
+            } => vec![
+                ("the repository whose release is awaited", awaiting),
+                ("the reference the change is pinned to", reference),
+                ("the reason the change is not ready", because),
+            ],
+            DraftReason::Held { because } => {
+                vec![("the reason the session is holding the change", because)]
+            }
+        };
+        for (what, value) in printed {
             if value.is_empty() {
                 return Err(crate::error::invalid(format!(
                     "a draft change request must say {what}, and this one names none: a draft \
@@ -162,14 +196,45 @@ impl DraftReason {
         Ok(())
     }
 
-    /// The reason as the fields an event payload and a refusal both name it by.
+    /// The one line a person reads, whichever kind of reason this is.
+    #[must_use]
+    pub fn because(&self) -> &str {
+        match self {
+            DraftReason::AwaitingRelease { because, .. } | DraftReason::Held { because } => because,
+        }
+    }
+
+    /// The word the `kind` tag travels as: `awaiting-release` or `held`.
+    ///
+    /// The spelling is serde's, and `fields` below is what holds the two together —
+    /// the tag is read out of the serialized form rather than restated here.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            DraftReason::AwaitingRelease { .. } => "awaiting-release",
+            DraftReason::Held { .. } => "held",
+        }
+    }
+
+    /// The reason as the fields an event payload and a refusal both name it by:
+    /// the `kind` tag and every field of that kind, which is exactly the serialized
+    /// form.
     fn fields(&self) -> serde_json::Value {
-        json!({
-            "awaiting": self.awaiting,
-            "target": self.target.to_string(),
-            "reference": self.reference,
-            "because": self.because,
-        })
+        serde_json::to_value(self).expect("a draft reason serializes: strings and a name")
+    }
+
+    /// The reason as a refusal spells what was asked for — "a draft awaiting … " or
+    /// "a draft held by the session that opened it" — so the two refusals a draft
+    /// can meet name the same thing the same way whichever kind of reason it was.
+    pub(crate) fn asked_for(&self) -> String {
+        match self {
+            DraftReason::AwaitingRelease {
+                awaiting, target, ..
+            } => format!("a draft awaiting {awaiting} {target}"),
+            DraftReason::Held { because } => {
+                format!("a draft held by the session that opened it ({because})")
+            }
+        }
     }
 }
 
@@ -476,8 +541,21 @@ pub fn run_for_session(
     let branch = record.branch.to_string();
     let outcome = match run(&context, &mut stream) {
         Ok(outcome) => {
-            record.state = Lifecycle::Closed;
-            workspace::save(&record)?;
+            // A publication is the end of a session's work, so the record closes
+            // with it — with one exception. A draft the session itself is holding
+            // is a session still being worked in: its worktree is still the
+            // dispatch's, and `session close` is what ends it. That matters because
+            // `workspace::reclaim` keeps a run root only while an *open* record names
+            // it, so a held draft that closed the record would let the next sibling
+            // `session open` reap the worktree the worker is committing in. A draft
+            // held for a release is the other thing: the work is finished, and the
+            // next worker opens a session of its own.
+            let still_working = matches!(outcome, PublishOutcome::ChangeDraft(_))
+                && matches!(context.draft, Some(DraftReason::Held { .. }));
+            if !still_working {
+                record.state = Lifecycle::Closed;
+                workspace::save(&record)?;
+            }
             outcome
         }
         Err(error) => {
@@ -741,15 +819,21 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
         reason.checked()?;
         if context.effective == MergePolicy::LocalDirect {
             return Err(crate::error::invalid(format!(
-                "{branch:?} was asked to publish as a draft awaiting {awaiting} {target}, and \
-                 this identity publishes with local-direct, which squashes the branch onto \
-                 {base:?} and opens no change request at all — so there is nothing to draft and \
-                 the work would land with the very pin the draft exists to hold back. Publish it \
-                 under a change-* policy, or publish it without a draft",
+                "{branch:?} was asked to publish as {asked}, and this identity publishes with \
+                 local-direct, which squashes the branch onto {base:?} and opens no change \
+                 request at all — so there is nothing to draft and {lands}. Publish it under a \
+                 change-* policy, or publish it without a draft",
                 branch = context.branch,
-                awaiting = reason.awaiting,
-                target = reason.target,
+                asked = reason.asked_for(),
                 base = context.target.base(),
+                lands = match reason {
+                    DraftReason::AwaitingRelease { .. } => {
+                        "the work would land with the very pin the draft exists to hold back"
+                    }
+                    DraftReason::Held { .. } => {
+                        "the work would land while the session is still making it"
+                    }
+                },
             )));
         }
     }
@@ -854,7 +938,7 @@ pub(crate) fn subject_for(
 ///
 /// A repository with no `commit-msg` hook expresses no policy and acquires none by
 /// being published through here: [`git::MessagePolicy::Unstated`] passes silently.
-fn hold_to_repository_policy(repo: &Path, branch: &str, subject: &str) -> Result<()> {
+pub(crate) fn hold_to_repository_policy(repo: &Path, branch: &str, subject: &str) -> Result<()> {
     let git::MessagePolicy::Rejected { status, output } = git::message_policy(repo, subject)?
     else {
         return Ok(());
@@ -1728,13 +1812,12 @@ fn already_open_for_review(
     reason: &DraftReason,
 ) -> Error {
     crate::error::invalid(format!(
-        "{url} is open for review on the host, and this publication asked for a draft awaiting \
-         {awaiting} {target}. A change that is open can land, so reporting it as a draft would \
-         say the work is held back when nothing is holding it. Lift nothing and publish \
-         {branch:?} without a draft, or close that change request and publish again",
+        "{url} is open for review on the host, and this publication asked for {asked}. A change \
+         that is open can land, so reporting it as a draft would say the work is held back when \
+         nothing is holding it. Lift nothing and publish {branch:?} without a draft, or close \
+         that change request and publish again",
         url = change.url,
-        awaiting = reason.awaiting,
-        target = reason.target,
+        asked = reason.asked_for(),
         branch = context.branch,
     ))
 }
@@ -1795,7 +1878,7 @@ fn refuse_a_draft_over_a_reviewed_change(
 /// have nothing to do with drafts. The cost is bounded and safe in the one direction
 /// that matters: a host that drafts a change and cannot be asked about it leaves the
 /// draft standing, and a draft that stands is a change that does not land.
-fn lift_any_draft(
+pub(crate) fn lift_any_draft(
     host: &dyn RemoteHost,
     change: &ChangeRequest,
     stream: &mut Stream,
@@ -2419,7 +2502,7 @@ pub fn fast_forward_publication(publication: &Path, base: &str) -> Result<()> {
 /// host at all and is asking for the wrong policy, while a hosted identity on a
 /// host this build does not speak for is asking for an implementation that has not
 /// arrived. The second is the seam `Error::NotImplemented` exists for.
-fn change_host(identity: &str) -> Result<String> {
+pub(crate) fn change_host(identity: &str) -> Result<String> {
     if let Some(slug) = gh::slug(identity) {
         return Ok(slug);
     }

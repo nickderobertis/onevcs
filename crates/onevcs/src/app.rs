@@ -8,13 +8,14 @@
 use std::io::Write;
 use std::path::Path;
 
+use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
-    ArtifactCommand, Command, EventsArgs, ImportArgs, IntegrateArgs, PublishArgs,
-    PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
-    ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs,
-    ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand,
-    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SweepArgs,
-    SyncArgs,
+    ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
+    EventsArgs, ImportArgs, IntegrateArgs, PublishArgs, PublishBranchArgs, RecoverArgs,
+    RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
+    ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
+    ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
+    SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -22,7 +23,7 @@ use crate::event::EventFilter;
 use crate::host::ProtectionSource;
 use crate::landed::Landed;
 use crate::providers::Providers;
-use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
+use crate::publish::{DraftReason, PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::Registry;
 use crate::releases::{
     Acknowledgement, Baseline, DeclarationSource, Probe, ReleaseAnswer, ReleaseMethod,
@@ -65,6 +66,11 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         },
         Command::Publish(args) => publish_session(args, providers),
         Command::PublishBranch(args) => publish_branch(args, providers),
+        Command::Change { command } => match command {
+            ChangeCommand::Show(args) => change_show(args, providers),
+            ChangeCommand::Describe(args) => change_describe(args, providers),
+            ChangeCommand::Ready(args) => change_ready(args, providers),
+        },
         Command::Recover(args) => recover_branch(args, providers),
         Command::Recoverable(args) => recoverable(args, providers),
         Command::Status(args) => report_status(args, providers),
@@ -372,6 +378,7 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
         args.body.as_ref(),
         args.body_file.as_deref(),
     )?;
+    let draft = held_draft(&args.token, args.draft, args.draft_reason.as_deref())?;
     let publication = crate::publish(
         providers,
         &SessionToken(args.token.clone()),
@@ -379,10 +386,7 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
             policy: args.policy,
             title,
             body,
-            // The command line takes no draft: the reason is four machine-readable
-            // fields a caller composes, and this surface is the library's. A CLI
-            // spelling of it is a public argument the contract does not name.
-            draft: None,
+            draft,
         },
     )?;
     let PublishOutcome::Failed {
@@ -411,6 +415,142 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
         None => {}
     }
     Ok(kind.exit_code())
+}
+
+/// The reason `--draft` composes, or none — and the refusal for a reason with no
+/// draft to carry it.
+///
+/// The command line takes one of the two kinds of draft: the one the session itself
+/// holds while its work is still being made. The other — a change awaiting a
+/// dependency's release — is four machine-readable fields a caller composes, and
+/// stays the library's. `--draft-reason` is the held draft's one line; without
+/// `--draft` it is refused by name, before the session is loaded, because a reason
+/// with nothing to hold is a caller that meant to ask for a draft and did not.
+fn held_draft(token: &str, draft: bool, reason: Option<&str>) -> Result<Option<DraftReason>> {
+    match (draft, reason) {
+        (false, None) => Ok(None),
+        (false, Some(_)) => Err(error::invalid(format!(
+            "--draft-reason says why a draft is held, and nothing asked for a draft. Add \
+             --draft — `{}` — or drop the reason",
+            guidance::command([
+                "onevcs",
+                "publish",
+                token,
+                "--draft",
+                "--draft-reason",
+                "TEXT"
+            ]),
+        ))),
+        (true, reason) => {
+            let reason = DraftReason::Held {
+                because: reason.map_or_else(|| DEFAULT_HELD_REASON.to_owned(), str::to_owned),
+            };
+            // Where the command line hands it over, for the reason the title is:
+            // a reason that would not render as itself is refused before anything
+            // is committed or fetched, naming the option that carried it.
+            reason.checked()?;
+            Ok(Some(reason))
+        }
+    }
+}
+
+/// What `--draft` says when `--draft-reason` says nothing: the one line the record
+/// and every refusal print for a draft the session holds.
+const DEFAULT_HELD_REASON: &str =
+    "the session that opened this change request is holding it as a draft while its work is \
+     still being made";
+
+/// Render the session's change request, the way `onevcs change show` reports it.
+fn change_show(args: &ChangeShowArgs, providers: &Providers<'_>) -> Result<u8> {
+    let token = SessionToken(args.token.clone());
+    match crate::session_change(providers, &token)? {
+        Some(change) => print_change(&change, args.json)?,
+        // An answer rather than a refusal: a session that has not published has no
+        // change request, and a caller sequencing a closeout asks exactly this to
+        // decide whether to publish. `--json` prints `null` for the same reason the
+        // library answers `None`.
+        None if args.json => println!("null"),
+        None => println!(
+            "session {} has no open change request on the host",
+            args.token
+        ),
+    }
+    Ok(0)
+}
+
+/// Replace the session's change request's description, and report the change as it
+/// stands after the write.
+fn change_describe(args: &ChangeDescribeArgs, providers: &Providers<'_>) -> Result<u8> {
+    let title = explicit_title(args.title.as_ref())?;
+    let body = described_body(&args.token, args.body.as_ref(), args.body_file.as_deref())?;
+    let change = crate::describe_change(
+        providers,
+        &SessionToken(args.token.clone()),
+        &ChangeDescription { title, body },
+    )?;
+    print_change(&change, args.json)?;
+    Ok(0)
+}
+
+/// Mark the session's change request ready for review, and report it as it stands.
+fn change_ready(args: &ChangeReadyArgs, providers: &Providers<'_>) -> Result<u8> {
+    let change = crate::ready_change(providers, &SessionToken(args.token.clone()))?;
+    print_change(&change, args.json)?;
+    Ok(0)
+}
+
+/// The body `onevcs change describe` was handed, which it must have been: a
+/// description *is* a body, so a call carrying neither option is refused by name,
+/// naming both ways to hand one over. Two are refused exactly as `publish` refuses
+/// them.
+fn described_body(token: &str, body: Option<&String>, body_file: Option<&Path>) -> Result<String> {
+    let prefix = ["onevcs", "change", "describe", token];
+    explicit_body(&prefix, body, body_file)?.ok_or_else(|| {
+        let keeping = |option: &str, value: &str| {
+            let mut argv = prefix.to_vec();
+            argv.extend([option, value]);
+            guidance::command(argv)
+        };
+        error::invalid(format!(
+            "a description is the change request's body, and neither --body nor --body-file \
+             names one. Hand it over as a file — `{}` — or as text: `{}`",
+            keeping("--body-file", "PATH"),
+            keeping("--body", "TEXT"),
+        ))
+    })
+}
+
+/// One change request as the three `change` verbs print it: the JSON object a
+/// consumer parses, or the same fields as lines a person reads. The body is printed
+/// last and whole, because it is prose of any length and everything else about the
+/// change fits on a line above it.
+fn print_change(change: &SessionChange, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(change).map_err(|e| Error::Invalid {
+                reason: format!("cannot render the change request: {e}"),
+            })?
+        );
+        return Ok(());
+    }
+    println!("change request: {}", change.url);
+    println!("id: {}", change.id.0);
+    println!("base: {}", change.base);
+    println!(
+        "draft: {}",
+        if change.draft {
+            "yes (the host holds it as a draft)"
+        } else {
+            "no (open for review)"
+        }
+    );
+    println!("title: {}", change.title);
+    println!("body:");
+    for line in change.body.lines() {
+        println!("  {line}");
+    }
+    Ok(())
 }
 
 /// Render what one branch-keyed verb did, the way `recover` and `publish-branch`

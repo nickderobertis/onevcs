@@ -40,7 +40,10 @@ use crate::store::Checked;
 /// `ready_for_review` calls it took. `8` is the two an [`Identity`] inside
 /// [`VcsState::identities`] **lost** — `workflow` and `repo_type`, the registry's
 /// inferences from whether an origin had a host, which every decision they made now
-/// takes from the resolved publication policy instead.
+/// takes from the resolved publication policy instead. `9` is the draft reason inside
+/// [`HostState::drafts`] becoming one of two kinds and saying which — `kind` is
+/// `awaiting-release` or `held` — and [`HostState::described`], the descriptions a
+/// host was handed for a change request after it was opened.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -50,7 +53,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 8;
+pub const STATE_VERSION: u32 = 9;
 
 /// The oldest document version this build reads.
 ///
@@ -73,7 +76,12 @@ pub const STATE_VERSION: u32 = 8;
 /// they were: no draft reason recorded for any of them, and no lift ever asked for.
 /// `7` to `8` *removed* two from each identity, and a version 7 document reads past
 /// them: an identity is its origin and its gate here as it is in `onevcs`, and the two
-/// keys beside them are ones this build has no opinion on.
+/// keys beside them are ones this build has no opinion on. `8` to `9` gave every
+/// draft reason a `kind`, and a reason written without one is read as the one kind
+/// there was — `awaiting-release`, whose four fields it carries unchanged — which is
+/// `drafts_of_any_version`'s whole job; the descriptions beside it are absent from a
+/// document written before them, which is the answer, since that build could describe
+/// nothing.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -259,7 +267,10 @@ pub struct HostState {
     /// Nothing is refused about the reason itself here. Its shape — that every field
     /// of it renders as the one line it is printed on — is `onevcs`'s own rule, and
     /// it is applied where a publication takes one in, before any host is asked.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "drafts_of_any_version"
+    )]
     pub drafts: BTreeMap<ChangeId, DraftReason>,
     /// Every `ready_for_review` call this host has taken, in the order it took them
     /// — the lifts it was asked to perform, never a request for a *reviewer*.
@@ -271,6 +282,18 @@ pub struct HostState {
     /// draft any more, whatever [`drafts`](HostState::drafts) says it was opened as.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub made_ready: Vec<ChangeId>,
+    /// Every `describe_change` call this host has taken, in the order it took them:
+    /// which change request, the title it was handed when it was handed one, and the
+    /// body.
+    ///
+    /// The calls themselves, for the reason [`made_ready`](HostState::made_ready) is:
+    /// what a journey asks is what a closeout *wrote*, call by call, and the current
+    /// title and body — which each call also writes into
+    /// [`titles`](HostState::titles) and [`bodies`](HostState::bodies), so
+    /// `change_description` answers from the same record `open_change` wrote — can
+    /// only say where the description ended up.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub described: Vec<Described>,
     /// Which sources this host answers about its checks from, which is what the
     /// real implementation reports alongside them.
     ///
@@ -293,6 +316,55 @@ pub struct HostState {
     pub merges: BTreeMap<ChangeId, MergeOutcome>,
 }
 
+/// One description a host was handed for a change request after it was opened.
+///
+/// What `RemoteHost::describe_change` was given, verbatim: the title only where the
+/// call carried one, because a call that replaced the body alone left the title as
+/// it was, and a record that filled it in would say the caller wrote a title nobody
+/// wrote.
+// llmlint: ignore[invalid_states_unrepresentable] the title and body are the `&str`s the
+// seam hands over — a host places no shape on prose, and `onevcs`'s own `Subject` rule
+// was applied where the description was composed, before any host was asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Described {
+    /// The change request the description was written to.
+    pub id: ChangeId,
+    /// The title the call replaced the change request's with, when it replaced one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The body the call replaced the change request's with.
+    pub body: String,
+}
+
+/// The `drafts` map of a document at any readable version.
+///
+/// A document written before version 9 spells a draft reason as the four fields of
+/// the one kind there was and no `kind` beside them; this build's reason is one of
+/// two kinds and says which. So a reason arriving without a `kind` is read as
+/// `awaiting-release` — exactly what it was — rather than refused, which is what
+/// keeps a consumer's checked-in scenario readable across the bump. A reason that
+/// *names* a kind is read as it names it, so nothing written by this build is
+/// reinterpreted.
+fn drafts_of_any_version<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<ChangeId, DraftReason>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: BTreeMap<ChangeId, serde_json::Map<String, serde_json::Value>> =
+        Deserialize::deserialize(deserializer)?;
+    raw.into_iter()
+        .map(|(id, mut fields)| {
+            fields
+                .entry("kind")
+                .or_insert_with(|| serde_json::Value::from("awaiting-release"));
+            serde_json::from_value::<DraftReason>(serde_json::Value::Object(fields))
+                .map(|reason| (id, reason))
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
+}
+
 /// Who a host with nothing seeded says is calling.
 ///
 /// A host that answers nobody is refused by the real implementation, so a default
@@ -311,6 +383,7 @@ impl Default for HostState {
             bodies: BTreeMap::new(),
             drafts: BTreeMap::new(),
             made_ready: Vec::new(),
+            described: Vec::new(),
             checks: BTreeMap::new(),
             check_logs: BTreeMap::new(),
             check_sources: None,
@@ -626,6 +699,14 @@ impl Checked for HostState {
         for id in &self.made_ready {
             opened_change(self, id, "a lifted draft")?;
         }
+        for described in &self.described {
+            opened_change(self, &described.id, "a description")?;
+            // The real host refuses a title that names nothing, so a seeded one is
+            // refused for the same reason — and a body is prose, refused for nothing.
+            if let Some(title) = &described.title {
+                titled(title)?;
+            }
+        }
         Ok(())
     }
 
@@ -633,7 +714,10 @@ impl Checked for HostState {
     /// no commit; each reads as what it was — change requests opened with none, and
     /// checks whose head that build never recorded. There is nothing to fill in — an
     /// absent field is already that answer, and a check's commit is the one thing
-    /// that must never be inferred — so this is the version and nothing else.
+    /// that must never be inferred — so this is the version and nothing else. The one
+    /// carry a version 8 document needs, the `kind` its draft reasons lack, is done
+    /// where those are read (`drafts_of_any_version`), because it is a fact about
+    /// one value's shape rather than about the document.
     fn carry_forward(&mut self) {
         self.version = STATE_VERSION;
     }

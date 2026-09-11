@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map, Value};
 
 use onevcs::{
-    ChangeSpec, Error, EventKind, FailureKind, HeldBy, Holding, Hosting, Identity, Landed,
-    Lifecycle, MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication, PublishOutcome,
-    PublishRequest, Recoverable, Result, Scope, Session, SessionRecord, SessionRequest,
-    SessionToken, Sha, Vcs,
+    ChangeSpec, DraftReason, Error, EventKind, FailureKind, HeldBy, Holding, Hosting, Identity,
+    Landed, Lifecycle, MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication,
+    PublishOutcome, PublishRequest, Recoverable, Result, Scope, Session, SessionRecord,
+    SessionRequest, SessionToken, Sha, Vcs,
 };
 
 use crate::events::{self, Emission};
@@ -405,12 +405,11 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                     Some(reason) => (
                         failed(&Error::Invalid {
                             reason: format!(
-                                "{branch:?} was asked to publish as a draft awaiting {awaiting} \
-                                 {target}, and this identity publishes with local-direct, which \
-                                 opens no change request at all",
+                                "{branch:?} was asked to publish as {asked}, and this identity \
+                                 publishes with local-direct, which opens no change request at \
+                                 all",
                                 branch = session.branch,
-                                awaiting = reason.awaiting,
-                                target = reason.target,
+                                asked = asked_for(reason),
                             ),
                         }),
                         Vec::new(),
@@ -615,32 +614,34 @@ fn publish_as_change(
         if !host.is_draft(&change)? {
             return Err(Error::Invalid {
                 reason: format!(
-                    "{url} is open for review on the host, and this publication asked for a \
-                     draft awaiting {awaiting} {target}. A change that is open can land, so \
-                     reporting it as a draft would say the work is held back when nothing is \
-                     holding it",
+                    "{url} is open for review on the host, and this publication asked for \
+                     {asked}. A change that is open can land, so reporting it as a draft would \
+                     say the work is held back when nothing is holding it",
                     url = change.url,
-                    awaiting = reason.awaiting,
-                    target = reason.target,
+                    asked = asked_for(reason),
                 ),
             });
         }
         // The publication record, and the only place the reason is written: the real
         // implementation writes nothing of it into the change request, and a provider
-        // that did would be a consumer's suite proving a body nobody renders.
+        // that did would be a consumer's suite proving a body nobody renders. The
+        // payload is the reason's own serialized form — its `kind` and every field of
+        // that kind — under the change request it holds, exactly as next door.
+        let mut drafted = object(json!({
+            "url": change.url.to_string(),
+            "id": change.id.0,
+            "base": change.base,
+        }));
+        if let serde_json::Value::Object(fields) =
+            serde_json::to_value(reason).expect("a draft reason serializes")
+        {
+            drafted.extend(fields);
+        }
         emissions.push(Emission {
             stream: token.0.clone(),
             identity: Some(identity.to_owned()),
             kind: EventKind::ChangeDrafted,
-            payload: object(json!({
-                "url": change.url.to_string(),
-                "id": change.id.0,
-                "base": change.base,
-                "awaiting": reason.awaiting,
-                "target": reason.target.to_string(),
-                "reference": reason.reference,
-                "because": reason.because,
-            })),
+            payload: drafted,
         });
         // Under every policy: a draft is unmergeable in that state, so nothing below
         // asks this host to merge it.
@@ -694,6 +695,20 @@ fn publish_as_change(
         MergeOutcome::Queued => (PublishOutcome::Queued(change.url.clone()), emissions),
         MergeOutcome::Open => (PublishOutcome::ChangeOpen(change.url.clone()), emissions),
     })
+}
+
+/// The draft a publication asked for, as the two refusals next door spell it: "a
+/// draft awaiting <repository> <target>", or "a draft held by the session that opened
+/// it (<why>)". A restatement, so the refusals here read as the real ones do.
+fn asked_for(reason: &DraftReason) -> String {
+    match reason {
+        DraftReason::AwaitingRelease {
+            awaiting, target, ..
+        } => format!("a draft awaiting {awaiting} {target}"),
+        DraftReason::Held { because } => {
+            format!("a draft held by the session that opened it ({because})")
+        }
+    }
 }
 
 /// What a publication answers for an identity no change request can be opened

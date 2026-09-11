@@ -245,6 +245,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ChangeOpened,
         EventKind::ChangeDrafted,
         EventKind::DraftLifted,
+        EventKind::ChangeDescribed,
         EventKind::ChangeCheck,
         EventKind::ChangeMerged,
         EventKind::MergeQueued,
@@ -268,6 +269,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::ChangeOpened
             | EventKind::ChangeDrafted
             | EventKind::DraftLifted
+            | EventKind::ChangeDescribed
             | EventKind::ChangeCheck
             | EventKind::ChangeMerged
             | EventKind::MergeQueued
@@ -2289,10 +2291,18 @@ fn documented_commands() -> BTreeSet<String> {
         .collect()
 }
 
-/// Every usage block the two documents spell: the approved contract's, and the
-/// ones `docs/inferred-surface.md` records as an inference awaiting confirmation.
+/// Every usage block the two documents spell: the approved contract's, the ones its
+/// amendments spell for the verbs they add, and the ones `docs/inferred-surface.md`
+/// records as an inference awaiting confirmation.
 fn usage_blocks() -> Vec<String> {
     let mut blocks = vec![block("")];
+    let amended = usage_in(&regions().0);
+    assert!(
+        !amended.is_empty(),
+        "the amendments spell no command surface; the held-draft amendment did, and this \
+         reader is what has to move if that block moved"
+    );
+    blocks.extend(amended);
     let inferred = usage_in(&repo_file("docs/inferred-surface.md"));
     assert!(
         !inferred.is_empty(),
@@ -2328,7 +2338,12 @@ fn commands_in(usage: &str) -> BTreeSet<String> {
                 .strip_prefix("onevcs ")
                 .unwrap_or_else(|| alternative.trim());
             if let Some(name) = segment.split_whitespace().next() {
-                if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+                // A command name, never an option: `[--body TEXT | --body-file PATH]`
+                // puts an option first in an alternative, and it names no command.
+                if !name.is_empty()
+                    && !name.starts_with('-')
+                    && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                {
                     names.insert(name.to_owned());
                 }
             }
@@ -2696,7 +2711,7 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
         policy: Some(MergePolicy::ChangeOpen),
         title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
         body: Some("Why the seam is where it is.".to_owned()),
-        draft: Some(DraftReason {
+        draft: Some(DraftReason::AwaitingRelease {
             awaiting: "github.com/acme-corp/upstream".to_owned(),
             target: TargetName::try_from("crate".to_owned()).expect("a target name"),
             reference: "feature/the-pinned-branch".to_owned(),
@@ -2744,7 +2759,7 @@ fn the_inferred_surface_row_lists_the_fields_a_change_spec_actually_has() {
         base: "main".to_owned(),
         title: "feat: add the seam".to_owned(),
         body: Some("Why the seam is where it is.".to_owned()),
-        draft: Some(DraftReason {
+        draft: Some(DraftReason::AwaitingRelease {
             awaiting: "github.com/acme-corp/upstream".to_owned(),
             target: TargetName::try_from("crate".to_owned()).expect("a target name"),
             reference: "feature/the-pinned-branch".to_owned(),
@@ -2838,8 +2853,11 @@ fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_n
     // clap's own, on every command it generates — not part of anybody's contract.
     implemented.remove("help");
 
+    // Two amendments each add options to `publish`, and each says so on a line that
+    // opens with the command: the body's, and the held draft's.
     let amended: BTreeSet<String> = backticked_on_line("`onevcs publish` takes the body two ways")
         .into_iter()
+        .chain(backticked_on_line("`onevcs publish` takes a draft as"))
         .filter_map(|span| span.strip_prefix("--").map(str::to_owned))
         .collect();
     assert_eq!(
@@ -3712,11 +3730,12 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
     // A draft is new capability rather than a widening of one, so the amendment is
     // where a consumer reads it first — and the shape it declares is the shape the
     // code has, or the two teach different things about the same seam.
+    // The reason's shape moved once — from a struct to a two-kind enum — and the
+    // amendment that moved it is where its declaration is read now; the earlier
+    // amendment still declares the two host methods and the field on the two
+    // requests, which did not move.
     let declared = amendment_declaring("pub struct DraftReason");
     for line in [
-        "pub struct DraftReason { pub awaiting: String, pub target: TargetName,",
-        "pub reference: String, pub because: String }",
-        "impl DraftReason { pub fn checked(&self) -> Result<()>; }",
         "pub draft: Option<DraftReason>",
         "fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()>;",
         "fn is_draft(&self, cr: &ChangeRequest) -> Result<bool>;",
@@ -3726,6 +3745,33 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
             "the amendment no longer declares: {line}"
         );
     }
+    let widened = amendment_declaring("pub enum DraftReason");
+    for line in [
+        "#[serde(tag = \"kind\", rename_all = \"kebab-case\")]",
+        "AwaitingRelease { awaiting: String, target: TargetName, reference: String, because: String },",
+        "Held { because: String },",
+        "impl DraftReason { pub fn checked(&self) -> Result<()>; }",
+    ] {
+        assert!(
+            widened.contains(line),
+            "the held-draft amendment no longer declares: {line}"
+        );
+    }
+    // …and the tag is the wire: a reason serializes under `kind`, spelled as the
+    // amendment spells the two kinds, so a consumer routing on it reads the document.
+    let held = DraftReason::Held {
+        because: "the session is holding it while its work is still being made".to_owned(),
+    };
+    let written = serde_json::to_value(&held).expect("a reason serializes");
+    assert_eq!(written["kind"], "held");
+    assert_eq!(
+        written["because"],
+        "the session is holding it while its work is still being made"
+    );
+    assert_eq!(
+        serde_json::from_value::<DraftReason>(written).expect("a reason reads back"),
+        held
+    );
 
     // Both are defaulted, so the seam stays additive — and both default to the
     // refusal this repository reserves for a seam with no body rather than to an
@@ -3770,25 +3816,44 @@ fn the_amendment_declares_the_draft_surface_and_the_two_methods_it_asks_a_host_f
     // And the rule the amendment says is public really is the one a supplied
     // implementation can apply: a reason that would not render as the one line it is
     // printed on is refused by the crate's own check rather than by a restatement.
-    let usable = DraftReason {
-        awaiting: "github.com/acme-corp/upstream".to_owned(),
+    let awaiting = |awaiting: &str, reference: &str, because: &str| DraftReason::AwaitingRelease {
+        awaiting: awaiting.to_owned(),
         target: TargetName::try_from("crate".to_owned()).expect("a target name"),
-        reference: "feature/the-pinned-branch".to_owned(),
-        because: "the pin moves when the release lands".to_owned(),
+        reference: reference.to_owned(),
+        because: because.to_owned(),
     };
+    let usable = awaiting(
+        "github.com/acme-corp/upstream",
+        "feature/the-pinned-branch",
+        "the pin moves when the release lands",
+    );
     usable.checked().expect("a usable reason");
+    DraftReason::Held {
+        because: "the session is holding it while its work is still being made".to_owned(),
+    }
+    .checked()
+    .expect("a usable held reason");
     for unusable in [
-        DraftReason {
+        awaiting(
+            "github.com/acme-corp/upstream",
+            "feature/the-pinned-branch",
+            "",
+        ),
+        awaiting(
+            "github.com/acme-corp/\nupstream",
+            "feature/the-pinned-branch",
+            "the pin moves when the release lands",
+        ),
+        awaiting(
+            "github.com/acme-corp/upstream",
+            "",
+            "the pin moves when the release lands",
+        ),
+        DraftReason::Held {
             because: String::new(),
-            ..usable.clone()
         },
-        DraftReason {
-            awaiting: "github.com/acme-corp/\nupstream".to_owned(),
-            ..usable.clone()
-        },
-        DraftReason {
-            reference: String::new(),
-            ..usable.clone()
+        DraftReason::Held {
+            because: "held\nacross two lines".to_owned(),
         },
     ] {
         assert!(

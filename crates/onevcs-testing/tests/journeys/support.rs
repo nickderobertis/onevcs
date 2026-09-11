@@ -13,7 +13,7 @@ use onevcs::{
     LineChange, MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
     PublishOutcome, Recoverable, Session, SessionToken, Sha, TargetName, Url,
 };
-use onevcs_testing::{HostState, VcsState};
+use onevcs_testing::{Described, HostState, VcsState};
 
 /// The variable this platform's home directory is spelled in.
 ///
@@ -196,7 +196,7 @@ pub fn full_host_state() -> HostState {
     let mut drafts = BTreeMap::new();
     drafts.insert(
         drafted.clone(),
-        DraftReason {
+        DraftReason::AwaitingRelease {
             awaiting: "github.com/acme-corp/widgets".to_owned(),
             target: TargetName::try_from("crate".to_owned()).expect("a target name"),
             reference: "feature/the-pinned-branch".to_owned(),
@@ -224,7 +224,14 @@ pub fn full_host_state() -> HostState {
         titles,
         bodies,
         drafts,
-        made_ready: vec![drafted],
+        made_ready: vec![drafted.clone()],
+        // The description a closeout wrote to the drafted change after it was opened:
+        // the document has to hold what `describe_change` was handed, title included.
+        described: vec![Described {
+            id: drafted,
+            title: Some("feat: the drafted change, described".to_owned()),
+            body: "## What\n\nThe body the closeout wrote.\n".to_owned(),
+        }],
         checks,
         check_logs,
         // The credential the real implementation meets in CI: a fine-grained token,

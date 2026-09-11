@@ -408,7 +408,7 @@ fn a_change_request_opened_directly_with_an_unusable_reason_is_refused() {
     for (field, unusable) in [
         (
             "the reason the change is not ready",
-            onevcs::DraftReason {
+            onevcs::DraftReason::AwaitingRelease {
                 awaiting: "github.com/acme-corp/upstream".to_owned(),
                 target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
                 reference: "feature/the-pinned-branch".to_owned(),
@@ -417,7 +417,7 @@ fn a_change_request_opened_directly_with_an_unusable_reason_is_refused() {
         ),
         (
             "the repository whose release is awaited",
-            onevcs::DraftReason {
+            onevcs::DraftReason::AwaitingRelease {
                 awaiting: "github.com/acme-corp/\nupstream".to_owned(),
                 target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
                 reference: "feature/the-pinned-branch".to_owned(),
@@ -442,7 +442,7 @@ fn a_change_request_opened_directly_with_an_unusable_reason_is_refused() {
     // …and the usable one opens, so what was refused is the reason rather than drafts.
     let opened = host
         .open_change(ChangeSpec {
-            draft: Some(onevcs::DraftReason {
+            draft: Some(onevcs::DraftReason::AwaitingRelease {
                 awaiting: "github.com/acme-corp/upstream".to_owned(),
                 target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
                 reference: "feature/the-pinned-branch".to_owned(),
