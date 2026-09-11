@@ -63,6 +63,40 @@ fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
                 "feat: add the seam",
             ],
         ),
+        // The held draft the amendment adds beside `--title`, with and without its
+        // one line; `change.rs` drives what it then opens.
+        ("publish", vec!["publish", "s-7f3a", "--draft"]),
+        (
+            "publish",
+            vec![
+                "publish",
+                "s-7f3a",
+                "--draft",
+                "--draft-reason",
+                "gathering evidence for the description",
+            ],
+        ),
+        ("change show", vec!["change", "show", "s-7f3a"]),
+        ("change show", vec!["change", "show", "s-7f3a", "--json"]),
+        (
+            "change describe",
+            vec!["change", "describe", "s-7f3a", "--body", "## What"],
+        ),
+        (
+            "change describe",
+            vec![
+                "change",
+                "describe",
+                "s-7f3a",
+                "--body-file",
+                "/home/agent/pr.md",
+                "--title",
+                "feat: add the seam",
+                "--json",
+            ],
+        ),
+        ("change ready", vec!["change", "ready", "s-7f3a"]),
+        ("change ready", vec!["change", "ready", "s-7f3a", "--json"]),
         (
             "publish-branch",
             vec![
@@ -147,6 +181,10 @@ fn every_command_offers_its_own_help() {
         vec!["session", "holders"],
         vec!["publish"],
         vec!["publish-branch"],
+        vec!["change"],
+        vec!["change", "show"],
+        vec!["change", "describe"],
+        vec!["change", "ready"],
         vec!["recover"],
         vec!["recoverable"],
         vec!["integrate"],
@@ -216,7 +254,7 @@ fn no_command_at_all_fails_at_the_boundary() {
         .stderr(predicate::str::contains("Usage"));
 
     // A command group is not itself runnable: `session` needs one of its own.
-    for group in ["session", "artifact", "rules"] {
+    for group in ["session", "artifact", "rules", "change"] {
         onevcs()
             .arg(group)
             .assert()
@@ -234,6 +272,9 @@ fn a_missing_operand_fails_at_the_boundary() {
         vec!["artifact", "cat"],
         vec!["rules", "check"],
         vec!["session", "open"],
+        vec!["change", "show"],
+        vec!["change", "describe"],
+        vec!["change", "ready"],
         vec!["integrate"],
         // `--repo` is required, unlike every other long option.
         vec!["recover", "feature"],

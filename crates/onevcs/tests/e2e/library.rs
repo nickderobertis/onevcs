@@ -4137,3 +4137,648 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
         "the refusal names the change request it was asked about: {unknown}"
     );
 }
+
+/// The reason a session holds its own change request as a draft with: the work is
+/// still being made.
+fn held_by_the_session() -> DraftReason {
+    DraftReason::Held {
+        because: "the session is gathering evidence for the description".to_owned(),
+    }
+}
+
+/// Both kinds of draft, each named the way a journey names the branch it drafts, so a
+/// refusal both must meet is proved for both under one assertion.
+fn every_kind_of_draft() -> [(&'static str, DraftReason); 2] {
+    [
+        ("awaiting-release", awaiting_a_release()),
+        ("held", held_by_the_session()),
+    ]
+}
+
+/// What a refusal has to name for a draft of this kind: the release the
+/// release-awaiting kind waits for, and the session's own sentence for the held one.
+fn names_the_reason(refusal: &str, reason: &DraftReason) -> bool {
+    match reason {
+        DraftReason::AwaitingRelease { awaiting, .. } => refusal.contains(awaiting.as_str()),
+        DraftReason::Held { because } => {
+            refusal.contains("held by the session") && refusal.contains(because.as_str())
+        }
+    }
+}
+
+#[test]
+fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
+    // The worker's own draft: opened so the session can keep working against a change
+    // request that exists — a demonstration change branched off it, a CI run against
+    // it — and lifted by the same session's later publication carrying no reason.
+    // Real git against a real bare origin, and a supplied host that records what the
+    // create call was given.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+    let session = worked(&world, "feature/held");
+    let base = origin_tip(&world, &origin, "main");
+    let reason = held_by_the_session();
+
+    let drafted = onevcs::publish(
+        &providers,
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: Some(DRAFTED.to_owned()),
+            draft: Some(reason.clone()),
+        },
+    )
+    .expect("the publication runs");
+    let PublishOutcome::ChangeDraft(url) = drafted.outcome.clone() else {
+        panic!("a held draft is a draft: {drafted:?}");
+    };
+
+    // On the host, as a draft, with the body the caller drafted and nothing of the
+    // reason in it.
+    let opened = host.state().changes[0].clone();
+    assert_eq!(opened.url, url);
+    assert_eq!(host.state().drafts.get(&opened.id), Some(&reason));
+    assert_eq!(
+        host.state().bodies.get(&opened.id).map(String::as_str),
+        Some(DRAFTED)
+    );
+    assert!(!host.state().bodies[&opened.id].contains(reason.because()));
+    // …and on the record, as the held kind, with the one line a person reads.
+    let recorded = world.events_of(&session.token.0, "change-drafted");
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(recorded[0]["payload"]["kind"], "held");
+    assert_eq!(recorded[0]["payload"]["because"], reason.because());
+    assert_eq!(recorded[0]["payload"]["url"], url.to_string());
+    assert_eq!(recorded[0]["payload"]["id"], opened.id.0);
+    assert_eq!(recorded[0]["payload"]["base"], "main");
+    assert_eq!(recorded[0]["phase"], "review");
+    for absent in ["awaiting", "target", "reference"] {
+        assert!(
+            recorded[0]["payload"].get(absent).is_none(),
+            "a held draft carries no release field: {absent}"
+        );
+    }
+    // The session is still being worked in, so its record stays open — which is
+    // what keeps its run root from being reaped under the worker.
+    assert_eq!(
+        onevcs::session(&providers, &session.token)
+            .expect("the record reads")
+            .lifecycle,
+        onevcs::Lifecycle::Open,
+        "a held draft leaves the session open"
+    );
+    assert!(host.state().merges.is_empty());
+    assert_eq!(origin_tip(&world, &origin, "main"), base);
+
+    // More work, and a second held publication: the branch is pushed, the change
+    // request adopted rather than reopened, and the draft recorded again.
+    world.commit_file(
+        &session.worktree,
+        "two.txt",
+        "two\n",
+        "feat: more of the work on feature/held",
+    );
+    let again = onevcs::publish(
+        &providers,
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(reason.clone()),
+        },
+    )
+    .expect("the second publication runs");
+    assert_eq!(again.outcome, PublishOutcome::ChangeDraft(url.clone()));
+    assert_eq!(host.state().changes.len(), 1, "no second change request");
+    assert_eq!(
+        world.events_of(&session.token.0, "change-drafted").len(),
+        2,
+        "the draft is recorded again"
+    );
+    assert!(host.state().made_ready.is_empty(), "nothing lifted it");
+    assert_eq!(
+        onevcs::session(&providers, &session.token)
+            .expect("the record reads")
+            .lifecycle,
+        onevcs::Lifecycle::Open
+    );
+    let pushed = world.git(
+        &origin,
+        &["log", "-1", "--format=%s", "refs/heads/feature/held"],
+    );
+    assert_eq!(pushed.trim(), "feat: more of the work on feature/held");
+
+    // The closeout: a publication carrying no reason lifts the draft and lands under
+    // the policy, and the session closes with it as every landing publication does.
+    let lifted = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("the third publication runs");
+    assert_eq!(lifted.outcome, PublishOutcome::ChangeOpen(url.clone()));
+    assert_eq!(host.state().made_ready, vec![opened.id.clone()]);
+    let events = world.events_of(&session.token.0, "draft-lifted");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["payload"]["url"], url.to_string());
+    assert_eq!(
+        onevcs::session(&providers, &session.token)
+            .expect("the record reads")
+            .lifecycle,
+        onevcs::Lifecycle::Closed,
+        "a landing publication closes the session as it always did"
+    );
+}
+
+#[test]
+fn a_draft_of_either_kind_is_refused_under_local_direct_before_anything_is_pushed() {
+    // The policy that cannot express a draft at all, refused by name for both kinds:
+    // it squashes the branch onto its base and opens no change request, so there is
+    // nothing to draft under it.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, LOCAL);
+    let host = MemoryHost::new();
+    let base = origin_tip(&world, &origin, "main");
+
+    for (kind, reason) in every_kind_of_draft() {
+        let session = worked(&world, &format!("feature/undraftable-{kind}"));
+        let published = onevcs::publish(
+            &Providers {
+                vcs: &Git,
+                hosting: &host,
+            },
+            &session.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(reason.clone()),
+            },
+        )
+        .expect("the publication runs and reports what stopped it");
+        let PublishOutcome::Failed {
+            kind: failure,
+            reason: refusal,
+            ..
+        } = &published.outcome
+        else {
+            panic!("local-direct cannot draft a {kind} draft: {published:?}");
+        };
+        assert_eq!(*failure, FailureKind::Invalid);
+        assert!(
+            refusal.contains("local-direct") && names_the_reason(refusal, &reason),
+            "the refusal names the policy and the {kind} reason: {refusal}"
+        );
+        assert_eq!(
+            origin_tip(&world, &origin, "main"),
+            base,
+            "nothing was pushed and nothing landed for the {kind} draft"
+        );
+    }
+    assert!(host.state().changes.is_empty());
+}
+
+#[test]
+fn a_draft_of_either_kind_is_refused_over_a_change_request_already_open_for_review() {
+    // The other refusal both kinds meet: a change the host holds open for review can
+    // land, so reporting it as a draft would say the work is held back when nothing
+    // is holding it. Refused before anything reaches the remote, and spelled per kind.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let providers = || Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+
+    for (kind, reason) in every_kind_of_draft() {
+        let session = worked(&world, &format!("feature/reviewed-{kind}"));
+        let opened = onevcs::publish(&providers(), &session.token, &PublishRequest::default())
+            .expect("the publication runs");
+        assert!(matches!(opened.outcome, PublishOutcome::ChangeOpen(_)));
+        let before = host.state().changes.len();
+
+        let refused = onevcs::publish(
+            &providers(),
+            &session.token,
+            &PublishRequest {
+                policy: None,
+                title: None,
+                body: None,
+                draft: Some(reason.clone()),
+            },
+        )
+        .expect("the publication runs and reports what stopped it");
+        let PublishOutcome::Failed {
+            kind: failure,
+            reason: refusal,
+            ..
+        } = &refused.outcome
+        else {
+            panic!("an open change request is not put back into a {kind} draft: {refused:?}");
+        };
+        assert_eq!(*failure, FailureKind::Invalid);
+        assert!(
+            refusal.contains("open for review") && names_the_reason(refusal, &reason),
+            "the refusal names the state it found and the {kind} reason: {refusal}"
+        );
+        assert_eq!(
+            host.state().changes.len(),
+            before,
+            "no second change request"
+        );
+        assert!(host.state().drafts.is_empty(), "nothing recorded a draft");
+        assert!(
+            world
+                .events_of(&session.token.0, "change-drafted")
+                .is_empty(),
+            "nothing wrote a {kind} reason into the record"
+        );
+    }
+}
+
+/// The description a closeout writes once the evidence is in.
+const DESCRIBED: &str = "## What\n\nThe work, with the CI run that proves it.\n\n## Why\n\n\
+                         Because the reviewer reads this and nothing else.\n";
+
+#[test]
+fn a_session_reads_describes_and_readies_its_own_change_request() {
+    // The three thin calls over the host, driven the way a closeout drives them:
+    // read what the change request says, replace its description, and lift the
+    // draft — each addressed at the session's own change request, so nothing here
+    // names a URL. Real git for the session, a supplied host for the change request.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+    let session = worked(&world, "feature/described");
+
+    // Before anything is published there is no change request, and the read says
+    // so rather than inventing one; the two writes refuse, naming what opens one.
+    assert_eq!(
+        onevcs::session_change(&providers, &session.token).expect("the read runs"),
+        None
+    );
+    let description = onevcs::ChangeDescription {
+        title: None,
+        body: DESCRIBED.to_owned(),
+    };
+    for refused in [
+        onevcs::describe_change(&providers, &session.token, &description)
+            .expect_err("nothing to describe")
+            .to_string(),
+        onevcs::ready_change(&providers, &session.token)
+            .expect_err("nothing to ready")
+            .to_string(),
+    ] {
+        assert!(
+            refused.contains("no open change request")
+                && refused.contains(&format!("onevcs publish {} --draft", session.token.0)),
+            "the refusal names the publication that opens one: {refused}"
+        );
+    }
+    assert!(
+        host.state().changes.is_empty(),
+        "nothing opened one on the way"
+    );
+    assert!(world
+        .events_of(&session.token.0, "change-described")
+        .is_empty());
+
+    let drafted = onevcs::publish(
+        &providers,
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: Some(
+                onevcs::Subject::try_from("feat: the described work".to_owned())
+                    .expect("a subject"),
+            ),
+            body: None,
+            draft: Some(held_by_the_session()),
+        },
+    )
+    .expect("the publication runs");
+    let PublishOutcome::ChangeDraft(url) = drafted.outcome.clone() else {
+        panic!("a held draft: {drafted:?}");
+    };
+    let opened = host.state().changes[0].clone();
+
+    // The read answers everything a closeout needs: where, which, into what, held
+    // as a draft, and the description as the host holds it — no body, because none
+    // was given.
+    let shown = onevcs::session_change(&providers, &session.token)
+        .expect("the read runs")
+        .expect("the session has a change request now");
+    assert_eq!(
+        shown,
+        onevcs::SessionChange {
+            url: url.clone(),
+            id: opened.id.clone(),
+            base: "main".to_owned(),
+            draft: true,
+            title: "feat: the described work".to_owned(),
+            body: String::new(),
+        }
+    );
+
+    // The description replaces the body, verbatim, and the read after the write
+    // reports what the host now holds.
+    let described = onevcs::describe_change(&providers, &session.token, &description)
+        .expect("the description is written");
+    assert_eq!(described.body, DESCRIBED);
+    assert_eq!(
+        described.title, "feat: the described work",
+        "the title was left"
+    );
+    assert!(described.draft, "describing a draft does not lift it");
+    assert_eq!(
+        host.state().bodies.get(&opened.id).map(String::as_str),
+        Some(DESCRIBED),
+        "the host was handed exactly the caller's bytes"
+    );
+    assert_eq!(host.state().described.len(), 1);
+    assert_eq!(host.state().described[0].title, None);
+    // …and the record names the body as an artifact `onevcs artifact cat` reads
+    // back byte for byte, with no title because none replaced it.
+    let events = world.events_of(&session.token.0, "change-described");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["phase"], "review");
+    assert_eq!(events[0]["payload"]["url"], url.to_string());
+    assert_eq!(events[0]["payload"]["id"], opened.id.0);
+    assert_eq!(events[0]["payload"]["base"], "main");
+    assert!(events[0]["payload"].get("title").is_none());
+    let artifact = events[0]["payload"]["artifact"]
+        .as_str()
+        .expect("the body's artifact id")
+        .to_owned();
+    assert_eq!(events[0]["artifacts"][0]["id"], artifact);
+    assert_eq!(events[0]["artifacts"][0]["kind"], "body");
+    world
+        .onevcs()
+        .args(["artifact", "cat", &artifact])
+        .assert()
+        .success()
+        .stdout(DESCRIBED);
+
+    // A second description with a title replaces both, and the record says the
+    // title moved.
+    let retitled = onevcs::describe_change(
+        &providers,
+        &session.token,
+        &onevcs::ChangeDescription {
+            title: Some(
+                onevcs::Subject::try_from("feat: the described work, finished".to_owned())
+                    .expect("a subject"),
+            ),
+            body: "## What\n\nFinished.\n".to_owned(),
+        },
+    )
+    .expect("the second description is written");
+    assert_eq!(retitled.title, "feat: the described work, finished");
+    assert_eq!(retitled.body, "## What\n\nFinished.\n");
+    assert_eq!(
+        host.state().titles.get(&opened.id).map(String::as_str),
+        Some("feat: the described work, finished")
+    );
+    let events = world.events_of(&session.token.0, "change-described");
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(
+        events[1]["payload"]["title"],
+        "feat: the described work, finished"
+    );
+
+    // Readying lifts the draft, records the lift, and reports the change as it
+    // stands; readying again asks the host for nothing and records nothing more.
+    let ready = onevcs::ready_change(&providers, &session.token).expect("the lift runs");
+    assert!(!ready.draft, "the change is open for review now");
+    assert_eq!(ready.body, "## What\n\nFinished.\n");
+    assert_eq!(host.state().made_ready, vec![opened.id.clone()]);
+    let lifted = world.events_of(&session.token.0, "draft-lifted");
+    assert_eq!(lifted.len(), 1, "{lifted:?}");
+    assert_eq!(lifted[0]["payload"]["url"], url.to_string());
+    assert_eq!(lifted[0]["phase"], "review");
+    let again = onevcs::ready_change(&providers, &session.token).expect("a no-op lift runs");
+    assert_eq!(
+        again, ready,
+        "a change that is not a draft is reported as it stands"
+    );
+    assert_eq!(
+        host.state().made_ready,
+        vec![opened.id.clone()],
+        "no second lift"
+    );
+    assert_eq!(world.events_of(&session.token.0, "draft-lifted").len(), 1);
+    // The session is still open: a lift lands nothing and closes nothing.
+    assert_eq!(
+        onevcs::session(&providers, &session.token)
+            .expect("the record reads")
+            .lifecycle,
+        onevcs::Lifecycle::Open
+    );
+    assert!(host.state().merges.is_empty());
+}
+
+#[test]
+fn a_described_title_is_held_to_the_repositorys_own_commit_msg_hook() {
+    // The title a description replaces is the squash subject a change-auto merge
+    // lands under, and no local hook ever sees it otherwise — so it is put to the
+    // repository's own commit-msg hook exactly as a publication's subject is, and a
+    // title the hook turns down never reaches the host.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, REVIEWED);
+    // Stated on the checkout before the session is cut from it, which is how a
+    // session's clone comes to carry the repository's policy.
+    world.install_commit_msg(
+        &world.path("hosted"),
+        "case \"$(head -n1 \"$1\")\" in feat:*|fix:*) exit 0 ;; *) echo \"only feat and fix release here\" >&2; exit 3 ;; esac",
+    );
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+    let session = worked(&world, "feature/titled");
+    let drafted = onevcs::publish(
+        &providers,
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(held_by_the_session()),
+        },
+    )
+    .expect("the publication runs");
+    assert!(matches!(drafted.outcome, PublishOutcome::ChangeDraft(_)));
+    let opened = host.state().changes[0].clone();
+
+    let refused = onevcs::describe_change(
+        &providers,
+        &session.token,
+        &onevcs::ChangeDescription {
+            title: Some(
+                onevcs::Subject::try_from("docs: the described work".to_owned())
+                    .expect("a subject"),
+            ),
+            body: DESCRIBED.to_owned(),
+        },
+    )
+    .expect_err("the hook turns the subject down");
+    assert!(
+        matches!(refused, onevcs::Error::GateFailed { .. }),
+        "a rejection is the repository's own verdict: {refused:?}"
+    );
+    let reason = refused.to_string();
+    assert!(
+        reason.contains("commit-msg hook")
+            && reason.contains("docs: the described work")
+            && reason.contains("only feat and fix release here"),
+        "the refusal names the hook, the title, and what the hook said: {reason}"
+    );
+    assert!(
+        host.state().described.is_empty() && !host.state().bodies.contains_key(&opened.id),
+        "nothing reached the host"
+    );
+    assert!(
+        world
+            .events_of(&session.token.0, "change-described")
+            .is_empty(),
+        "and nothing was recorded"
+    );
+
+    // A title the hook accepts is written, and a description with no title asks the
+    // hook nothing — there is no subject to judge.
+    let accepted = onevcs::describe_change(
+        &providers,
+        &session.token,
+        &onevcs::ChangeDescription {
+            title: Some(
+                onevcs::Subject::try_from("feat: the described work".to_owned())
+                    .expect("a subject"),
+            ),
+            body: DESCRIBED.to_owned(),
+        },
+    )
+    .expect("the hook accepts a releasing subject");
+    assert_eq!(accepted.title, "feat: the described work");
+    assert_eq!(host.state().described.len(), 1);
+}
+
+#[test]
+fn a_consumer_drives_a_whole_closeout_against_the_providers() {
+    // The consumer's closeout, on the providers alone: show → describe → publish
+    // without a reason, with no git and no host. What it proves is that the three
+    // calls and the publication are one path whichever implementations are behind
+    // them — the change request the provided host opened is the one the description
+    // reaches and the one the reasonless publication lifts and lands.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+    let session = open(&vcs, "feature/closeout");
+
+    assert_eq!(
+        onevcs::session_change(&providers, &session.token).expect("the read runs"),
+        None,
+        "a session that has not published has no change request"
+    );
+    let drafted = onevcs::publish(
+        &providers,
+        &session.token,
+        &PublishRequest {
+            policy: None,
+            title: None,
+            body: None,
+            draft: Some(held_by_the_session()),
+        },
+    )
+    .expect("the publication runs");
+    let PublishOutcome::ChangeDraft(url) = drafted.outcome.clone() else {
+        panic!("a held draft: {drafted:?}");
+    };
+    let recorded = world.events_of(&session.token.0, "change-drafted");
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(recorded[0]["payload"]["kind"], "held");
+    assert!(
+        !vcs.state().closed_sessions.contains(&session.token),
+        "a held draft leaves the provided session open too"
+    );
+
+    let shown = onevcs::session_change(&providers, &session.token)
+        .expect("the read runs")
+        .expect("the session has a change request");
+    assert_eq!(shown.url, url);
+    assert!(shown.draft);
+    assert_eq!(shown.body, "");
+
+    // The title goes through the same check a publication's does, and the provided
+    // repository side has no hook to ask — so it is asked nothing, exactly as it
+    // publishes a requested title.
+    let described = onevcs::describe_change(
+        &providers,
+        &session.token,
+        &onevcs::ChangeDescription {
+            title: Some(
+                onevcs::Subject::try_from("feat: the closeout".to_owned()).expect("a subject"),
+            ),
+            body: DESCRIBED.to_owned(),
+        },
+    )
+    .expect("the description is written");
+    assert_eq!(described.title, "feat: the closeout");
+    assert_eq!(described.body, DESCRIBED);
+    assert_eq!(host.state().described.len(), 1);
+    assert_eq!(
+        host.state().described[0].title.as_deref(),
+        Some("feat: the closeout")
+    );
+    let events = world.events_of(&session.token.0, "change-described");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["payload"]["title"], "feat: the closeout");
+    let artifact = events[0]["payload"]["artifact"]
+        .as_str()
+        .expect("the body's artifact")
+        .to_owned();
+    world
+        .onevcs()
+        .args(["artifact", "cat", &artifact])
+        .assert()
+        .success()
+        .stdout(DESCRIBED);
+
+    let landed = onevcs::publish(&providers, &session.token, &PublishRequest::default())
+        .expect("the closeout publication runs");
+    assert_eq!(landed.outcome, PublishOutcome::ChangeOpen(url.clone()));
+    assert_eq!(host.state().made_ready.len(), 1, "the draft was lifted");
+    assert_eq!(world.events_of(&session.token.0, "draft-lifted").len(), 1);
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "one change request throughout"
+    );
+    let shown = onevcs::session_change(&providers, &session.token)
+        .expect("the read runs")
+        .expect("the change request is still open");
+    assert!(!shown.draft, "open for review now");
+    assert_eq!(
+        shown.body, DESCRIBED,
+        "with the description the closeout wrote"
+    );
+}

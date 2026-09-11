@@ -453,3 +453,92 @@ fn a_change_request_opened_directly_with_an_unusable_reason_is_refused() {
         .expect("a usable reason opens a draft");
     assert!(host.is_draft(&opened).expect("the host answers"));
 }
+
+#[test]
+fn a_host_describes_a_change_request_and_answers_the_description_it_holds() {
+    // The two calls a closeout makes after the change request exists, in the order
+    // it makes them: read what is there, replace it, read it back. Both flavours see
+    // one record, because the description lands where `open_change` put the title
+    // and the body.
+    let home = Home::new();
+    let factory = FileHost::create(home.path("host.json")).expect("a host");
+    let host = factory.for_repo("acme-corp/widgets").expect("a host");
+    let opened = host
+        .open_change(ChangeSpec {
+            body: None,
+            ..spec("feature/described")
+        })
+        .expect("opened");
+
+    // As opened: the title, and no body — answered as empty, which is what the real
+    // host answers for a change request that carries none.
+    let before = host.change_description(&opened).expect("the description");
+    assert_eq!(before.title, "feat: the thing");
+    assert_eq!(before.body, "");
+
+    // The body alone leaves the title, and is handed over verbatim — a multi-line
+    // body with a trailing blank line reads back byte for byte.
+    let evidence = "## What\n\nThe thing, with evidence.\n\n";
+    host.describe_change(&opened, None, evidence)
+        .expect("the description is written");
+    let described = host.change_description(&opened).expect("the description");
+    assert_eq!(described.title, "feat: the thing");
+    assert_eq!(described.body, evidence);
+    // Then a title with it, and both move.
+    host.describe_change(
+        &opened,
+        Some("feat: the thing, described"),
+        "## What\n\nDone.\n",
+    )
+    .expect("the description is written");
+    let retitled = host.change_description(&opened).expect("the description");
+    assert_eq!(retitled.title, "feat: the thing, described");
+    assert_eq!(retitled.body, "## What\n\nDone.\n");
+
+    // The record holds every call, verbatim, with the title only where one was
+    // handed over — and a second handle over the same document reads the same
+    // record, which is what lets a closeout span several processes.
+    let state = FileHost::create(home.path("host.json"))
+        .expect("the same document")
+        .state()
+        .expect("readable");
+    assert_eq!(state.described.len(), 2);
+    assert_eq!(state.described[0].id, opened.id);
+    assert_eq!(state.described[0].title, None);
+    assert_eq!(state.described[0].body, evidence);
+    assert_eq!(
+        state.described[1].title.as_deref(),
+        Some("feat: the thing, described")
+    );
+    assert_eq!(state.titles[&opened.id], "feat: the thing, described");
+    assert_eq!(state.bodies[&opened.id], "## What\n\nDone.\n");
+
+    // What the real host refuses, refused here: a title that names nothing, and a
+    // change request this host never opened.
+    let refused = host
+        .describe_change(&opened, Some("   "), "a body")
+        .expect_err("a blank title names no change");
+    assert!(refused.to_string().contains("blank"), "{refused}");
+    let nobody_opened = onevcs::ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        ..opened.clone()
+    };
+    for refused in [
+        host.describe_change(&nobody_opened, None, "a body")
+            .expect_err("nothing to describe")
+            .to_string(),
+        host.change_description(&nobody_opened)
+            .expect_err("nothing to read")
+            .to_string(),
+    ] {
+        assert!(
+            refused.contains("42") && refused.contains("was opened"),
+            "the refusal names the change request nobody opened: {refused}"
+        );
+    }
+    assert_eq!(
+        factory.state().expect("readable").described.len(),
+        2,
+        "a refused description records nothing"
+    );
+}

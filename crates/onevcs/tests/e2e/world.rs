@@ -526,7 +526,9 @@ impl World {
     ///
     /// `no-draft-state` answers a `gh pr view` without the field that says whether
     /// the change request is a draft, which is what a host that will not say looks
-    /// like — never the same thing as a host saying it is not one.
+    /// like — never the same thing as a host saying it is not one. `no-description`
+    /// answers one without the change request's body, which is likewise a host that
+    /// will not say rather than a change request with an empty one.
     ///
     /// `classic-protection-refused` is a credential without administration rights
     /// meeting classic branch protection, which is every fine-grained token: the
@@ -582,6 +584,17 @@ impl World {
             .expect("a change request somebody closed without merging it");
     }
     // llmlint: ignore-end[tests_mirror_real_usage]
+
+    /// Make the substituted host refuse to replace a change request's description.
+    ///
+    /// The one write to a change request's prose after it exists, declined: the
+    /// credential may not edit it, or the host is having a bad day. Nothing is
+    /// described, and the command has to say so rather than record a description the
+    /// host never took.
+    pub fn refuse_to_describe(&self) {
+        std::fs::write(self.path("gh-state/refuse-edit"), "")
+            .expect("a host that will not edit a change request")
+    }
 
     /// Make the substituted host refuse to take a change out of its draft.
     ///
@@ -1081,14 +1094,16 @@ json_string() {
   printf '"%s"' "$s"
 }
 
-# What one change request's record holds as its title or its body, with the one
-# newline `printf '%s\n'` wrote after it taken back off — exactly one, so a body that
-# ends in a blank line still reads as one.
-recorded_text() {
+# What one change request's record holds as its title or its body, as a JSON string,
+# with the one newline `printf '%s\n'` wrote after it taken back off — exactly one,
+# so a body that ends in a blank line still reads as one. Read and encoded in one
+# function, because a command substitution between the two would strip the trailing
+# newlines the body really carries.
+json_recorded() {
   local text
   text="$(cat "$1"; printf x)"
   text="${text%x}"
-  printf '%s' "${text%$'\n'}"
+  json_string "${text%$'\n'}"
 }
 
 # Perform the merge of one change request, with real git against the real bare
@@ -1327,8 +1342,8 @@ case "$subcommand" in
     fi
     if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
     # The description, as `gh pr edit` last left it or `gh pr create` opened it.
-    if wanted title; then printf '%s"title":%s' "$separator" "$(json_string "$(recorded_text "$STATE/pr-$number.title")")"; separator=","; fi
-    if wanted body; then printf '%s"body":%s' "$separator" "$(json_string "$(recorded_text "$STATE/pr-$number.body")")"; separator=","; fi
+    if wanted title; then printf '%s"title":%s' "$separator" "$(json_recorded "$STATE/pr-$number.title")"; separator=","; fi
+    if wanted body && [ "$malformed" != "no-description" ]; then printf '%s"body":%s' "$separator" "$(json_recorded "$STATE/pr-$number.body")"; separator=","; fi
     if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
     printf '}\n'
     ;;
@@ -1338,6 +1353,10 @@ case "$subcommand" in
     # land in the same records `pr create` wrote, so `pr view` answers the description
     # as it now stands whichever call wrote it.
     . "$STATE/pr-$number.env"
+    if [ -f "$STATE/refuse-edit" ]; then
+      printf 'the host declines to edit %s\n' "$PR_URL" >&2
+      exit 1
+    fi
     if [ -n "$body_file" ]; then
       if [ ! -f "$body_file" ]; then
         printf 'could not read body file %s\n' "$body_file" >&2

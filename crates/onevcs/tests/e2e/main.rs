@@ -19,6 +19,11 @@
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod accounting;
+// Unix only: `change` opens drafts through the same substituted `gh` as `host.rs`
+// and cuts real sessions. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod change;
 mod cli;
 // The producer's own release declaration. It drives the binary and, for the half of
 // the promise a binary cannot show, the library beside it — see its own header.

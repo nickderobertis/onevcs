@@ -2806,6 +2806,28 @@ fn a_host_this_build_does_not_speak_for_is_refused_rather_than_addressed_as_gith
         world.git(&origin, &["log", "-1", "--format=%s", "feature/elsewhere"]),
         "feat: add the thing"
     );
+    // The three verbs over the session's change request reach the same seam and
+    // answer the same way, before anything is asked of a host: the identity is
+    // well-formed, and this build has no host for it.
+    for verb in [
+        vec!["change", "show", &token],
+        vec!["change", "describe", &token, "--body", "## What"],
+        vec!["change", "ready", &token],
+    ] {
+        world
+            .onevcs()
+            .args(&verb)
+            .assert()
+            .code(70)
+            .stderr(predicate::str::contains(
+                "RemoteHost for a host other than github.com is not implemented yet",
+            ));
+    }
+    assert!(
+        world.host_calls().is_empty(),
+        "nothing was addressed as GitHub: {:?}",
+        world.host_calls()
+    );
 }
 
 #[test]

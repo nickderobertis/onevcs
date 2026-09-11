@@ -318,3 +318,94 @@ fn recovering_a_branch_opens_its_change_on_the_supplied_host() {
         "opened from the branch that was recovered"
     );
 }
+
+#[test]
+fn the_change_verbs_go_through_the_supplied_repository_side_and_host() {
+    let world = World::new();
+    inhabit(&world);
+    let (_checkout, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let session = vcs
+        .open_session(SessionRequest {
+            repo: "hosted".to_owned(),
+            branch: Some("feature/described".to_owned()),
+            base: Some("main".to_owned()),
+            execution_checkout: None,
+        })
+        .expect("a session");
+    let host = MemoryHost::new();
+    let providers = || Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+
+    // Opened as a held draft through the seam, and then read, described, and
+    // readied through it: the change request every verb reaches is the one the
+    // supplied host holds, and no `gh` answered anything in this world.
+    assert_eq!(
+        run(
+            &["onevcs", "publish", &session.token.0, "--draft"],
+            providers()
+        ),
+        0
+    );
+    assert_eq!(
+        run(&["onevcs", "change", "show", &session.token.0], providers()),
+        0
+    );
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "change",
+                "describe",
+                &session.token.0,
+                "--body",
+                "## What\n\nProvided.\n",
+            ],
+            providers()
+        ),
+        0
+    );
+    assert_eq!(
+        run(
+            &["onevcs", "change", "ready", &session.token.0],
+            providers()
+        ),
+        0
+    );
+    let changes = host.state().changes;
+    assert_eq!(changes.len(), 1, "the supplied host holds the change");
+    assert_eq!(
+        host.state().bodies[&changes[0].id],
+        "## What\n\nProvided.\n"
+    );
+    assert_eq!(host.state().made_ready, vec![changes[0].id.clone()]);
+
+    // A repository side with no record of the session refuses every one of them,
+    // which it could not do if a verb read the record `Git` writes.
+    for verb in [
+        vec!["onevcs", "change", "show", &session.token.0],
+        vec![
+            "onevcs",
+            "change",
+            "describe",
+            &session.token.0,
+            "--body",
+            "## What\n\nProvided.\n",
+        ],
+        vec!["onevcs", "change", "ready", &session.token.0],
+    ] {
+        assert_eq!(
+            run(
+                &verb,
+                Providers {
+                    vcs: &MemoryVcs::new(),
+                    hosting: &MemoryHost::new(),
+                },
+            ),
+            2,
+            "{verb:?} starts from the supplied repository side"
+        );
+    }
+}
