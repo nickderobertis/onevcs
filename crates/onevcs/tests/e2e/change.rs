@@ -17,7 +17,7 @@
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, REVIEWED};
+use crate::host::{hosted_stack, squash_the_change_below, Hosted, REVIEWED};
 use crate::lifecycle::local_direct;
 use crate::publish_branch::stderr_of;
 
@@ -690,5 +690,116 @@ fn a_host_that_will_not_describe_or_will_not_say_what_it_holds_is_reported_as_su
         refused.contains("without its body"),
         "a host that will not say what the change request says is a refusal, not an \
          empty description: {refused}"
+    );
+}
+
+#[test]
+fn a_stacked_session_whose_root_carries_the_stack_names_one_change_request_throughout() {
+    // The amendment's rule, driven whole: a session cut from the change below it,
+    // whose change below has since squash-merged onto the root, is published as a
+    // draft — which moves it onto the root — and then read, described, readied and
+    // landed. The session's own record still names the branch below as its base, so
+    // every one of the four verbs has to resolve the base the way `publish` did
+    // rather than read it off the record: one change request, into the root, named
+    // by all of them.
+    let hosted = Hosted::new(REVIEWED);
+    let (token, _worktree) = hosted_stack(&hosted, "feature/filter");
+    squash_the_change_below(&hosted, true);
+
+    // Before the draft, nothing is open — into the root or anywhere else.
+    assert_eq!(shown(&hosted, &token), Value::Null);
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("open as a draft"));
+    let drafted = hosted.world.events_of(&token, "change-drafted");
+    assert_eq!(drafted.len(), 1, "{drafted:?}");
+    assert_eq!(
+        drafted[0]["payload"]["base"], "main",
+        "the draft is opened against the root the change was replayed onto: {drafted:?}"
+    );
+    assert_eq!(drafted[0]["payload"]["kind"], "held");
+    assert_eq!(status(&hosted, &token)["session"]["state"], "open");
+
+    // The read names that change request and its resolved base, not the branch the
+    // session was opened against.
+    let before = shown(&hosted, &token);
+    assert_eq!(before["url"], "https://github.com/acme-corp/hosted/pull/1");
+    assert_eq!(before["base"], "main");
+    assert_eq!(before["draft"], true);
+
+    // The description reaches the same change request, and its record names the
+    // same base.
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["change", "describe", &token, "--body", EVIDENCE, "--json"])
+        .assert()
+        .success();
+    let described: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one JSON object");
+    assert_eq!(
+        described["url"],
+        "https://github.com/acme-corp/hosted/pull/1"
+    );
+    assert_eq!(described["base"], "main");
+    assert_eq!(described["body"], EVIDENCE);
+    assert_eq!(hosted.world.change_request_body(1), EVIDENCE);
+    let events = hosted.world.events_of(&token, "change-described");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["payload"]["base"], "main");
+
+    // The lift, on the same change request.
+    hosted
+        .world
+        .onevcs()
+        .args(["change", "ready", &token, "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"url\":\"https://github.com/acme-corp/hosted/pull/1\"",
+        ))
+        .stdout(predicate::str::contains("\"draft\":false"));
+    assert_eq!(hosted.world.events_of(&token, "draft-lifted").len(), 1);
+
+    // …and the landing publication adopts it rather than opening a second one.
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "change request open at https://github.com/acme-corp/hosted/pull/1",
+        ));
+    assert_eq!(
+        hosted
+            .world
+            .host_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr create"))
+            .count(),
+        1,
+        "one change request throughout"
+    );
+    assert_eq!(status(&hosted, &token)["session"]["state"], "closed");
+    assert_eq!(shown(&hosted, &token)["base"], "main");
+    // The branch really is the root plus its own work: the change below is on the
+    // origin once, as the commit that squashed it.
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.origin, &["log", "--format=%s", "feature/filter"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "feat: filter what the engine relays",
+            "feat: write the engine",
+            "chore: seed the repository",
+        ]
     );
 }

@@ -1766,8 +1766,14 @@ pub trait RemoteHost {   // every existing method unchanged, plus two, both defa
 }
 ```
 
+`session_change`, `describe_change` and `ready_change` address the change request
+`publish` would open or adopt for that same session — the branch `publish` pushes,
+into the base `publish` resolves for it, stacked or not — resolved through one
+computation, so no session can have `publish` and a `change` verb naming two different
+change requests; on a stacked session `change show` therefore answers the change
+request the stack publishes onto, and its `base` is that resolved base.
 `session_change` answers `None` when the host holds no open change request from the
-session's branch into its base, and never invents one. `describe_change` refuses a
+session's branch into that base, and never invents one. `describe_change` refuses a
 session with no change request rather than opening one; `ready_change` on a change
 request that is not a draft is a no-op that reports the change as it stands. A `title`
 handed to `describe_change` is a `Subject` and is held to the repository's own

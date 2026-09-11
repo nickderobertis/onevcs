@@ -1,10 +1,11 @@
 //! A session's own change request, read and written after it exists.
 //!
 //! Three thin calls over the host, each addressed at **the session's own change
-//! request** — the one open from its branch into its base — so no caller ever names
-//! a URL: read it back, replace its description, and mark it ready for review. Each
-//! is recorded on the session's own event stream, in the review phase, exactly as a
-//! publication records what it does to the same change request.
+//! request** — the one `publish` would open or adopt for that session: from the
+//! branch it pushes, into the base it resolves for it, stacked or not — so no caller
+//! ever names a URL: read it back, replace its description, and mark it ready for
+//! review. Each is recorded on the session's own event stream, in the review phase,
+//! exactly as a publication records what it does to the same change request.
 //!
 //! What none of them does is open one. A publication is the only thing that opens a
 //! change request, and `onevcs publish TOKEN --draft` is how a session opens its own
@@ -22,7 +23,7 @@ use crate::providers::Providers;
 use crate::publish::{self, Subject};
 use crate::session::{SessionRecord, SessionToken};
 use crate::stream::{self, Stream};
-use crate::workspace::object;
+use crate::workspace::{self, object};
 use crate::{git, guidance};
 
 /// What a caller writes to a change request's description.
@@ -187,6 +188,10 @@ pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<S
 struct Addressed<'a> {
     token: &'a SessionToken,
     record: SessionRecord,
+    /// The base the session's publication resolves for it, which is what its change
+    /// request targets: the recorded base, or for a stacked session the root once
+    /// the root carries the change below.
+    base: String,
     host: Box<dyn RemoteHost>,
 }
 
@@ -198,20 +203,21 @@ impl<'a> Addressed<'a> {
         // has no implementation for is the seam `Error::NotImplemented` exists for.
         let slug = publish::change_host(&record.identity)?;
         let host = providers.hosting.for_repo(&slug)?;
+        let base = publication_base(token, &record)?;
         Ok(Self {
             token,
             record,
+            base,
             host,
         })
     }
 
-    /// The open change request from the session's branch into its base, if the host
-    /// holds one.
+    /// The open change request from the session's branch into the base its
+    /// publication resolves, if the host holds one.
     fn find(&self) -> Result<Option<ChangeRequest>> {
-        let session = &self.record.session;
         Ok(self
             .host
-            .find_changes(&session.branch, &session.base)?
+            .find_changes(&self.record.session.branch, &self.base)?
             .into_iter()
             .next())
     }
@@ -228,7 +234,7 @@ impl<'a> Addressed<'a> {
                  work is still being made",
                 token = self.token.0,
                 branch = self.record.session.branch,
-                base = self.record.session.base,
+                base = self.base,
                 publish = guidance::command(["onevcs", "publish", &self.token.0, "--draft"]),
             ),
         })
@@ -274,5 +280,25 @@ impl<'a> Addressed<'a> {
         let mut stream = Stream::open(&self.token.0)?;
         stream.label("identity", &self.record.identity);
         Ok(stream)
+    }
+}
+
+/// The base the session's publication resolves for it — what its change request
+/// targets — through the one computation `publish` makes.
+///
+/// A stack is a thing only the `Git` implementation records: its publication moves a
+/// stacked change onto the root once the root carries the change below, and the
+/// [`Vcs`](crate::Vcs) interface has no word for that, so a session's own record
+/// names the base it was opened against and nothing more. The record under the
+/// state root is where `Git` keeps the rest, and it is consulted where it names this
+/// same session — the same worktree on the same branch — which is what a session
+/// `Git` opened always has and a session a supplied `Vcs` opened never does. Those
+/// have no stack to resolve, and publish into the base their record names.
+fn publication_base(token: &SessionToken, record: &SessionRecord) -> Result<String> {
+    match workspace::load(&token.0) {
+        Ok(stored) if stored.session() == record.session => {
+            Ok(publish::session_target(&stored)?.base().to_string())
+        }
+        _ => Ok(record.session.base.clone()),
     }
 }

@@ -639,7 +639,7 @@ fn a_reviewed_change_is_pushed_and_left_open() {
 /// `session open --base` is what records a stack, so this is how a hosted stacked
 /// change is opened: the branch below exists on the origin, and the session is cut
 /// from it.
-fn hosted_stack(hosted: &Hosted, branch: &str) -> (String, std::path::PathBuf) {
+pub fn hosted_stack(hosted: &Hosted, branch: &str) -> (String, std::path::PathBuf) {
     let world = &hosted.world;
     world.git(
         &hosted.checkout,
@@ -691,7 +691,7 @@ fn hosted_stack(hosted: &Hosted, branch: &str) -> (String, std::path::PathBuf) {
 }
 
 /// Land the branch below on `main` the way a squash-merging host does.
-fn squash_the_change_below(hosted: &Hosted, delete_it: bool) {
+pub fn squash_the_change_below(hosted: &Hosted, delete_it: bool) {
     let below = hosted.world.clone_of(&hosted.origin, "below");
     hosted
         .world

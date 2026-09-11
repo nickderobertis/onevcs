@@ -3887,6 +3887,27 @@ fn the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_m
             "the held-draft amendment no longer declares: {line}"
         );
     }
+    // Which change request the three calls address is a rule rather than a
+    // signature, and it is stated beside the declarations: the one `publish` would
+    // open or adopt for the same session, resolved the same way — so a stacked
+    // session cannot have `publish` and a `change` verb naming two different ones.
+    // `tests/e2e/change.rs` drives that rule; this holds the document to it.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "`session_change`, `describe_change` and `ready_change` address the change request \
+         `publish` would open or adopt for that same session — the branch `publish` pushes, \
+         into the base `publish` resolves for it, stacked or not — resolved through one \
+         computation, so no session can have `publish` and a `change` verb naming two \
+         different change requests",
+        "on a stacked session `change show` therefore answers the change request the stack \
+         publishes onto, and its `base` is that resolved base",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the held-draft amendment no longer says which change request the calls \
+             address: {sentence}"
+        );
+    }
 
     // The types, built with exactly the declared fields, and the three functions
     // referenced at exactly the declared signatures — which is what fails to compile

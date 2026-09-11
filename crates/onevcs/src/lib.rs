@@ -158,8 +158,9 @@ pub fn close_session(providers: &Providers<'_>, token: &SessionToken) -> Result<
     providers.vcs.close_session(token)
 }
 
-/// The session's own change request — the one open from its branch into its base —
-/// as the host holds it, or `None` when the host holds none.
+/// The session's own change request — the one [`publish`] would open or adopt for
+/// it, from its branch into the base its publication resolves — as the host holds
+/// it, or `None` when the host holds none.
 ///
 /// The library form of `onevcs change show`. It never invents one: a session that
 /// has not published has no change request, and [`publish`] is what opens one.

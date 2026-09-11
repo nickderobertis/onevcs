@@ -113,7 +113,7 @@ impl Vcs for Git {
 
     fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
         let record = workspace::load(&token.0)?;
-        let base = base_ref(&record.clone, &record.base);
+        let base = judging_base(&record)?;
         let trailers = provenance::configured()?;
         Ok(SessionRecord {
             session: record.session(),
@@ -206,7 +206,7 @@ pub fn preserve_into(
         });
     }
 
-    let base = base_ref(&record.clone, &record.base);
+    let base = judging_base(record)?;
     Ok(PreservedBranch {
         branch: record.branch.to_string(),
         base: record.base.to_string(),
@@ -222,6 +222,14 @@ pub fn spell_provenance(kind: Provenance) -> &'static str {
         Provenance::Complete => "complete",
         Provenance::IncompleteStep => "incomplete-step",
     }
+}
+
+/// The ref a session's branch is judged against: the base its publication resolves
+/// from what the clone holds now — the branch below for a stacked session, until the
+/// clone has seen the root carry it — as [`base_ref`] spells it.
+fn judging_base(record: &workspace::Record) -> Result<String> {
+    let target = publish::standing_target(record)?;
+    Ok(base_ref(&record.clone, target.base()))
 }
 
 /// The ref a branch's commits are counted against: the remote-tracking base when

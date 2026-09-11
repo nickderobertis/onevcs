@@ -540,8 +540,19 @@ pub fn run_for_session(
         hosting,
     };
     let branch = record.branch.to_string();
-    let outcome = match run(&context, &mut stream) {
-        Ok(outcome) => {
+    let outcome = match run_resolving(&context, &mut stream) {
+        Ok((outcome, landed)) => {
+            // A stacked change the root carried was replayed onto the root, and the
+            // record learns that: every later read and publication of this session
+            // then resolves the root directly rather than a stack the replayed
+            // branch no longer shows — the tip it was cut from is out of its history
+            // now, so there is no stack left to record. Recorded rather than
+            // inferred, exactly as the stack itself was: this publication is the one
+            // that moved it.
+            if landed != context.target {
+                record.change_base = Some(landed.base().clone());
+                record.stack_tip = None;
+            }
             // A publication is the end of a session's work, so the record closes
             // with it — with one exception. A draft the session itself is holding
             // is a session still being worked in: its worktree is still the
@@ -555,6 +566,8 @@ pub fn run_for_session(
                 && matches!(context.draft, Some(DraftReason::Held { .. }));
             if !still_working {
                 record.state = Lifecycle::Closed;
+            }
+            if !still_working || landed != context.target {
                 workspace::save(&record)?;
             }
             outcome
@@ -786,6 +799,61 @@ pub(crate) fn root_is_known_to_carry_the_stack(
     git::known_to_carry_changes(repo, &root, &fork, tip)
 }
 
+/// Where a publication lands once the root has been consulted: the target it was
+/// handed, or the root once the root carries the change below — and, in that case,
+/// the tip the branch's own work begins after, which is what a replay onto the root
+/// starts from.
+///
+/// Asked after a fetch, deliberately: the root is what decides it, and a clone's own
+/// copy of the root is only as current as its last fetch. Every target that is not a
+/// stacked one is handed back as it was, with nothing to replay.
+pub(crate) fn landed_target(
+    repo: &Path,
+    branch: &Ref,
+    target: &Target,
+) -> Result<(Target, Option<String>)> {
+    if let Target::Stacked { root, tip, .. } = target {
+        if root_is_known_to_carry_the_stack(repo, branch, root, tip)? {
+            return Ok((Target::Base(root.clone()), Some(tip.clone())));
+        }
+    }
+    Ok((target.clone(), None))
+}
+
+/// The change request a session's publication opens or adopts: the branch it pushes,
+/// into the base it resolves for it, stacked or not.
+///
+/// One computation for `publish` and for the `change` verbs that address the same
+/// change request afterwards, so no session can have the two naming different ones.
+/// It is the resolution [`run_for_session`] and [`run`] make between them — the
+/// target the record wrote down, then the root once the root carries the change
+/// below — made after the same fetch a publication makes, because the root decides
+/// the second step and the clone's own copy of it is only as current as its last
+/// fetch. A `change show` on a stacked session therefore answers the change request
+/// the stack publishes onto, which is the one its next `publish` adopts.
+pub(crate) fn session_target(record: &workspace::Record) -> Result<Target> {
+    if git::has_remote(&record.clone, "origin") {
+        git::fetch(&record.clone, "origin")?;
+    }
+    standing_target(record)
+}
+
+/// The same resolution as [`session_target`], from what the session's clone already
+/// holds, without asking the remote.
+///
+/// What a *read* of the session judges its branch against: the base its publication
+/// would resolve from the clone's own view, which is the branch below until the
+/// clone has seen the root carry it. A stacked session whose branch below has
+/// landed and gone loses that name from the clone at the next fetch — its
+/// publication's own fetch prunes — and a read that kept comparing against the
+/// recorded base would then fail on a branch nothing has any more, for a session
+/// whose work is exactly where its publication put it.
+pub(crate) fn standing_target(record: &workspace::Record) -> Result<Target> {
+    let recorded = recorded_target(record, &record.publication_checkout)?;
+    let (target, _replay) = landed_target(&record.clone, &record.branch, &recorded)?;
+    Ok(target)
+}
+
 impl<'a> Context<'a> {
     /// The same publication, landing where `target` says instead.
     fn onto(&self, target: Target) -> Context<'a> {
@@ -812,6 +880,19 @@ impl<'a> Context<'a> {
 
 /// Verify and publish a branch.
 pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome> {
+    run_resolving(context, stream).map(|(outcome, _)| outcome)
+}
+
+/// [`run`], also answering where the branch landed: the target it was handed, or
+/// the root a stacked change was replayed onto because the root already carried the
+/// change below.
+///
+/// The second is what a session's own record has to learn, because a replay changes
+/// the branch's shape: the tip it was cut from is no longer in its history, so the
+/// record's stack cannot be recognised on the branch again — and a later read or
+/// publication of the same session that still resolved the recorded stack would
+/// compare the branch against a branch below it that has landed and gone.
+fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishOutcome, Target)> {
     // Input, rejected at its boundary: before the fetch, before the sync, and before
     // anything reaches a remote. A draft is a state of a *change request*, so a
     // publication that opens none cannot be in it, and a reason nobody can read is
@@ -855,15 +936,12 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     // already carries is a change onto the root base, and everything below — what it is compared
     // against, what its change request targets — follows from that rather than from
     // the branch it was opened against.
-    let mut replay = None;
+    let (target, replay) = landed_target(&context.repo, &context.branch, &context.target)?;
     let landed;
     let mut context = context;
-    if let Target::Stacked { root, tip, .. } = &context.target {
-        if root_is_known_to_carry_the_stack(&context.repo, &context.branch, root, tip)? {
-            replay = Some(tip.clone());
-            landed = context.onto(Target::Base(root.clone()));
-            context = &landed;
-        }
+    if replay.is_some() {
+        landed = context.onto(target.clone());
+        context = &landed;
     }
     let remote_base = format!("origin/{}", context.target.base());
     let compared = if git::ref_exists(&context.repo, &format!("refs/remotes/{remote_base}")) {
@@ -875,7 +953,7 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     sync(context, stream, &compared, replay.as_deref())?;
 
     if nothing_to_publish(context, &compared)? {
-        return Ok(PublishOutcome::NothingToPublish);
+        return Ok((PublishOutcome::NothingToPublish, target));
     }
 
     let push = match (&replay, &last_seen) {
@@ -893,10 +971,11 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
     let (subject, _) = describe(context, &compared)?;
     let environment = merge_path::comparison_env("origin", context.target.base());
 
-    match context.effective {
-        MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment),
-        _ => publish_as_change(context, stream, &subject, &environment, push),
-    }
+    let outcome = match context.effective {
+        MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment)?,
+        _ => publish_as_change(context, stream, &subject, &environment, push)?,
+    };
+    Ok((outcome, target))
 }
 
 /// The subject a publication of one branch would carry, or the refusal that none

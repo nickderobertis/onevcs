@@ -26,7 +26,10 @@ implementation opened is a first-class session in every command that takes one.
 It was not always so — the record was written by `Git` directly, and `publish` and
 `session close` therefore refused a provider-opened session as a session nobody
 opened. Anything that reaches for `workspace::load` from a command is that bug
-coming back.
+coming back. The one read of it outside `Git` — `change.rs` resolving a stacked
+session's publication base — asks the seam first and consults the record only where
+it names the session the seam answered with, so a provider-opened session is never
+refused for lacking one.
 
 `tests/e2e/seam.rs` holds each command to the implementation it was handed: with a
 provider that knows the answer it succeeds, with one that does not it fails, which
@@ -102,11 +105,32 @@ and the filter grammar matches it. Four things about that are easy to undo.
 
 `change.rs` is three thin calls over the host — `session_change`, `describe_change`,
 `ready_change` — each addressed at **the session's own change request**, the one
-open from the session's branch into its base, so no caller names a URL. `onevcs
+`publish` would open or adopt for that session, so no caller names a URL. `onevcs
 change show|describe|ready` are renderings of them, and `onevcs publish TOKEN
 --draft` is how a session opens that change request as a draft it holds while its
-work is still being made. Five things are easy to undo.
+work is still being made. Seven things are easy to undo.
 
+- **Which change request that is, `publish` decides, and the verbs ask the same
+  computation.** The session's record names the base it was opened against; what
+  its change request targets is the base its publication *resolves* — for a stacked
+  session, the root once the root carries the change below. `publish::session_target`
+  is that resolution, made after the same fetch a publication makes, and it is the
+  one thing `change.rs` reaches the state root for: `Addressed::of` takes the session
+  off the `Vcs` seam first and consults the `Git` record only where it names that
+  same worktree and branch, because a stack is a thing only `Git` records and the
+  interface has no word for it. A session a supplied `Vcs` opened has no such record
+  and publishes into the base its own record names. Reading the recorded base here
+  instead is how `change show` answered *none* for a change request the draft
+  publication had just opened.
+- **A replay moves the record, so the stack is not resolved twice.** Replaying a
+  stacked branch onto the root takes the tip it was cut from out of its history, and
+  nothing can recognise the stack on that branch again — so `run_for_session` writes
+  the root as `change_base` and clears `stack_tip` the moment a publication lands
+  there. Every later read and publication of that session then resolves the root
+  directly; without the write, the next one compared the branch against a branch
+  below that had landed and gone. `Git::session` and `preserve_into` judge a branch's
+  provenance against that same resolution (`publish::standing_target`, the read-side
+  form that asks the remote nothing) for the same reason.
 - **Nothing here opens a change request.** `describe_change` and `ready_change`
   refuse a session with none, naming `publish --draft`; `session_change` answers
   `None`. A verb that opened one on the way would be a second publication path.
