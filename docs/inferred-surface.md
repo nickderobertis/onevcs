@@ -99,6 +99,21 @@ protects a branch two ways and a fine-grained token is refused the second on eve
 repository: an empty set that one source contributed to is not "requires nothing",
 and a consumer deleting its own cached list must be able to tell the two apart.
 
+**`RemoteHost::describe_change` and `RemoteHost::change_description` are an approved
+amendment, written into `docs/contract.md`** beside the three session-change calls
+they serve, and held to the code by
+`the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_methods`
+in `tests/contract.rs`. Recorded here is only why the shape is what it is. The write
+takes the title as an `Option<&str>` and the body as a `&str` rather than a
+`ChangeDescription`, because the `Subject` rule on a title is publication's and is
+applied where the description is composed — a host is handed the bytes it will
+write, and a second check of them at the seam would be a restatement. The read
+answers a `Description` of two plain strings rather than a `SessionChange`, because
+a host holds a title and a body and nothing else about the description: the URL, the
+id, the base, and the draft state come from the change request the read was asked
+about and from `is_draft`, and a type that had the host repeat them would let the
+two answers disagree.
+
 **A publication's repository side used to be git rather than `Vcs`, and no longer
 is.** The five methods covered identities, sessions, preserved work, and recovery,
 while the work `onevcs publish` does — fetch, merge, squash, push — sat beneath
