@@ -241,7 +241,7 @@ fn a_session_opens_its_draft_describes_it_readies_it_and_lands_it() {
         .args(["change", "ready", &token, "--json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"draft\": false"));
+        .stdout(predicate::str::contains("\"draft\":false"));
     assert_eq!(
         hosted
             .world

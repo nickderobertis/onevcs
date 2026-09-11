@@ -111,12 +111,34 @@ pub fn describe_change(
     session
         .host
         .describe_change(&change, description.title.as_deref(), &description.body)?;
-    // The record, and the reason the body is an artifact rather than a field: it is
-    // prose of unbounded size, and the stream bounds payload text. Best effort, as
-    // every capture of a thing that has already happened is — the host has the
-    // description, and reporting the write as failed because its own record could
-    // not be stored would send somebody to write it again.
-    let mut stream = session.stream()?;
+    record_description(&session, &change, description);
+    session.read(&change)
+}
+
+/// Record one description on the session's stream, best effort.
+///
+/// Best effort, as every capture of a thing that has already happened is: the host
+/// has the description by the time this runs, and reporting the write as failed
+/// because its own record could not be stored would send somebody to write it again.
+/// The body is an artifact rather than a field of the payload because it is prose of
+/// unbounded size and the stream bounds payload text; a body that could not be
+/// stored leaves the event without one, said on stderr, rather than an event that
+/// names an artifact nothing can read.
+fn record_description(
+    session: &Addressed<'_>,
+    change: &ChangeRequest,
+    description: &ChangeDescription,
+) {
+    let mut stream = match session.stream() {
+        Ok(stream) => stream,
+        Err(error) => {
+            eprintln!(
+                "onevcs: warning: the description of {} was written and is not recorded: {error}",
+                change.url
+            );
+            return;
+        }
+    };
     let mut payload = object(json!({
         "url": change.url.to_string(),
         "id": change.id.0,
@@ -139,7 +161,6 @@ pub fn describe_change(
         }
     };
     stream.emit_with(EventKind::ChangeDescribed, payload, artifacts);
-    session.read(&change)
 }
 
 /// Mark the session's change request ready for review, and report the change as it

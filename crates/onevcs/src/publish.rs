@@ -85,8 +85,8 @@ pub struct PublishRequest {
 /// the meantime. A change whose work is *still being made* — evidence gathered, a
 /// description started — is [`Held`](DraftReason::Held) by the session that opened
 /// it, and the one line a person reads is the whole of that reason. The `kind` tag
-/// is what a consumer routes on; [`because`](DraftReason::because) is the same fact
-/// as a sentence, for whoever reads it rather than routes on it.
+/// is what a consumer routes on; `because` is the same fact as a sentence, for
+/// whoever reads it rather than routes on it.
 ///
 /// It is recorded on the session's own event stream — the publication record — and
 /// nowhere else. **Nothing is written into the change request's body**, under a
@@ -197,8 +197,7 @@ impl DraftReason {
     }
 
     /// The one line a person reads, whichever kind of reason this is.
-    #[must_use]
-    pub fn because(&self) -> &str {
+    pub(crate) fn because(&self) -> &str {
         match self {
             DraftReason::AwaitingRelease { because, .. } | DraftReason::Held { because } => because,
         }
@@ -206,14 +205,13 @@ impl DraftReason {
 
     /// The word the `kind` tag travels as: `awaiting-release` or `held`.
     ///
-    /// The spelling is serde's, and `fields` below is what holds the two together —
-    /// the tag is read out of the serialized form rather than restated here.
-    #[must_use]
-    pub fn kind(&self) -> &'static str {
-        match self {
-            DraftReason::AwaitingRelease { .. } => "awaiting-release",
-            DraftReason::Held { .. } => "held",
-        }
+    /// Read off the serialized form rather than restated, so a rendering cannot
+    /// spell a kind the record does not.
+    pub(crate) fn kind(&self) -> String {
+        self.fields()["kind"]
+            .as_str()
+            .expect("a tagged enum serializes its kind as a string")
+            .to_owned()
     }
 
     /// The reason as the fields an event payload and a refusal both name it by:

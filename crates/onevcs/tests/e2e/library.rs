@@ -4184,6 +4184,9 @@ fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
     let session = worked(&world, "feature/held");
     let base = origin_tip(&world, &origin, "main");
     let reason = held_by_the_session();
+    let DraftReason::Held { because } = &reason else {
+        panic!("the session's own reason is the held kind");
+    };
 
     let drafted = onevcs::publish(
         &providers,
@@ -4209,12 +4212,12 @@ fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
         host.state().bodies.get(&opened.id).map(String::as_str),
         Some(DRAFTED)
     );
-    assert!(!host.state().bodies[&opened.id].contains(reason.because()));
+    assert!(!host.state().bodies[&opened.id].contains(because.as_str()));
     // …and on the record, as the held kind, with the one line a person reads.
     let recorded = world.events_of(&session.token.0, "change-drafted");
     assert_eq!(recorded.len(), 1, "{recorded:?}");
     assert_eq!(recorded[0]["payload"]["kind"], "held");
-    assert_eq!(recorded[0]["payload"]["because"], reason.because());
+    assert_eq!(recorded[0]["payload"]["because"], *because);
     assert_eq!(recorded[0]["payload"]["url"], url.to_string());
     assert_eq!(recorded[0]["payload"]["id"], opened.id.0);
     assert_eq!(recorded[0]["payload"]["base"], "main");

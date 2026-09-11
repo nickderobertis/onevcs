@@ -526,12 +526,7 @@ fn described_body(token: &str, body: Option<&String>, body_file: Option<&Path>) 
 /// change fits on a line above it.
 fn print_change(change: &SessionChange, json: bool) -> Result<()> {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(change).map_err(|e| Error::Invalid {
-                reason: format!("cannot render the change request: {e}"),
-            })?
-        );
+        println!("{}", serde_json::to_string(change).map_err(serialization)?);
         return Ok(());
     }
     println!("change request: {}", change.url);
