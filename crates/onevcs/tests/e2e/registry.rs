@@ -180,9 +180,13 @@ fn the_gate_audit_names_each_check_an_identitys_host_requires() {
         .args(["repos", "--audit-gates"])
         .assert()
         .success()
-        // The required ones and only those, named for the base they gate.
+        // The required ones and only those, named for the base they gate — and both
+        // protection sources were read: the branch carries no classic protection,
+        // which the host answers as `Branch not protected`, an answer and not a
+        // refusal.
         .stdout(predicate::str::contains(
-            "  required checks: cross, gate (required by the repository's rulesets for main)\n",
+            "  required checks: cross, gate (required by the repository's rulesets and \
+             branch protection for main)\n",
         ))
         .stdout(predicate::str::contains("advisory").not())
         // …beside the coverage line the audit already reported per checkout.
@@ -190,7 +194,9 @@ fn the_gate_audit_names_each_check_an_identitys_host_requires() {
             "    merge-path coverage: the host's required checks",
         ));
 
-    // A repository that requires nothing is an answer, and it is spelled as one.
+    // A repository that requires nothing is an answer, and it is spelled as one —
+    // only because both sources were read and both name nothing; the journey below
+    // this one holds what an unread source does to it.
     hosted.world.host_checks(&[Check {
         name: "advisory",
         status: "completed",
@@ -204,7 +210,8 @@ fn the_gate_audit_names_each_check_an_identitys_host_requires() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "  required checks: none declared by the repository's rulesets for main\n",
+            "  required checks: none required: neither the repository's rulesets nor its \
+             branch protection names one for main\n",
         ));
 
     // A host that could not be asked is *not* that answer: the list is reported as
@@ -250,6 +257,87 @@ fn the_gate_audit_names_each_check_an_identitys_host_requires() {
         .success()
         .stdout(predicate::str::contains("required checks").not())
         .stdout(predicate::str::contains("merge-path coverage").not());
+}
+
+#[test]
+fn an_audit_that_could_not_consult_every_protection_source_never_reports_no_required_checks() {
+    // GitHub protects a branch two ways — rulesets and classic branch protection —
+    // and a credential that can read the first may be refused the second. "This
+    // source found nothing" and "this merge path requires nothing" are opposite
+    // facts, and the second is the dangerous one: the consumer is deleting its own
+    // cached list on the strength of this line. So an answer a protection source
+    // did not contribute to says so, and an empty one is reported as unknown rather
+    // than as none.
+    let hosted = Hosted::new(REVIEWED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.answer_malformed("classic-protection-refused");
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        // The rulesets' names, marked incomplete, with the refusal.
+        .stdout(predicate::str::contains(
+            "  required checks: gate (required by the repository's rulesets for main; \
+             incomplete — classic branch protection was not consulted: ",
+        ))
+        .stdout(predicate::str::contains(
+            "Resource not accessible by personal access token",
+        ));
+
+    // The same refusal with rulesets naming nothing: unknown, never none.
+    hosted.world.host_checks(&[]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  required checks: unknown — the repository's rulesets name none for main, and \
+             classic branch protection was not consulted: ",
+        ))
+        .stdout(predicate::str::contains("required checks: none").not());
+
+    // Both sources readable: each contributes, and the answer says both were read.
+    hosted.world.answer_malformed("");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.host_classic_protection(&["deploy"]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  required checks: deploy, gate (required by the repository's rulesets and \
+             branch protection for main)\n",
+        ));
+
+    // …and only when both were read and both name nothing is the answer "none".
+    hosted.world.host_checks(&[]);
+    hosted.world.host_classic_protection(&[]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  required checks: none required: neither the repository's rulesets nor its \
+             branch protection names one for main\n",
+        ));
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! Host-neutral vocabulary: the review unit is a [`ChangeRequest`]. GitHub maps it
 //! to a pull request; a later host maps it to whatever it calls the same thing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -60,6 +60,10 @@ fn no_checks_yet(answer: &gh::Answer) -> bool {
         && answer.stdout.trim().is_empty()
         && answer.stderr.trim_start().starts_with(NO_CHECKS_YET)
 }
+
+/// How `gh api` reports a branch that has no classic protection at all — GitHub's
+/// own message, which is an answer (the source names nothing) and not a refusal.
+const NOT_PROTECTED: &str = "Branch not protected";
 
 /// Which of the host's check sources a call may consult.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,28 +218,83 @@ pub trait RemoteHost {
         })
     }
 
-    /// The names of the checks the repository requires before anything merges into
-    /// `base`, asked of the branch itself rather than of a change request targeting
-    /// it.
+    /// The checks the repository requires before anything merges into `base`, asked
+    /// of the branch itself rather than of a change request targeting it.
     ///
     /// What `onevcs repos --audit-gates` names per identity. Which checks a
     /// repository requires is a setting on that repository, and a consumer that
     /// sequences its own work behind another repository's merge path had to keep a
     /// copy of that list — which drifted the day the repository renamed a check, and
     /// cost a whole gate to discover. The host holds the list; this is how it is
-    /// read. An empty set is an answer — the repository requires nothing — and a
-    /// host that cannot say must refuse rather than answer it, for the reason
-    /// [`change_checks`](RemoteHost::change_checks) may not answer with an empty
-    /// source list: "could not look" reported as "requires nothing" is how a consumer
-    /// stops waiting on a check that is still coming.
+    /// read.
+    ///
+    /// The answer says which protection source it could not consult, because "this
+    /// source found nothing" and "this merge path requires nothing" are opposite
+    /// facts and only the second is safe to act on: an answer with a source in
+    /// [`RequiredChecks::unconsulted`] is incomplete, and an empty one is *unknown*
+    /// rather than none. A host that could read no source at all must refuse rather
+    /// than answer, for the reason [`change_checks`](RemoteHost::change_checks) may
+    /// not answer with an empty source list.
     ///
     /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
-    /// stays additive — and to the same refusal, which the audit reports as the
-    /// list being unreadable rather than as no check being required.
-    fn required_checks_on(&self, _base: &str) -> Result<BTreeSet<String>> {
+    /// stays additive — and to the same refusal, which the audit reports as the list
+    /// being unreadable rather than as no check being required.
+    fn required_checks_on(&self, _base: &str) -> Result<RequiredChecks> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::required_checks_on",
         })
+    }
+}
+
+/// One of the ways a host protects a branch, each of which may name required checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProtectionSource {
+    /// The repository's rulesets, which every credential that can read the
+    /// repository can read.
+    Rulesets,
+    /// Classic branch protection, which only a credential with administration
+    /// rights can read — so it is the source an audit is most often refused.
+    BranchProtection,
+}
+
+impl ProtectionSource {
+    /// Every source, in the order a report names them.
+    pub fn every() -> impl Iterator<Item = ProtectionSource> {
+        [
+            ProtectionSource::Rulesets,
+            ProtectionSource::BranchProtection,
+        ]
+        .into_iter()
+    }
+
+    /// How a report names it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ProtectionSource::Rulesets => "the repository's rulesets",
+            ProtectionSource::BranchProtection => "classic branch protection",
+        }
+    }
+}
+
+/// What a host requires before a merge into a branch, and how much of the host
+/// that answer covers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredChecks {
+    /// The names, from every source that answered.
+    pub checks: BTreeSet<String>,
+    /// Each protection source the host holds that could not be read, with the
+    /// host's reason. Empty means every source answered and `checks` is the whole
+    /// list; otherwise `checks` is what the sources that did answer require, and an
+    /// empty `checks` is not "nothing is required".
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unconsulted: BTreeMap<ProtectionSource, String>,
+}
+
+impl RequiredChecks {
+    /// Whether every protection source answered, so `checks` is the whole list.
+    pub fn complete(&self) -> bool {
+        self.unconsulted.is_empty()
     }
 }
 
@@ -838,6 +897,54 @@ impl GitHub {
         Ok(names)
     }
 
+    /// The contexts classic branch protection requires on `base`, or why the host
+    /// would not say.
+    ///
+    /// Three answers, told apart by what `gh` wrote. A protected branch answers with
+    /// its contexts; a branch with no classic protection answers `Branch not
+    /// protected`, a 404 that *is* an answer — the source was consulted and names
+    /// nothing; and anything else is the source not consulted, which the inner `Err`
+    /// carries so the caller records it beside what the rulesets did say rather than
+    /// losing that too. The outer `Err` is `gh` itself failing to run.
+    fn classic_protection(
+        &self,
+        base: &str,
+    ) -> Result<std::result::Result<BTreeSet<String>, String>> {
+        addressable_branch(base, "the base branch")?;
+        let path = format!(
+            "repos/{}/branches/{}/protection/required_status_checks",
+            self.repo,
+            path_segment(base)
+        );
+        let answer = gh::attempt(&["api", &path])?;
+        if answer.code != Some(0) {
+            if answer.stderr.contains(NOT_PROTECTED) {
+                return Ok(Ok(BTreeSet::new()));
+            }
+            return Ok(Err(answer.detail()));
+        }
+        let value = gh::json(&answer.stdout)?;
+        let contexts = value
+            .get("contexts")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "the classic branch protection on {}'s {base:?} came back without its \
+                     contexts, so which checks it requires cannot be read from it: {value}",
+                    self.repo
+                ))
+            })?;
+        let mut names = BTreeSet::new();
+        for context in contexts {
+            let name = context
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| unsaid_about(&self.repo, &context.to_string()))?;
+            names.insert(name.to_owned());
+        }
+        Ok(Ok(names))
+    }
+
     /// The log of the Actions job one check ran in, addressed by the job's id.
     ///
     /// The id comes from the same listing the checks did, so the name matched here
@@ -1373,8 +1480,27 @@ impl RemoteHost for GitHub {
         merged_sha(&self.view(&cr.id.0, MERGE_FIELDS)?, cr)
     }
 
-    fn required_checks_on(&self, base: &str) -> Result<BTreeSet<String>> {
-        self.required_on(base, &self.repo)
+    fn required_checks_on(&self, base: &str) -> Result<RequiredChecks> {
+        // The rulesets first, and their refusal is the whole read's: every
+        // credential that can see the repository can read them, so one that cannot
+        // has not answered about anything. Classic protection is asked second and
+        // its refusal is recorded rather than raised, because the credential GitHub
+        // steers people toward is refused it on every repository, and the rulesets'
+        // answer is still worth having — marked as the part it is.
+        let checks = self.required_on(base, &self.repo)?;
+        let mut answer = RequiredChecks {
+            checks,
+            unconsulted: BTreeMap::new(),
+        };
+        match self.classic_protection(base)? {
+            Ok(contexts) => answer.checks.extend(contexts),
+            Err(refusal) => {
+                answer
+                    .unconsulted
+                    .insert(ProtectionSource::BranchProtection, refusal);
+            }
+        }
+        Ok(answer)
     }
 }
 

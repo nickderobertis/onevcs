@@ -19,6 +19,7 @@ use crate::cli::{
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
+use crate::host::ProtectionSource;
 use crate::landed::Landed;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
@@ -191,12 +192,15 @@ fn repos(args: &ReposArgs, providers: &Providers<'_>) -> Result<u8> {
 
 /// What the audit says about the checks an identity's host requires on its base.
 ///
-/// Three answers, and the last two never collapse into one another, for the reason
-/// the release probe's do not: a consumer that reads "none" stops waiting on a
-/// check, and one that reads "unreadable" knows it has not been told. The list is
-/// asked of the host through the seam, for the base the identity's first registered
-/// checkout tracks — the base is a fact about the origin, so any checkout of it
-/// answers.
+/// Five answers, and none of them collapses into another, for the reason the release
+/// probe's do not: a consumer that reads "none" stops waiting on a check, and one
+/// that reads "unknown" or "unreadable" knows it has not been told. A host protects a
+/// branch from more than one source, and a credential may be refused one of them, so
+/// an answer a source did not contribute to says so — and an *empty* answer with a
+/// source unconsulted is unknown, never none, because "this source found nothing"
+/// and "this merge path requires nothing" are opposite facts. The list is asked of
+/// the host through the seam, for the base the identity's first registered checkout
+/// tracks — the base is a fact about the origin, so any checkout of it answers.
 fn required_checks_line(
     key: &str,
     checkout: &crate::registry::Checkout,
@@ -215,15 +219,39 @@ fn required_checks_line(
             .required_checks_on(&base)
             .map(|checks| (base, checks))
     });
-    match asked {
-        Ok((base, checks)) if checks.is_empty() => {
-            format!("none declared by the repository's rulesets for {base}")
-        }
-        Ok((base, checks)) => format!(
-            "{} (required by the repository's rulesets for {base})",
-            checks.into_iter().collect::<Vec<_>>().join(", ")
-        ),
-        Err(error) => format!("unreadable — {error}"),
+    let (base, answer) = match asked {
+        Ok(asked) => asked,
+        Err(error) => return format!("unreadable — {error}"),
+    };
+    let names = answer.checks.iter().cloned().collect::<Vec<_>>().join(", ");
+    if answer.complete() {
+        return if answer.checks.is_empty() {
+            format!(
+                "none required: neither the repository's rulesets nor its branch protection \
+                 names one for {base}"
+            )
+        } else {
+            format!(
+                "{names} (required by the repository's rulesets and branch protection for \
+                 {base})"
+            )
+        };
+    }
+    let unconsulted = answer
+        .unconsulted
+        .iter()
+        .map(|(source, why)| format!("{} was not consulted: {why}", source.describe()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let consulted = ProtectionSource::every()
+        .filter(|source| !answer.unconsulted.contains_key(source))
+        .map(ProtectionSource::describe)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    if answer.checks.is_empty() {
+        format!("unknown — {consulted} name none for {base}, and {unconsulted}")
+    } else {
+        format!("{names} (required by {consulted} for {base}; incomplete — {unconsulted})")
     }
 }
 

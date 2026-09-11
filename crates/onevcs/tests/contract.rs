@@ -37,9 +37,10 @@ use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
     DraftReason, Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub,
     HeldBy, Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
-    MergeOutcome, MergePolicy, NetNegative, Phase, PreservedBranch, Provenance, Publication,
-    PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session,
-    SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
+    MergeOutcome, MergePolicy, NetNegative, Phase, PreservedBranch, ProtectionSource, Provenance,
+    Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks,
+    Retention, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
+    Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -3629,23 +3630,56 @@ fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
 }
 
 #[test]
-fn the_required_checks_read_is_recorded_as_an_inference_and_defaulted_to_a_refusal() {
-    // `RemoteHost::required_checks_on` is not in the approved text: it is recorded in
-    // docs/inferred-surface.md as an inference awaiting confirmation, in the words
-    // the code has, so a reader of the record and a reader of the trait learn the
-    // same signature.
-    let record = repo_file("docs/inferred-surface.md");
+fn the_amendment_declares_the_required_checks_read_and_defaults_it_to_a_refusal() {
+    // The read is an approved amendment, so the shape a consumer reads there is the
+    // shape the code has: the method, the answer, and the two sources an answer can
+    // say it did not consult.
+    let declared = amendment_declaring("pub struct RequiredChecks");
+    for line in [
+        "fn required_checks_on(&self, base: &str) -> Result<RequiredChecks>;",
+        "pub struct RequiredChecks { pub checks: BTreeSet<String>,",
+        "pub unconsulted: BTreeMap<ProtectionSource, String> }",
+        "impl RequiredChecks { pub fn complete(&self) -> bool; }",
+        "pub enum ProtectionSource { Rulesets, BranchProtection }",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    let complete = RequiredChecks {
+        checks: BTreeSet::from(["gate".to_owned()]),
+        unconsulted: BTreeMap::new(),
+    };
+    assert!(complete.complete());
+    let partial = RequiredChecks {
+        checks: BTreeSet::new(),
+        unconsulted: BTreeMap::from([(ProtectionSource::BranchProtection, "HTTP 403".to_owned())]),
+    };
     assert!(
-        record.contains(
-            "`RemoteHost::required_checks_on(&self, base: &str) -> Result<BTreeSet<String>>`"
-        ),
-        "docs/inferred-surface.md no longer records the required-checks read"
+        !partial.complete(),
+        "an answer with a source unconsulted is not the whole list"
+    );
+    // The two sources spell themselves as the amendment says.
+    assert_eq!(
+        serde_json::to_value([
+            ProtectionSource::Rulesets,
+            ProtectionSource::BranchProtection
+        ])
+        .expect("sources serialize"),
+        json!(["rulesets", "branch-protection"])
+    );
+    // …and an answer nothing was refused omits the map, so a consumer reading a
+    // complete answer is not handed an empty field to wonder about.
+    assert_eq!(
+        serde_json::to_value(&complete).expect("an answer serializes"),
+        json!({"checks": ["gate"]})
     );
 
     // Defaulted, so an implementation written against the earlier surface still
     // compiles — and to the refusal this repository reserves for a seam with no body,
-    // never to an empty set: "could not look" reported as "requires nothing" is how a
-    // consumer stops waiting on a check that is still coming.
+    // never to an empty answer: "could not look" reported as "requires nothing" is how
+    // a consumer stops waiting on a check that is still coming.
     struct Earlier;
     impl RemoteHost for Earlier {
         fn authenticated_user(&self) -> onevcs::Result<String> {

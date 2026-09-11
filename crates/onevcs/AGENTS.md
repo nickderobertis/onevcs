@@ -225,12 +225,17 @@ accident.
 - **The audit names each required check per identity, read from the host.** Which
   checks a repository requires is a setting on that repository, and a consumer that
   kept its own copy of the list paid a full gate every time a sibling renamed a
-  check. `RemoteHost::required_checks_on(base)` is the read, defaulted to
-  `NotImplemented` like the other additive seam methods, and `GitHub` answers it
-  from the rulesets — with the rulesets' limit, which is why the line says so. Three
-  answers, never collapsed: the names, `none declared`, or `unreadable —` with the
-  host's refusal. A consumer that read "none" from a host that could not be asked
-  would stop waiting on a check that is still coming.
+  check. `RemoteHost::required_checks_on(base)` is the read — an approved amendment
+  in `docs/contract.md`, defaulted to `NotImplemented` like the other additive seam
+  methods — and `GitHub` answers it from **both** protection sources: the rulesets,
+  whose refusal is the whole read's, and classic branch protection, whose refusal is
+  recorded in the answer's `unconsulted` map beside what the rulesets did say. Five
+  renderings, never collapsed: the names from both sources; `none required` only
+  when both were read and both name nothing; the names marked `incomplete` with the
+  unconsulted source; `unknown` when what answered names nothing and a source did not
+  answer; and `unreadable —` with the host's refusal. "This source found nothing" and
+  "this merge path requires nothing" are opposite facts, and a consumer that read the
+  first as the second would stop waiting on a check that is still coming.
 
 ## A publication observes, captures, and does not settle early
 

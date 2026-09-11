@@ -84,24 +84,20 @@ reach:
   Routing a second host vocabulary through the seam is the next question, not this
   one.
 
-**`RemoteHost::required_checks_on(&self, base: &str) -> Result<BTreeSet<String>>`
-is an inference awaiting confirmation.** It names the checks the repository requires
-before anything merges into `base`, asked of the branch rather than of a change
-request targeting it, and it exists so `onevcs repos --audit-gates` can name each
-required check per identity: a consumer that sequences its work behind another
-repository's merge path kept a copy of that list, and the copy drifted the day a
-sibling renamed a check, at the cost of a full gate to learn it. The host holds the
-list, and this tool already read it — `GitHub` reads a change request's rulesets to
-say which of its checks block — so the read is addressed to a base branch and put
-on the seam, where the audit reaches it through `Hosting` like every other host
-question. It is **defaulted** to `NotImplemented`, exactly as `merged_at`,
-`ready_for_review`, and `is_draft` are, so an implementation written against the
-earlier surface still compiles and the audit reports the list as *unreadable* for it
-rather than as empty; an empty set is the host's answer that nothing is required,
-and the two never collapse. `GitHub` answers from the rulesets, with the rulesets'
-limit: classic branch protection is not reported, so a classically-protected
-repository names nothing here — the same limit `CheckSource::BranchRules` carries,
-and reported with the same words.
+**`RemoteHost::required_checks_on` is an approved amendment, written into
+`docs/contract.md`** — the method, its `RequiredChecks` answer, and the
+`ProtectionSource` an answer names as unconsulted — and held to the code by
+`the_amendment_declares_the_required_checks_read_and_defaults_it_to_a_refusal` in
+`tests/contract.rs`. What is recorded here is only why the shape is what it is. It
+exists so `onevcs repos --audit-gates` can name each required check per identity
+through the seam every other host question goes through; it is defaulted to
+`NotImplemented` exactly as `merged_at`, `ready_for_review`, and `is_draft` are, so an
+implementation written against the earlier surface still compiles and the audit
+reports the list as *unreadable* for it rather than as empty. The answer carries
+which protection source could not be read rather than only a set, because GitHub
+protects a branch two ways and a fine-grained token is refused the second on every
+repository: an empty set that one source contributed to is not "requires nothing",
+and a consumer deleting its own cached list must be able to tell the two apart.
 
 **A publication's repository side used to be git rather than `Vcs`, and no longer
 is.** The five methods covered identities, sessions, preserved work, and recovery,
