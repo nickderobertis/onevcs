@@ -14,9 +14,9 @@ quietly in passing.
 
 | Type | Inferred shape | Why |
 | --- | --- | --- |
-| `Identity` | `origin`, `workflow`, `repo_type`, `gate` | The contract says the registry is "v5 = ai-orchestrator's v4 identities/checkouts + rules reference", so the identity record is v4's, field for field. The identity *key* is not a field: it is the normalized origin, which is the map key in the document. |
+| `Identity` | `origin`, `gate` | The contract says the registry is "v5 = ai-orchestrator's v4 identities/checkouts + rules reference", so the identity record began as v4's, field for field. Two of those fields — `workflow` and `repo_type` — are withdrawn: both were inferred at registration from whether the origin had a host, settable by nothing afterwards, and consulted where the resolved publication policy should have been (the merge train's gate, the merge-path coverage verdict, and the handoff naming the verb for a complete branch). Every one of those reads the rules file's `publication` now, and the review requirement is its `approvals`. Their removal is registry version **6**, one past the `v5` the contract names: a document at 2–5 is migrated on its first read, dropping exactly those two keys from each identity and keeping every other key beyond the shape, so an old host follows its configured policy and stops carrying the inference. The identity *key* is not a field: it is the normalized origin, which is the map key in the document. |
 | `Checkout` | `path`, `identity` | v4's checkout record. |
-| `Registry` | `version`, `identities`, `checkouts`, `rules` | v4's document plus the rules reference the contract adds. `rules` is optional: absent means the built-in default policy. |
+| `Registry` | `version`, `identities`, `checkouts`, `rules` | v4's document plus the rules reference the contract adds, written at version 6 since the two inferred identity fields were withdrawn (the `Identity` row above). `rules` is optional: absent means the built-in default policy. |
 | `SessionRequest` | `repo`, `branch`, `base`, `execution_checkout` | Exactly the operands and options `onevcs session open` takes. What each of `branch` and `base` *means* is inferred too, and is open question 12 below. |
 | `SessionToken` | newtype over `String` | Opaque by design; the CLI takes and prints it as text. |
 | `Provenance` | `complete` / `incomplete-step` | The contract's ported invariant, "dirty adoption -> incomplete-step commit", gives the two cases, and `commit-preserved` carries "provenance kind". |
@@ -83,6 +83,21 @@ reach:
   make a GitLab origin publishable; it makes GitHub's *behaviour* replaceable.
   Routing a second host vocabulary through the seam is the next question, not this
   one.
+
+**`RemoteHost::required_checks_on` is an approved amendment, written into
+`docs/contract.md`** — the method, its `RequiredChecks` answer, and the
+`ProtectionSource` an answer names as unconsulted — and held to the code by
+`the_amendment_declares_the_required_checks_read_and_defaults_it_to_a_refusal` in
+`tests/contract.rs`. What is recorded here is only why the shape is what it is. It
+exists so `onevcs repos --audit-gates` can name each required check per identity
+through the seam every other host question goes through; it is defaulted to
+`NotImplemented` exactly as `merged_at`, `ready_for_review`, and `is_draft` are, so an
+implementation written against the earlier surface still compiles and the audit
+reports the list as *unreadable* for it rather than as empty. The answer carries
+which protection source could not be read rather than only a set, because GitHub
+protects a branch two ways and a fine-grained token is refused the second on every
+repository: an empty set that one source contributed to is not "requires nothing",
+and a consumer deleting its own cached list must be able to tell the two apart.
 
 **A publication's repository side used to be git rather than `Vcs`, and no longer
 is.** The five methods covered identities, sessions, preserved work, and recovery,
@@ -225,12 +240,13 @@ and `RECORD_VERSION` stay behind it for the same reason.
 
 The contract's usage block gives a branch three ways to reach its base and leaves
 one state with none. `publish` takes a session token; `integrate` lands a branch on
-a **local** base and refuses an identity whose `repo_type` is `team` or whose
-`workflow` is `remote`; `recover` publishes *interrupted* work and refuses a branch
+a **local** base and refuses an identity whose resolved publication policy is not
+`local-direct` (it used to refuse on the two withdrawn identity fields, which every
+hosted origin failed); `recover` publishes *interrupted* work and refuses a branch
 carrying no unattested marker. A complete, unpublished branch whose session is gone
-is therefore refused by both — and since every hosted origin `register` sees derives
-as `team`/`remote`, that is every finished branch of every hosted repository, whose
-only remaining exit was raw `git push` plus `gh pr create`.
+is therefore refused by both under any change-request policy — which, under the
+built-in default, is every finished branch of every hosted repository, whose only
+remaining exit was raw `git push` plus `gh pr create`.
 
 The verb that answers it is **not in the approved text**, and the approved text is
 never edited, so it is recorded here as an inference awaiting confirmation:
@@ -304,7 +320,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `5`, and it is deliberately not a migration boundary
+The report's schema version is `6`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -316,6 +332,12 @@ Version 4 is `publication.draft`, the readback of the draft amendment's record.
 Version 5 is the fourth landing answer and the ninth `publication.state`:
 `publication.landed` may say `in-part`, and `state` the `landed-in-part` derived from
 it, for a branch whose landing a record found and whose commits have gone on past it.
+Version 6 is `identity.workflow` and `identity.repo_type` going away: both were the
+registry's inferences from whether the origin had a host, and every decision they
+made is the resolved publication policy's, which the report carries as
+`publication.merge_policy` beside the `identity.approvals` that carries the review
+requirement — `local-direct` is the local landing, and the three change-request
+policies are the hosted one.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -331,8 +353,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v5.json` and
-`status-report-v5-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v6.json` and
+`status-report-v6-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in

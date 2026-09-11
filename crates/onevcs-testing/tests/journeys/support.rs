@@ -8,7 +8,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use onevcs::registry::{RepoType, Workflow};
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, HeldBy, Holding, Identity, Landed,
     LineChange, MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
@@ -74,8 +73,6 @@ impl Home {
 pub fn identity() -> Identity {
     Identity {
         origin: "github.com/acme-corp/widgets".to_owned(),
-        workflow: Workflow::Remote,
-        repo_type: RepoType::Team,
         gate: "just check".to_owned(),
     }
 }

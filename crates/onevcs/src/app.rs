@@ -19,10 +19,11 @@ use crate::cli::{
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
+use crate::host::ProtectionSource;
 use crate::landed::Landed;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, PublishRequest, Retention, Subject};
-use crate::registry::{Registry, RepoType, Workflow};
+use crate::registry::Registry;
 use crate::releases::{
     Acknowledgement, Baseline, DeclarationSource, Probe, ReleaseAnswer, ReleaseMethod,
     ReleaseStatus, ReleaseTarget, RepositoryReleases, TargetName, TargetSource,
@@ -54,7 +55,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
     lock::timeout_seconds()?;
     match command {
         Command::Register(args) => register(args),
-        Command::Repos(args) => repos(args),
+        Command::Repos(args) => repos(args, providers),
         Command::Resolve(args) => resolve(args, providers),
         Command::Session { command } => match command {
             SessionCommand::Open(args) => session_open(args, providers),
@@ -92,18 +93,21 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
 fn register(args: &RegisterArgs) -> Result<u8> {
     let origin = args.origin.as_ref().map(url::Url::to_string);
     let resolution = store::register(&args.path, origin.as_deref())?;
+    // What was registered is the identity and its checkout; how it publishes is the
+    // rules file's answer, resolved here so the coverage line below is about the
+    // merge path the identity will actually take.
+    let registry = store::load()?;
+    let (file, source) = policy::load(&registry)?;
+    let resolved = policy::resolve_for(&file, &source, &resolution);
     println!("{}", resolution.key);
     println!("  alias: {}", resolution.alias);
-    println!(
-        "  workflow: {}",
-        spell_workflow(resolution.identity.workflow)
-    );
-    println!(
-        "  repo_type: {}",
-        spell_repo_type(resolution.identity.repo_type)
-    );
+    print_policy("  ", &resolved);
     println!("  gate: {}", resolution.identity.gate);
-    let coverage = store::merge_path_coverage(&resolution, &resolution.publication);
+    let coverage = store::merge_path_coverage(
+        &resolution,
+        &resolution.publication,
+        resolved.policy.publication,
+    );
     println!("  merge-path coverage: {}", coverage.describe());
     if coverage == store::Coverage::None {
         eprintln!(
@@ -114,37 +118,141 @@ fn register(args: &RegisterArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn repos(args: &ReposArgs) -> Result<u8> {
+/// The two policy fields as every rendering of a resolved policy prints them.
+fn print_policy(indent: &str, resolved: &policy::Resolved) {
+    println!(
+        "{indent}publication: {} (from {})",
+        policy::spell(resolved.policy.publication),
+        resolved.publication_from
+    );
+    println!(
+        "{indent}approvals: {} (from {})",
+        spell_approvals(resolved.policy.approvals),
+        resolved.approvals_from
+    );
+}
+
+fn spell_approvals(approvals: crate::rules::Approvals) -> &'static str {
+    match approvals {
+        crate::rules::Approvals::Required => "required",
+        crate::rules::Approvals::None => "none",
+    }
+}
+
+fn repos(args: &ReposArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
     if registry.identities.is_empty() {
         println!("no repositories registered");
         return Ok(0);
     }
+    // The audit is about each identity's merge path, and the merge path is the
+    // resolved policy's: which verifier covers it follows from how it publishes, so
+    // the rules are read once here and resolved per checkout below. The plain
+    // listing reads no rules at all — it is the registry as it stands.
+    let rules = if args.audit_gates {
+        Some(policy::load(&registry)?)
+    } else {
+        None
+    };
     for (key, identity) in &registry.identities {
-        println!(
-            "{key}\t{}\t{}\t{}",
-            spell_workflow(identity.workflow),
-            spell_repo_type(identity.repo_type),
-            identity.gate
-        );
-        for (alias, checkout) in &registry.checkouts {
-            if checkout.identity != *key {
-                continue;
-            }
+        println!("{key}\t{}", identity.gate);
+        let checkouts: Vec<(&String, &crate::registry::Checkout)> = registry
+            .checkouts
+            .iter()
+            .filter(|(_, checkout)| checkout.identity == *key)
+            .collect();
+        if let (true, Some((_, first))) = (args.audit_gates, checkouts.first()) {
+            println!(
+                "  required checks: {}",
+                required_checks_line(key, first, providers)
+            );
+        }
+        for (alias, checkout) in checkouts {
             println!("  {alias}\t{}", checkout.path.display());
-            if args.audit_gates {
+            if let Some((file, source)) = &rules {
                 let resolution = Resolution {
                     key: key.clone(),
                     identity: identity.clone(),
                     alias: alias.clone(),
                     publication: checkout.path.clone(),
                 };
-                let coverage = store::merge_path_coverage(&resolution, &checkout.path);
+                let resolved = policy::resolve_for(file, source, &resolution);
+                print_policy("    ", &resolved);
+                let coverage = store::merge_path_coverage(
+                    &resolution,
+                    &checkout.path,
+                    resolved.policy.publication,
+                );
                 println!("    merge-path coverage: {}", coverage.describe());
             }
         }
     }
     Ok(0)
+}
+
+/// What the audit says about the checks an identity's host requires on its base.
+///
+/// Five answers, and none of them collapses into another, for the reason the release
+/// probe's do not: a consumer that reads "none" stops waiting on a check, and one
+/// that reads "unknown" or "unreadable" knows it has not been told. A host protects a
+/// branch from more than one source, and a credential may be refused one of them, so
+/// an answer a source did not contribute to says so — and an *empty* answer with a
+/// source unconsulted is unknown, never none, because "this source found nothing"
+/// and "this merge path requires nothing" are opposite facts. The list is asked of
+/// the host through the seam, for the base the identity's first registered checkout
+/// tracks — the base is a fact about the origin, so any checkout of it answers.
+fn required_checks_line(
+    key: &str,
+    checkout: &crate::registry::Checkout,
+    providers: &Providers<'_>,
+) -> String {
+    let Some(slug) = crate::gh::slug(key) else {
+        return format!(
+            "none: {key:?} is not a {} repository, so no host answers for it",
+            crate::gh::HOST
+        );
+    };
+    let asked = git::default_branch(&checkout.path, "origin").and_then(|base| {
+        providers
+            .hosting
+            .for_repo(&slug)?
+            .required_checks_on(&base)
+            .map(|checks| (base, checks))
+    });
+    let (base, answer) = match asked {
+        Ok(asked) => asked,
+        Err(error) => return format!("unreadable — {error}"),
+    };
+    let names = answer.checks.iter().cloned().collect::<Vec<_>>().join(", ");
+    if answer.complete() {
+        return if answer.checks.is_empty() {
+            format!(
+                "none required: neither the repository's rulesets nor its branch protection \
+                 names one for {base}"
+            )
+        } else {
+            format!(
+                "{names} (required by the repository's rulesets and branch protection for \
+                 {base})"
+            )
+        };
+    }
+    let unconsulted = answer
+        .unconsulted
+        .iter()
+        .map(|(source, why)| format!("{} was not consulted: {why}", source.describe()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let consulted = ProtectionSource::every()
+        .filter(|source| !answer.unconsulted.contains_key(source))
+        .map(ProtectionSource::describe)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    if answer.checks.is_empty() {
+        format!("unknown — {consulted} name none for {base}, and {unconsulted}")
+    } else {
+        format!("{names} (required by {consulted} for {base}; incomplete — {unconsulted})")
+    }
 }
 
 fn resolve(args: &ResolveArgs, providers: &Providers<'_>) -> Result<u8> {
@@ -153,14 +261,20 @@ fn resolve(args: &ResolveArgs, providers: &Providers<'_>) -> Result<u8> {
     // Through the trait, which is the seam a second implementation replaces.
     let identity = providers.vcs.resolve_identity(&args.repo)?;
     debug_assert_eq!(identity, resolution.identity);
+    // The policy the identity publishes under travels with the answer, in place of
+    // the classification the registry no longer holds: it is what every verb that
+    // routes on "local or through the host" reads, so a caller resolving an identity
+    // to decide the same thing reads the same value.
+    let (file, source) = policy::load(&registry)?;
+    let resolved = policy::resolve_for(&file, &source, &resolution);
     println!(
         "{}",
         serde_json::json!({
             "identity": resolution.key,
             "alias": resolution.alias,
             "origin": resolution.identity.origin,
-            "workflow": spell_workflow(resolution.identity.workflow),
-            "repo_type": spell_repo_type(resolution.identity.repo_type),
+            "publication": policy::spell(resolved.policy.publication),
+            "approvals": spell_approvals(resolved.policy.approvals),
             "gate": resolution.identity.gate,
             "publication_checkout": resolution.publication.display().to_string(),
         })
@@ -881,19 +995,7 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
         ),
         None => println!("matched: no rule; the default applies"),
     }
-    println!(
-        "publication: {} (from {})",
-        policy::spell(resolved.policy.publication),
-        resolved.publication_from
-    );
-    println!(
-        "approvals: {} (from {})",
-        match resolved.policy.approvals {
-            crate::rules::Approvals::Required => "required",
-            crate::rules::Approvals::None => "none",
-        },
-        resolved.approvals_from
-    );
+    print_policy("", &resolved);
     // Not part of the matched policy: one vocabulary reads and writes every
     // repository's provenance, so it is reported once, from the file or the default.
     println!(
@@ -1246,18 +1348,4 @@ fn yes_or_no(answer: bool) -> &'static str {
 
 fn serialization(failure: serde_json::Error) -> Error {
     error::invalid(format!("cannot serialize the result: {failure}"))
-}
-
-fn spell_workflow(workflow: Workflow) -> &'static str {
-    match workflow {
-        Workflow::Local => "local",
-        Workflow::Remote => "remote",
-    }
-}
-
-fn spell_repo_type(repo_type: RepoType) -> &'static str {
-    match repo_type {
-        RepoType::SingleOwner => "single-owner",
-        RepoType::Team => "team",
-    }
 }

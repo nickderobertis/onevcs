@@ -894,6 +894,62 @@ fn recovery_hands_a_hosted_identitys_complete_branch_to_the_verb_that_can_publis
 }
 
 #[test]
+fn recovery_hands_a_hosted_identitys_complete_branch_to_the_train_when_its_rules_land_locally() {
+    // The handoff is decided by the resolved policy and by nothing about where the
+    // origin is: a hosted identity whose rules publish `local-direct` is one the
+    // train accepts, so that is the verb named — and it used to be refused twice,
+    // by a handoff that never named the train for a hosted origin and by a train
+    // that refused every hosted origin on a classification nothing could set.
+    let hosted = Hosted::new(&local_direct());
+    finished_hosted_branch(&hosted, "feature/landed-locally", "feat: land it locally");
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            "feature/landed-locally",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(2);
+    let refusal = stderr_of(&assert);
+    assert!(
+        refusal.contains("carries no unattested incomplete provenance"),
+        "{refusal}"
+    );
+    let handed = refusal
+        .split('`')
+        .find(|span| span.starts_with("onevcs integrate"))
+        .unwrap_or_else(|| {
+            panic!("the handoff names the train for a local-direct identity: {refusal}")
+        })
+        .to_owned();
+    assert_eq!(handed, "onevcs integrate feature/landed-locally");
+
+    // …and the command it names runs, from the checkout the train reads: the
+    // branch lands on the local base as one commit.
+    let argv: Vec<&str> = handed.split_whitespace().skip(1).collect();
+    hosted
+        .world
+        .onevcs()
+        .args(&argv)
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feature/landed-locally: merged"))
+        .stdout(predicate::str::contains("Base advanced: yes"));
+    assert_eq!(
+        hosted
+            .world
+            .git(&hosted.checkout, &["log", "--format=%s", "-1", "main"])
+            .trim(),
+        "feat: land it locally"
+    );
+}
+
+#[test]
 fn a_marker_under_an_unreadable_prefix_is_never_published_as_a_finished_branch() {
     // The one shape that would otherwise reach this verb as finished work: a step
     // that stopped, marked under a vocabulary this host is not configured with, so
@@ -1256,17 +1312,20 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         .args([
             "register",
             &checkout.to_string_lossy(),
-            // Hosted, so the train refuses it and has to route: the two refusals
-            // that name a command with this path in it are the ones under test.
             "--origin",
             "https://github.com/acme-corp/spacey.git",
         ])
         .assert()
         .success();
+    // Ruled to publish through a change request, so the train refuses it and has
+    // to route: the two refusals that name a command with this path in it are the
+    // ones under test.
     configure_rules(
         &world,
-        format!("version: 1\nrules: []\ndefault: {}\n", local_direct()),
+        format!("version: 1\nrules: []\ndefault: {DIRECT}\n"),
     );
+    world.install_fake_host(&origin);
+    world.host_checks(&[green_check()]);
 
     let assert = world
         .onevcs()
@@ -1343,7 +1402,7 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         .stdout(predicate::str::contains("merged at"));
     assert_eq!(
         world.git(&origin, &["log", "-1", "--format=%s", "main"]),
-        "feat: work under a spacey path"
+        "feat: work under a spacey path (#1)"
     );
 
     // The quote itself is the character single-quoting cannot simply wrap, and git
@@ -1395,7 +1454,7 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         .stdout(predicate::str::contains("merged at"));
     assert_eq!(
         world.git(&origin, &["log", "-1", "--format=%s", "main"]),
-        "feat: work on a quoted branch"
+        "feat: work on a quoted branch (#2)"
     );
 }
 

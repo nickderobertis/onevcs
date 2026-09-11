@@ -92,8 +92,9 @@ pub struct RegisterArgs {
 /// Arguments for `onevcs repos`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct ReposArgs {
-    /// Also report which identities have merge-path verification and which do
-    /// not.
+    /// Also report, per identity, each check its host requires before a merge, and
+    /// per checkout the policy it publishes under and what on its merge path runs a
+    /// gate.
     #[arg(long)]
     pub audit_gates: bool,
 }

@@ -17,8 +17,10 @@
 // below still drives the real binary.
 use predicates::prelude::*;
 
+use crate::host::{Hosted, REVIEWED};
+use crate::lifecycle::local_direct;
 use crate::support::documented_default_prefix;
-use crate::world::World;
+use crate::world::{Check, World};
 
 #[test]
 fn registering_a_checkout_reports_the_identity_its_origin_normalizes_to() {
@@ -32,8 +34,15 @@ fn registering_a_checkout_reports_the_identity_its_origin_normalizes_to() {
         .assert()
         .success()
         .stdout(predicate::str::contains("alias: widgets"))
-        .stdout(predicate::str::contains("workflow: local"))
-        .stdout(predicate::str::contains("repo_type: single-owner"));
+        // How it publishes is the rules file's answer and is reported as such —
+        // here the built-in default — rather than a classification derived from the
+        // origin and stored.
+        .stdout(predicate::str::contains(
+            "publication: change-open (from the default)",
+        ))
+        .stdout(predicate::str::contains(
+            "approvals: required (from the default)",
+        ));
 
     // `resolve` answers with the same identity, and by every spelling that names
     // it: the alias, the checkout path, and the origin URL.
@@ -138,6 +147,371 @@ fn the_gate_audit_reports_what_runs_on_each_identitys_merge_path() {
 }
 
 #[test]
+fn the_gate_audit_names_each_check_an_identitys_host_requires() {
+    // Which checks a repository requires before a merge is a setting on that
+    // repository, and a consumer that sequences its work behind another repository's
+    // merge path kept its own copy of that list — which drifted the day a sibling
+    // renamed a check, and cost a full gate to learn. The host holds the list, so the
+    // audit reads it from the host and names it per identity.
+    let hosted = Hosted::new(REVIEWED);
+    hosted.world.host_checks(&[
+        Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        },
+        Check {
+            name: "cross",
+            status: "in_progress",
+            conclusion: None,
+            required: true,
+        },
+        Check {
+            name: "advisory",
+            status: "completed",
+            conclusion: Some("failure"),
+            required: false,
+        },
+    ]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        // The required ones and only those, named for the base they gate — and both
+        // protection sources were read: the branch carries no classic protection,
+        // which the host answers as `Branch not protected`, an answer and not a
+        // refusal.
+        .stdout(predicate::str::contains(
+            "  required checks: cross, gate (required by the repository's rulesets and \
+             branch protection for main)\n",
+        ))
+        .stdout(predicate::str::contains("advisory").not())
+        // …beside the coverage line the audit already reported per checkout.
+        .stdout(predicate::str::contains(
+            "    merge-path coverage: the host's required checks",
+        ));
+
+    // A repository that requires nothing is an answer, and it is spelled as one —
+    // only because both sources were read and both name nothing; the journey below
+    // this one holds what an unread source does to it.
+    hosted.world.host_checks(&[Check {
+        name: "advisory",
+        status: "completed",
+        conclusion: Some("failure"),
+        required: false,
+    }]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  required checks: none required: neither the repository's rulesets nor its \
+             branch protection names one for main\n",
+        ));
+
+    // A host that could not be asked is *not* that answer: the list is reported as
+    // unreadable, with the host's own refusal, and the rest of the audit still
+    // stands — a consumer reading "none" here would stop waiting on a check that is
+    // still coming.
+    hosted.world.answer_malformed("checks-refused");
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  required checks: unreadable — "))
+        .stdout(predicate::str::contains(
+            "Resource not accessible by personal access token",
+        ))
+        .stdout(predicate::str::contains("merge-path coverage:"));
+
+    // …and an identity no host answers for says so rather than pretending to have
+    // asked one. The plain listing asks the host nothing at all.
+    let world = World::new();
+    let origin = world.bare_origin("unhosted");
+    let checkout = world.clone_of(&origin, "unhosted");
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  required checks: none: "))
+        .stdout(predicate::str::contains(
+            "is not a github.com repository, so no host answers for it",
+        ));
+    world
+        .onevcs()
+        .arg("repos")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("required checks").not())
+        .stdout(predicate::str::contains("merge-path coverage").not());
+}
+
+#[test]
+fn an_audit_that_could_not_consult_every_protection_source_never_reports_no_required_checks() {
+    // GitHub protects a branch two ways — rulesets and classic branch protection —
+    // and a credential that can read the first may be refused the second. "This
+    // source found nothing" and "this merge path requires nothing" are opposite
+    // facts, and the second is the dangerous one: the consumer is deleting its own
+    // cached list on the strength of this line. So an answer a protection source
+    // did not contribute to says so, and an empty one is reported as unknown rather
+    // than as none.
+    let hosted = Hosted::new(REVIEWED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.answer_malformed("classic-protection-refused");
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        // The rulesets' names, marked incomplete, with the refusal.
+        .stdout(predicate::str::contains(
+            "  required checks: gate (required by the repository's rulesets for main; \
+             incomplete — classic branch protection was not consulted: ",
+        ))
+        .stdout(predicate::str::contains(
+            "Resource not accessible by personal access token",
+        ));
+
+    // The same refusal with rulesets naming nothing: unknown, never none.
+    hosted.world.host_checks(&[]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  required checks: unknown — the repository's rulesets name none for main, and \
+             classic branch protection was not consulted: ",
+        ))
+        .stdout(predicate::str::contains("required checks: none").not());
+
+    // Both sources readable: each contributes, and the answer says both were read.
+    hosted.world.answer_malformed("");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.host_classic_protection(&["deploy"]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  required checks: deploy, gate (required by the repository's rulesets and \
+             branch protection for main)\n",
+        ));
+
+    // …and only when both were read and both name nothing is the answer "none".
+    hosted.world.host_checks(&[]);
+    hosted.world.host_classic_protection(&[]);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  required checks: none required: neither the repository's rulesets nor its \
+             branch protection names one for main\n",
+        ));
+}
+
+#[test]
+fn merge_path_coverage_is_decided_by_the_resolved_policy_and_not_by_the_origin() {
+    // The coverage verdict is a safety verdict — with no pre-push hook it decides
+    // between "the host's required checks" and "nothing" — and it used to be decided
+    // by a field inferred from whether the origin had a host. The policy is what says
+    // whether a change request will ever exist for the host to check, so the policy
+    // is what decides it.
+    let hosted = Hosted::new(REVIEWED);
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "    publication: change-open (from the default)\n",
+        ))
+        .stdout(predicate::str::contains(
+            "    merge-path coverage: the host's required checks",
+        ));
+
+    // The same hosted origin, ruled to land locally: no change request is ever
+    // opened, so the host's required checks cover nothing, and the audit says so.
+    // `register` answers the same question the same way, and warns.
+    configure_rules(
+        &hosted.world,
+        format!("version: 3\nrules: []\ndefault: {}\n", local_direct()),
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "    publication: local-direct (from the default)\n",
+        ))
+        .stdout(predicate::str::contains("    merge-path coverage: nothing"));
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "register",
+            &hosted.checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/hosted.git",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merge-path coverage: nothing"))
+        .stderr(predicate::str::contains(
+            "nothing on this identity's merge path runs a gate",
+        ));
+
+    // A hook covers either policy, because it judges the push that feeds both paths.
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    hosted
+        .world
+        .onevcs()
+        .args(["repos", "--audit-gates"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "    merge-path coverage: pre-push hook at",
+        ));
+}
+
+/// What a version 5 build wrote, with the two inferred fields beside an identity and
+/// unknown keys at both levels; and what this build writes it back as.
+const REGISTRY_V5: &str = include_str!("../golden/registry-v5.json");
+const REGISTRY_V6: &str = include_str!("../golden/registry-v6.json");
+
+#[test]
+fn a_version_5_registry_follows_the_configured_policy_and_is_rewritten_without_its_inference() {
+    // Versions 2 through 5 wrote a `workflow` and a `repo_type` beside each identity,
+    // inferred at registration from whether the origin had a host and settable by
+    // nothing afterwards. A host that already holds them must not go on being routed
+    // by them, and must not go on holding them either: the rules file is the routing,
+    // and the next write drops the inference while keeping every key this build has
+    // no opinion on — which is what separates a spent field from an unknown one.
+    let world = World::new();
+    let origin = world.bare_origin("legacy");
+    let checkout = world.clone_of(&origin, "legacy");
+    let root = world.path("");
+    let root = root.to_string_lossy();
+    let root = root.trim_end_matches('/');
+    let rules = world.path("rules-elsewhere.yml");
+    std::fs::write(
+        &rules,
+        "version: 3\nrules:\n  - match: {host: github.com, owner: acme-corp}\n    \
+         publication: local-direct\n    approvals: none\ndefault: {publication: \
+         change-open, approvals: required}\n",
+    )
+    .expect("a rules file the registry names");
+    std::fs::create_dir_all(world.home()).expect("a state root");
+    std::fs::write(
+        world.home().join("registry.json"),
+        REGISTRY_V5.replace("<root>", root),
+    )
+    .expect("a registry a version 5 build wrote");
+    assert_eq!(
+        checkout,
+        world.path("legacy"),
+        "the golden names this checkout"
+    );
+
+    // The organisation's rule decides, and the stored inference decides nothing.
+    let assert = world
+        .onevcs()
+        .args(["resolve", "legacy"])
+        .assert()
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
+    assert_eq!(value["publication"], "local-direct", "{value}");
+    assert_eq!(value["gate"], "just gate");
+    assert!(
+        value.get("workflow").is_none() && value.get("repo_type").is_none(),
+        "nothing inferred is reported: {value}"
+    );
+
+    // …and that first read rewrote the document: at this build's version, without
+    // either inferred field, and with the rules reference and both unknown keys —
+    // one beside the identity, one at the top — exactly as they were.
+    assert_eq!(
+        std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+        REGISTRY_V6.replace("<root>", root),
+        "the migrated document is its checked-in golden; re-make \
+         crates/onevcs/tests/golden/registry-v6.json if the shape moved"
+    );
+
+    // The verb the inference used to refuse runs: this hosted identity's rules
+    // publish locally, so the train lands its branch.
+    world.git(&checkout, &["checkout", "-q", "-b", "claude/one", "main"]);
+    world.commit_file(&checkout, "one.txt", "one\n", "feat: land locally");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+    world
+        .onevcs()
+        .args(["integrate", "claude/one"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude/one: merged"))
+        .stdout(predicate::str::contains("Base advanced: yes"));
+
+    // A second write — `register` rewrites the whole document — changes nothing the
+    // migration settled: the version stays, the inference stays gone, the unknown
+    // keys stay.
+    let second = world.bare_origin("alongside");
+    let alongside = world.clone_of(&second, "alongside");
+    world
+        .onevcs()
+        .args(["register", &alongside.to_string_lossy()])
+        .assert()
+        .success();
+    let written: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    )
+    .expect("the registry is JSON");
+    assert_eq!(written["version"], 6);
+    let legacy = &written["identities"]["github.com/acme-corp/legacy"];
+    assert!(
+        legacy.get("workflow").is_none() && legacy.get("repo_type").is_none(),
+        "{written}"
+    );
+    assert_eq!(legacy["release_channel"], "nightly");
+    assert_eq!(written["policies"]["stacking"], "always");
+    assert_eq!(written["rules"], rules.to_string_lossy().into_owned());
+    assert!(written["checkouts"].get("alongside").is_some());
+}
+
+#[test]
 fn a_version_4_registry_migrates_lazily_on_the_first_read() {
     let world = World::new();
     let origin = world.bare_origin("legacy");
@@ -169,7 +543,10 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
     let value: serde_json::Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
     assert_eq!(value["gate"], "make check");
-    assert_eq!(value["repo_type"], "single-owner");
+    assert!(
+        value.get("repo_type").is_none() && value.get("workflow").is_none(),
+        "nothing the older document inferred is reported: {value}"
+    );
 
     // The migration is written back once, in one atomic replacement, rather than
     // being redone on every read.
@@ -177,22 +554,29 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 5);
+    assert_eq!(stored["version"], 6);
     assert_eq!(stored["identities"][&key]["gate"], "make check");
+    assert!(
+        stored["identities"][&key].get("workflow").is_none()
+            && stored["identities"][&key].get("repo_type").is_none(),
+        "the inference is dropped on the way through: {stored}"
+    );
 }
 
 #[test]
 fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() {
     // The registry is **shared host state**: every `onevcs` on a machine reads the
     // one document, and a read that migrates rewrites it in place. So what this
-    // holds is not only that an older document still loads — it is that this build
-    // does not *touch* it. A version an already-released build cannot read, written
-    // into a host whose operator configured no release targets, stops every verb on
-    // that host; this suite put one into `~/.onevcs` once and every `onevcs` command
-    // there refused until it was restored by hand.
+    // holds is not only that a document at this build's own version still loads — it
+    // is that this build does not *touch* it: nothing about release targets is a
+    // reason to rewrite a registry, because nothing about them lives in it. A version
+    // an already-released build cannot read, written into a host whose operator
+    // configured no release targets, stops every verb on that host; this suite put
+    // one into `~/.onevcs` once and every `onevcs` command there refused until it was
+    // restored by hand.
     let world = World::new();
-    let origin = world.bare_origin("v5");
-    let checkout = world.clone_of(&origin, "v5");
+    let origin = world.bare_origin("current");
+    let checkout = world.clone_of(&origin, "current");
     let key = std::fs::canonicalize(&origin)
         .expect("the origin exists")
         .to_string_lossy()
@@ -205,12 +589,9 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
     )
     .expect("a rules file the registry names");
     let document = serde_json::json!({
-        "version": 5,
-        "identities": {
-            &key: {"origin": &key, "workflow": "local", "repo_type": "single-owner",
-                   "gate": "just gate"}
-        },
-        "checkouts": {"v5": {"path": checkout.to_string_lossy(), "identity": &key}},
+        "version": 6,
+        "identities": {&key: {"origin": &key, "gate": "just gate"}},
+        "checkouts": {"current": {"path": checkout.to_string_lossy(), "identity": &key}},
         "rules": rules.to_string_lossy(),
     });
     write_registry(&world, &document);
@@ -218,7 +599,7 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
 
     world
         .onevcs()
-        .args(["rules", "check", "v5"])
+        .args(["rules", "check", "current"])
         .assert()
         .success()
         .stdout(predicate::str::contains("publication: local-direct"))
@@ -237,7 +618,7 @@ fn a_registry_written_before_release_targets_existed_is_left_exactly_as_it_is() 
     // global adoption rung.
     let assert = world
         .onevcs()
-        .args(["release", "targets", "v5", "--json"])
+        .args(["release", "targets", "current", "--json"])
         .assert()
         .success();
     let targets: serde_json::Value =
@@ -315,7 +696,7 @@ fn a_releases_key_in_the_registry_is_a_stray_key_and_never_a_reference() {
 }
 
 #[test]
-fn a_version_2_registry_infers_the_type_its_workflow_is_evidence_for() {
+fn a_version_2_registry_migrates_its_gate_and_reads_past_its_inference() {
     let world = World::new();
     let origin = world.bare_origin("v2");
     let checkout = world.clone_of(&origin, "v2");
@@ -336,12 +717,14 @@ fn a_version_2_registry_infers_the_type_its_workflow_is_evidence_for() {
     let assert = world.onevcs().args(["resolve", "v2"]).assert().success();
     let value: serde_json::Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
-    // A local workflow pushes straight to its base and never opens a change
-    // request, which is affirmative single-owner evidence rather than a guess.
-    assert_eq!(value["repo_type"], "single-owner");
     // No version before 4 recorded a gate, so the identity says plainly that it
     // cannot name its own complete bar.
     assert_eq!(value["gate"], "<no-op>");
+    // The workflow every version 2 document wrote was an inference from the origin,
+    // and nothing infers a second field from it any more: how this identity
+    // publishes is its rules' answer, which here is the built-in default.
+    assert_eq!(value["publication"], "change-open");
+    assert!(value.get("repo_type").is_none() && value.get("workflow").is_none());
 }
 
 #[test]
@@ -391,13 +774,14 @@ fn a_registry_missing_a_field_this_build_requires_is_refused_and_names_it() {
         .stderr(predicate::str::contains("missing field `identities`"));
 
     // …and one nested inside a record it does understand, which is where a document
-    // that reads as well-formed goes wrong most quietly.
+    // that reads as well-formed goes wrong most quietly. The `workflow` beside it is
+    // a key this build has no opinion on, and it is the *gate* that is missed.
     write_registry(
         &world,
         &serde_json::json!({
             "version": 5,
             "identities": {"github.com/acme/widgets": {
-                "origin": "github.com/acme/widgets", "workflow": "remote", "gate": "just gate"
+                "origin": "github.com/acme/widgets", "workflow": "remote"
             }},
             "checkouts": {},
         }),
@@ -407,7 +791,7 @@ fn a_registry_missing_a_field_this_build_requires_is_refused_and_names_it() {
         .arg("repos")
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("missing field `repo_type`"));
+        .stderr(predicate::str::contains("missing field `gate`"));
 
     // A document with no version at all cannot even be asked which shape it is, and
     // says so naming the versions that are readable.
@@ -424,8 +808,10 @@ fn a_registry_missing_a_field_this_build_requires_is_refused_and_names_it() {
 }
 
 /// A registry a build from the future left on this host: a version this one has
-/// never heard of, a key beside the ones it knows, and a key inside a record it
-/// does know.
+/// never heard of, a key beside the ones it knows, and keys inside a record it does
+/// know — two of them spelled like the fields versions 2 through 5 inferred, which
+/// at a version this build does not know are keys like any other rather than the
+/// spent ones the migration drops.
 fn from_a_later_build(key: &str, checkout: &std::path::Path) -> serde_json::Value {
     serde_json::json!({
         "version": 99,
@@ -465,7 +851,7 @@ fn a_registry_a_later_build_wrote_is_read_rather_than_refusing_every_verb() {
     let value: serde_json::Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("resolve prints JSON");
     assert_eq!(value["identity"], key);
-    assert_eq!(value["workflow"], "local");
+    assert_eq!(value["gate"], "just gate");
 
     world
         .onevcs()
@@ -527,6 +913,12 @@ fn a_verb_that_rewrites_the_registry_keeps_what_it_did_not_understand() {
     assert_eq!(
         written["identities"][&key]["release_channel"], "nightly",
         "a key inside a record this build understood survives it too"
+    );
+    assert_eq!(
+        written["identities"][&key]["workflow"], "local",
+        "…and at a version this build does not know, so does one spelled like a field \
+         the migration drops: only a document *below* this build's version carries a \
+         spent inference"
     );
     assert!(
         written["checkouts"].get("alongside").is_some(),

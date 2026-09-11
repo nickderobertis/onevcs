@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::rules::{Approvals, MergePolicy, Policy, RuleMatch, RulesFile};
-use crate::store::Normalized;
+use crate::store::{Normalized, Resolution};
 use crate::{home, ids};
 
 /// The version of the rules file this build writes, and the newest it has an
@@ -368,6 +368,16 @@ pub fn resolve(
         publication_from: "the default".to_owned(),
         approvals_from: "the default".to_owned(),
     }
+}
+
+/// Resolve the policy for one resolved repository argument.
+///
+/// The same question [`resolve`] answers, asked of a [`Resolution`] rather than of
+/// its parts: the identity's origin is what a rule's `host`/`owner`/`name` match
+/// against, and its publication checkout is what a `path` matches against.
+pub fn resolve_for(file: &RulesFile, source: &RulesSource, resolution: &Resolution) -> Resolved {
+    let normalized = crate::store::normalize(&resolution.identity.origin);
+    resolve(file, source, &normalized, &resolution.publication)
 }
 
 fn field_source(named: &str, from_rule: bool) -> String {

@@ -4220,12 +4220,20 @@ fn the_train_refuses_an_identity_whose_changes_are_reviewed() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("direct integration is refused"))
-        .stderr(predicate::str::contains("repo_type: team"));
-    // The refusal routes rather than only diagnosing: every hosted origin derives
-    // as team, so a refusal naming no command would leave `git push` and `gh pr
-    // create` as the exit for every finished branch here. A train is offered
-    // several, and each one gets its own invocation — a single shape naming one of
-    // them would send the others nowhere.
+        // Refused on the policy its rules resolve — the built-in default, here — and
+        // never on anything stored about the identity, so the refusal names the
+        // policy and where it came from, which is what an operator changes.
+        .stderr(predicate::str::contains(
+            "resolves to change-open (from the default; rules: the built-in default policy)",
+        ))
+        .stderr(predicate::str::contains(
+            "Set publication: local-direct for it there",
+        ));
+    // The refusal routes rather than only diagnosing: under the built-in default
+    // every identity publishes through a change request, so a refusal naming no
+    // command would leave `git push` and `gh pr create` as the exit for every
+    // finished branch here. A train is offered several, and each one gets its own
+    // invocation — a single shape naming one of them would send the others nowhere.
     let refusal = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr is UTF-8");
     for branch in ["claude/one", "claude/two"] {
         assert!(

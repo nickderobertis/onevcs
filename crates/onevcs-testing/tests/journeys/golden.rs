@@ -27,19 +27,19 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v7-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v7-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v8-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v8-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v7.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v7.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v8.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v8.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v6.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v6.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v7.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v7.json");
 
 /// Every optional key of a repository state, as the document spells it.
 const VCS_OPTIONAL: &[&str] = &[
@@ -186,29 +186,38 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 #[test]
 fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     // A consumer's checked-in scenario, written by the build before this one and
-    // read by this one: the version went up because the document gained a field, and
-    // a bump that refused every scenario already written would make every consumer's
-    // suite the thing that has to change.
+    // read by this one: the version went up because the document's identities
+    // *lost* two fields, and a bump that refused every scenario already written
+    // would make every consumer's suite the thing that has to change.
     let home = Home::new();
     let host_path = home.path("host.json");
     let vcs_path = home.path("vcs.json");
     std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
     std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
     assert!(
-        HOST_PREVIOUS.contains(r#""version": 6"#) && !HOST_PREVIOUS.contains(r#""drafts""#),
-        "the previous document is the one that predates the field, or it proves nothing"
+        VCS_PREVIOUS.contains(r#""version": 7"#)
+            && VCS_PREVIOUS.contains(r#""workflow": "remote""#)
+            && VCS_PREVIOUS.contains(r#""repo_type": "team""#),
+        "the previous document is the one that still carries the fields, or it proves \
+         nothing"
     );
 
     let host = FileHost::create(&host_path).expect("the previous version reads");
     let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
 
-    // Read as the shape this build writes, with everything it did hold intact and
-    // the field it never held empty — which is the answer rather than a gap: that
-    // build's host never recorded which commit a check was about.
+    // Read as the shape this build writes, with everything it did hold intact.
     let state = host.state().expect("readable");
     assert_eq!(state.version, STATE_VERSION);
     assert_eq!(state.authenticated_user, "seeded-user");
-    assert_eq!(state.changes.len(), 1);
+    // The seeded identity reads back as the identity it names, past the two fields
+    // the previous build wrote beside it, which nothing infers anything from any more.
+    let repository = vcs.state().expect("readable");
+    assert_eq!(repository.identities.len(), 1);
+    assert_eq!(
+        repository.identities[0].origin,
+        "github.com/acme-corp/widgets"
+    );
+    assert_eq!(state.changes.len(), 2);
     assert_eq!(
         state.titles[&state.changes[0].id],
         "feat: the seeded change"
@@ -216,18 +225,12 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     let carried = &state.checks[&state.changes[0].id];
     assert_eq!(carried.len(), 2);
     // Everything the previous document did hold reads back unchanged, the commit its
-    // host attached a check to included.
+    // host attached a check to and the reason a change was drafted with included.
     assert_eq!(carried[0].head, Some(onevcs::Sha("def456".to_owned())));
-    // The two fields a version 6 document could not hold, read as the answer that
-    // document *was*: a build that could not draft a change request did not draft
-    // one, and never asked a host to lift one. Inventing either — reading a change
-    // request nobody drafted as a draft — is what would make a publication over a
-    // consumer's checked-in scenario refuse to merge work nothing is holding back.
-    assert!(
-        state.drafts.is_empty() && state.made_ready.is_empty(),
-        "a document that predates drafts records none: {state:?}"
+    assert_eq!(
+        state.drafts[&state.changes[1].id].reference,
+        "feature/the-pinned-branch"
     );
-    let repository = vcs.state().expect("readable");
     assert_eq!(repository.version, STATE_VERSION);
     assert_eq!(repository.sessions.len(), 1);
     assert_eq!(repository.publications.len(), 1);
@@ -277,24 +280,24 @@ fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
     assert_eq!(
         host.state().expect("readable").bodies[&opened.id],
         drafted,
-        "a field of the previous bump is written to the carried-forward document"
+        "a field of an earlier bump is written to the carried-forward document"
     );
-    // …and this bump's own field with it: the reason the change was drafted, recorded
-    // where the ruling puts it and read back out of the carried-forward document.
     assert_eq!(
         host.state().expect("readable").drafts[&opened.id],
         held,
         "the reason a change request was drafted with is written to the carried-forward \
          document"
     );
-    // …and this bump's field is written into it, carrying the answer that list meant
-    // rather than the one nothing said. A carried-forward document says what this
-    // build answers, not what the build that wrote it could not.
+    // …and a carried-forward document is written as this build's shape: the two
+    // fields the previous build wrote beside an identity are not written back,
+    // because nothing here holds them — the document says what this build answers,
+    // not what the build that wrote it recorded.
     let carried = std::fs::read_to_string(&vcs_path).expect("a document");
     assert!(
         carried.contains(&format!(r#""version": {STATE_VERSION}"#))
-            && carried.contains(r#""state": "no""#),
-        "a carried-forward row is written back saying what this build answers about \
-         it: {carried}"
+            && carried.contains(r#""state": "no""#)
+            && !carried.contains("workflow")
+            && !carried.contains("repo_type"),
+        "a carried-forward document is written at this build's shape: {carried}"
     );
 }

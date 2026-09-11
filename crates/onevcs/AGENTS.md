@@ -127,6 +127,27 @@ attestation that clears it, `publish-branch` requires that there is none.
 than re-verifying a branch itself; what verifies a train is the `pre-push` hook at
 the push that publishes the advanced base.
 
+**Which identities the train takes is the resolved publication policy's answer,
+and the registry records nothing about it.** An identity is its origin and its
+gate. It used to carry a `workflow` and a `repo_type` too, inferred at registration
+from whether the origin had a host and settable by nothing afterwards — so every
+hosted origin was `team`/`remote` for ever, the train refused all of them on those
+fields while every other verb routed on the rules file, and a repository whose
+rules said `local-direct` was refused the one verb documented for that condition.
+Now the train is allowed exactly when the resolved `publication` is `local-direct`,
+the merge-path coverage verdict asks the same policy whether a change request will
+ever exist for the host to check, `recover`'s handoff names the train for exactly the
+identities the train takes, and the review requirement is the rules file's
+`approvals`. A registry a previous build wrote still carries the two keys, and that
+is registry version 6's whole reason: `store::migrate` reads a 2–5 document past
+them, drops exactly those two from each identity, keeps every other unknown key,
+and rewrites the document on that first read — `tests/golden/registry-v5.json` and
+`registry-v6.json` are the before and after, held byte for byte by `registry.rs`.
+They are spent rather than unknown, which is why the remainder mechanism is not
+what handles them. Do not bring an inference back: a rule matching `host` and `owner` is the organisation's
+default and one adding `name` is the per-repository override, which is all the
+configuration this needs.
+
 Which means **a refusal on this path is the guidance surface**: each one names the
 command with its exact arguments, or the rules-file entry, that resolves it. A
 refusal that only diagnoses leaves an agent to invent a way forward, and what it
@@ -173,16 +194,18 @@ than described here.
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
 cwd. The train is deliberately not what it names, even for finished work:
-`integrate` reads its candidates out of the publication checkout alone and
-refuses a team or remote identity outright, so it lands none of the branches this
-report is most often read about — the ones a run left in its own clone.
+`integrate` reads its candidates out of the publication checkout alone and refuses
+every identity whose rules do not publish `local-direct`, so it lands none of the
+branches this report is most often read about — the ones a run left in its own
+clone.
 
 ## The repository's own merge path is the only verifier
 
 Nothing here runs a verification tier of its own, and the rules file names none.
-For a remote-first identity the verifier is the host's required checks; for a
-local-first one it is the `pre-push` hook git runs at the publishing push. Three
-things follow, and each is easy to undo by accident.
+For an identity whose rules publish through a change request the verifier is the
+host's required checks; for one ruled `local-direct` it is the `pre-push` hook git
+runs at the publishing push. Four things follow, and each is easy to undo by
+accident.
 
 - **This crate hands the merge path what it needs and keeps what it wrote, and does
   nothing else about verification.** `merge_path::comparison_env` exports the remote
@@ -195,7 +218,24 @@ things follow, and each is easy to undo by accident.
   `status` reads its `merge_path` section off that event and nothing else.
 - **`recover` refuses to attest a branch nothing verified**, asking
   `store::merge_path_coverage` — the same question `onevcs register` warns on and
-  `onevcs repos --audit-gates` reports. Those three must keep one answer.
+  `onevcs repos --audit-gates` reports. Those three must keep one answer, and the
+  answer is decided from the resolved publication policy: with no hook, a
+  `local-direct` identity is covered by nothing and a change-request one by the
+  host's required checks — where there is a host at all.
+- **The audit names each required check per identity, read from the host.** Which
+  checks a repository requires is a setting on that repository, and a consumer that
+  kept its own copy of the list paid a full gate every time a sibling renamed a
+  check. `RemoteHost::required_checks_on(base)` is the read — an approved amendment
+  in `docs/contract.md`, defaulted to `NotImplemented` like the other additive seam
+  methods — and `GitHub` answers it from **both** protection sources: the rulesets,
+  whose refusal is the whole read's, and classic branch protection, whose refusal is
+  recorded in the answer's `unconsulted` map beside what the rulesets did say. Five
+  renderings, never collapsed: the names from both sources; `none required` only
+  when both were read and both name nothing; the names marked `incomplete` with the
+  unconsulted source; `unknown` when what answered names nothing and a source did not
+  answer; and `unreadable —` with the host's refusal. "This source found nothing" and
+  "this merge path requires nothing" are opposite facts, and a consumer that read the
+  first as the second would stop waiting on a check that is still coming.
 
 ## A publication observes, captures, and does not settle early
 

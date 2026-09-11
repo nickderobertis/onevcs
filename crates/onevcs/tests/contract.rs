@@ -25,7 +25,7 @@ use std::path::{Component, Path, PathBuf};
 use clap::CommandFactory;
 use onevcs::cli::Cli;
 use onevcs::declaration::{self, Declaration, RepositoryPath};
-use onevcs::registry::{Checkout, Identity, Registry, RepoType, Workflow};
+use onevcs::registry::{Checkout, Identity, Registry};
 use onevcs::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
     Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
@@ -37,9 +37,10 @@ use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource,
     DraftReason, Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub,
     HeldBy, Holding, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
-    MergeOutcome, MergePolicy, NetNegative, Phase, PreservedBranch, Provenance, Publication,
-    PublishOutcome, PublishRequest, Recoverable, RemoteHost, Retention, Scope, Session,
-    SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source, Subject, Url, Vcs,
+    MergeOutcome, MergePolicy, NetNegative, Phase, PreservedBranch, ProtectionSource, Provenance,
+    Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks,
+    Retention, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
+    Source, Subject, Url, Vcs,
 };
 use serde_json::{json, Value};
 
@@ -1780,20 +1781,16 @@ fn a_baseline_is_persisted_as_one_of_three_states_rather_than_a_bare_version() {
 }
 
 #[test]
-fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
+fn a_v6_registry_round_trips_and_carries_the_rules_reference() {
     let document = json!({
-        "version": 5,
+        "version": 6,
         "identities": {
             "github.com/nickderobertis/onevcs": {
                 "origin": "https://github.com/nickderobertis/onevcs",
-                "workflow": "remote",
-                "repo_type": "single-owner",
                 "gate": "just gate",
             },
             "github.com/acme-corp/service": {
                 "origin": "https://github.com/acme-corp/service",
-                "workflow": "remote",
-                "repo_type": "team",
                 "gate": "just check",
             },
         },
@@ -1807,14 +1804,12 @@ fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
     });
 
     let registry: Registry =
-        serde_json::from_value(document.clone()).expect("a v5 document must deserialize");
-    assert_eq!(registry.version, 5);
+        serde_json::from_value(document.clone()).expect("a v6 document must deserialize");
+    assert_eq!(registry.version, 6);
     assert_eq!(
         registry.identities["github.com/acme-corp/service"],
         Identity {
             origin: "https://github.com/acme-corp/service".to_owned(),
-            workflow: Workflow::Remote,
-            repo_type: RepoType::Team,
             gate: "just check".to_owned(),
         }
     );
@@ -1836,7 +1831,7 @@ fn a_v5_registry_round_trips_and_carries_the_rules_reference() {
 
 #[test]
 fn a_registry_without_a_rules_reference_omits_the_field() {
-    let document = json!({"version": 5, "identities": {}, "checkouts": {}});
+    let document = json!({"version": 6, "identities": {}, "checkouts": {}});
     let registry: Registry = serde_json::from_value(document.clone()).expect("rules is optional");
     assert_eq!(registry.rules, None);
     assert_eq!(
@@ -1854,7 +1849,7 @@ fn the_registry_names_no_release_targets_reference_at_any_version() {
     // the first host to configure a target would stop every older build on it, for
     // every verb. Withdrawing the key is what makes that failure stop existing rather
     // than be postponed — and the version does not move either, for the same reason.
-    let written = json!({"version": 5, "identities": {}, "checkouts": {}});
+    let written = json!({"version": 6, "identities": {}, "checkouts": {}});
     let registry: Registry =
         serde_json::from_value(written.clone()).expect("a registry without a rules key loads");
     assert_eq!(
@@ -1864,7 +1859,7 @@ fn the_registry_names_no_release_targets_reference_at_any_version() {
     );
 
     let fields = serde_json::to_value(Registry {
-        version: 5,
+        version: 6,
         identities: BTreeMap::new(),
         checkouts: BTreeMap::new(),
         rules: Some(PathBuf::from("/home/agent/.config/onevcs/rules.yaml")),
@@ -1885,14 +1880,12 @@ fn the_registry_names_no_release_targets_reference_at_any_version() {
 #[test]
 fn a_malformed_registry_is_rejected_at_the_boundary() {
     let cases = [
-        // A repository type nobody declared.
-        json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "remote", "repo_type": "solo", "gate": "g"}}, "checkouts": {}}),
-        // A workflow nobody declared.
-        json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "hybrid", "repo_type": "team", "gate": "g"}}, "checkouts": {}}),
         // An identity with no gate.
-        json!({"version": 5, "identities": {"k": {"origin": "o", "workflow": "remote", "repo_type": "team"}}, "checkouts": {}}),
+        json!({"version": 6, "identities": {"k": {"origin": "o"}}, "checkouts": {}}),
+        // An identity with no origin.
+        json!({"version": 6, "identities": {"k": {"gate": "g"}}, "checkouts": {}}),
         // A checkout pointing nowhere.
-        json!({"version": 5, "identities": {}, "checkouts": {"a": {"path": "/tmp/x"}}}),
+        json!({"version": 6, "identities": {}, "checkouts": {"a": {"path": "/tmp/x"}}}),
     ];
     for case in cases {
         assert!(
@@ -3634,6 +3627,84 @@ fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
         ),
         "a host that was never taught to answer must refuse rather than say `not yet`"
     );
+}
+
+#[test]
+fn the_amendment_declares_the_required_checks_read_and_defaults_it_to_a_refusal() {
+    // The read is an approved amendment, so the shape a consumer reads there is the
+    // shape the code has: the method, the answer, and the two sources an answer can
+    // say it did not consult.
+    let declared = amendment_declaring("pub struct RequiredChecks");
+    for line in [
+        "fn required_checks_on(&self, base: &str) -> Result<RequiredChecks>;",
+        "pub struct RequiredChecks { pub checks: BTreeSet<String>,",
+        "pub unconsulted: BTreeMap<ProtectionSource, String> }",
+        "impl RequiredChecks { pub fn complete(&self) -> bool; }",
+        "pub enum ProtectionSource { Rulesets, BranchProtection }",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    let complete = RequiredChecks {
+        checks: BTreeSet::from(["gate".to_owned()]),
+        unconsulted: BTreeMap::new(),
+    };
+    assert!(complete.complete());
+    let partial = RequiredChecks {
+        checks: BTreeSet::new(),
+        unconsulted: BTreeMap::from([(ProtectionSource::BranchProtection, "HTTP 403".to_owned())]),
+    };
+    assert!(
+        !partial.complete(),
+        "an answer with a source unconsulted is not the whole list"
+    );
+    // The two sources spell themselves as the amendment says.
+    assert_eq!(
+        serde_json::to_value([
+            ProtectionSource::Rulesets,
+            ProtectionSource::BranchProtection
+        ])
+        .expect("sources serialize"),
+        json!(["rulesets", "branch-protection"])
+    );
+    // …and an answer nothing was refused omits the map, so a consumer reading a
+    // complete answer is not handed an empty field to wonder about.
+    assert_eq!(
+        serde_json::to_value(&complete).expect("an answer serializes"),
+        json!({"checks": ["gate"]})
+    );
+
+    // Defaulted, so an implementation written against the earlier surface still
+    // compiles — and to the refusal this repository reserves for a seam with no body,
+    // never to an empty answer: "could not look" reported as "requires nothing" is how
+    // a consumer stops waiting on a check that is still coming.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    assert!(matches!(
+        Earlier.required_checks_on("main"),
+        Err(Error::NotImplemented { operation }) if operation.contains("required_checks_on")
+    ));
 }
 
 #[test]

@@ -1,0 +1,22 @@
+{
+  "version": 5,
+  "identities": {
+    "github.com/acme-corp/legacy": {
+      "origin": "github.com/acme-corp/legacy",
+      "workflow": "remote",
+      "repo_type": "team",
+      "gate": "just gate",
+      "release_channel": "nightly"
+    }
+  },
+  "checkouts": {
+    "legacy": {
+      "path": "<root>/legacy",
+      "identity": "github.com/acme-corp/legacy"
+    }
+  },
+  "rules": "<root>/rules-elsewhere.yml",
+  "policies": {
+    "stacking": "always"
+  }
+}

@@ -427,6 +427,23 @@ impl World {
         self.write_rows("gh-state/checks.rows", checks);
     }
 
+    /// What the substituted host's **classic** branch protection requires on the
+    /// base, which is the second of the two ways GitHub protects a branch and the one
+    /// a credential may be refused. Unset, the branch has no classic protection —
+    /// which GitHub answers as `Branch not protected`, a 404 that is an answer — and
+    /// set to nothing it is protected and requires no check.
+    pub fn host_classic_protection(&self, contexts: &[&str]) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path("gh-state/classic-protection"),
+            contexts
+                .iter()
+                .map(|context| format!("{context}\n"))
+                .collect::<String>(),
+        )
+        .expect("a classic branch protection");
+    }
+
     /// What the substituted host reports once it has been asked for its check
     /// rollup `after` times, so a journey can drive a check that *moves* while a
     /// publication watches it.
@@ -510,6 +527,11 @@ impl World {
     /// `no-draft-state` answers a `gh pr view` without the field that says whether
     /// the change request is a draft, which is what a host that will not say looks
     /// like — never the same thing as a host saying it is not one.
+    ///
+    /// `classic-protection-refused` is a credential without administration rights
+    /// meeting classic branch protection, which is every fine-grained token: the
+    /// rulesets still answer, and that one source does not. An empty `shape` clears
+    /// every one of these.
     pub fn answer_malformed(&self, shape: &str) {
         std::fs::write(self.path("gh-state/malformed"), shape)
             .expect("a host that answers in the wrong shape");
@@ -900,6 +922,26 @@ case "$command" in
         job="${path%/logs}"; job="${job##*/}"
         job_log "$job"
         exit 0 ;;
+      */branches/*/protection/required_status_checks)
+        # Classic branch protection, the second way GitHub protects a branch and the
+        # one a credential without administration rights is refused. Unset, the
+        # branch has none, which GitHub says as a 404 that is an answer.
+        if [ "$malformed" = "classic-protection-refused" ]; then
+          printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
+          exit 1
+        fi
+        if [ ! -f "$STATE/classic-protection" ]; then
+          printf 'gh: Branch not protected (HTTP 404)\n' >&2
+          exit 1
+        fi
+        contexts=""; separator=""
+        while IFS= read -r context; do
+          [ -n "$context" ] || continue
+          contexts="$contexts$separator\"$context\""
+          separator=","
+        done <"$STATE/classic-protection"
+        printf '{"strict":false,"contexts":[%s],"checks":[]}\n' "$contexts"
+        exit 0 ;;
       */rules/branches/*)
         case "$malformed" in
           actions-only-rules-not-a-list)
@@ -1045,8 +1087,8 @@ land_pr() {
     printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
     printf 'PR_URL=%s\n' "$PR_URL"
     printf 'PR_STATE=MERGED\n'
-    printf 'PR_HEAD=%s\n' "$PR_HEAD"
-    printf 'PR_BASE=%s\n' "$PR_BASE"
+    printf 'PR_HEAD=%q\n' "$PR_HEAD"
+    printf 'PR_BASE=%q\n' "$PR_BASE"
     printf 'PR_HEAD_SHA=%s\n' "$PR_HEAD_SHA"
     printf 'PR_MERGE_COMMIT=%s\n' "$oid"
   } >"$STATE/pr-$PR_NUMBER.env"
@@ -1191,8 +1233,9 @@ case "$subcommand" in
       printf 'PR_NUMBER=%s\n' "$next"
       printf 'PR_URL=https://github.com/%s/pull/%s\n' "$repo" "$next"
       printf 'PR_STATE=OPEN\n'
-      printf 'PR_HEAD=%s\n' "$head"
-      printf 'PR_BASE=%s\n' "$base"
+      # %q, because git lets a branch name carry a quote and this record is sourced.
+      printf 'PR_HEAD=%q\n' "$head"
+      printf 'PR_BASE=%q\n' "$base"
       printf 'PR_HEAD_SHA=%s\n' "$head_sha"
       printf 'PR_MERGE_COMMIT=\n'
       printf 'PR_DRAFT=%s\n' "$draft"

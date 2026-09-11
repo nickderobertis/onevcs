@@ -85,7 +85,7 @@ pub use event::{
 };
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, GitHub, Hosting,
-    MergeOutcome, RemoteHost, Sha,
+    MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
 pub use landed::{Landed, LandingEvidence};
 pub use providers::Providers;

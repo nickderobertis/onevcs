@@ -22,11 +22,26 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{self, Error, Result};
-use crate::registry::{Checkout, Identity, Registry, RepoType, Workflow};
+use crate::registry::{Checkout, Identity, Registry};
 use crate::remainder::Remainder;
+use crate::rules::MergePolicy;
 use crate::{git, home, lock};
 
 /// The version this build writes.
+///
+/// `6` is an identity without the `workflow` and `repo_type` that versions 2 through
+/// 5 wrote beside it. Both were inferred at registration from whether the origin
+/// had a host, settable by nothing afterwards, and consulted where the resolved
+/// publication policy should have been — so a document that carries them is a
+/// document whose routing is wrong, and the version moved so that the next write
+/// *removes* them rather than handing them back as keys this build merely has no
+/// opinion on. They are spent, not unknown: [`migrate`] strips exactly those two
+/// from each identity of a document below `6` before the remainder is computed, so
+/// everything else the document carried beyond this shape still comes back. The
+/// cost is the one every bump here pays — a build that still requires the two fields
+/// stops reading a registry this one has migrated — and it is paid deliberately,
+/// because leaving the inference in place is leaving the defect in place on every
+/// host that already has it.
 ///
 /// It did **not** move for the release-targets work, and neither did the shape: the
 /// releases document is found at its conventional path under the state root, so
@@ -37,7 +52,7 @@ use crate::{git, home, lock};
 /// does not degrade that build: it stops it, for every verb, on a host whose
 /// operator opted into nothing. Those builds declare `deny_unknown_fields` and
 /// always will, which is why the key was withdrawn rather than made optional.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// The oldest document this build still migrates.
 pub const OLDEST_VERSION: u32 = 2;
@@ -250,11 +265,21 @@ fn migrate(path: &Path, value: Value) -> Result<Read> {
                 carried,
             })
         }
-        2..=4 => {
-            let registry = legacy(path, object, version as u32)?;
+        // Version 5 is this shape plus the two inferred fields, so it is read as
+        // this shape; the versions before it are read by `legacy`. Either way the
+        // inference is stripped before the remainder is taken, so the rewrite drops
+        // it and keeps everything else the document carried.
+        2..=5 => {
+            let mut registry = if version == 5 {
+                serde_json::from_value(value.clone())
+                    .map_err(error::at("read the registry at", path))?
+            } else {
+                legacy(path, object, version as u32)?
+            };
+            registry.version = VERSION;
             coherent(path, &registry)?;
             let carried = Remainder::between(
-                &value,
+                &without_inference(&value),
                 &serde_json::to_value(&registry)
                     .map_err(error::at("read the registry at", path))?,
             );
@@ -274,22 +299,44 @@ fn migrate(path: &Path, value: Value) -> Result<Read> {
     }
 }
 
+/// The keys versions 2 through 5 inferred beside each identity, which the migration
+/// to 6 removes rather than carries.
+const INFERRED_KEYS: [&str; 2] = ["workflow", "repo_type"];
+
+/// A pre-6 document with the inferred identity fields taken out, so that what the
+/// remainder keeps is what the document carried beyond this shape *and* beyond the
+/// shape it was written at: an unknown key beside an identity survives the migration,
+/// and a spent one does not.
+fn without_inference(value: &Value) -> Value {
+    let mut stripped = value.clone();
+    if let Some(identities) = stripped
+        .get_mut("identities")
+        .and_then(Value::as_object_mut)
+    {
+        for identity in identities.values_mut() {
+            if let Some(fields) = identity.as_object_mut() {
+                for key in INFERRED_KEYS {
+                    fields.remove(key);
+                }
+            }
+        }
+    }
+    stripped
+}
+
 /// Reject a document whose records disagree with each other.
 ///
 /// Serde proves the *shape*, and stops there: a checkout naming an identity the
-/// document does not hold, or an identity combining a team with a workflow that
-/// opens no change request, are both well-formed JSON and neither is a repository
-/// this can act on. Checked on every read, whatever version it arrived as.
+/// document does not hold is well-formed JSON and not a repository this can act on.
+/// Checked on every read, whatever version it arrived as.
+///
+/// Nothing here asserts over an identity on its own any more. The one such check —
+/// a `repo_type` of `team` beside a `workflow` of `local` — refused a pair of stored
+/// inferences this build no longer stores, and the contradiction it guarded against
+/// (review required, no change request to review) is the rules file's to refuse,
+/// which `policy::validate` does where `approvals: required` meets a publication that
+/// merges without one.
 fn coherent(path: &Path, registry: &Registry) -> Result<()> {
-    for (key, identity) in &registry.identities {
-        if identity.repo_type == RepoType::Team && identity.workflow == Workflow::Local {
-            return Err(error::invalid(format!(
-                "the registry at {} has identity {key:?} combining repo_type=team with \
-                 workflow=local, which no publication policy can honour",
-                path.display()
-            )));
-        }
-    }
     for (alias, checkout) in &registry.checkouts {
         if !registry.identities.contains_key(&checkout.identity) {
             return Err(error::invalid(format!(
@@ -309,19 +356,18 @@ fn coherent(path: &Path, registry: &Registry) -> Result<()> {
     Ok(())
 }
 
-/// Read a version 2, 3, or 4 document into the version 5 shape.
+/// Read a version 2, 3, or 4 document into this build's shape.
 ///
-/// Each older version omits one field, and each omission has one answer that is
-/// evidence rather than a guess:
+/// One field is filled in, and its answer is evidence rather than a guess:
+/// **`gate`** (absent before 4) becomes `<no-op>`, which is what an identity that
+/// cannot name its own complete bar has always recorded.
 ///
-/// * **`gate`** (absent before 4) becomes `<no-op>`, which is what an identity that
-///   cannot name its own complete bar has always recorded.
-/// * **`repo_type`** (absent before 3) follows the workflow. `local` is affirmative
-///   single-owner evidence — a local workflow pushes straight to its base and never
-///   opens a change request, which is not something a team's repository does. A
-///   `remote` workflow is left as `team`, the classification that requires approvals,
-///   because migrating into the *narrower* policy is the failure that cannot be
-///   undone by review.
+/// The `workflow` every one of these versions wrote, and the `repo_type` version 3
+/// added, are read past rather than validated: they were inferences from whether the
+/// origin had a host, and what they decided is the resolved publication policy's
+/// decision now. A document that spelled either one wrongly is not refused for it —
+/// there is nothing here the value could be wrong *for* — and [`migrate`] drops both
+/// on the way through, so the rewritten document carries neither.
 fn legacy(path: &Path, object: &Map<String, Value>, version: u32) -> Result<Registry> {
     let mut identities = BTreeMap::new();
     for (key, value) in object
@@ -335,56 +381,12 @@ fn legacy(path: &Path, object: &Map<String, Value>, version: u32) -> Result<Regi
         })?
     {
         let origin = field(path, value, "origin")?;
-        let workflow = match field(path, value, "workflow")?.as_str() {
-            "local" => Workflow::Local,
-            "remote" => Workflow::Remote,
-            other => {
-                return Err(Error::Invalid {
-                    reason: format!(
-                        "registry identity {key:?} has workflow {other:?}, which is not \
-                         'local' or 'remote'"
-                    ),
-                })
-            }
-        };
-        let repo_type = match (version, workflow) {
-            (2, Workflow::Local) => RepoType::SingleOwner,
-            (2, Workflow::Remote) => RepoType::Team,
-            _ => match field(path, value, "repo_type")?.as_str() {
-                "single-owner" => RepoType::SingleOwner,
-                "team" => RepoType::Team,
-                other => {
-                    return Err(Error::Invalid {
-                        reason: format!(
-                            "registry identity {key:?} has repo_type {other:?}, which is not \
-                             'single-owner' or 'team'"
-                        ),
-                    })
-                }
-            },
-        };
-        if repo_type == RepoType::Team && workflow == Workflow::Local {
-            return Err(Error::Invalid {
-                reason: format!(
-                    "registry identity {key:?} combines repo_type=team with workflow=local, \
-                     which no publication policy can honour"
-                ),
-            });
-        }
         let gate = if version >= 4 {
             field(path, value, "gate")?
         } else {
             NOOP_GATE.to_owned()
         };
-        identities.insert(
-            key.clone(),
-            Identity {
-                origin,
-                workflow,
-                repo_type,
-                gate,
-            },
-        );
+        identities.insert(key.clone(), Identity { origin, gate });
     }
 
     let mut checkouts = BTreeMap::new();
@@ -559,22 +561,12 @@ pub fn register(path: &Path, origin_override: Option<&str>) -> Result<Resolution
         registry
             .identities
             .entry(normalized.key.clone())
+            // Nothing about how this identity publishes is recorded: that is the
+            // rules file's answer, resolved every time it is asked, so a decision
+            // an operator changes there is changed everywhere at once rather than
+            // frozen into the document at registration.
             .or_insert_with(|| Identity {
                 origin: normalized.key.clone(),
-                // A hosted origin is reviewed before it lands until somebody says
-                // otherwise; the narrower classification is the safe default,
-                // because widening it is a decision and narrowing it silently is a
-                // defect.
-                workflow: if normalized.hosted.is_some() {
-                    Workflow::Remote
-                } else {
-                    Workflow::Local
-                },
-                repo_type: if normalized.hosted.is_some() {
-                    RepoType::Team
-                } else {
-                    RepoType::SingleOwner
-                },
                 gate: gate.clone(),
             });
         if let Some(identity) = registry.identities.get_mut(&normalized.key) {
@@ -627,17 +619,36 @@ fn detect_gate(checkout: &Path) -> String {
 
 /// Whether an identity's merge path is covered by something that runs a gate.
 ///
-/// Which evidence counts depends on the workflow. A **local** workflow pushes
-/// straight to its base and never opens a change request, so branch protection has
-/// nothing to run against and only an executable `pre-push` hook can cover it. A
-/// remote workflow is covered by either: the hook gates the branch push that feeds
-/// the change request, and required checks gate the merge.
-pub fn merge_path_coverage(resolution: &Resolution, checkout: &Path) -> Coverage {
-    let hook = pre_push_hook(checkout);
-    match (hook.is_some(), resolution.identity.workflow) {
-        (true, _) => Coverage::PrePushHook(hook.expect("checked above")),
-        (false, Workflow::Remote) => Coverage::RequiredChecks,
-        (false, Workflow::Local) => Coverage::None,
+/// Which evidence counts depends on the resolved publication policy, which is the
+/// one place how an identity publishes is decided. Under **`local-direct`** a
+/// publication pushes straight to its base and never opens a change request, so the
+/// host's required checks have nothing to rule on and only an executable `pre-push`
+/// hook can cover it. Under any of the three change-request policies it is covered
+/// by either: the hook gates the branch push that feeds the change request, and the
+/// host's required checks gate the merge.
+///
+/// This is a safety verdict, and it is answered from the policy rather than from a
+/// stored classification because the classification was inferred once, from whether
+/// the origin had a host, and could not be changed afterwards — so an identity whose
+/// rules had it publishing through a change request could still be reported as
+/// covered by nothing, or the reverse, depending on how it was registered. The one
+/// thing the origin still decides is whether there is a host at all: an identity
+/// with no host has no required checks whatever its policy says, and reporting the
+/// host's checks as its cover would be the unverified merge that looks verified.
+pub fn merge_path_coverage(
+    resolution: &Resolution,
+    checkout: &Path,
+    publication: MergePolicy,
+) -> Coverage {
+    if let Some(hook) = pre_push_hook(checkout) {
+        return Coverage::PrePushHook(hook);
+    }
+    let through_a_change_request = publication != MergePolicy::LocalDirect;
+    let hosted = normalize(&resolution.identity.origin).hosted.is_some();
+    if through_a_change_request && hosted {
+        Coverage::RequiredChecks
+    } else {
+        Coverage::None
     }
 }
 

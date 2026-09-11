@@ -1669,6 +1669,51 @@ Both belong to the `review` phase, beside `change-opened`.
   no reason: the reason is on the `change-drafted` it answers, and the publication
   that lifts a draft is one that never held it.
 
+**A host says which checks it requires before a merge into a branch, and how much
+of itself that answer covers.** Which checks a repository requires is a setting on
+that repository, and a consumer that sequences its own work behind another
+repository's merge path kept a copy of that list — which drifted the day a sibling
+renamed a check, and cost a full gate to learn. This crate already read the list to
+wait on it; it did not report it. `onevcs repos --audit-gates` names it per identity
+now, and the read is on the seam, so a supplied host answers it the way it answers
+everything else.
+
+```rust
+pub trait RemoteHost {                       // the methods above, and one more, defaulted:
+    fn required_checks_on(&self, base: &str) -> Result<RequiredChecks>;
+}
+pub struct RequiredChecks { pub checks: BTreeSet<String>,
+                            pub unconsulted: BTreeMap<ProtectionSource, String> }
+impl RequiredChecks { pub fn complete(&self) -> bool; }       // unconsulted is empty
+pub enum ProtectionSource { Rulesets, BranchProtection }     // rulesets|branch-protection
+```
+
+It is defaulted, to the refusal this crate reserves for a seam with no body, for the
+reason `merged_at`, `ready_for_review`, and `is_draft` are: an implementation written
+against the earlier surface still compiles, and a host that was never taught to
+answer has not said the repository requires nothing.
+
+The answer says which protection source it could not consult, and that is the whole
+of its shape. A host protects a branch from more than one source — GitHub from its
+rulesets and from classic branch protection — and a credential may read one and be
+refused the other: a fine-grained token reads rulesets on every repository and
+classic protection on none. "This source found nothing" and "this merge path
+requires nothing" are opposite facts, and only the second is safe to act on, so an
+answer with a source in `unconsulted` is incomplete and an empty one is *unknown*
+rather than none. A host that could read no source at all refuses rather than
+answers, for the reason `change_checks` may not answer with an empty source list.
+
+`GitHub` reads the rulesets first, and their refusal is the whole read's — every
+credential that can see the repository can read them. Classic protection is read
+second, and its refusal is recorded beside what the rulesets did say rather than
+raised over it; `Branch not protected` is an answer from that source, not a refusal.
+The audit renders the five states apart — the names from both sources, `none
+required` only when both were read and both name nothing, the names marked
+`incomplete` with the unconsulted source and its reason, `unknown` when the sources
+that answered name nothing and one did not answer, and `unreadable` with the host's
+refusal — and a consumer deleting its own cached list reads the first two as answers
+and the last three as not having been told.
+
 ---
 
 ### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)

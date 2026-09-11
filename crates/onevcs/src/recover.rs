@@ -21,7 +21,8 @@ use crate::error::{Error, Result};
 use crate::event::EventKind;
 use crate::host::Hosting;
 use crate::publish::{PublishOutcome, Subject};
-use crate::registry::{Registry, RepoType, Workflow};
+use crate::registry::Registry;
+use crate::rules::MergePolicy;
 use crate::store;
 use crate::stream::Stream;
 use crate::workspace::object;
@@ -99,16 +100,17 @@ fn nothing_to_recover(landing: &branch::Landing) -> Result<String> {
 
 /// The command that publishes a *complete* branch of this identity.
 ///
-/// The merge train is local-only, and the two fields `onevcs register` derives from
-/// an origin are what say so — so a handoff that always named `integrate` would send
-/// half the identities on this host to a verb that refuses them, and an operator
-/// refused twice reaches for raw `git`.
+/// The merge train lands exactly the identities whose resolved publication policy is
+/// `local-direct`, and this handoff is decided from that same policy — the one the
+/// landing already resolved — so it names the train for precisely the identities the
+/// train accepts and `publish-branch` for the rest. Deciding it from anything else
+/// sends an operator to a verb that refuses them, and an operator refused twice
+/// reaches for raw `git`.
 fn complete_branch_verb(landing: &branch::Landing) -> String {
-    let identity = &landing.resolution.identity;
-    if identity.repo_type == RepoType::Team || identity.workflow == Workflow::Remote {
-        landing.command_for(Verb::PublishBranch)
-    } else {
+    if landing.resolved.policy.publication == MergePolicy::LocalDirect {
         crate::guidance::command(["onevcs", "integrate", &landing.branch])
+    } else {
+        landing.command_for(Verb::PublishBranch)
     }
 }
 
@@ -126,16 +128,20 @@ fn complete_branch_verb(landing: &branch::Landing) -> String {
 /// actually rule on its change requests.
 fn attests_nothing(landing: &branch::Landing) -> Option<String> {
     if landing.resolution.identity.gate != store::NOOP_GATE
-        || store::merge_path_coverage(&landing.resolution, &landing.source) != store::Coverage::None
+        || store::merge_path_coverage(
+            &landing.resolution,
+            &landing.source,
+            landing.resolved.policy.publication,
+        ) != store::Coverage::None
     {
         return None;
     }
     Some(format!(
         "identity {:?} names no complete bar and nothing on its merge path verifies one, so a \
          recovery attestation would attest nothing. Give it one of the two: put an executable \
-         pre-push hook in {}, which is what judges a publishing push, or register this identity \
-         against a host whose required checks judge its change requests. Confirm what covers it \
-         with `{}`, then re-run `{}`",
+         pre-push hook in {}, which is what judges a publishing push, or resolve this identity \
+         to a change-request policy in the rules file so a host's required checks judge its \
+         change requests. Confirm what covers it with `{}`, then re-run `{}`",
         landing.resolution.key,
         landing.source.display(),
         guidance::command(["onevcs", "repos", "--audit-gates"]),

@@ -37,7 +37,10 @@ use crate::store::Checked;
 /// commit the host attached that check to, and where the check is on the host. `7`
 /// is the two a draft change request needs — [`HostState::drafts`], the reason each
 /// change request was opened as a draft with, and [`HostState::made_ready`], the
-/// `ready_for_review` calls it took.
+/// `ready_for_review` calls it took. `8` is the two an [`Identity`] inside
+/// [`VcsState::identities`] **lost** — `workflow` and `repo_type`, the registry's
+/// inferences from whether an origin had a host, which every decision they made now
+/// takes from the resolved publication policy instead.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -47,7 +50,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 7;
+pub const STATE_VERSION: u32 = 8;
 
 /// The oldest document version this build reads.
 ///
@@ -68,6 +71,9 @@ pub const STATE_VERSION: u32 = 7;
 /// head. `6` to `7` added two more of that kind, so a version 6 document reads as one
 /// whose change requests were opened before this crate could draft one — which is what
 /// they were: no draft reason recorded for any of them, and no lift ever asked for.
+/// `7` to `8` *removed* two from each identity, and a version 7 document reads past
+/// them: an identity is its origin and its gate here as it is in `onevcs`, and the two
+/// keys beside them are ones this build has no opinion on.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a

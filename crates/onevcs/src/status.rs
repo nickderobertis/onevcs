@@ -39,7 +39,7 @@ use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
 use crate::publish::DraftReason;
-use crate::registry::{Registry, RepoType, Workflow};
+use crate::registry::Registry;
 use crate::releases::TargetName;
 use crate::rules::{Approvals, MergePolicy};
 use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
@@ -79,10 +79,21 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// both omit the field: "there is no reason holding this back" is the same answer
 /// either way, and the *reason* is only ever the one currently holding it.
 ///
+/// `5` is the fourth landing answer, `in-part`, and the ninth `publication.state`
+/// derived from it, `landed-in-part`.
+///
+/// `6` is `identity.workflow` and `identity.repo_type` going away. Both were the
+/// registry's inferences from whether the origin had a host, settable by nothing,
+/// and every decision they made is the resolved publication policy's now — which the
+/// report already carries as `publication.merge_policy`, beside the
+/// `identity.approvals` that carries the review requirement. A consumer that read
+/// `workflow` to tell a local landing from a hosted one reads `merge_policy`:
+/// `local-direct` is the local one.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 5;
+pub const REPORT_VERSION: u32 = 6;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -180,16 +191,17 @@ pub enum RefKind {
 }
 
 /// The identity, and what its rules resolve to for this repository.
+///
+/// How the identity publishes is not here twice: `publication.merge_policy` is the
+/// resolved publication, and it is the one fact that says whether work lands locally
+/// or through the host. The review requirement is `approvals`, the other field the
+/// rules resolve.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityReport {
     /// The identity key.
     pub key: String,
     /// The checkout publication fast-forwards, never works in.
     pub publication_checkout: PathBuf,
-    /// Whether work publishes locally or through the remote host.
-    pub workflow: Workflow,
-    /// Whether the repository is one person's or a team's.
-    pub repo_type: RepoType,
     /// Whether the rules require approvals.
     pub approvals: Approvals,
 }
@@ -925,8 +937,6 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         identity: IdentityReport {
             key: resolution.key.clone(),
             publication_checkout: resolution.publication.clone(),
-            workflow: resolution.identity.workflow,
-            repo_type: resolution.identity.repo_type,
             approvals: resolved.policy.approvals,
         },
         session,
@@ -2022,12 +2032,9 @@ impl Report {
             self.branch.name, self.identity.key
         ));
         out.push_str(&format!(
-            "identity:\n  key: {}\n  publication checkout: {}\n  workflow: {}\n  repo_type: {}\n  \
-             approvals: {}\n",
+            "identity:\n  key: {}\n  publication checkout: {}\n  approvals: {}\n",
             self.identity.key,
             self.identity.publication_checkout.display(),
-            spell_workflow(self.identity.workflow),
-            spell_repo_type(self.identity.repo_type),
             spell_approvals(self.identity.approvals),
         ));
         match &self.session {
@@ -2200,20 +2207,6 @@ fn spell_landing(state: Landing) -> &'static str {
     }
 }
 
-fn spell_workflow(workflow: Workflow) -> &'static str {
-    match workflow {
-        Workflow::Local => "local",
-        Workflow::Remote => "remote",
-    }
-}
-
-fn spell_repo_type(repo_type: RepoType) -> &'static str {
-    match repo_type {
-        RepoType::SingleOwner => "single-owner",
-        RepoType::Team => "team",
-    }
-}
-
 fn spell_approvals(approvals: Approvals) -> &'static str {
     match approvals {
         Approvals::Required => "required",
@@ -2254,8 +2247,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v5.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v5-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v6.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v6-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
