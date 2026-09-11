@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/nickderobertis/onevcs/compare/v0.19.3...v0.20.0) - 2026-09-11
+
+### Added
+
+- *(identity)* gate and report on the publication policy that is configured ([#136](https://github.com/nickderobertis/onevcs/pull/136))
+
 ## [0.19.3](https://github.com/nickderobertis/onevcs/compare/v0.19.2...v0.19.3) - 2026-09-06
 
 ### Fixed
