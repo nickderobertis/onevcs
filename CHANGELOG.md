@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/nickderobertis/onevcs/compare/v0.21.0...v0.22.0) - 2026-09-13
+
+### Added
+
+- *(release)* read a cancelled check as no verdict, acknowledge lost baselines ([#143](https://github.com/nickderobertis/onevcs/pull/143))
+
 ## [0.21.0](https://github.com/nickderobertis/onevcs/compare/v0.20.0...v0.21.0) - 2026-09-11
 
 ### Added

@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, DIRECT};
+use crate::host::{Hosted, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::support::{documented_actor_limit, documented_probe_environment};
 use crate::world::World;
@@ -286,11 +286,12 @@ fn an_automated_target_is_released_only_by_a_version_strictly_greater_than_the_l
     assert_eq!(released["version"], "1.10.0");
     assert_eq!(released["style"], "automated");
     assert_eq!(released["target"], "crate");
+    assert_eq!(released["source"], "probed");
 
     // …and the human rendering is the same answer.
     assert_eq!(
         releasing.says(&["status", "feature/one"]),
-        "released: crate 1.10.0 (automated)"
+        "released: crate 1.10.0 (automated, probed)"
     );
 }
 
@@ -345,7 +346,9 @@ fn a_landing_whose_probe_failed_is_never_answered_as_not_released_and_only_no_re
     );
     let reason = unsound["reason"].as_str().expect("it says why");
     assert!(
-        reason.contains("no baseline was captured") && reason.contains("unsound"),
+        reason.contains("no baseline was captured")
+            && reason.contains("unsound")
+            && reason.contains("onevcs release acknowledge"),
         "the refusal names the missing baseline and why a comparison would be unsound: {reason}"
     );
 
@@ -373,6 +376,34 @@ fn a_landing_whose_probe_failed_is_never_answered_as_not_released_and_only_no_re
     let released = releasing.json(&["status", "feature/unbaselined"]);
     assert_eq!(released["state"], "released");
     assert_eq!(released["version"], "0.1.0");
+
+    releasing.answers_nothing("crate");
+    releasing.land("feature/acknowledged-unestablished");
+    releasing
+        .release(&[
+            "acknowledge",
+            "feature/acknowledged-unestablished",
+            "--target",
+            "crate",
+            "--version",
+            "2.0.0",
+        ])
+        .success();
+    let acknowledged = releasing.json(&[
+        "status",
+        "feature/acknowledged-unestablished",
+        "--target",
+        "crate",
+    ]);
+    assert_eq!(acknowledged["state"], "released");
+    assert_eq!(acknowledged["version"], "2.0.0");
+    assert_eq!(acknowledged["source"], "acknowledged");
+    assert!(releasing
+        .events_of("release-acknowledged")
+        .iter()
+        .any(|event| {
+            event["payload"]["target"] == "crate" && event["payload"]["version"] == "2.0.0"
+        }));
 }
 
 #[test]
@@ -907,6 +938,11 @@ fn a_human_step_target_starts_a_wait_nobody_probes_and_an_acknowledgement_ends_i
     assert_eq!(released["state"], "released");
     assert_eq!(released["version"], "2026.8.23");
     assert_eq!(released["style"], "human-step");
+    assert_eq!(released["source"], "acknowledged");
+    assert_eq!(
+        releasing.says(&["status", "feature/one", "--target", "container"]),
+        "released: container 2026.8.23 (human-step, acknowledged)"
+    );
     assert_eq!(
         releasing.json(&["latest", "project", "--target", "container"]),
         serde_json::json!({"state": "released", "version": "2026.8.23"}),
@@ -1036,8 +1072,8 @@ fn the_acknowledge_operation_refuses_what_it_cannot_honestly_record() {
                 "--version",
                 "9.9.9",
             ],
-            "is automated",
-            "onevcs release latest",
+            "has an established baseline from its shell probe",
+            "its release must be answered by that probe",
         ),
         (
             vec![
@@ -1798,6 +1834,151 @@ fn a_target_declared_after_a_landing_has_no_baseline_at_it_and_says_so() {
 }
 
 #[test]
+fn a_host_landing_missed_by_onevcs_can_be_acknowledged_for_an_automated_target() {
+    let hosted = Hosted::new(REVIEWED);
+    let answers = hosted.world.path("answers");
+    std::fs::create_dir_all(&answers).expect("an answers directory");
+    std::fs::write(answers.join("crate"), "1.0.0\n").expect("a probe answer");
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{host: \
+             github.com, owner: acme-corp, name: hosted}}\n    adoption: published\n    \
+             default_target: crate\n    targets:\n{}",
+            answering("crate")
+        ),
+    )
+    .expect("release targets");
+    let token = hosted.change(
+        "feature/missed-landing",
+        "feat: land after the watcher exits",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    // The host completes the change after the publishing process is gone. Its squash
+    // message names the change request, so the ordinary landing reader discovers it.
+    let host = hosted.world.clone_of(&hosted.origin, "late-host");
+    hosted
+        .world
+        .git(&host, &["fetch", "-q", "origin", "feature/missed-landing"]);
+    hosted
+        .world
+        .git(&host, &["merge", "-q", "--squash", "FETCH_HEAD"]);
+    hosted.world.git(
+        &host,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "feat: land after the watcher exits (#1)",
+        ],
+    );
+    hosted.world.git(&host, &["push", "-q", "origin", "main"]);
+    hosted.world.git(
+        &hosted.checkout,
+        &["fetch", "-q", "origin", "main:refs/remotes/origin/main"],
+    );
+
+    let release = |args: &[&str]| {
+        hosted
+            .world
+            .onevcs()
+            .arg("release")
+            .args(args)
+            .env("ONEVCS_ACTOR", "operator")
+            .assert()
+    };
+    let before = release(&["status", &token, "--target", "crate", "--json"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let before: Value = serde_json::from_slice(&before).expect("status JSON");
+    assert_eq!(before["state"], "not-answered");
+    assert!(before["reason"]
+        .as_str()
+        .expect("a reason")
+        .contains("release acknowledge"));
+
+    release(&[
+        "acknowledge",
+        &token,
+        "--target",
+        "crate",
+        "--version",
+        "1.0.0",
+    ])
+    .success();
+    let human = release(&["status", &token, "--target", "crate"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        String::from_utf8_lossy(&human).trim(),
+        "released: crate 1.0.0 (automated, acknowledged)"
+    );
+    let after = release(&["status", &token, "--target", "crate", "--json"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let after: Value = serde_json::from_slice(&after).expect("status JSON");
+    assert_eq!(after["version"], "1.0.0");
+    assert_eq!(after["source"], "acknowledged");
+
+    release(&[
+        "acknowledge",
+        &token,
+        "--target",
+        "crate",
+        "--version",
+        "1.0.1",
+    ])
+    .failure()
+    .code(2)
+    .stderr(predicate::str::contains("--supersede"));
+    release(&[
+        "acknowledge",
+        &token,
+        "--target",
+        "crate",
+        "--version",
+        "1.0.1",
+        "--supersede",
+        "--json",
+    ])
+    .success()
+    .stdout(predicate::str::contains(
+        "\"superseded\":[{\"version\":\"1.0.0\"",
+    ));
+
+    let events: Vec<Value> = std::fs::read_dir(hosted.world.home().join("streams"))
+        .expect("stream directory")
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("releases-"))
+        .flat_map(|entry| {
+            std::fs::read_to_string(entry.path())
+                .expect("release stream")
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("an event"))
+                .collect::<Vec<Value>>()
+        })
+        .filter(|event| event["kind"] == "release-acknowledged")
+        .collect();
+    assert_eq!(
+        events.len(),
+        2,
+        "the acknowledgement and correction emit: {events:?}"
+    );
+}
+
+#[test]
 fn a_baseline_that_could_not_be_captured_warns_and_never_fails_the_publication() {
     let releasing = Releasing::with(&answering("crate"));
     // The document stops being readable between one landing and the next, which is
@@ -2503,7 +2684,7 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
-            "released: crate 1.0.1 (automated)",
+            "released: crate 1.0.1 (automated, probed)",
             "every ask reports the same release"
         );
     }

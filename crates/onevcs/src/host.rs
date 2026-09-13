@@ -515,9 +515,17 @@ impl Check {
             })
     }
 
+    /// Whether the host ended this run without a verdict either way.
+    pub(crate) fn no_verdict(&self) -> bool {
+        self.settled()
+            && self.conclusion.as_deref().is_some_and(|value| {
+                matches!(value.to_ascii_lowercase().as_str(), "cancelled" | "stale")
+            })
+    }
+
     /// Whether a settled check ended in a way that blocks a merge.
     pub fn red(&self) -> bool {
-        self.settled() && !self.green()
+        self.settled() && !self.green() && !self.no_verdict()
     }
 }
 

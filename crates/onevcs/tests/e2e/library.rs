@@ -1969,6 +1969,28 @@ fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_throug
         other => panic!("a local-direct publication merges: {other:?}"),
     };
 
+    // A target learned only after landing has no baseline. The library accepts the
+    // same explicit backstop as the CLI and reports where its answer came from.
+    let releases = world.home().join("releases.yml");
+    let mut declaration = std::fs::read_to_string(&releases).expect("release targets");
+    declaration.push_str(
+        "      - name: wheel\n        style: automated\n        probe:\n          shell: 'cat \
+         \"$HOME/answers\"'\n          timeout_seconds: 20\n",
+    );
+    std::fs::write(&releases, declaration).expect("a late automated target");
+    let wheel = onevcs::TargetName::try_from("wheel".to_owned()).expect("a target name");
+    onevcs::acknowledge_release("feature/one", &wheel, "1.0.0", false)
+        .expect("a missing automated baseline can be acknowledged");
+    assert_eq!(
+        onevcs::release_status("feature/one", Some(&wheel)).expect("the record answers"),
+        onevcs::ReleaseStatus::Released {
+            target: wheel,
+            style: onevcs::ReleaseStyle::Automated,
+            version: "1.0.0".to_owned(),
+            source: onevcs::ReleaseSource::Acknowledged,
+        }
+    );
+
     // The baseline the landing captured is what makes the next question answerable.
     assert_eq!(
         onevcs::release_status("feature/one", None).expect("the landing is compared"),
@@ -1986,6 +2008,7 @@ fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_throug
             target: onevcs::TargetName::try_from("crate".to_owned()).expect("a target name"),
             style: onevcs::ReleaseStyle::Automated,
             version: "1.0.1".to_owned(),
+            source: onevcs::ReleaseSource::Probed,
         }
     );
 

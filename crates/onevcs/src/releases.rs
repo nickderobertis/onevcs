@@ -246,6 +246,25 @@ impl std::fmt::Display for ReleaseStyle {
     }
 }
 
+/// Where the answer that a release carries a landing came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReleaseSource {
+    /// The target's configured probe answered it.
+    Probed,
+    /// A person explicitly recorded it.
+    Acknowledged,
+}
+
+impl std::fmt::Display for ReleaseSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReleaseSource::Probed => f.write_str("probed"),
+            ReleaseSource::Acknowledged => f.write_str("acknowledged"),
+        }
+    }
+}
+
 /// What to run to find out what version of a target is released right now.
 ///
 /// Two forms and no way to spell a third, neither privileged: a script checked into
@@ -517,6 +536,8 @@ pub enum ReleaseStatus {
         style: ReleaseStyle,
         /// The version that carries the change.
         version: String,
+        /// Where this answer came from.
+        source: ReleaseSource,
     },
     /// Automated only: a probe answered, and the baseline has not been passed.
     // llmlint: ignore[invalid_states_unrepresentable] `now` is an empty string where

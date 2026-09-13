@@ -28,9 +28,9 @@ use onevcs::declaration::{self, Declaration, RepositoryPath};
 use onevcs::registry::{Checkout, Identity, Registry};
 use onevcs::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
-    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
-    ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName,
-    TargetRelease, TargetSource,
+    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseSource,
+    ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases,
+    SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::{
@@ -1111,11 +1111,14 @@ fn the_amendment_declares_the_release_surface_it_added() {
         "impl Probe { pub fn form(&self) -> &'static str; }",
         "pub fn select(&self, named: Option<&TargetName>) -> Result<&ReleaseTarget>;",
         "pub enum ReleaseStyle { Automated, HumanStep }",
+        "pub enum ReleaseSource { Probed, Acknowledged }",
         "Script { script: PathBuf, args: Vec<String>, timeout_seconds: u64 },",
         "Shell  { shell: String, timeout_seconds: u64 },",
         "pub enum Baseline { At { version: String }, NoRelease }",
         "pub enum BaselineRecord { Established(Baseline),",
         "Unestablished { reason: String, attempted_at: String } }",
+        "Released { target: TargetName, style: ReleaseStyle, version: String,",
+        "source: ReleaseSource },",
         "NotReleased { at_landing: Baseline, now: String },",
         "AwaitingHumanStep { target: TargetName, action: String, since: String },",
         "NotAnswered { reason: String },",
@@ -1148,6 +1151,11 @@ fn the_amendment_declares_the_release_surface_it_added() {
         ("published", serde_json::to_value(Adoption::Published)),
         ("automated", serde_json::to_value(ReleaseStyle::Automated)),
         ("human-step", serde_json::to_value(ReleaseStyle::HumanStep)),
+        ("probed", serde_json::to_value(ReleaseSource::Probed)),
+        (
+            "acknowledged",
+            serde_json::to_value(ReleaseSource::Acknowledged),
+        ),
     ] {
         assert_eq!(value.expect("it serializes"), json!(spelled));
         assert!(
@@ -1155,6 +1163,22 @@ fn the_amendment_declares_the_release_surface_it_added() {
             "the amendment does not spell {spelled}"
         );
     }
+    assert_eq!(
+        serde_json::to_value(ReleaseStatus::Released {
+            target: TargetName::try_from("crate".to_owned()).expect("a target"),
+            style: ReleaseStyle::Automated,
+            version: "1.2.3".to_owned(),
+            source: ReleaseSource::Probed,
+        })
+        .expect("released status serializes"),
+        json!({
+            "state": "released",
+            "target": "crate",
+            "style": "automated",
+            "version": "1.2.3",
+            "source": "probed",
+        })
+    );
     assert_eq!(
         serde_json::to_value(&acknowledgement).expect("an acknowledgement serializes"),
         json!({

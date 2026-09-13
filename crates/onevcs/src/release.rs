@@ -33,9 +33,9 @@ use crate::landed::Landed;
 use crate::registry::Registry;
 use crate::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
-    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
-    ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName, TargetRelease,
-    TargetSource, DEFAULT_PROBE_TIMEOUT_SECONDS, VERSION,
+    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseSource,
+    ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName,
+    TargetRelease, TargetSource, DEFAULT_PROBE_TIMEOUT_SECONDS, VERSION,
 };
 use crate::remainder::Remainder;
 use crate::stream::Stream;
@@ -601,7 +601,16 @@ fn automated_status(
     stream: &mut Stream,
 ) -> Result<ReleaseStatus> {
     let identity = &located.releases.identity;
-    let baseline = read(identity)?.baseline(&target.name, commit);
+    let record = read(identity)?;
+    if let Some(recorded) = record.acknowledgement(&target.name, commit) {
+        return Ok(ReleaseStatus::Released {
+            target: target.name.clone(),
+            style: target.style(),
+            version: recorded.version,
+            source: ReleaseSource::Acknowledged,
+        });
+    }
+    let baseline = record.baseline(&target.name, commit);
     let answer = ask(located, target, configured, stream).answer;
     let established = match baseline {
         Some(BaselineRecord::Established(baseline)) => baseline,
@@ -669,8 +678,9 @@ fn unsound(target: &ReleaseTarget, commit: &str, record: Option<&BaselineRecord>
     format!(
         "no baseline was captured for the release target {name:?} at landing {commit}, so a \
          comparison would be unsound — the release carrying this very change may already be \
-         included in whatever the probe answers now. {then}. Fix the probe and land again, or \
-         adopt fast for this dependency",
+         included in whatever the probe answers now. {then}. Record the release that carries \
+         this landing with `onevcs release acknowledge {commit} --target {name} --version \
+         <VERSION>`",
         name = target.name,
     )
 }
@@ -689,6 +699,7 @@ fn released(
         target: target.name.clone(),
         style: target.style(),
         version,
+        source: ReleaseSource::Probed,
     })
 }
 
@@ -706,6 +717,7 @@ fn human_step_status(
             target: target.name.clone(),
             style: target.style(),
             version: recorded.version,
+            source: ReleaseSource::Acknowledged,
         });
     }
     let action = target
@@ -830,7 +842,7 @@ fn capture(registry: &Registry, identity: &str, commit: &str, stream: &mut Strea
     Ok(())
 }
 
-/// Record that a person released a human-step target, and what they released.
+/// Record the release a person says carries a landing.
 pub fn acknowledge(
     registry: &Registry,
     reference: &str,
@@ -841,14 +853,6 @@ pub fn acknowledge(
     let landing = status::landing_of(registry, reference)?;
     let located = for_repository(registry, &landing.identity)?;
     let target = located.releases.select(Some(named))?;
-    if target.probe().is_some() {
-        return Err(error::invalid(format!(
-            "the release target {named:?} is automated, so its version comes from its probe and \
-             not from a hand-written second answer; ask it with `onevcs release latest {identity} \
-             --target {named}`",
-            identity = located.releases.identity,
-        )));
-    }
     let commit = match &landing.landed {
         Landed::Yes { evidence } | Landed::InPart { evidence, .. } => evidence.commit().to_owned(),
         Landed::No => {
@@ -865,6 +869,18 @@ pub fn acknowledge(
             )))
         }
     };
+    if let Some(probe) = target.probe() {
+        if matches!(
+            read(&located.releases.identity)?.baseline(named, &commit),
+            Some(BaselineRecord::Established(_))
+        ) {
+            return Err(error::invalid(format!(
+                "the release target {named:?} has an established baseline from its {form} probe \
+                 at landing {commit}, so its release must be answered by that probe",
+                form = probe.form(),
+            )));
+        }
+    }
     if semver::Version::parse(version).is_err() {
         return Err(error::invalid(format!(
             "{version:?} is not a semantic version, and a release is compared against others by \
