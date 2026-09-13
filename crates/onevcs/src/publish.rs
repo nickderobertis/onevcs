@@ -2387,11 +2387,27 @@ fn unsettled(
         .collect();
     let pending: Vec<&str> = required
         .iter()
-        .filter(|check| !check.settled())
+        .filter(|check| !check.green() && !check.red())
         .map(|check| check.name.as_str())
         .collect();
+    let no_verdict: Vec<String> = required
+        .iter()
+        .filter(|check| check.no_verdict())
+        .map(|check| {
+            format!(
+                "{:?}: {}",
+                check.name,
+                check.conclusion.as_deref().unwrap_or("unknown")
+            )
+        })
+        .collect();
     let named = if !pending.is_empty() {
-        format!("still unsettled: {}", guidance::listed(&pending))
+        let verdicts = if no_verdict.is_empty() {
+            String::new()
+        } else {
+            format!("; completed with no verdict: {}", no_verdict.join(", "))
+        };
+        format!("still unsettled: {}{verdicts}", guidance::listed(&pending))
     } else if required.is_empty() {
         "the host declared no required check on it at all".to_owned()
     } else {

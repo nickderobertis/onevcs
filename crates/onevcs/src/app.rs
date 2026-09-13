@@ -1362,7 +1362,8 @@ fn release_status(args: &ReleaseStatusArgs) -> Result<u8> {
             target,
             style,
             version,
-        } => println!("released: {target} {version} ({style})"),
+            source,
+        } => println!("released: {target} {version} ({style}, {source})"),
         ReleaseStatus::NotReleased { at_landing, now } => println!(
             "not released: at landing {landing}, now {now}",
             landing = spell_baseline(&at_landing),

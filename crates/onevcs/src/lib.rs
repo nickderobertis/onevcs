@@ -97,9 +97,9 @@ pub use publish::{
 pub use registry::Identity;
 pub use releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
-    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseStatus,
-    ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName,
-    TargetRelease, TargetSource,
+    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseSource,
+    ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases,
+    SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
 pub use rules::MergePolicy;
 pub use session::{
@@ -339,10 +339,12 @@ pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
     Ok(status::landing_of_within(&store::load()?, reference, repo)?.landed)
 }
 
-/// Record that somebody performed a human-step release, and what they released.
+/// Record the release somebody says carries a landing.
 ///
-/// The library form of `onevcs release acknowledge`. It refuses an automated target
-/// — its version comes from its probe — a reference that has not landed, a version
+/// The library form of `onevcs release acknowledge`. It accepts an automated target
+/// whose landing has no established probed baseline, and refuses one whose baseline
+/// is established. Human-step targets behave the same way regardless of baselines.
+/// It also refuses a reference that has not landed, a version
 /// that is not a semantic version, and a target the repository does not declare.
 ///
 /// Recording the same version for the same landing again succeeds and changes

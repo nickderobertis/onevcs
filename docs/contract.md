@@ -17,6 +17,23 @@ and released rather than what the crate exposes, so it is not reproduced here.
 
 ## Amendments, recorded outside the approved text
 
+### A completed check may still have no verdict, and a missed release may be acknowledged
+
+A required check whose conclusion is `cancelled` or `stale` has no verdict. Publication
+keeps reading checks for a later run under the same name. A later green conclusion proceeds,
+a later red conclusion refuses as `checks-failed`, and reaching the existing bound reports
+`checks-unsettled`, naming the check and its no-verdict conclusion. Every other completed
+conclusion that is not green remains red. This adds no `FailureKind`.
+
+`onevcs release acknowledge <REFERENCE> --target <NAME> --version <VERSION>
+[--supersede] [--json]` also accepts an automated target when that landing's baseline
+for the target is absent or `Unestablished`. It records the version a person states carries
+the landing. An established probed baseline still refuses the acknowledgement and names the
+probe. Status then answers `Released` with `source: acknowledged`; a probe-derived answer carries
+`source: probed`, and the human rendering says `acknowledged` or `probed`. Superseding and
+event emission are the same for either target style. This uses the existing acknowledgement
+record, so the persisted release-record schema remains version 1.
+
 The contract below is committed verbatim and is never edited. An approved
 extension to it is written here instead, and the suite reconciles it with the code
 the same way it reconciles the text below.
@@ -918,6 +935,7 @@ impl ReleaseTarget {
 }
 pub enum ReleaseStyle { Automated, HumanStep }        // automated | human-step
 impl ReleaseStyle { pub fn as_str(&self) -> &'static str; }
+pub enum ReleaseSource { Probed, Acknowledged }      // probed | acknowledged
 impl Adoption { pub fn as_str(&self) -> &'static str; }
 
 pub enum Probe {
@@ -934,7 +952,8 @@ pub enum Baseline { At { version: String }, NoRelease }
 pub enum BaselineRecord { Established(Baseline),
                           Unestablished { reason: String, attempted_at: String } }
 pub enum ReleaseStatus {
-    Released { target: TargetName, style: ReleaseStyle, version: String },
+    Released { target: TargetName, style: ReleaseStyle, version: String,
+               source: ReleaseSource },
     /// Automated only: a probe answered, and the baseline has not been passed.
     NotReleased { at_landing: Baseline, now: String },
     /// Human step only: it landed, and nobody has acknowledged a release yet.
@@ -1009,7 +1028,7 @@ there for an implementation of either interface to answer.
 Four verbs, each also taking `--json`: `onevcs release targets REPO`, `onevcs
 release latest REPO [--target NAME]`, `onevcs release status REF [--target NAME]`,
 and `onevcs release acknowledge REF --target NAME --version VERSION
-[--supersede]`. `REPO` is the identity key, registered alias, origin URL, or path
+[--supersede] [--json]`. `REPO` is the identity key, registered alias, origin URL, or path
 every other command takes, and `REF` is the four-spelling reference `onevcs status`
 takes. The approved usage block below is committed verbatim, so — as with every
 verb added since it was written — the block a parser is reconciled against is the

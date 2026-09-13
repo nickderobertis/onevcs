@@ -1707,6 +1707,117 @@ fn a_branch_the_host_never_lands_is_bounded_and_says_what_was_pending() {
 }
 
 #[test]
+fn a_completed_check_without_a_verdict_waits_for_a_later_run() {
+    for (initial, later, succeeds) in [("cancelled", "success", true), ("stale", "failure", false)]
+    {
+        let hosted = Hosted::new("{publication: change-auto, approvals: required}");
+        hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some(initial),
+            required: true,
+        }]);
+        hosted.world.host_checks_after(
+            1,
+            &[Check {
+                name: "gate",
+                status: "completed",
+                conclusion: Some(later),
+                required: true,
+            }],
+        );
+        let branch = format!("feature/{initial}-then-{later}");
+        finished_hosted_branch(&hosted, &branch, "feat: wait for a verdict");
+        let mut command = hosted.world.onevcs();
+        command.args([
+            "publish-branch",
+            &branch,
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ]);
+        if succeeds {
+            command
+                .assert()
+                .success()
+                .stdout(predicate::str::contains("merged at"));
+        } else {
+            command
+                .assert()
+                .code(1)
+                .stderr(predicate::str::contains("required check failed"))
+                .stderr(predicate::str::contains("concluded failure"));
+        }
+    }
+}
+
+#[test]
+fn a_completed_check_without_a_verdict_is_unsettled_at_the_bound() {
+    for conclusion in ["cancelled", "stale"] {
+        let hosted = Hosted::new("{publication: change-auto, approvals: required}");
+        hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some(conclusion),
+            required: true,
+        }]);
+        let branch = format!("feature/{conclusion}-forever");
+        finished_hosted_branch(&hosted, &branch, "feat: wait for a verdict");
+        hosted
+            .world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "0.01")
+            .args([
+                "publish-branch",
+                &branch,
+                "--repo",
+                &hosted.checkout.to_string_lossy(),
+            ])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("checks unsettled"))
+            .stderr(predicate::str::contains("gate"))
+            .stderr(predicate::str::contains(conclusion));
+    }
+}
+
+#[test]
+fn every_other_completed_conclusion_is_a_failed_check() {
+    for conclusion in [
+        "failure",
+        "timed_out",
+        "action_required",
+        "startup_failure",
+        "future_host_conclusion",
+    ] {
+        let hosted = Hosted::new("{publication: change-auto, approvals: required}");
+        hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+        hosted.world.host_checks(&[Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some(conclusion),
+            required: true,
+        }]);
+        let branch = format!("feature/failed-{}", conclusion.replace('_', "-"));
+        finished_hosted_branch(&hosted, &branch, "feat: encounter a failed check");
+        hosted
+            .world
+            .onevcs()
+            .args([
+                "publish-branch",
+                &branch,
+                "--repo",
+                &hosted.checkout.to_string_lossy(),
+            ])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("required check failed"))
+            .stderr(predicate::str::contains(format!("concluded {conclusion}")));
+    }
+}
+
+#[test]
 fn a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body_for() {
     // The one exit code this repository owns: the request parsed, the identity is
     // well formed, and the policy is honourable — and this build has no
