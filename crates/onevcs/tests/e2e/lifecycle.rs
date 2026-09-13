@@ -6669,6 +6669,231 @@ fn a_per_run_policy_may_narrow_the_rules_but_never_widen_them() {
         .stdout(predicate::str::contains("change request open at"));
 }
 
+#[test]
+fn recoverable_answers_for_the_repository_repo_names_from_wherever_it_is_run() {
+    // Two identities with preserved work under each, so an answer that leaked past the
+    // identity `--repo` names would carry the other one's row.
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let other_origin = world.bare_origin("unrelated");
+    let other = world.clone_of(&other_origin, "unrelated");
+    world
+        .onevcs()
+        .args(["register", &other.to_string_lossy()])
+        .assert()
+        .success();
+    world.git(&other, &["checkout", "-q", "-b", "feature/unrelated-work"]);
+    world.commit_file(&other, "u.txt", "u\n", "feat: the other identity's work");
+    world.git(&other, &["checkout", "-q", "main"]);
+
+    let (_open, worktree) = fixture.open(&["--branch", "feature/named-work"]);
+    world.commit_file(&worktree, "a.txt", "a\n", "feat: work nobody published");
+
+    // A branch whose work reached the base, preserved under a name of its own: the
+    // default view withholds it and `--all` lists it, so the two views differ and
+    // `--repo` composing with `--all` is a claim that can fail.
+    let (landed, landed_tree) = fixture.open(&["--branch", "feature/landed"]);
+    world.commit_file(&landed_tree, "b.txt", "b\n", "feat: work that landed");
+    world.onevcs().args(["publish", &landed]).assert().success();
+    world
+        .onevcs()
+        .args(["session", "close", &landed])
+        .assert()
+        .success();
+    world
+        .onevcs()
+        .args([
+            "import",
+            "feature/landed",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+            "--as",
+            "preserved/landed",
+        ])
+        .assert()
+        .success();
+
+    // The alias, key, and checkout an operator would read off the registration, asked
+    // the way they would ask for them.
+    let resolved: serde_json::Value = serde_json::from_slice(
+        &world
+            .onevcs()
+            .args(["resolve", &fixture.checkout.to_string_lossy()])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("resolve prints JSON");
+    let alias = resolved["alias"].as_str().expect("an alias").to_owned();
+    let key = resolved["identity"].as_str().expect("an identity key");
+    let publication = resolved["publication_checkout"]
+        .as_str()
+        .expect("a publication checkout");
+
+    let json = |cwd: &std::path::Path, args: &[&str]| {
+        let output = world
+            .onevcs()
+            .args(["recoverable", "--json"])
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("the binary runs");
+        assert!(output.status.success(), "{output:?}");
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("stdout is the JSON document alone ({e}): {output:?}"));
+        (rows, String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    let human = |cwd: &std::path::Path, args: &[&str]| {
+        let output = world
+            .onevcs()
+            .arg("recoverable")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("the binary runs");
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let branches = |rows: &[serde_json::Value]| -> Vec<String> {
+        rows.iter()
+            .map(|row| {
+                row["branch"]["branch"]
+                    .as_str()
+                    .expect("a branch")
+                    .to_owned()
+            })
+            .collect()
+    };
+
+    // What the directory-decided view answers from inside the checkout is the
+    // reference, and it is pinned first so the reference is known to be the right one.
+    let (expected, _) = json(&fixture.checkout, &[]);
+    let (expected_all, _) = json(&fixture.checkout, &["--all"]);
+    assert!(
+        branches(&expected).contains(&"feature/named-work".to_owned())
+            && !branches(&expected).contains(&"preserved/landed".to_owned())
+            && branches(&expected_all).contains(&"preserved/landed".to_owned())
+            && !branches(&expected_all).contains(&"feature/unrelated-work".to_owned()),
+        "the reference views are not the ones this journey is built on: {expected:#?} \
+         {expected_all:#?}"
+    );
+
+    // Without `--repo`, both directory-decided first lines are exactly what they were.
+    assert_eq!(
+        human(&fixture.checkout, &[]).lines().next(),
+        Some(
+            format!(
+                "{} preserved unpublished branch(es) in {key} — the identity of {publication}, \
+                 the registered checkout this was run in:",
+                expected.len()
+            )
+            .as_str()
+        )
+    );
+    let (everywhere, _) = json(&world.path(""), &[]);
+    assert!(branches(&everywhere).contains(&"feature/unrelated-work".to_owned()));
+    assert_eq!(
+        human(&world.path(""), &[]).lines().next(),
+        Some(
+            format!(
+                "{} preserved unpublished branch(es) across every registered identity:",
+                everywhere.len()
+            )
+            .as_str()
+        )
+    );
+
+    // Every spelling `publish-branch --repo` accepts: the alias, the checkout's path,
+    // the identity key, and an origin that only normalizing reaches the key from.
+    let origin = format!("file://{}", fixture.origin.display());
+    let checkout_path = fixture.checkout.to_string_lossy().into_owned();
+    for spelling in [alias.as_str(), checkout_path.as_str(), key, origin.as_str()] {
+        for cwd in [world.path(""), other.clone()] {
+            let (rows, stderr) = json(&cwd, &["--repo", spelling]);
+            assert_eq!(rows, expected, "`--repo {spelling}` from {}", cwd.display());
+            let scope = format!(
+                "this answer covers {key} — the identity `--repo {spelling}` names, whose \
+                 publication checkout is {publication}."
+            );
+            assert!(stderr.contains(&scope), "{scope} not in {stderr}");
+            let (rows, _) = json(&cwd, &["--repo", spelling, "--all"]);
+            assert_eq!(
+                rows,
+                expected_all,
+                "`--repo {spelling} --all` from {}",
+                cwd.display()
+            );
+
+            let reported = human(&cwd, &["--repo", spelling]);
+            assert_eq!(
+                reported.lines().next(),
+                Some(
+                    format!(
+                        "{} preserved unpublished branch(es) in {key} — the identity `--repo \
+                         {spelling}` names, whose publication checkout is {publication}:",
+                        expected.len()
+                    )
+                    .as_str()
+                ),
+                "{reported}"
+            );
+            assert!(
+                !reported.contains("this was run in") && !reported.contains("feature/unrelated"),
+                "{reported}"
+            );
+            assert!(
+                reported.trim_end().ends_with(
+                    "run `onevcs recoverable` without `--repo`, from a directory outside \
+                     every registered checkout, to see them all."
+                ),
+                "{reported}"
+            );
+        }
+    }
+
+    // A value naming nothing is refused naming it, and lists nothing — in both
+    // renderings, rather than widening to every identity.
+    for args in [
+        vec!["recoverable", "--repo", "nowhere/at-all"],
+        vec!["recoverable", "--repo", "nowhere/at-all", "--all", "--json"],
+    ] {
+        world
+            .onevcs()
+            .args(&args)
+            .assert()
+            .code(2)
+            .stdout("")
+            .stderr(predicate::str::contains(
+                "\"nowhere/at-all\" is not a registered repository",
+            ));
+    }
+    // …and a value the two verbs read the same way is refused the same way by both:
+    // the resolution matches a checkout's own path, not a directory below it.
+    let nested = fixture.checkout.join("deep/inside");
+    std::fs::create_dir_all(&nested).expect("a directory inside the checkout");
+    let nested = nested.to_string_lossy().into_owned();
+    let refusal = format!("{nested:?} is not a registered repository");
+    world
+        .onevcs()
+        .args(["recoverable", "--repo", &nested])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains(refusal.as_str()));
+    world
+        .onevcs()
+        .args(["publish-branch", "feature/named-work", "--repo", &nested])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(refusal.as_str()));
+    // What is matched is the checkout's canonical path, so a spelling that climbs back
+    // out of that directory to the root names the checkout itself.
+    let respelled = format!("{nested}/../..");
+    let (rows, _) = json(&world.path(""), &["--repo", &respelled]);
+    assert_eq!(rows, expected, "`--repo {respelled}`");
+}
+
 fn row<'a>(rows: &'a [serde_json::Value], branch: &str) -> &'a serde_json::Value {
     rows.iter()
         .find(|row| row["branch"]["branch"] == branch)

@@ -681,18 +681,27 @@ fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result
 }
 
 fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> {
-    // Run inside a registered checkout, this answers for that repository; run
-    // anywhere else, it answers across every registered identity. Both are
-    // documented views, and which one somebody wants is answered by where they ask.
+    // Named with `--repo`, this answers for that identity wherever it is run.
+    // Otherwise, run inside a registered checkout it answers for that repository, and
+    // run anywhere else it answers across every registered identity. All three are
+    // documented views.
     let registry = store::load()?;
-    // The registry document has been validated by the load above, and every alias
-    // this compares against came out of it, so the failure discarded here is the
-    // documented one — this directory is not inside a registered checkout — or an
-    // unreadable current directory, which widens the question rather than narrowing
-    // it and can therefore hide no work.
-    // llmlint: ignore[boundary_inputs_validated] discards only which of two documented answers to give
-    let here = resolve_here(&registry).ok();
-    let scope = match &here {
+    // The identity this answer covers, whichever of `--repo` and the directory named
+    // it; none is every identity.
+    let covered = match &args.repo {
+        // The resolution `publish-branch --repo` makes, so the two verbs cannot come
+        // to disagree about what one value names — and a value naming nothing is
+        // refused before anything is listed, rather than widened to every identity.
+        Some(repo) => Some(store::resolve_path(&registry, repo)?),
+        // The registry document has been validated by the load above, and every alias
+        // this compares against came out of it, so the failure discarded here is the
+        // documented one — this directory is not inside a registered checkout — or an
+        // unreadable current directory, which widens the question rather than
+        // narrowing it and can therefore hide no work.
+        // llmlint: ignore[boundary_inputs_validated] discards only which of two documented answers to give
+        None => resolve_here(&registry).ok(),
+    };
+    let scope = match &covered {
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
         None => Scope::All,
     };
@@ -700,18 +709,33 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         true => providers.vcs.preserved(scope)?,
         false => providers.vcs.recoverable(scope)?,
     };
-    // Nobody types the scope — the directory decides it — so every rendering names
-    // it. Unsaid, a scoped answer reads as the whole host's, and another identity's
-    // preserved work reads as work nobody has.
-    let scoped = here.as_ref().map(|resolution| {
-        format!(
+    // Where nobody typed the scope the directory decided it, and where `--repo` did
+    // it may still be pasted from a wrapper nobody reads — so every rendering names
+    // it, and says which of the two decided. Unsaid, a scoped answer reads as the
+    // whole host's, and another identity's preserved work reads as work nobody has.
+    let scoped = covered.as_ref().map(|resolution| match &args.repo {
+        Some(repo) => format!(
+            "{} — the identity `--repo {}` names, whose publication checkout is {}",
+            resolution.key,
+            repo.display(),
+            resolution.publication.display()
+        ),
+        None => format!(
             "{} — the identity of {}, the registered checkout this was run in",
             resolution.key,
             resolution.publication.display()
-        )
+        ),
     });
-    let widen = "Only that identity is covered: run `onevcs recoverable` from a directory \
-                 outside every registered checkout to see them all.";
+    let widen = match args.repo {
+        Some(_) => {
+            "Only that identity is covered: run `onevcs recoverable` without `--repo`, from a \
+             directory outside every registered checkout, to see them all."
+        }
+        None => {
+            "Only that identity is covered: run `onevcs recoverable` from a directory \
+             outside every registered checkout to see them all."
+        }
+    };
     // Named whether or not anything was withheld, because what a report leaves out
     // is exactly what nobody can see it left out: this answer is about work that has
     // *not* reached its base, and a branch missing from it because it landed reads

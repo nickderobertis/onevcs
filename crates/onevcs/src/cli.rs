@@ -338,6 +338,19 @@ pub struct RecoverArgs {
 /// Arguments for `onevcs recoverable`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RecoverableArgs {
+    // llmlint: ignore-block[invalid_states_unrepresentable,names_match_behavior] this is
+    // `PublishBranchArgs::repo`'s type and spelling on purpose, so the two verbs read one
+    // value one way. Which of the four forms a value is cannot be decided by a parser —
+    // an alias and a key are registry lookups and a path is `canonicalize` — so
+    // `store::resolve_path` is the one boundary that decides it for both, refusing a
+    // value that names nothing by name; and `PATH` is the placeholder the pinned
+    // `recoverable [--repo <PATH>]` usage block spells.
+    /// Answer for the one identity this names, wherever it is run: a registered
+    /// alias, a registered checkout's path, an identity key, or an origin — read
+    /// exactly as `publish-branch --repo` reads it.
+    #[arg(long, value_name = "PATH")]
+    pub repo: Option<PathBuf>,
+    // llmlint: ignore-end[invalid_states_unrepresentable,names_match_behavior]
     /// List every preserved branch, including the ones whose work reached their
     /// base and the ones nothing here can decide about.
     #[arg(long)]

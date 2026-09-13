@@ -141,6 +141,16 @@ fn accepted_invocations() -> Vec<(&'static str, Vec<&'static str>)> {
         ),
         ("recoverable", vec!["recoverable"]),
         ("recoverable", vec!["recoverable", "--json"]),
+        (
+            "recoverable",
+            vec![
+                "recoverable",
+                "--repo",
+                "/home/agent/projects/onevcs",
+                "--all",
+                "--json",
+            ],
+        ),
         ("integrate", vec!["integrate", "one", "two", "--push"]),
         ("sync", vec!["sync"]),
         ("sync", vec!["sync", "main"]),
