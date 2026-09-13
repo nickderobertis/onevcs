@@ -6887,6 +6887,11 @@ fn recoverable_answers_for_the_repository_repo_names_from_wherever_it_is_run() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(refusal.as_str()));
+    // What is matched is the checkout's canonical path, so a spelling that climbs back
+    // out of that directory to the root names the checkout itself.
+    let respelled = format!("{nested}/../..");
+    let (rows, _) = json(&world.path(""), &["--repo", &respelled]);
+    assert_eq!(rows, expected, "`--repo {respelled}`");
 }
 
 fn row<'a>(rows: &'a [serde_json::Value], branch: &str) -> &'a serde_json::Value {
