@@ -686,7 +686,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // run anywhere else it answers across every registered identity. All three are
     // documented views.
     let registry = store::load()?;
-    let here = match &args.repo {
+    // The identity this answer covers, whichever of `--repo` and the directory named
+    // it; none is every identity.
+    let covered = match &args.repo {
         // The resolution `publish-branch --repo` makes, so the two verbs cannot come
         // to disagree about what one value names — and a value naming nothing is
         // refused before anything is listed, rather than widened to every identity.
@@ -699,7 +701,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         // llmlint: ignore[boundary_inputs_validated] discards only which of two documented answers to give
         None => resolve_here(&registry).ok(),
     };
-    let scope = match &here {
+    let scope = match &covered {
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
         None => Scope::All,
     };
@@ -711,7 +713,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // it may still be pasted from a wrapper nobody reads — so every rendering names
     // it, and says which of the two decided. Unsaid, a scoped answer reads as the
     // whole host's, and another identity's preserved work reads as work nobody has.
-    let scoped = here.as_ref().map(|resolution| match &args.repo {
+    let scoped = covered.as_ref().map(|resolution| match &args.repo {
         Some(repo) => format!(
             "{} — the identity `--repo {}` names, whose publication checkout is {}",
             resolution.key,

@@ -403,10 +403,9 @@ and what a name already means are each stated rather than left to be inferred.
   disagree about what it would land.
 - **A scoped answer names its scope.** `recoverable` answers for one identity when it
   is run inside a registered checkout and for every identity when it is not — the
-  directory decides — unless `--repo` names the identity, which it resolves through
-  `store::resolve_path` exactly as `publish-branch --repo` does. Unsaid, a scoped
-  answer reads as the whole host's, so every rendering names it, and names which of
-  the two decided: a `--repo` answer must not claim it was run in the checkout.
+  directory decides — unless `--repo` names it (`docs/inferred-surface.md` records the
+  flag). Unsaid, a scoped answer reads as the whole host's, so every rendering names it,
+  and names which of the two decided it.
 - **A branch pin that names something is continued, never cut fresh over it.** A name a
   repository of the identity carries *means* the work on it, and cutting a branch over
   it produces an empty second branch of that name which cannot even be handed back. So

@@ -2402,6 +2402,39 @@ fn collect_long_flags(command: &clap::Command, into: &mut BTreeSet<String>) {
     }
 }
 
+#[test]
+fn the_recoverable_usage_block_spells_exactly_the_flags_its_parser_takes() {
+    // The gate above asks whether a documented flag exists on *some* command, and
+    // `--repo` exists on several — so dropping it from this block, or adding a flag to
+    // this parser without recording it, would pass there. `recoverable`'s flags are
+    // consumed by a wrapper that forwards every argument untouched, so this one
+    // command is held to its own record, in both directions.
+    let usage = usage_in(&repo_file("docs/inferred-surface.md"))
+        .into_iter()
+        .find(|body| body.starts_with("onevcs recoverable "))
+        .expect("docs/inferred-surface.md spells a `recoverable` usage block");
+    let documented: BTreeSet<String> = usage
+        .split(|c: char| c.is_whitespace() || c == '[' || c == ']')
+        .filter_map(|token| token.strip_prefix("--"))
+        .filter(|flag| !flag.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let parser = Cli::command();
+    let implemented: BTreeSet<String> = parser
+        .find_subcommand("recoverable")
+        .expect("the parser has `recoverable`")
+        .get_arguments()
+        .filter_map(|arg| arg.get_long())
+        .filter(|long| *long != "help")
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        documented, implemented,
+        "docs/inferred-surface.md's `recoverable` usage block and the parser disagree about \
+         its flags"
+    );
+}
+
 /// The age floor `onevcs sweep` applies when a caller says nothing.
 ///
 /// Read out of the record rather than repeated here, and held to the parser below.

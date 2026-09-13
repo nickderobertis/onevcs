@@ -6713,19 +6713,23 @@ fn recoverable_answers_for_the_repository_repo_names_from_wherever_it_is_run() {
         .assert()
         .success();
 
-    let registry: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
+    // The alias, key, and checkout an operator would read off the registration, asked
+    // the way they would ask for them.
+    let resolved: serde_json::Value = serde_json::from_slice(
+        &world
+            .onevcs()
+            .args(["resolve", &fixture.checkout.to_string_lossy()])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
     )
-    .expect("the registry is JSON");
-    let canonical = std::fs::canonicalize(&fixture.checkout).expect("the checkout exists");
-    let (alias, checkout) = registry["checkouts"]
-        .as_object()
-        .expect("checkouts")
-        .iter()
-        .find(|(_, checkout)| checkout["path"] == canonical.to_string_lossy().as_ref())
-        .expect("the fixture's checkout is registered");
-    let key = checkout["identity"].as_str().expect("an identity key");
-    let publication = checkout["path"].as_str().expect("a checkout path");
+    .expect("resolve prints JSON");
+    let alias = resolved["alias"].as_str().expect("an alias").to_owned();
+    let key = resolved["identity"].as_str().expect("an identity key");
+    let publication = resolved["publication_checkout"]
+        .as_str()
+        .expect("a publication checkout");
 
     let json = |cwd: &std::path::Path, args: &[&str]| {
         let output = world
