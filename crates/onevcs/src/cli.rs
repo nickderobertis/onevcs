@@ -338,6 +338,11 @@ pub struct RecoverArgs {
 /// Arguments for `onevcs recoverable`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RecoverableArgs {
+    /// Answer for the one identity this names, wherever it is run: a registered
+    /// alias, a registered checkout's path, an identity key, or an origin — read
+    /// exactly as `publish-branch --repo` reads it.
+    #[arg(long, value_name = "PATH")]
+    pub repo: Option<PathBuf>,
     /// List every preserved branch, including the ones whose work reached their
     /// base and the ones nothing here can decide about.
     #[arg(long)]

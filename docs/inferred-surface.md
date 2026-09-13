@@ -465,9 +465,10 @@ away from re-publishing work `main` already carried.
 | `Recoverable.landed` | the same value, on every row | The row is read to be pasted. A row whose work *landed* carries an **empty** `recover_command` rather than a command with a warning beside it, and no `Resume:` line in either rendering. A row nothing can decide about keeps the argv — it may be work nobody published — and loses only the label that reads as an instruction. A row that landed **in part** keeps both the argv and the `Resume:` label, because the commits above the landing are work nobody published; what it gains is the landing named beside them, so an operator publishing the rest can see what the base already carries. |
 | `Vcs::preserved(scope)` | `recoverable` plus the rows it withholds, and required rather than defaulted | `recoverable` answers "what is left to publish" and must never hand a caller a branch whose work is on the base. But an exclusion nobody can see is how preserved work goes missing, so those rows are reachable — through the seam, so a supplied implementation answers this command too. No default body: it could only answer the *narrower* question under this one's name, and an implementation whose wider answer really is the same one has only to say so, as `onevcs-testing` does. |
 | `recoverable --all` | the flag that reaches it | Off by default: the report is read to decide what to publish, and a branch whose work is on the base is the one row whose command must not be pasted. Only *those* are withheld — a branch nothing can decide about may be work nobody published, and withholding it is how preserved work goes missing, so it is listed saying so. Every rendering, `--json` included, names the flag whether or not anything was withheld: what a report leaves out is exactly what nobody can see it left out. |
+| `recoverable --repo` | optional; the identity a registered alias, a registered checkout's path, an identity key, or an origin names, resolved by the one resolution `publish-branch --repo` makes | Scoping by working directory meant an operator had to `cd` into a checkout to ask about it, and a wrapper run from another checkout could not ask at all. The same resolution rather than a second one, so the two verbs cannot disagree about what a value names. That resolution is also what "a path inside a registered checkout" means here: a registered checkout's own path, in any spelling that canonicalizes to it — a directory below the checkout names no repository, and both verbs refuse it naming the value. Accepting one would change the resolution every `--repo` verb shares, which is not this flag's to do. With it, the scope is that identity wherever the command runs, and the scope line says `--repo` decided it rather than claiming the command ran in the checkout; `--json` keeps that line on stderr and the document unchanged. A value naming nothing is refused naming the value, and lists nothing — widening to every identity would answer a question nobody asked. Without it, both directory-decided views are exactly what they were. It composes with `--all`, whose meaning does not change. |
 
 ```
-onevcs recoverable [--all] [--json]
+onevcs recoverable [--repo <PATH>] [--all] [--json]
 ```
 
 ## One more: the disk this tool fills, and the verb that empties it
@@ -782,11 +783,12 @@ question was:
    belongs here is only why it left this list: a spelling nothing named is not a
    question a *reader* of this crate can answer, and the answer that generalizes is
    a hook rather than a second spelling this crate knows about.
-5. **`Scope::Repo` is reached by where a command is run.** `onevcs recoverable`
-   takes no repository operand, and the contract documents the view both across
-   every identity and for one repository. Run inside a registered checkout it
-   answers for that repository; run anywhere else, for all of them. An explicit
-   operand would be a contract amendment.
+5. ~~**`Scope::Repo` is reached by where a command is run.**~~ **Resolved: it can
+   also be named.** `onevcs recoverable --repo` takes the value `publish-branch
+   --repo` takes, through the same resolution, and scopes the answer to that
+   identity wherever it is run; the row and usage block for it are above. Without
+   it, run inside a registered checkout it answers for that repository and run
+   anywhere else for all of them, as it always did.
 6. **Holder enumeration does not go through the seam.** `session_holders` reads
    this host's session records, which is what `onevcs session holders` has always
    done and is why the two are one path — but it means a session a supplied `Vcs`
