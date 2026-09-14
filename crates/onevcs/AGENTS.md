@@ -446,9 +446,13 @@ The `#[cfg(test)]` modules in `src/` are the exceptions to that, and each one is
 there because what it holds is reachable no other way: a process's creation
 identity (`workspace.rs`), a reader overlapping an atomic replace (`home.rs`),
 Windows' verbatim paths crossing every git boundary and a captured command's
-collector meeting its pipe empty at the instant the command exits (`git.rs`), and
-the *type* side of the status report's serialized contract (`status.rs`). The
-collector's is the one that looks like a journey and cannot be: what it holds is
+collector meeting its pipe empty at the instant the command exits (`git.rs`),
+the *type* side of the status report's serialized contract (`status.rs`), and a
+credential nested in an object reaching `Stream`'s own record call (`stream.rs`) —
+`Stream` is private and no kind nests an object in its payload, so no verb can be
+driven into writing one. Healing a torn record sits beside it on the same call, and
+`lifecycle.rs` also drives that through `session close`. The collector's is the one
+that looks like a journey and cannot be: what it holds is
 an *interleaving* — a reader taking a read that finds the pipe empty, and finding
 its command already collected when it next looks — and on an idle host that window
 is nanoseconds wide, so it is arranged rather than waited for.

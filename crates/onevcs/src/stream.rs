@@ -148,20 +148,12 @@ impl Stream {
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
     ) {
-        // llmlint: ignore-block[changed_behavior_has_e2e] nested redaction is covered end to
-        // end as far as this crate can produce it. No kind here nests an object in its payload,
-        // so no journey can have `onevcs` write one; a list it does write, and
-        // `lifecycle::a_credential_in_a_list_the_event_carries_never_reaches_the_stream_file`
-        // drives it through the binary (it fails against 0.21.0, which redacted only top-level
-        // text). The object half is `library::a_credential_nested_in_an_object_and_a_list_never_reaches_a_sessions_stream`,
-        // through the emitter this call is made on.
         let Err(unrecorded) =
             self.emitter
                 .try_emit_stamped(kind, Dimensions::at(phase), payload, artifacts)
         else {
             return;
         };
-        // llmlint: ignore-end[changed_behavior_has_e2e]
         // Said in this crate's words rather than the bus's, because this is the line
         // an operator running `onevcs` reads.
         let path = self.path.display();
@@ -808,4 +800,135 @@ pub fn read_artifact(id: &str) -> Result<String> {
     let path = home::artifacts_dir()?.join(id);
     std::fs::read_to_string(&path)
         .map_err(|_| error::invalid(format!("no artifact {id:?} is stored")))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Point this process's state root at a directory of its own.
+    ///
+    /// Safe as a process-wide write because `cargo nextest` runs each test in its own
+    /// process, which is what the end-to-end suite's in-process journeys rely on too.
+    fn inhabit() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("a temporary state root");
+        std::env::set_var(home::HOME_ENV, home.path());
+        home
+    }
+
+    fn envelopes(written: &str) -> Vec<Value> {
+        written
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("every line is an envelope"))
+            .collect()
+    }
+
+    #[test]
+    fn a_credential_nested_in_an_object_and_a_list_never_reaches_a_sessions_stream() {
+        // No kind this crate emits today nests an object in its payload, so no verb can
+        // be driven into writing one; the day one does, it is written by this call, the
+        // one every session event goes through. The stream is read back the two ways a
+        // consumer reads it: the file's own bytes, and `EventStream`.
+        let _home = inhabit();
+        let token = "nested-credentials";
+        let credentials = [
+            "ghp_0123456789abcdef",
+            "github_pat_0123456789abcdef",
+            "AKIA0123456789ABCDEF",
+        ];
+        let payload = json!({
+            "name": "check",
+            "detail": {
+                "said": format!("pushed with {}", credentials[0]),
+                "attempts": [
+                    {"output": credentials[1]},
+                    ["retried", format!("{},", credentials[2])],
+                ],
+            },
+        });
+
+        Stream::open(token)
+            .expect("the session's stream")
+            .emit_with(
+                EventKind::ChangeCheck,
+                payload.as_object().expect("an object").clone(),
+                Vec::new(),
+            );
+
+        let written = std::fs::read_to_string(path_for(token).expect("a stream path"))
+            .expect("the stream was written");
+        for credential in credentials {
+            assert!(
+                !written.contains(credential),
+                "{credential:?} reached the stream file:\n{written}"
+            );
+        }
+        let read = EventStream::open(&SessionToken(token.to_owned()))
+            .expect("the session's stream")
+            .read()
+            .expect("every event the session wrote");
+        assert_eq!(read.len(), 1, "{written}");
+        assert_eq!(
+            Value::Object(read[0].payload.clone()),
+            json!({
+                "name": "check",
+                "detail": {
+                    "said": "pushed with [redacted]",
+                    "attempts": [
+                        {"output": "[redacted]"},
+                        ["retried", "[redacted],"],
+                    ],
+                },
+            }),
+            "every string of the payload is redacted, however deeply it is nested"
+        );
+    }
+
+    #[test]
+    fn a_record_a_writer_died_part_way_through_is_healed_before_the_next_event_is_appended() {
+        // A writer killed mid-line leaves bytes no newline finished. The next event this
+        // crate records truncates them first, so it starts a line of its own and takes
+        // the number after the last whole record.
+        let _home = inhabit();
+        let token = "torn-tail";
+        let path = path_for(token).expect("a stream path");
+        Stream::open(token)
+            .expect("the session's stream")
+            .emit(EventKind::SessionOpened, Map::new());
+        let whole = std::fs::read_to_string(&path).expect("the stream was written");
+        let torn = "{\"v\":1,\"ts\":\"2026-09-13T00:00:00.000Z\",\"stream\":\"";
+        {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .and_then(|mut file| file.write_all(torn.as_bytes()))
+                .expect("the stream takes the bytes");
+        }
+
+        Stream::open(token)
+            .expect("the session's stream, reopened")
+            .emit(EventKind::SessionClosed, Map::new());
+
+        let written = std::fs::read_to_string(&path).expect("the stream");
+        assert!(
+            written.starts_with(&whole) && written.ends_with('\n') && !written.contains(torn),
+            "the torn bytes were not truncated away before the append:\n{written}"
+        );
+        let envelopes = envelopes(&written);
+        assert_eq!(
+            envelopes
+                .iter()
+                .map(|envelope| envelope["seq"].as_u64().expect("a seq"))
+                .collect::<Vec<u64>>(),
+            vec![1, 2],
+            "one gapless series:\n{written}"
+        );
+        assert_eq!(
+            envelopes[1]["kind"], "session-closed",
+            "the last record is the one the healing writer wrote:\n{written}"
+        );
+    }
 }
