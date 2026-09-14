@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.2...onevcs-testing-v0.6.3) - 2026-09-14
+
+### Changed
+
+- *(event)* take the wire envelope, the filter grammar, the stream emitter and redaction from onemessagebus ([#148](https://github.com/nickderobertis/onevcs/pull/148))
+
 ## [0.6.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.5.7...onevcs-testing-v0.6.0) - 2026-09-11
 
 ### Added

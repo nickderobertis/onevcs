@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/nickderobertis/onevcs/compare/v0.23.0...v0.24.0) - 2026-09-14
+
+### Changed
+
+- *(event)* take the wire envelope, the filter grammar, the stream emitter and redaction from onemessagebus ([#148](https://github.com/nickderobertis/onevcs/pull/148))
+
 ### Changed
 
 - *(event)* [**breaking**] the envelope, its filter, the stream's emitter and reader, and redaction are `onemessagebus` 0.4.0's and `onemessagebus-agent` 0.4.0's, re-exported at the paths they had
