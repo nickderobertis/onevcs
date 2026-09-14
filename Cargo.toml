@@ -14,7 +14,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 authors = ["Nick DeRobertis"]
 repository = "https://github.com/nickderobertis/onevcs"
@@ -93,6 +93,12 @@ icu_properties = "2.2"
 # portable spelling. Depended on for Unix only; Windows gets the bound without the
 # group teardown.
 libc = "0.2"
+# The event envelope, its filter grammar, the payload bound, the redaction tables,
+# and the emitter and reader over a stream: one copy shared by every producer in
+# the stack, where each used to keep its own. The core is generic over a
+# vocabulary; the agent profile is the vocabulary `onevcs` writes (`source: vcs`).
+onemessagebus = "0.4.0"
+onemessagebus-agent = "0.4.0"
 
 assert_cmd = "2"
 predicates = "3"

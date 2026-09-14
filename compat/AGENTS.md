@@ -8,8 +8,9 @@ Instructions that are true of `compat/` and nowhere else.
 
 One claim, which the crate next door cannot make about itself: that a build of
 `onevcs` **already in the field** goes on reading the streams this build writes.
-The envelope types are duplicated per repository by design, so asserting that from
-the current sources would only ask this build about itself. So the dependency here
+A released build carries its own copy of the envelope types, from before they were
+`onemessagebus`'s, so asserting that from the current sources would only ask this
+build about itself. So the dependency here
 is the released crate from crates.io, at a pinned version, and the fixture is the
 one `docs/contract.md` declares — the same document `crates/onevcs/tests/contract.rs`
 holds this build's own serialization to, so the two ends meet on one text rather

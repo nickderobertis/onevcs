@@ -1043,12 +1043,12 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
     // event has to be *read* to be judged, so a line this build cannot parse is
     // refused there, naming it, rather than passed through (which would report an
     // event the filter never admitted) or dropped (which would hide one).
+    //
+    // A record's number is one-based and counted across every batch, so a refusal
+    // names the line of the file rather than of the read it happened to arrive in —
+    // the same numbering `EventStream::read` refuses by, because it is the same cursor.
     let mut reader = stream::Reader::open(token)?;
     let session = SessionToken(token.to_owned());
-    // One-based and counted across every batch, so a refusal names the line of the
-    // file rather than of the read it happened to arrive in — the same numbering
-    // `EventStream::read` refuses by.
-    let mut line_number = 0usize;
     loop {
         // Ask first, then drain. Closing providers append `session-closed` before
         // publishing the closed lifecycle, so once closure is visible this read is
@@ -1061,8 +1061,8 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
                 .map(|record| record.lifecycle == Lifecycle::Closed)
                 .unwrap_or(true);
         let mut out = std::io::stdout().lock();
-        for line in reader.lines()? {
-            line_number += 1;
+        for record in reader.records()? {
+            let line = record.text.clone();
             if let Some(filter) = &filter {
                 // Read as a value, and therefore checked as one — by the same seam
                 // `EventStream` reads through, so the two surfaces refuse the same
@@ -1072,16 +1072,15 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
                 // another session would be judged against a consumer's statement
                 // about *this* one.
                 //
-                // llmlint: ignore[boundary_inputs_validated] `attributed`, called below, is
-                // the check, and it has run over this line before the `else` arm can
+                // llmlint: ignore[boundary_inputs_validated] `attributed_record`, called below,
+                // is the check, and it has run over this line before the `else` arm can
                 // discard it: a line that is not an envelope and one belonging to another
                 // stream are both refused there. The envelope's version and its stamp are not this
                 // surface's to judge and never have been — `onevcs events` renders one
                 // file, `status` is what reports a version it cannot read as a gap — so
                 // what falls through here is a value no filter in this grammar could have
                 // matched, not a line that went unchecked.
-                let crate::event::Line::Known(envelope) =
-                    stream::attributed(&line, token, line_number)?
+                let crate::event::Line::Known(known) = stream::attributed_record(record, token)?
                 else {
                     // A kind this build has no word for: a filter is a statement
                     // about the events a consumer wants, and this is not one of
@@ -1091,7 +1090,7 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
                     // a later build's kinds still reads.
                     continue;
                 };
-                if !filter.matches(&envelope) {
+                if !filter.matches(&known.envelope) {
                     continue;
                 }
             }
@@ -1122,12 +1121,13 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
 /// happens to be there, so what an invocation means does not change with the
 /// working directory it is run from.
 fn load_filter(spec: &str) -> Result<EventFilter> {
-    if spec.trim_start().starts_with('{') {
-        return EventFilter::parse(spec);
-    }
-    let path = Path::new(spec);
-    let raw = std::fs::read_to_string(path).map_err(error::at("read the event filter at", path))?;
-    EventFilter::parse(&raw)
+    let document = if spec.trim_start().starts_with('{') {
+        spec.to_owned()
+    } else {
+        let path = Path::new(spec);
+        std::fs::read_to_string(path).map_err(error::at("read the event filter at", path))?
+    };
+    EventFilter::parse(&document).map_err(|refusal| error::invalid(refusal.to_string()))
 }
 
 fn artifact(id: &str) -> Result<u8> {

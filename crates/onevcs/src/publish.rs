@@ -2261,7 +2261,7 @@ fn watch<T>(
                         logs.retain(|(name, _)| name != &check.name);
                         logs.push((check.name.clone(), id.clone()));
                         artifacts.push(crate::event::ArtifactRef {
-                            id,
+                            id: id.0,
                             kind: "log".to_owned(),
                             bytes: 0,
                         });
@@ -2488,7 +2488,9 @@ pub(crate) fn record_push(
         );
     }
     let evidence = Kept {
-        artifact: artifact.as_ref().map(|stored| stored.id.clone()),
+        artifact: artifact
+            .as_ref()
+            .map(|stored| crate::event::ArtifactId(stored.id.clone())),
         preserved: match kept {
             Some(Ok(preserved)) => Some(preserved),
             Some(Err(_)) | None => None,

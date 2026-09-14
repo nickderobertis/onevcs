@@ -423,11 +423,8 @@ pub(crate) fn matches(criteria: &RuleMatch, identity: &Normalized, checkout: &Pa
 ///
 /// Deliberately not a full glob: the contract's own fixture uses `*` and nothing
 /// else, and a matcher with more syntax than the thing it matches is a place for a
-/// rule to mean something its author did not write.
-///
-/// Shared with [`EventMatcher`](crate::EventMatcher), whose `kind` is a glob over
-/// the same syntax: two spellings of "what `*` means here" would be two answers
-/// waiting to differ.
+/// rule to mean something its author did not write. It is the same dialect an
+/// event filter's `kind` glob is, which `onemessagebus` states for every producer.
 pub(crate) fn glob(pattern: &str, value: &str) -> bool {
     let mut segments = pattern.split('*');
     // `split` always yields at least one segment, so the literal prefix exists even

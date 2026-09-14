@@ -1477,7 +1477,7 @@ impl RemoteHost for GitHub {
                 check.name, cr.url
             ))
         })?;
-        Ok(stream::store_artifact("log", &log)?.id)
+        Ok(ArtifactId(stream::store_artifact("log", &log)?.id))
     }
 
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome> {

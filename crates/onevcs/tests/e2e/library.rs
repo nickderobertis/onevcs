@@ -25,11 +25,12 @@
 // a real session record under a real state root, and the same substituted `gh` every
 // journey in this suite uses.
 
+use onemessagebus_agent::event::MatchFields;
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, EventFilter, EventMatcher,
     EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, Landed, MergeOutcome,
-    MergePolicy, Phase, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention, Scope,
-    Session, SessionRequest, SessionToken, Source, TargetName, Vcs,
+    MergePolicy, Phase, PhaseOf, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention,
+    Scope, Session, SessionRequest, SessionToken, Source, TargetName, Vcs,
 };
 use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -1419,7 +1420,7 @@ fn two_concurrent_sessions_each_get_their_own_events() {
             serde_json::Value::String(token.0.clone())
         );
         assert_eq!(events[0].payload["branch"], branch);
-        assert_eq!(events[0].kind, onevcs::EventKind::SessionOpened);
+        assert_eq!(kind_of(&events[0]), onevcs::EventKind::SessionOpened);
     };
     opened(&mut left, &first.token, "feature/first");
     opened(&mut right, &second.token, "feature/second");
@@ -1435,7 +1436,7 @@ fn two_concurrent_sessions_each_get_their_own_events() {
     assert_eq!(
         fresh
             .iter()
-            .map(|event| event.kind)
+            .map(kind_of)
             .collect::<Vec<onevcs::EventKind>>(),
         vec![
             onevcs::EventKind::ChangeOpened,
@@ -1446,7 +1447,7 @@ fn two_concurrent_sessions_each_get_their_own_events() {
     assert_eq!(
         theirs
             .iter()
-            .map(|event| event.kind)
+            .map(kind_of)
             .collect::<Vec<onevcs::EventKind>>(),
         vec![onevcs::EventKind::ChangeOpened],
         "the session that was not closed is not told that it was"
@@ -1480,7 +1481,7 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
     // The real backend fetches its origin before it clones, which a provider with
     // no origin does not do — so this is the one journey where the two differ.
     assert_eq!(
-        events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        events.iter().map(kind_of).collect::<Vec<_>>(),
         vec![onevcs::EventKind::Fetch, onevcs::EventKind::SessionOpened]
     );
     let opened = &events[1];
@@ -1594,7 +1595,7 @@ fn an_event_stream_passes_over_a_kind_this_build_has_no_word_for() {
         .read()
         .expect("what the session recorded")
         .into_iter()
-        .map(|event| event.kind)
+        .map(|event| kind_of(&event))
         .collect::<Vec<_>>();
     assert!(!written.is_empty(), "the session recorded something");
 
@@ -1637,7 +1638,7 @@ fn an_event_stream_passes_over_a_kind_this_build_has_no_word_for() {
         .read()
         .expect("a kind this build does not know is not a line it cannot read");
     assert_eq!(
-        read.into_iter().map(|event| event.kind).collect::<Vec<_>>(),
+        read.iter().map(kind_of).collect::<Vec<_>>(),
         written,
         "a retired kind was reported as one of this build's, or one of this build's was lost"
     );
@@ -1698,7 +1699,7 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
     // opened for: a narrow reader is not a reader of a different stream.
     let opening = planner.read().expect("the events so far, filtered");
     assert_eq!(
-        opening.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        opening.iter().map(kind_of).collect::<Vec<_>>(),
         vec![onevcs::EventKind::SessionOpened]
     );
     assert_eq!(opening[0].stream, session.token.0);
@@ -1707,7 +1708,7 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
             .read()
             .expect("the events so far")
             .iter()
-            .map(|event| event.kind)
+            .map(kind_of)
             .collect::<Vec<_>>(),
         vec![onevcs::EventKind::SessionOpened],
         "an unfiltered stream is the same stream it always was"
@@ -1724,7 +1725,7 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
             .read()
             .expect("what the planner asked for")
             .iter()
-            .map(|event| event.kind)
+            .map(kind_of)
             .collect::<Vec<_>>(),
         vec![onevcs::EventKind::SessionClosed],
         "the change request the monitor sees is not what this reader asked for"
@@ -1734,7 +1735,7 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
             .read()
             .expect("everything since")
             .iter()
-            .map(|event| event.kind)
+            .map(kind_of)
             .collect::<Vec<_>>(),
         vec![
             onevcs::EventKind::ChangeOpened,
@@ -2041,7 +2042,10 @@ fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_throug
 fn phased(phase: Phase) -> EventFilter {
     EventFilter {
         include: vec![EventMatcher {
-            phase: Some(phase),
+            fields: MatchFields {
+                phase: Some(phase),
+                ..MatchFields::default()
+            },
             ..EventMatcher::default()
         }],
         exclude: Vec::new(),
@@ -2052,8 +2056,8 @@ fn phased(phase: Phase) -> EventFilter {
 fn phases_of(events: &[onevcs::Envelope], kind: onevcs::EventKind) -> Vec<Phase> {
     events
         .iter()
-        .filter(|event| event.kind == kind)
-        .map(|event| event.phase)
+        .filter(|event| kind_of(event) == kind)
+        .map(stamped)
         .collect()
 }
 
@@ -2109,7 +2113,7 @@ fn a_reviewed_publication_stamps_its_own_branch_push_as_development_and_reads_by
             .read()
             .expect("the review of this change")
             .into_iter()
-            .map(|event| event.kind)
+            .map(|event| kind_of(&event))
             .collect();
     assert_eq!(reviewed, vec![onevcs::EventKind::ChangeOpened]);
 
@@ -2166,9 +2170,9 @@ fn a_local_direct_publication_stamps_its_base_push_as_integrate_and_has_no_revie
     assert!(
         events
             .iter()
-            .all(|event| event.phase == Phase::Development || event.phase == Phase::Integrate),
+            .all(|event| stamped(event) == Phase::Development || stamped(event) == Phase::Integrate),
         "a local-direct session produced something outside its own phases: {:?}",
-        events.iter().map(|e| (e.kind, e.phase)).collect::<Vec<_>>()
+        events.iter().map(|e| (kind_of(e), stamped(e))).collect::<Vec<_>>()
     );
     assert_eq!(
         EventStream::open(&session.token)
@@ -2247,7 +2251,7 @@ fn a_session_read_gains_the_releases_that_carried_its_own_landing_long_after_it_
     let session = landed(&world, "feature/released", "one.txt");
     let mut reader = EventStream::open(&session.token).expect("the session's stream");
     let opening = reader.read().expect("everything through the close");
-    let kinds: Vec<onevcs::EventKind> = opening.iter().map(|event| event.kind).collect();
+    let kinds: Vec<onevcs::EventKind> = opening.iter().map(kind_of).collect();
     assert!(
         kinds.contains(&onevcs::EventKind::SessionClosed),
         "the read reaches the close: {kinds:?}"
@@ -2291,7 +2295,7 @@ fn a_session_read_gains_the_releases_that_carried_its_own_landing_long_after_it_
         .expect("this landing's release is recorded");
     let fresh = reader.read().expect("what the release added");
     assert_eq!(
-        fresh.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        fresh.iter().map(kind_of).collect::<Vec<_>>(),
         vec![
             onevcs::EventKind::ReleaseAcknowledged,
             onevcs::EventKind::ReleaseObserved
@@ -2299,7 +2303,7 @@ fn a_session_read_gains_the_releases_that_carried_its_own_landing_long_after_it_
         "the release that carried this work, and nothing else of that stream"
     );
     for event in &fresh {
-        assert_eq!(event.phase, Phase::Release);
+        assert_eq!(stamped(event), Phase::Release);
         assert_eq!(
             event.payload["landing_commit"],
             acknowledged.landing_commit.as_str(),
@@ -2366,7 +2370,7 @@ fn a_session_whose_branch_kept_committing_after_it_landed_still_gains_that_landi
         .expect("the release of what this session landed is recorded");
     let fresh = reader.read().expect("what the release added");
     assert_eq!(
-        fresh.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        fresh.iter().map(kind_of).collect::<Vec<_>>(),
         vec![
             onevcs::EventKind::ReleaseAcknowledged,
             onevcs::EventKind::ReleaseObserved
@@ -2475,7 +2479,7 @@ fn a_release_reaches_its_session_in_whichever_order_it_and_the_landing_became_vi
         // The first read taken once both are true, whichever of them was true first.
         let fresh = reader.read().expect("what the release added");
         assert_eq!(
-            fresh.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            fresh.iter().map(kind_of).collect::<Vec<_>>(),
             vec![
                 onevcs::EventKind::ReleaseAcknowledged,
                 onevcs::EventKind::ReleaseObserved,
@@ -2501,7 +2505,7 @@ fn a_release_reaches_its_session_in_whichever_order_it_and_the_landing_became_vi
             "{visible:?}: every target this landing was released for, not the first of them"
         );
         for event in &fresh {
-            assert_eq!(event.phase, Phase::Release, "{visible:?}");
+            assert_eq!(stamped(event), Phase::Release, "{visible:?}");
             assert_eq!(
                 event.payload["landing_commit"],
                 acknowledged.landing_commit.as_str(),
@@ -2597,14 +2601,17 @@ fn a_phase_a_session_no_longer_has_is_dropped_in_silence_and_refused_when_it_is_
     assert!(
         phases_of(&after, onevcs::EventKind::ReleaseProbed).is_empty(),
         "a phase this session no longer has is dropped: {:?}",
-        after.iter().map(|e| (e.kind, e.phase)).collect::<Vec<_>>()
+        after
+            .iter()
+            .map(|e| (kind_of(e), stamped(e)))
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         after.len(),
         while_releasing.len()
             - while_releasing
                 .iter()
-                .filter(|event| event.phase == Phase::Release)
+                .filter(|event| stamped(event) == Phase::Release)
                 .count(),
         "…and nothing else was dropped with it"
     );
@@ -2799,9 +2806,9 @@ fn a_release_targets_document_this_build_cannot_read_rules_no_phase_out() {
     assert!(
         events
             .iter()
-            .all(|event| event.kind == onevcs::EventKind::ReleaseProbed),
+            .all(|event| kind_of(event) == onevcs::EventKind::ReleaseProbed),
         "{:?}",
-        events.iter().map(|e| e.kind).collect::<Vec<_>>()
+        events.iter().map(kind_of).collect::<Vec<_>>()
     );
 }
 
@@ -4807,4 +4814,71 @@ fn a_consumer_drives_a_whole_closeout_against_the_providers() {
         shown.body, DESCRIBED,
         "with the description the closeout wrote"
     );
+}
+
+/// The kind an event this build handed back names, in this build's own vocabulary.
+fn kind_of(event: &onevcs::Envelope) -> onevcs::EventKind {
+    serde_json::from_value(serde_json::json!(event.kind)).expect("a kind this build names")
+}
+
+/// The phase an event this build handed back was stamped at, which every one carries.
+fn stamped(event: &onevcs::Envelope) -> Phase {
+    event
+        .dimensions
+        .phase
+        .expect("every event a reader hands back carries its phase")
+}
+
+#[test]
+fn a_stream_written_before_the_shared_envelope_reads_as_values_at_the_phases_that_build_read() {
+    // The typed half of `filter.rs`'s journey over the same checked-in stream: every
+    // filter 0.23.0 was asked is asked of `EventStream` here, and it hands back the
+    // same events — with a phase on every one of them, the one a phase-less line's
+    // kind decides where the line carried none.
+    let (stream, answers) = crate::filter::pre_adoption_stream();
+    let token = SessionToken(
+        answers["stream"]
+            .as_str()
+            .expect("the stream names its token")
+            .to_owned(),
+    );
+    let world = World::new();
+    inhabit(&world);
+    let streams = world.home().join("streams");
+    std::fs::create_dir_all(&streams).expect("a streams directory");
+    // llmlint: ignore[tests_mirror_real_usage] as in `filter.rs`: the record an earlier
+    // build left is the input, and no interface of this build writes one in its shape.
+    std::fs::write(streams.join(format!("{}.ndjson", token.0)), &stream)
+        .expect("the earlier build's stream, where it left it");
+    let written: Vec<serde_json::Value> = stream
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every line is an envelope"))
+        .collect();
+
+    for answer in answers["answers"].as_array().expect("a list of answers") {
+        let filter: EventFilter = match &answer["filter"] {
+            serde_json::Value::Null => EventFilter::default(),
+            spec => serde_json::from_value(spec.clone()).expect("a filter 0.23.0 took"),
+        };
+        let read = EventStream::open_filtered(&token, filter)
+            .expect("the stream opens")
+            .read()
+            .expect("every line of it reads");
+        let seqs: Vec<u64> = read.iter().map(|event| event.seq).collect();
+        let expected: Vec<u64> = answer["seqs"]
+            .as_array()
+            .expect("the events that build answered")
+            .iter()
+            .map(|seq| seq.as_u64().expect("a seq"))
+            .collect();
+        assert_eq!(seqs, expected, "{}", answer["filter"]);
+        for event in &read {
+            let line = &written[usize::try_from(event.seq).expect("a line") - 1];
+            let phase = match line.get("phase") {
+                Some(named) => serde_json::from_value(named.clone()).expect("a phase"),
+                None => Phase::of(kind_of(event)).unwrap_or(Phase::Development),
+            };
+            assert_eq!(stamped(event), phase, "seq {}", event.seq);
+        }
+    }
 }

@@ -1707,7 +1707,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         // because each of them is about the envelope rather than about what it
         // recorded — which is why the header is what a kindless line hands back.
         let (v, ts) = match &read {
-            Line::Known(event) => (event.v, event.ts.as_str()),
+            Line::Known(known) => (known.envelope.v, known.envelope.ts.as_str()),
             Line::Unknown(header) => (header.v, header.ts.as_str()),
         };
         // The envelope is versioned and this report orders by its timestamp, so an
@@ -1744,9 +1744,10 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         // operator is told is the only thing that says where the work is arrived
         // buried under hundreds of them. Nothing is missing from the answer: this
         // match acts on six kinds, and a kind with no word here is not one of them.
-        let Line::Known(event) = read else {
+        let Line::Known(known) = read else {
             continue;
         };
+        let (kind, event) = (known.kind, known.envelope);
         if record.identity.is_none() {
             record.identity = event.labels.extra.get("identity").and_then(text);
         }
@@ -1754,7 +1755,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             record.branch = event.payload.get("branch").and_then(text);
         }
         let field = |name: &str| event.payload.get(name).and_then(text);
-        match event.kind {
+        match kind {
             EventKind::ChangeOpened => {
                 if let Some(url) = field("url") {
                     record.change_url = Some(Stamped { at, value: url });

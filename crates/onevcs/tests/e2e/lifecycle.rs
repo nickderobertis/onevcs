@@ -4842,6 +4842,90 @@ fn a_merge_path_that_echoes_a_credential_records_only_that_it_had_one() {
 }
 
 #[test]
+fn every_credential_word_and_prefix_is_redacted_to_the_same_bytes_in_the_event_and_the_log() {
+    // Both redaction rules, every entry of both tables, and the edges each one leaves
+    // alone — asserted as the exact bytes a reader meets, because what this crate
+    // redacts is what an operator's log keeps, and a rule that widened or narrowed by
+    // a character would pass any assertion looser than this one. The environment
+    // rule: a value handed over under a name holding a credential word, whatever it
+    // looks like, at eight bytes or more. The prefix rule: a word spelled like a
+    // host's token, whatever it was named, with its trailing punctuation kept.
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by(concat!(
+        "echo BEGIN >&2; ",
+        "echo \"token=$JOURNEY_TOKEN secret=$JOURNEY_SECRET\" >&2; ",
+        "echo \"password=$JOURNEY_PASSWORD passwd=$JOURNEY_PASSWD\" >&2; ",
+        "echo \"credential=$JOURNEY_CREDENTIAL apikey=$JOURNEY_APIKEY\" >&2; ",
+        "echo \"api_key=$JOURNEY_API_KEY private_key=$JOURNEY_PRIVATE_KEY\" >&2; ",
+        "echo \"lowercase=$journey_token_lower short=$JOURNEY_SHORT_TOKEN\" >&2; ",
+        "echo 'ghp_0123456789abcdef gho_0123456789abcdef ghs_0123456789abcdef' >&2; ",
+        "echo 'ghu_0123456789abcdef, ghr_0123456789abcdef; github_pat_0123456789abcdef)' >&2; ",
+        "echo '\"AKIA0123456789ABCDEF\" (ghp_0123456789abcdef) ghp_1234567 AKIA1234 ghp_' >&2; ",
+        "echo END >&2; exit 1",
+    ));
+    let (token, worktree) = fixture.open(&["--branch", "feature/credentials"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    fixture
+        .world
+        .onevcs()
+        .env("JOURNEY_TOKEN", "value-under-token")
+        .env("JOURNEY_SECRET", "value-under-secret")
+        .env("JOURNEY_PASSWORD", "value-under-password")
+        .env("JOURNEY_PASSWD", "value-under-passwd")
+        .env("JOURNEY_CREDENTIAL", "value-under-credential")
+        .env("JOURNEY_APIKEY", "value-under-apikey")
+        .env("JOURNEY_API_KEY", "value-under-api-key")
+        .env("JOURNEY_PRIVATE_KEY", "value-under-private-key")
+        .env("journey_token_lower", "value-under-a-lowercase-name")
+        .env("JOURNEY_SHORT_TOKEN", "seven77")
+        .args(["publish", &token])
+        .assert()
+        .code(1);
+
+    let expected = concat!(
+        "BEGIN\n",
+        "token=[redacted] secret=[redacted]\n",
+        "password=[redacted] passwd=[redacted]\n",
+        "credential=[redacted] apikey=[redacted]\n",
+        "api_key=[redacted] private_key=[redacted]\n",
+        "lowercase=[redacted] short=seven77\n",
+        "[redacted] [redacted] [redacted]\n",
+        "[redacted], [redacted]; [redacted])\n",
+        // The prefix rule's edges, each left alone: a word that *opens* with a quote or
+        // a bracket is not spelled like a token (only trailing punctuation is set
+        // aside), and a prefix with fewer than eight characters after it is prose.
+        "\"AKIA0123456789ABCDEF\" (ghp_0123456789abcdef) ghp_1234567 AKIA1234 ghp_\n",
+        "END\n",
+    );
+    let between = |text: &str| -> String {
+        let start = text.find("BEGIN\n").expect("the hook's output is recorded");
+        let end = text.find("END\n").expect("all of it") + "END\n".len();
+        text[start..end].to_owned()
+    };
+
+    let pushes = fixture.world.events_of(&token, "push");
+    let output = pushes[0]["payload"]["output"]
+        .as_str()
+        .expect("the push records what the merge path printed");
+    assert_eq!(between(output), expected, "the event");
+
+    let id = pushes[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("a stored log");
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["artifact", "cat", id])
+        .assert()
+        .success();
+    let stored = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert_eq!(between(&stored), expected, "the stored log");
+}
+
+#[test]
 fn every_event_carries_the_envelope_the_contract_declares() {
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/observed"]);

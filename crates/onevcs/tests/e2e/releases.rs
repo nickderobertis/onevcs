@@ -2731,6 +2731,13 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
         numbers.len(),
         "no two events written at once share a sequence number: {numbers:?}"
     );
+    // …and none is skipped either, because a gap is what a consumer reads as an event
+    // it lost: the numbers are the file's own series, in the order it holds them.
+    assert_eq!(
+        numbers,
+        (1..=u64::try_from(numbers.len()).expect("a count")).collect::<Vec<u64>>(),
+        "the events written at once are one gapless series: {numbers:?}"
+    );
 
     // …and the record says the same thing, which is what decided it: one
     // observation, at the version that carried the work.

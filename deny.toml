@@ -24,6 +24,12 @@ allow = [
     # repository's hook wrote renders as anything, and the IDNA data behind `url`,
     # which parses a change request's URL.
     "Unicode-3.0",
+    # Brought by `onemessagebus`'s schema validator (`jsonschema`), which the event
+    # envelope is read through: `borrow-or-share` behind its URI parser is MIT-0, and
+    # `foldhash` behind its hash maps is Zlib. Both permissive and attribution-free
+    # or near enough for an MIT binary.
+    "MIT-0",
+    "Zlib",
 ]
 confidence-threshold = 0.9
 exceptions = []

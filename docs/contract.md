@@ -34,6 +34,59 @@ probe. Status then answers `Released` with `source: acknowledged`; a probe-deriv
 event emission are the same for either target style. This uses the existing acknowledgement
 record, so the persisted release-record schema remains version 1.
 
+### The envelope, its filter, its bounds and its redaction are `onemessagebus`'s
+
+The planner ruled that this crate adopts `onemessagebus` 0.4.0 and
+`onemessagebus-agent` 0.4.0 in place of its own copy of the shared envelope. That
+ruling is the one edit made below the rule: the title and first sentence of the
+envelope section now say the types are `onemessagebus-agent`'s, re-exported here,
+and that `onemessagebus`'s `docs/contract.md` is the one source of the fenced text,
+which stays as a copy. Its fixtures are still extracted by `tests/contract.rs` and
+parsed through the re-exported types.
+
+`Envelope`, `Labels`, `Source`, `Phase`, `ArtifactRef`, `EventFilter` and
+`EventMatcher` are re-exports of the agent profile's types at the paths they always
+had. Writing a stream is the bus's `Emitter`, splitting one into records is its
+`Reader`, and a payload's bound and redaction are its `bound_payload` and `Redactor`.
+What stays this crate's is its vocabulary (`EventKind`, written into the envelope's
+open `kind`), the phase each of those kinds belongs to, where a stream and an
+artifact live, and what its readers refuse. The bytes a stream carries are unchanged.
+
+One refusal 0.23.0 made is not made at 0.4.0, and is a bus-side follow-up rather
+than something this crate restores: a filter spec whose `include:` or `exclude:`
+names no value is read as the empty list, so it admits everything, where 0.23.0
+refused it as a list that was not one. Parsing a filter is the bus's, and
+`tests/contract.rs` asserts what 0.4.0 does so the assertion fails the day it
+refuses. Every other spec 0.23.0 refused is still refused, in the bus's words.
+
+Four things are decided against the released 0.4.0 rather than taken from it:
+
+- `ArtifactId` stays this crate's own transparent newtype. The bus carries an
+  artifact's id as a plain string on `ArtifactRef`, and `RemoteHost::check_log`
+  answers a typed one, so the id is wrapped where it crosses that seam.
+- `Phase::of` is the `PhaseOf` trait, implemented for `Phase`. `Phase` is the
+  profile's type, so an inherent method cannot be added to it here; with the trait
+  in scope the call is still spelled `Phase::of(kind)`.
+- Every stream numbers its events from the file under the file's own lock, a session
+  stream included. A session's stream is written by one process after another, and
+  each continues the series the last one left.
+- The minimum supported Rust is 1.89, which the bus requires.
+
+Three behaviours are the bus's contract and therefore this crate's:
+
+- Redaction reaches every string in a payload, however deeply nested, where this
+  crate once redacted only its top-level text fields. An artifact is redacted by the
+  same tables.
+- A writer that finds a stream ending in a line no newline finished truncates that
+  torn tail before it appends. A reader hands a final line back only once its newline
+  is written, so it treats a torn tail as a record still being written rather than a
+  line to refuse.
+- An envelope is read strictly by its declared keys. An undeclared top-level key is
+  refused by name, and absent `labels`, `payload` or `artifacts` read as empty. A
+  `kind` is any string on the wire, and a kind `EventKind` does not name is passed over
+  by this crate's readers, as it was. A line with no `phase` reads at the phase its
+  kind decides.
+
 The contract below is committed verbatim and is never edited. An approved
 extension to it is written here instead, and the suite reconciles it with the code
 the same way it reconciles the text below.
@@ -312,18 +365,15 @@ That is the command's own limit, unchanged; routing enumeration through the seam
 would add a required method to a trait consumers implement, and is the next
 question rather than this one.
 
-<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] the duplication is the
-approved contract's own mechanism rather than a missing gate, and this amendment cannot
-close it from inside one of the three repositories. The envelope section below the rule
-already fixes it: those types are duplicated per crate with deliberately no shared util
-crate, and "a cross-repo contract test asserts this crate's envelope serialization
-against the spec fixtures committed in docs/contract.md". The filter follows that
-pattern, as the paragraph below says. So the authoritative artifact for *this* copy is
-the fixture below, which `a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set`
-and `the_amendment_declares_the_filter_a_stream_is_read_through` in tests/contract.rs
-hold the code to — extracted, never restated — and the cross-repository half is that same
-committed fixture read by the contract owner's test. A shared artifact here would be
-exactly the shared source the contract refuses. -->
+<!-- llmlint: ignore[contracts_have_one_source_or_a_drift_gate] this block is a copy
+whose source is named and whose drift gate is in this repository. The grammar's one
+source is `onemessagebus`'s docs/contract.md, as the envelope section below the rule now
+says, and this crate's filter *is* that crate's type, re-exported. What keeps the copy
+honest is `a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set` and
+`the_amendment_declares_the_filter_a_stream_is_read_through` in tests/contract.rs, which
+parse the fixture below — extracted, never restated — through the re-exported type, so a
+bus that stopped reading this text fails here. The copy stays because this document is
+what this crate's consumers read, and the suite reads its fixtures out of it. -->
 
 **Reading a session's events takes a filter, and it is the grammar the three
 producing libraries share.** The contract gives both surfaces one answer: every
@@ -342,13 +392,12 @@ exclude:            # list of matchers; a match here always rejects (wins over i
   - {kind: lock-wait}
 ```
 
-The three copies are held together the way the envelope's already are: each
-repository commits this fixture in its own contract, its own suite holds its own
-code to its own copy, and the cross-repo contract test reads those committed
-fixtures. There is nothing here to import and nothing to generate from — that is
-the point of "duplicate these types; there is deliberately no shared util crate" —
-so a departure from the grammar is raised with the contract owner as a proposal,
-never taken here.
+The grammar has one source, the way the envelope does: `onemessagebus`'s
+`docs/contract.md`, whose filter type `onemessagebus-agent` declares and this crate
+re-exports. This repository keeps the fixture above as a copy of that text and its
+suite parses the copy through the re-exported type, so the grammar and the code that
+reads it cannot come apart here without failing. A departure from the grammar is
+raised with the bus's owner as a proposal, never taken here.
 
 An envelope passes when it matches any `include` matcher — or `include` is absent
 or empty — and matches no `exclude` matcher. Matcher fields are all optional and
@@ -359,21 +408,23 @@ equality; `kind` is a glob over the event kind's kebab-case wire string, so
 reserved `labels` keys, where a matcher naming a label the envelope did not stamp
 does not match it. Deliberately **not** in the grammar: `stream`, which is a
 producing process's id rather than a family, and payload fields, which differ per
-kind. The envelope types are duplicated per repository by design, held together by
-a cross-repo contract test rather than by a shared util crate; the filter type
-follows the same pattern.
+kind. The filter types are `onemessagebus-agent`'s, as the envelope's are, and this
+crate re-exports them under the names below.
 
 ```rust
 impl EventStream {                           // `open`, `session`, `read` unchanged, plus:
     pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self>;
 }
+// `pub use onemessagebus_agent::event::{EventFilter, Matcher as EventMatcher};`, the
+// agent profile's instances of the bus's `Filter` and `Matcher`:
 pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }
 pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,
-                          pub run_id: Option<String>, pub node: Option<String>,
-                          pub step: Option<String>, pub member: Option<String>,
-                          pub persona: Option<String> }
+                          pub fields: MatchFields }
+pub struct MatchFields { pub phase: Option<Phase>, pub run_id: Option<String>,
+                         pub node: Option<String>, pub step: Option<String>,
+                         pub member: Option<String>, pub persona: Option<String> }
 impl EventFilter {
-    pub fn parse(spec: &str) -> Result<Self>;            // the JSON or YAML above
+    pub fn parse(spec: &str) -> Result<Self, FilterError>;  // the JSON or YAML above
     pub fn matches(&self, envelope: &Envelope) -> bool;
 }
 ```
@@ -1197,15 +1248,18 @@ whole point is that a wrong `no` here is the answer somebody pastes a publicatio
 under.
 
 ```rust
-pub enum Phase { Development, Integrate, Review, Release }
+pub enum Phase { Development, Integrate, Review, Release } // `onemessagebus-agent`'s, re-exported
 impl Phase {
     pub fn as_str(self) -> &'static str;         // development | integrate | review | release
     pub fn every() -> [Phase; 4];
-    pub fn of(kind: EventKind) -> Option<Phase>; // None for `push` alone, whose target decides it
 }
+pub trait PhaseOf {                              // this crate's mapping over its own kinds
+    fn of(kind: EventKind) -> Option<Phase>;     // None for `push` alone, whose target decides it
+}
+impl PhaseOf for Phase {}                        // so the call is still spelled `Phase::of(kind)`
 // Three declared types each gain one field, and nothing else about them moves:
-//   Envelope       pub phase: Phase                     // stamped by the producer
-//   EventMatcher   pub phase: Option<Phase>             // exact equality, as `source` is
+//   Envelope       pub dimensions: Dimensions         // `{ pub phase: Option<Phase> }`, stamped by the producer
+//   EventMatcher   pub fields: MatchFields            // `pub phase: Option<Phase>`, exact equality, as `source` is
 //   SessionRecord  pub retried_by: Option<SessionToken> // the session that superseded this one
 ```
 
@@ -1883,9 +1937,9 @@ described, so a consumer's journeys can drive a whole closeout against them.
 
 ---
 
-### Shared event envelope (duplicate these types in this crate; there is deliberately no shared util crate)
+### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)
 
-Every process in the stack emits NDJSON, one envelope shape:
+Every process in the stack emits NDJSON, one envelope shape, whose types are `onemessagebus-agent`'s and are re-exported here; `onemessagebus`'s `docs/contract.md` is the one source of the fenced text below, which stays here as a copy of it:
 
 ```json
 {"v": 1, "ts": "<RFC3339, millisecond, UTC>", "stream": "<unique id per producing process>",

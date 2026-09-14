@@ -19,13 +19,18 @@ The vocabulary is a **change request**, not a pull request, and stack metadata i
 expected later, and naming the concept after one host is what would have to be
 undone to add the second.
 
-## Every process emits the same envelope, and the types are duplicated
+## Every process emits the same envelope, and the types are `onemessagebus`'s
 
-`oneagentgraph`, `onevcs`, and `onepipeline` all emit the same NDJSON envelope,
-and each one **duplicates** the types rather than sharing a util crate. That is
-deliberate: a shared crate would couple three release trains, and the drift it
-would prevent is instead prevented by each repository's contract test asserting
-its own serialization against the fixtures in `docs/contract.md`.
+`oneagentgraph`, `onevcs`, and `onepipeline` all emit the same NDJSON envelope.
+Each once kept its own copy of the types, and the copies drifted: this crate's
+matcher grew a `phase` the other two never had. So the envelope, its filter
+grammar, the payload bound and the redaction tables were extracted into
+`onemessagebus` and its agent profile, `onemessagebus-agent`, and `onevcs` is their
+first consumer. It re-exports them at the paths it always had and keeps its own
+vocabulary — `EventKind`, and the phase each kind belongs to. The contract test
+still asserts this crate's serialization against the fixtures in
+`docs/contract.md`, now through the re-exported types, so a bus that stopped writing
+those bytes fails here.
 
 ## Dependency direction is one-way
 

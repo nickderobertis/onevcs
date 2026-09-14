@@ -1,0 +1,117 @@
+{
+  "stream": "s-1ea03116cddf",
+  "answered_by": "onevcs 0.23.0",
+  "answers": [
+    {
+      "filter": null,
+      "seqs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ]
+    },
+    {
+      "filter": {
+        "include": [
+          {
+            "phase": "development"
+          }
+        ]
+      },
+      "seqs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7
+      ]
+    },
+    {
+      "filter": {
+        "include": [
+          {
+            "phase": "integrate"
+          }
+        ]
+      },
+      "seqs": [
+        8,
+        12
+      ]
+    },
+    {
+      "filter": {
+        "include": [
+          {
+            "phase": "review"
+          }
+        ]
+      },
+      "seqs": [
+        5,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "filter": {
+        "include": [
+          {
+            "kind": "change-*"
+          }
+        ],
+        "exclude": [
+          {
+            "kind": "change-check"
+          }
+        ]
+      },
+      "seqs": [
+        5,
+        11
+      ]
+    },
+    {
+      "filter": {
+        "include": [
+          {
+            "source": "vcs",
+            "phase": "development",
+            "kind": "push"
+          }
+        ]
+      },
+      "seqs": [
+        4
+      ]
+    },
+    {
+      "filter": {
+        "exclude": [
+          {
+            "phase": "development"
+          }
+        ]
+      },
+      "seqs": [
+        5,
+        8,
+        9,
+        10,
+        11,
+        12
+      ]
+    }
+  ]
+}
