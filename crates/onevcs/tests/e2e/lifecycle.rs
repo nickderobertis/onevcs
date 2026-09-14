@@ -4937,14 +4937,19 @@ fn a_credential_in_a_list_the_event_carries_never_reaches_the_stream_file() {
     let secret = "value-under-journey-token";
     let names = [prefixed.to_owned(), format!("notes {secret}.txt")];
     let (token, worktree) = fixture.open(&["--branch", "feature/credential-paths"]);
-    let other = fixture.world.clone_of(&fixture.origin, "advancing-credentials");
+    let other = fixture
+        .world
+        .clone_of(&fixture.origin, "advancing-credentials");
     for name in &names {
         fixture
             .world
             .commit_file(&worktree, name, "from the session\n", "feat: a file");
-        fixture
-            .world
-            .commit_file(&other, name, "from the base\n", "feat: the file, differently");
+        fixture.world.commit_file(
+            &other,
+            name,
+            "from the base\n",
+            "feat: the file, differently",
+        );
     }
     fixture.world.git(&other, &["push", "-q", "origin", "main"]);
 

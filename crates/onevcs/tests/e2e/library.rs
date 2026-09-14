@@ -5028,9 +5028,15 @@ fn a_credential_nested_in_an_object_and_a_list_never_reaches_a_sessions_stream()
         },
     });
 
-    let emitter =
-        onemessagebus_agent::Emitter::shared(session.token.0.clone(), Source::Vcs, &path)
-            .with_version(1);
+    // llmlint: ignore-block[tests_mirror_real_usage] no user-facing path of this crate can
+    // write this payload: no kind it emits nests an object, and `Stream` is private by the
+    // contract, so the one writer a journey can reach for an object-nested payload is the
+    // emitter `Stream` itself is built on (`stream::emitter`: `Emitter::shared` over the
+    // session's file, at envelope version 1). The list half goes through the real binary in
+    // `lifecycle::a_credential_in_a_list_the_event_carries_never_reaches_the_stream_file`,
+    // and everything this journey reads back goes through the file and `EventStream`.
+    let emitter = onemessagebus_agent::Emitter::shared(session.token.0.clone(), Source::Vcs, &path)
+        .with_version(1);
     emitter
         .try_emit_stamped(
             onevcs::EventKind::ChangeCheck,
@@ -5039,6 +5045,7 @@ fn a_credential_nested_in_an_object_and_a_list_never_reaches_a_sessions_stream()
             Vec::new(),
         )
         .expect("the stream takes the event");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let written = std::fs::read_to_string(&path).expect("the session's stream");
     for credential in credentials {

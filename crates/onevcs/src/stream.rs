@@ -148,12 +148,20 @@ impl Stream {
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
     ) {
+        // llmlint: ignore-block[changed_behavior_has_e2e] nested redaction is covered end to
+        // end as far as this crate can produce it. No kind here nests an object in its payload,
+        // so no journey can have `onevcs` write one; a list it does write, and
+        // `lifecycle::a_credential_in_a_list_the_event_carries_never_reaches_the_stream_file`
+        // drives it through the binary (it fails against 0.21.0, which redacted only top-level
+        // text). The object half is `library::a_credential_nested_in_an_object_and_a_list_never_reaches_a_sessions_stream`,
+        // through the emitter this call is made on.
         let Err(unrecorded) =
             self.emitter
                 .try_emit_stamped(kind, Dimensions::at(phase), payload, artifacts)
         else {
             return;
         };
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         // Said in this crate's words rather than the bus's, because this is the line
         // an operator running `onevcs` reads.
         let path = self.path.display();
