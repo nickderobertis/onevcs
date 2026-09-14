@@ -750,12 +750,13 @@ fn a_stream_written_before_the_shared_envelope_is_filtered_as_that_build_filtere
     let world = World::new();
     let streams = world.home().join("streams");
     std::fs::create_dir_all(&streams).expect("a streams directory");
-    // llmlint: ignore[tests_mirror_real_usage] the file *is* the input under test: it is a
-    // record an earlier build left under this host's state root, and no interface of this
-    // build can write one in that build's shape — which is exactly the history a reader
-    // has to go on reading.
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test: it
+    // is a record an earlier build left under this host's state root, and no interface of
+    // this build can write one in that build's shape — which is exactly the history a
+    // reader has to go on reading. Every assertion below still drives the real binary.
     std::fs::write(streams.join(format!("{token}.ndjson")), &stream)
         .expect("the earlier build's stream, where it left it");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let recorded = answers["answers"].as_array().expect("a list of answers");
     assert!(
@@ -790,4 +791,80 @@ fn a_stream_written_before_the_shared_envelope_is_filtered_as_that_build_filtere
             "the filter {filter} answers differently than the build that wrote the stream"
         );
     }
+}
+
+#[test]
+fn a_record_its_writer_has_not_finished_is_left_out_until_it_is_whole() {
+    // A writer appends a whole line per write, so a final line no newline has ended is
+    // a record still being written — or one its writer died on, which the next writer
+    // truncates before it appends. Neither is a line of the stream yet: a read stops
+    // before it, refusing nothing, filtered or not, and hands it on once it is whole.
+    let (fixture, token) = published("feature/half-written");
+    let world = &fixture.world;
+    let path = world.home().join("streams").join(format!("{token}.ndjson"));
+    let written = std::fs::read_to_string(&path).expect("the session wrote a stream");
+    let mut next: Value =
+        serde_json::from_str(written.lines().last().expect("a last event")).expect("an envelope");
+    next["seq"] = Value::from(next["seq"].as_u64().expect("a seq") + 1);
+    let next = next.to_string();
+    let (head, tail) = next.split_at(next.len() / 2);
+    let append = |text: &str| {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(text.as_bytes()))
+            .expect("the stream takes the bytes");
+    };
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test: a
+    // record half-way through its write is a state no interface can hold still for a
+    // journey to read at, because a writer finishes the line in the same call it starts
+    // it. Every assertion below still drives the real binary.
+    append(head);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    for extra in [
+        &[][..],
+        &["--filter", r#"{"include": [{"source": "vcs"}]}"#][..],
+    ] {
+        let output = world
+            .onevcs()
+            .args(["events", &token])
+            .args(extra)
+            .output()
+            .expect("the binary runs");
+        assert!(
+            output.status.success(),
+            "{extra:?}: a record still being written was refused:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            written,
+            "{extra:?}: a record nobody has finished was handed on"
+        );
+    }
+
+    // llmlint: ignore-block[tests_mirror_real_usage] as above: the writer finishing its line.
+    append(&format!("{tail}\n"));
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    assert_eq!(
+        kinds(&reported(
+            world,
+            &token,
+            &["--filter", r#"{"include": [{"source": "vcs"}]}"#]
+        ))
+        .len(),
+        written.lines().count() + 1,
+        "the record, once whole, is read like every other"
+    );
+    let output = world
+        .onevcs()
+        .args(["events", &token])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{written}{next}\n")
+    );
 }

@@ -4846,10 +4846,12 @@ fn a_stream_written_before_the_shared_envelope_reads_as_values_at_the_phases_tha
     inhabit(&world);
     let streams = world.home().join("streams");
     std::fs::create_dir_all(&streams).expect("a streams directory");
-    // llmlint: ignore[tests_mirror_real_usage] as in `filter.rs`: the record an earlier
-    // build left is the input, and no interface of this build writes one in its shape.
+    // llmlint: ignore-block[tests_mirror_real_usage] as in `filter.rs`: the record an
+    // earlier build left is the input, and no interface of this build writes one in its
+    // shape. Every read below goes through the public `EventStream`.
     std::fs::write(streams.join(format!("{}.ndjson", token.0)), &stream)
         .expect("the earlier build's stream, where it left it");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let written: Vec<serde_json::Value> = stream
         .lines()
         .map(|line| serde_json::from_str(line).expect("every line is an envelope"))
@@ -4881,4 +4883,115 @@ fn a_stream_written_before_the_shared_envelope_reads_as_values_at_the_phases_tha
             assert_eq!(stamped(event), phase, "seq {}", event.seq);
         }
     }
+}
+
+/// Append bytes to a stream file as a writer part-way through a line leaves them.
+fn tear(path: &std::path::Path, text: &str) {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .expect("the stream takes the bytes");
+}
+
+#[test]
+fn an_event_stream_reads_a_record_its_writer_has_not_finished_once_it_is_whole() {
+    // A final line no newline has ended is a record still being written, not a line
+    // that is not an envelope: the reader hands back nothing for it and refuses
+    // nothing, and the same reader hands it back on the read after its writer finishes.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let session = open(&vcs, "feature/half-written");
+    let mut reader = EventStream::open(&session.token).expect("the session's stream");
+    let before = reader.read().expect("what the session recorded");
+    assert!(!before.is_empty(), "the session recorded something");
+
+    let path = world
+        .home()
+        .join("streams")
+        .join(format!("{}.ndjson", session.token.0));
+    let written = std::fs::read_to_string(&path).expect("the stream");
+    let mut next: serde_json::Value =
+        serde_json::from_str(written.lines().last().expect("a last event")).expect("an envelope");
+    let seq = next["seq"].as_u64().expect("a seq") + 1;
+    next["seq"] = serde_json::Value::from(seq);
+    let next = next.to_string();
+    let (head, tail) = next.split_at(next.len() / 2);
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test: a
+    // record half-way through its write is a state no interface can hold still for a
+    // reader to meet, because a writer finishes a line in the call that starts it. Every
+    // read below goes through the public `EventStream`.
+    tear(&path, head);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    assert!(
+        reader
+            .read()
+            .expect("a record still being written is not a refusal")
+            .is_empty(),
+        "a record nobody has finished was handed back"
+    );
+    assert_eq!(
+        EventStream::open(&session.token)
+            .expect("the stream")
+            .read()
+            .expect("a fresh reader refuses nothing either")
+            .len(),
+        before.len(),
+        "a fresh reader reads every whole record before the torn one"
+    );
+
+    // llmlint: ignore-block[tests_mirror_real_usage] as above: the writer finishing its line.
+    tear(&path, &format!("{tail}\n"));
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let after = reader.read().expect("the finished record");
+    assert_eq!(
+        after.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![seq],
+        "the record, once whole, is handed back once"
+    );
+}
+
+#[test]
+fn a_release_record_its_writer_has_not_finished_still_hands_back_the_releases_before_it() {
+    // The correlated read takes the identity's release record whole on every read, so
+    // a record being appended to it at that moment ends in a line no newline has ended.
+    // The releases before it are this session's all the same, and refusing the whole
+    // record over a write in progress would have a consumer wait on releases it has.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    releasing(&world);
+    let session = landed(&world, "feature/half-recorded", "one.txt");
+    EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("everything through the close");
+    let container = "container".parse().expect("a target name");
+    onevcs::acknowledge_release(&session.token.0, &container, "2.0.0", false)
+        .expect("this landing's release is recorded");
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test: a
+    // release record part-way through an append is a state no release verb can hold still
+    // for a reader to meet. The read below goes through the public `EventStream`.
+    tear(&release_record_of(&world), "{\"v\":1,\"ts\":\"2026-");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let read = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("a release record still being written is not a refusal");
+    assert_eq!(
+        read.iter()
+            .filter(|event| event.stream.starts_with("releases-"))
+            .map(kind_of)
+            .collect::<Vec<_>>(),
+        vec![
+            onevcs::EventKind::ReleaseAcknowledged,
+            onevcs::EventKind::ReleaseObserved
+        ],
+        "the releases recorded before the torn line are still this session's"
+    );
 }
