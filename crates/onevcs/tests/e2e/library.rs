@@ -4995,3 +4995,75 @@ fn a_release_record_its_writer_has_not_finished_still_hands_back_the_releases_be
         "the releases recorded before the torn line are still this session's"
     );
 }
+
+#[test]
+fn a_credential_nested_in_an_object_and_a_list_never_reaches_a_sessions_stream() {
+    // No kind this crate emits today nests an object in its payload, and the day one
+    // does it is written through the emitter every stream here is: `Emitter::shared`
+    // over the session's own file, at this crate's envelope version. So the journey
+    // writes through exactly that onto a real session's stream, and reads the result
+    // back the two ways a consumer does — the file's bytes, and `EventStream`.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let session = open(&vcs, "feature/nested-credentials");
+    let path = world
+        .home()
+        .join("streams")
+        .join(format!("{}.ndjson", session.token.0));
+    let credentials = [
+        "ghp_0123456789abcdef",
+        "github_pat_0123456789abcdef",
+        "AKIA0123456789ABCDEF",
+    ];
+    let payload = serde_json::json!({
+        "name": "check",
+        "detail": {
+            "said": format!("pushed with {}", credentials[0]),
+            "attempts": [
+                {"output": credentials[1]},
+                ["retried", format!("{},", credentials[2])],
+            ],
+        },
+    });
+
+    let emitter =
+        onemessagebus_agent::Emitter::shared(session.token.0.clone(), Source::Vcs, &path)
+            .with_version(1);
+    emitter
+        .try_emit_stamped(
+            onevcs::EventKind::ChangeCheck,
+            onemessagebus_agent::Dimensions::at(Phase::Review),
+            payload.as_object().expect("an object").clone(),
+            Vec::new(),
+        )
+        .expect("the stream takes the event");
+
+    let written = std::fs::read_to_string(&path).expect("the session's stream");
+    for credential in credentials {
+        assert!(
+            !written.contains(credential),
+            "{credential:?} reached the stream file:\n{written}"
+        );
+    }
+    let read = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("every event the session wrote");
+    let last = read.last().expect("the event just written");
+    assert_eq!(
+        serde_json::Value::Object(last.payload.clone()),
+        serde_json::json!({
+            "name": "check",
+            "detail": {
+                "said": "pushed with [redacted]",
+                "attempts": [
+                    {"output": "[redacted]"},
+                    ["retried", "[redacted],"],
+                ],
+            },
+        }),
+        "every string of the payload is redacted, however deeply it is nested"
+    );
+}

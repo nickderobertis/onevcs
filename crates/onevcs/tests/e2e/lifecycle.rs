@@ -4926,6 +4926,126 @@ fn every_credential_word_and_prefix_is_redacted_to_the_same_bytes_in_the_event_a
 }
 
 #[test]
+fn a_credential_in_a_list_the_event_carries_never_reaches_the_stream_file() {
+    // Redaction reaches every string of a payload, not only its top-level text: a
+    // conflict's paths travel as a list, and a path is whatever somebody named a
+    // file — a pasted token, or a value this process was handed as a secret. Neither
+    // may land in the record, which is asserted over the file's own bytes rather than
+    // over a rendering of it.
+    let fixture = Fixture::local(&local_direct());
+    let prefixed = "ghp_0123456789abcdef";
+    let secret = "value-under-journey-token";
+    let names = [prefixed.to_owned(), format!("notes {secret}.txt")];
+    let (token, worktree) = fixture.open(&["--branch", "feature/credential-paths"]);
+    let other = fixture.world.clone_of(&fixture.origin, "advancing-credentials");
+    for name in &names {
+        fixture
+            .world
+            .commit_file(&worktree, name, "from the session\n", "feat: a file");
+        fixture
+            .world
+            .commit_file(&other, name, "from the base\n", "feat: the file, differently");
+    }
+    fixture.world.git(&other, &["push", "-q", "origin", "main"]);
+
+    fixture
+        .world
+        .onevcs()
+        .env("JOURNEY_TOKEN", secret)
+        .args(["publish", &token])
+        .assert()
+        .code(3);
+
+    let conflicts = fixture.world.events_of(&token, "sync-conflict");
+    assert_eq!(
+        conflicts[0]["payload"]["paths"],
+        serde_json::json!(["[redacted]", "notes [redacted].txt"]),
+        "{conflicts:?}"
+    );
+    let written = std::fs::read_to_string(
+        fixture
+            .world
+            .home()
+            .join("streams")
+            .join(format!("{token}.ndjson")),
+    )
+    .expect("the session's stream");
+    for credential in [prefixed, secret] {
+        assert!(
+            !written.contains(credential),
+            "{credential:?} reached the stream file:\n{written}"
+        );
+    }
+}
+
+#[test]
+fn a_record_a_writer_died_part_way_through_is_healed_before_the_next_event_is_appended() {
+    // A writer killed mid-line leaves a stream ending in bytes no newline finished.
+    // The next writer truncates them before it appends, so its event starts a line of
+    // its own rather than completing half of somebody else's, and it takes the number
+    // after the last whole record — the series stays gapless and every line of the
+    // file is an envelope again.
+    let fixture = Fixture::local(&local_direct());
+    let (token, _worktree) = fixture.open(&["--branch", "feature/torn-tail"]);
+    let path = fixture
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let whole = std::fs::read_to_string(&path).expect("the session wrote a stream");
+    let torn = "{\"v\":1,\"ts\":\"2026-09-13T00:00:00.000Z\",\"stream\":\"";
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test: a
+    // writer that died part-way through its line is a state no interface can leave on
+    // purpose, because a writer finishes the line in the call that starts it. The event
+    // that heals it is written by the real binary below.
+    {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(torn.as_bytes()))
+            .expect("the stream takes the bytes");
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("healed a torn record"));
+
+    let written = std::fs::read_to_string(&path).expect("the stream");
+    assert!(
+        written.starts_with(&whole) && written.ends_with('\n') && !written.contains(torn),
+        "the torn bytes were not truncated away before the append:\n{written}"
+    );
+    let envelopes: Vec<serde_json::Value> = written
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every line is an envelope again"))
+        .collect();
+    assert_eq!(
+        envelopes
+            .iter()
+            .map(|envelope| envelope["seq"].as_u64().expect("a seq"))
+            .collect::<Vec<u64>>(),
+        (1..=u64::try_from(envelopes.len()).expect("a count")).collect::<Vec<u64>>(),
+        "one gapless series:\n{written}"
+    );
+    assert!(
+        envelopes.len() > whole.lines().count(),
+        "the close appended"
+    );
+    assert_eq!(
+        envelopes.last().expect("a last record")["kind"],
+        "session-closed",
+        "the last record is the one the healing writer wrote:\n{written}"
+    );
+}
+
+#[test]
 fn every_event_carries_the_envelope_the_contract_declares() {
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/observed"]);
