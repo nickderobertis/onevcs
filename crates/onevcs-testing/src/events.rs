@@ -13,7 +13,7 @@
 //! provider's bookkeeping.
 //!
 //! The layout is duplicated here rather than reached for through `onevcs`, which
-//! exposes no writer — the same deliberate duplication the envelope types carry.
+//! exposes no writer; the envelope itself is the one `onevcs` re-exports.
 //! Nothing here can drift silently: a provider writing anywhere else emits a stream
 //! `onevcs events` cannot read, and the dual-backend journey in the crate next door
 //! reads both runs through that command.
@@ -26,7 +26,8 @@ use serde_json::{Map, Value};
 use time::macros::format_description;
 use time::OffsetDateTime;
 
-use onevcs::{ArtifactId, Envelope, Error, EventKind, Labels, Phase, Result, Source};
+use onemessagebus_agent::event::Dimensions;
+use onevcs::{ArtifactId, Envelope, Error, EventKind, Labels, Phase, PhaseOf, Result, Source};
 
 /// The envelope schema version this crate emits, as `onevcs` emits it.
 const ENVELOPE_VERSION: u32 = 1;
@@ -129,12 +130,12 @@ fn append(emission: &Emission) -> Result<()> {
         stream: emission.stream.clone(),
         seq,
         source: Source::Vcs,
-        kind: emission.kind,
+        kind: emission.kind.into(),
         // Stamped from the kind, which decides it for every kind a provider here
         // emits: the one kind whose phase its own target decides is `push`, and
         // nothing in this crate performs one — the repository side of a publication
         // is neither performed nor claimed.
-        phase: Phase::of(emission.kind).unwrap_or(Phase::Development),
+        dimensions: Dimensions::at(Phase::of(emission.kind).unwrap_or(Phase::Development)),
         labels,
         payload: emission.payload.clone(),
         artifacts: Vec::new(),

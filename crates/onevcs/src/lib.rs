@@ -83,7 +83,8 @@ pub use declaration::{
 };
 pub use error::{Error, Result};
 pub use event::{
-    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Phase, Source,
+    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Phase,
+    PhaseOf, Source,
 };
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description, GitHub,

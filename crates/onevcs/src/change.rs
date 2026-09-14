@@ -150,7 +150,7 @@ fn record_description(
     }
     let artifacts: Vec<ArtifactRef> = match stream::store_artifact("body", &description.body) {
         Ok(artifact) => {
-            payload.insert("artifact".to_owned(), json!(artifact.id.0));
+            payload.insert("artifact".to_owned(), json!(artifact.id));
             vec![artifact]
         }
         Err(error) => {

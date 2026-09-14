@@ -48,18 +48,27 @@ surfaces cannot disagree about which failures are which. `tests/e2e/library.rs`
 drives every one of them twice, on the providers and on real `Git` + `gh`.
 
 Reading events takes a filter on both surfaces — `EventStream::open_filtered` and
-`onevcs events --filter` — and the grammar is **shared with `oneagentgraph` and
-`onepipeline`**, fixed across the three. Do not extend it here: a field one of
-them understands and the others do not is a consumer's filter meaning three
-different things. Two rules follow from what filtering is for. A filter decides
+`onevcs events --filter` — and the grammar is **`onemessagebus`'s**, shared with
+`oneagentgraph` and `onepipeline`. The envelope, the filter, the payload bound, the
+redaction tables, and the emitter and reader over a stream are that crate's and its
+agent profile's (`event.rs` re-exports them); what stays here is `EventKind`, the
+phase each kind belongs to, where streams and artifacts live, and what a reader
+refuses. Do not extend any of it here: a change is a proposal to the bus's owner.
+Two rules follow from what filtering is for. A filter decides
 which events a consumer *wants*, never which lines of a file are worth reading, so
 it is applied after the refusals — a stream that is not what a writer left is
-refused whichever events were asked for. Both readers of a stream's *values* go
-through `stream::attributed`, which is where those two refusals live, so `--filter`
-and `EventStream` cannot come to differ about which line is unreadable or whose
-event it is. And the command prints the producer's own line rather than a
-re-serialization of what it parsed, so a filtered read is a subset of an unfiltered
-one byte for byte.
+refused whichever events were asked for. Every reader of a stream's *values* goes
+through `stream::attributed` (or `attributed_record`, for a record `stream::Reader`
+already parsed), which is where those two refusals live, so `--filter`, `EventStream`
+and `status` cannot come to differ about which line is unreadable or whose event it
+is. And the command prints the producer's own line rather than a re-serialization of
+what it parsed, so a filtered read is a subset of an unfiltered one byte for byte.
+
+**Every stream is written through `Emitter::shared`, a session's included.** A
+session's stream is written by one process after another, and each continues the
+series the previous one left; the bus's single-writer emitter counts from zero in
+memory and would restart it. Numbering from the file under its lock is what keeps
+one gapless series per stream.
 
 ## An event names its phase, and a session read is scoped by it
 
@@ -73,10 +82,12 @@ and the filter grammar matches it. Four things about that are easy to undo.
   on and the base a merge train advanced. `Stream::emit_push` is the only way to emit
   one.
 - **The field is additive inside `v: 1`, and stays additive.** An envelope written
-  before it existed reads at the phase its kind decides (`StoredEnvelope` in
-  `event.rs`), and a build that predates it reads one carrying it — which `compat/`
-  proves against a released `onevcs` from the registry rather than against this
-  build's own reader.
+  before it existed reads at the phase its kind decides (`Line::of` in `event.rs`,
+  which every stream reader goes through), and a build that predates it reads one
+  carrying it — which `compat/` proves against a released `onevcs` from the registry
+  rather than against this build's own reader. `tests/golden/stream-v0.23.0.ndjson`
+  is a stream written before the shared envelope was adopted, and
+  `tests/e2e/filter.rs` holds every filtered read of it to what that build answered.
 - **Which phases a session *has* is derived, never configured.** `stream::supported`
   answers it from the session record, the resolved merge policy, and whether anything
   — `$ONEVCS_HOME/releases.yml` or the repository's own declaration — resolves a
@@ -435,9 +446,13 @@ The `#[cfg(test)]` modules in `src/` are the exceptions to that, and each one is
 there because what it holds is reachable no other way: a process's creation
 identity (`workspace.rs`), a reader overlapping an atomic replace (`home.rs`),
 Windows' verbatim paths crossing every git boundary and a captured command's
-collector meeting its pipe empty at the instant the command exits (`git.rs`), and
-the *type* side of the status report's serialized contract (`status.rs`). The
-collector's is the one that looks like a journey and cannot be: what it holds is
+collector meeting its pipe empty at the instant the command exits (`git.rs`),
+the *type* side of the status report's serialized contract (`status.rs`), and a
+credential nested in an object reaching `Stream`'s own record call (`stream.rs`) —
+`Stream` is private and no kind nests an object in its payload, so no verb can be
+driven into writing one. Healing a torn record sits beside it on the same call, and
+`lifecycle.rs` also drives that through `session close`. The collector's is the one
+that looks like a journey and cannot be: what it holds is
 an *interleaving* — a reader taking a read that finds the pipe empty, and finding
 its command already collected when it next looks — and on an idle host that window
 is nanoseconds wide, so it is arranged rather than waited for.

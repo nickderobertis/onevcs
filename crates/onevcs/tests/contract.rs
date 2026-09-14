@@ -23,6 +23,8 @@ use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
 use clap::CommandFactory;
+use onemessagebus::Kind;
+use onemessagebus_agent::event::{Dimensions, MatchFields};
 use onevcs::cli::Cli;
 use onevcs::declaration::{self, Declaration, RepositoryPath};
 use onevcs::registry::{Checkout, Identity, Registry};
@@ -37,7 +39,7 @@ use onevcs::{
     ArtifactId, ArtifactRef, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest, ChangeSpec,
     Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter, EventKind,
     EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, Labels, Landed, LandingEvidence,
-    Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative, Phase,
+    Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative, Phase, PhaseOf,
     PreservedBranch, ProtectionSource, Provenance, Providers, Publication, PublishOutcome,
     PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Session,
     SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source,
@@ -318,7 +320,8 @@ fn the_envelope_fixture_carries_the_declared_types() {
     assert_eq!(envelope.v, 1);
     assert_eq!(envelope.seq, 42);
     assert_eq!(envelope.source, Source::Vcs);
-    assert_eq!(envelope.kind, EventKind::SessionOpened);
+    assert_eq!(envelope.kind, Kind::from(EventKind::SessionOpened));
+    assert_eq!(envelope.dimensions.phase, Some(Phase::Development));
     assert_eq!(envelope.ts, "2026-08-07T12:34:56.789Z");
     assert_eq!(envelope.stream, "onevcs-7f3a9c2e");
     assert_eq!(
@@ -337,7 +340,7 @@ fn the_envelope_fixture_carries_the_declared_types() {
     assert_eq!(
         envelope.artifacts,
         vec![ArtifactRef {
-            id: ArtifactId("a-91".to_owned()),
+            id: "a-91".to_owned(),
             kind: "log".to_owned(),
             bytes: 21_400,
         }]
@@ -386,8 +389,8 @@ fn labels_that_the_producer_did_not_know_are_omitted_rather_than_null() {
         stream: "onevcs-7f3a9c2e".to_owned(),
         seq: 0,
         source: Source::Vcs,
-        kind: EventKind::SessionClosed,
-        phase: Phase::Development,
+        kind: EventKind::SessionClosed.into(),
+        dimensions: Dimensions::at(Phase::Development),
         labels: Labels::default(),
         payload: serde_json::Map::new(),
         artifacts: Vec::new(),
@@ -398,13 +401,28 @@ fn labels_that_the_producer_did_not_know_are_omitted_rather_than_null() {
 
 #[test]
 fn an_event_kind_the_contract_does_not_name_is_rejected() {
+    // `kind` is open on the wire — the bus's envelope carries a sibling's kinds for a
+    // relay that does not interpret them — so the closed vocabulary is `EventKind`'s,
+    // and it is the one that refuses a kind this contract does not name.
     let mut fixture = envelope_fixture("vcs", "session-opened");
     fixture["kind"] = json!("teleported");
-    assert!(serde_json::from_value::<Envelope>(fixture).is_err());
+    let envelope: Envelope =
+        serde_json::from_value(fixture).expect("the envelope carries any kind it is handed");
+    assert!(serde_json::from_value::<EventKind>(json!(envelope.kind)).is_err());
 
+    // A source is not open: the three families are the profile's closed set.
     let mut fixture = envelope_fixture("vcs", "session-opened");
     fixture["source"] = json!("somewhere-else");
     assert!(serde_json::from_value::<Envelope>(fixture).is_err());
+
+    // …and neither is the envelope itself: a top-level key the contract does not
+    // declare is refused by name rather than dropped.
+    let mut fixture = envelope_fixture("vcs", "session-opened");
+    fixture["teleported"] = json!(true);
+    let refused = serde_json::from_value::<Envelope>(fixture)
+        .expect_err("an undeclared top-level key is refused")
+        .to_string();
+    assert!(refused.contains("teleported"), "{refused}");
 }
 
 /// The kind-to-phase table the amendment spells, as `(phase, kind, target)` rows.
@@ -528,16 +546,24 @@ fn the_phase_the_amendment_adds_is_the_approved_envelope_and_one_more_key() {
     }
 
     // And the field is additive *inside* `v: 1`: an envelope written before there
-    // was one still reads, at the phase its kind decides.
+    // was one still reads, with no phase of its own — and written back, it gains
+    // none. The phase its kind decides is what this crate's stream readers read it
+    // at, which `tests/e2e/filter.rs` holds against a stream written before the
+    // adoption of the shared envelope.
     let mut without = envelope_fixture("vcs", "change-opened");
     without
         .as_object_mut()
         .expect("an envelope is an object")
         .remove("phase");
     let read: Envelope =
-        serde_json::from_value(without).expect("an envelope with no phase still reads");
-    assert_eq!(read.phase, Phase::Review);
+        serde_json::from_value(without.clone()).expect("an envelope with no phase still reads");
+    assert_eq!(read.dimensions.phase, None);
     assert_eq!(read.v, 1);
+    assert_eq!(
+        serde_json::to_value(&read).expect("it writes back"),
+        without
+    );
+    assert_eq!(Phase::of(EventKind::ChangeOpened), Some(Phase::Review));
 }
 
 #[test]
@@ -3153,13 +3179,15 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     let filter = EventFilter {
         include: vec![EventMatcher {
             source: Some(Source::Vcs),
-            phase: Some(Phase::Review),
             kind: Some("change-*".to_owned()),
-            run_id: Some("R".to_owned()),
-            node: Some("service".to_owned()),
-            step: Some("implement".to_owned()),
-            member: Some("worker".to_owned()),
-            persona: Some("engineer".to_owned()),
+            fields: MatchFields {
+                phase: Some(Phase::Review),
+                run_id: Some("R".to_owned()),
+                node: Some("service".to_owned()),
+                step: Some("implement".to_owned()),
+                member: Some("worker".to_owned()),
+                persona: Some("engineer".to_owned()),
+            },
         }],
         exclude: vec![EventMatcher {
             kind: Some("lock-wait".to_owned()),
@@ -3217,11 +3245,13 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     for declared in [
         "pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self>;",
         "pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }",
+        "pub use onemessagebus_agent::event::{EventFilter, Matcher as EventMatcher};",
         "pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,",
-        "pub run_id: Option<String>, pub node: Option<String>,",
-        "pub step: Option<String>, pub member: Option<String>,",
-        "pub persona: Option<String> }",
-        "pub fn parse(spec: &str) -> Result<Self>;",
+        "pub fields: MatchFields }",
+        "pub struct MatchFields { pub phase: Option<Phase>, pub run_id: Option<String>,",
+        "pub node: Option<String>, pub step: Option<String>,",
+        "pub member: Option<String>, pub persona: Option<String> }",
+        "pub fn parse(spec: &str) -> Result<Self, FilterError>;",
         "pub fn matches(&self, envelope: &Envelope) -> bool;",
     ] {
         assert!(
@@ -3258,8 +3288,11 @@ fn the_amendment_declares_the_phase_surface_and_the_retry_link() {
         "pub enum Phase { Development, Integrate, Review, Release }",
         "pub fn as_str(self) -> &'static str;",
         "pub fn every() -> [Phase; 4];",
-        "pub fn of(kind: EventKind) -> Option<Phase>;",
-        "pub phase: Phase",
+        "pub trait PhaseOf {",
+        "fn of(kind: EventKind) -> Option<Phase>;",
+        "impl PhaseOf for Phase {}",
+        "pub dimensions: Dimensions",
+        "pub fields: MatchFields",
         "pub phase: Option<Phase>",
         "pub retried_by: Option<SessionToken>",
     ] {
@@ -3300,13 +3333,15 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
     // compile here rather than passing a gate that never looked at it.
     let every_field = EventMatcher {
         source: Some(Source::Vcs),
-        phase: Some(Phase::Development),
         kind: Some("push".to_owned()),
-        run_id: Some("R".to_owned()),
-        node: Some("service".to_owned()),
-        step: Some("implement".to_owned()),
-        member: Some("worker".to_owned()),
-        persona: Some("engineer".to_owned()),
+        fields: MatchFields {
+            phase: Some(Phase::Development),
+            run_id: Some("R".to_owned()),
+            node: Some("service".to_owned()),
+            step: Some("implement".to_owned()),
+            member: Some("worker".to_owned()),
+            persona: Some("engineer".to_owned()),
+        },
     };
     let Value::Object(written) = serde_json::to_value(&every_field).expect("a matcher serializes")
     else {
@@ -3314,20 +3349,38 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
     };
     let has: BTreeSet<&str> = written.keys().map(String::as_str).collect();
 
-    // The list the refusal names, read out of the refusal rather than repeated here.
-    let refused = EventFilter::parse("include: [{kinds: push}]")
-        .expect_err("a matcher field the grammar does not have is refused")
+    // The list the refusal names, read out of the refusal rather than repeated here: a
+    // matcher naming nothing is told every field it could have named.
+    let refused = EventFilter::parse("include: [{}]")
+        .expect_err("a matcher naming no field is refused")
         .to_string();
     let listed = refused
-        .rsplit_once('(')
-        .and_then(|(_, tail)| tail.split_once(')'))
+        .split_once("at least one of ")
         .unwrap_or_else(|| panic!("the refusal names no field list: {refused}"))
-        .0
-        .to_owned();
-    let names: BTreeSet<&str> = listed.split(", ").collect();
+        .1;
+    let names: BTreeSet<&str> = backticked(listed);
     assert_eq!(
         names, has,
         "the fields a refusal names and the fields a matcher has disagree: {refused}"
+    );
+    // …and a field it does not have is told the ones beside `source` and `kind`.
+    let mistyped = EventFilter::parse("include: [{kinds: push}]")
+        .expect_err("a matcher field the grammar does not have is refused")
+        .to_string();
+    assert!(mistyped.contains("`kinds`"), "{mistyped}");
+    let offered = backticked(
+        mistyped
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("the refusal names no field list: {mistyped}"))
+            .1,
+    );
+    assert_eq!(
+        offered,
+        has.iter()
+            .copied()
+            .filter(|field| !matches!(*field, "source" | "kind"))
+            .collect(),
+        "the fields a refusal offers and the fields a matcher has disagree: {mistyped}"
     );
 
     // And every one of them is a field the parser takes, so what the refusal offers
@@ -3347,6 +3400,11 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
     }
 }
 
+/// Every `` `word` `` a refusal spells, in the order it spells them.
+fn backticked(text: &str) -> BTreeSet<&str> {
+    text.split('`').skip(1).step_by(2).collect()
+}
+
 #[test]
 fn the_wire_spelling_of_every_kind_is_the_one_a_filter_matches() {
     // A filter's `kind` is matched against a spelling the type answers directly,
@@ -3355,6 +3413,9 @@ fn the_wire_spelling_of_every_kind_is_the_one_a_filter_matches() {
     // that silently admits nothing for exactly one of them.
     for kind in all_event_kinds() {
         let spelled = kind_name(kind);
+        // What a stream is written with is this spelling too, and what it is read back
+        // as is the same kind.
+        assert_eq!(Kind::from(kind).as_str(), spelled);
         let filter = EventFilter {
             include: vec![EventMatcher {
                 kind: Some(spelled.clone()),
@@ -3436,30 +3497,30 @@ fn a_filter_spec_the_grammar_does_not_name_is_refused_where_it_is_read() {
     // Read leniently, each of these means everything or nothing — and a consumer
     // acts on either without ever being told it asked for something else. The same
     // posture the rules loader takes to a bound it cannot read.
+    // Each refusal is `onemessagebus`'s, and each names what was wrong: the field, the
+    // value, or the position in the list that held it.
     let cases = [
         // A matcher field nobody declared, which is usually a typo for one that matters.
-        (
-            "include: [{kind: fetch}, {kinds: push}]",
-            "include matcher 2",
-        ),
-        ("exclude: [{payload: {}}]", "exclude matcher 1"),
+        ("include: [{kind: fetch}, {kinds: push}]", "`kinds`"),
+        ("exclude: [{payload: {}}]", "`payload`"),
         // The label the envelope has and the grammar deliberately does not.
-        ("include: [{round: 2}]", "include matcher 1"),
+        ("include: [{round: 2}]", "`round`"),
         // A matcher that is not a mapping of fields.
-        ("include: [fetch]", "include matcher 1"),
-        ("exclude: [[{kind: fetch}]]", "exclude matcher 1"),
+        ("include: [fetch]", "include[0]"),
+        ("exclude: [[{kind: fetch}]]", "exclude[0]"),
         // A source outside the three families.
-        ("include: [{source: onevcs}]", "include matcher 1"),
+        ("include: [{source: onevcs}]", "`onevcs`"),
         // A field compared as a string, given something that is not one.
-        ("include: [{kind: 7}]", "include matcher 1"),
-        ("exclude: [{node: [service]}]", "exclude matcher 1"),
-        // A list that is not one — including the empty value, which means the
-        // opposite thing to each of the two people who read it.
-        ("include: {kind: fetch}", "`include`"),
-        ("exclude:", "`exclude`"),
+        ("include: [{kind: 7}]", "kind: invalid type"),
+        ("exclude: [{node: [service]}]", "expected a string"),
+        // A list that is not one.
+        ("include: {kind: fetch}", "expected a sequence"),
+        // A matcher that would match everything, and one that could match nothing.
+        ("include: [{}]", "naming no field"),
+        ("include: [{kind: \"\"}]", "`kind` is empty"),
         // A document that is not a filter at all, and one naming neither list.
-        ("- {kind: fetch}", "mapping of `include` and `exclude`"),
-        ("includes: [{kind: fetch}]", "\"includes\""),
+        ("- {kind: fetch}", "expected struct Filter"),
+        ("includes: [{kind: fetch}]", "`includes`"),
     ];
     for (spec, named) in cases {
         let refused = EventFilter::parse(spec)
@@ -3476,7 +3537,16 @@ fn a_filter_spec_the_grammar_does_not_name_is_refused_where_it_is_read() {
     let embedded = serde_json::from_value::<EventFilter>(json!({"include": [{"kinds": "push"}]}))
         .expect_err("a filter is refused wherever it is deserialized")
         .to_string();
-    assert!(embedded.contains("include matcher 1"), "{embedded}");
+    assert!(embedded.contains("`kinds`"), "{embedded}");
+
+    // The one spec 0.23.0 refused and `onemessagebus` 0.4.0 reads: a list named with
+    // no value, which the bus reads as the empty list — so a filter that only says
+    // `exclude:` admits everything. Recorded as a departure in the adoption
+    // amendment, and asserted as it stands so this fails when the bus refuses it.
+    assert_eq!(
+        EventFilter::parse("exclude:").expect("0.4.0 reads an empty list here"),
+        EventFilter::default()
+    );
 }
 
 #[test]
@@ -3563,7 +3633,7 @@ fn a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set() {
     let versioned = EventFilter::parse("version: 1\ninclude: []")
         .expect_err("a version nobody agreed on is not read as one")
         .to_string();
-    assert!(versioned.contains("\"version\""), "{versioned}");
+    assert!(versioned.contains("`version`"), "{versioned}");
 }
 
 /// Every failure a publication can end with, taken off the type.

@@ -6,73 +6,54 @@
 //! artifact instead, stored beside the stream and fetched through
 //! `onevcs artifact cat`.
 //!
-//! Redaction happens **here**, before an event or an artifact leaves the library,
-//! because the thing being redacted arrives from outside it: a rejecting `pre-push`
-//! hook echoes whatever its own verification printed, credentials included.
+//! Stamping, numbering, bounding, redacting and writing an envelope are
+//! `onemessagebus`'s [`Emitter`], and splitting a stream back into its records is its
+//! [`BusReader`]. What stays here is where a stream lives, which labels it carries,
+//! and what a reader of *this* crate's streams refuses.
+//!
+//! Redaction happens before an event or an artifact leaves the library, because the
+//! thing being redacted arrives from outside it: a rejecting `pre-push` hook echoes
+//! whatever its own verification printed, credentials included.
 
 use std::collections::BTreeSet;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 
+use onemessagebus::{EmitterError, Reading, Redactor};
+use onemessagebus_agent::event::Dimensions;
+use onemessagebus_agent::{Emitter, Reader as BusReader};
 use serde_json::{Map, Value};
 
 use crate::error::{self, Result};
 use crate::event::{
-    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, Labels, Line, Phase, Source,
+    phase_of, ArtifactRef, Envelope, EventFilter, EventKind, Known, Labels, Line, Phase, Source,
 };
 use crate::git::ObjectId;
 use crate::landed::Landed;
 use crate::rules::MergePolicy;
 use crate::session::SessionToken;
-use crate::{home, ids, lock, policy, release, status, store, workspace};
+use crate::{home, ids, policy, release, status, store, workspace};
 
 /// The envelope schema version this build emits.
 pub const ENVELOPE_VERSION: u32 = 1;
-/// Where a payload text field is cut, with `"truncated": true` beside it.
-pub const PAYLOAD_LIMIT: usize = 4096;
-/// What a redacted value is replaced with.
-pub const REDACTED: &str = "[redacted]";
-
-/// The label prefix an environment variable is treated as credential-shaped by.
-const CREDENTIAL_WORDS: &[&str] = &[
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "CREDENTIAL",
-    "APIKEY",
-    "API_KEY",
-    "PRIVATE_KEY",
-];
-/// Prefixes a value is a credential by, whatever it was named.
-const CREDENTIAL_PREFIXES: &[&str] = &[
-    "ghp_",
-    "gho_",
-    "ghs_",
-    "ghu_",
-    "ghr_",
-    "github_pat_",
-    "AKIA",
-];
 
 /// One session's append-only NDJSON stream.
 #[derive(Debug)]
 pub struct Stream {
     path: PathBuf,
     id: String,
-    seq: u64,
     labels: Labels,
-    /// Whether processes other than this one append to the same file *at the same
-    /// time*, which decides where `seq` comes from.
+    /// Numbers every envelope from what the file already holds, under the file's
+    /// own lock, and writes it inside that same turn.
     ///
-    /// A session's stream is written by whichever process holds the session, one at
-    /// a time, so its sequence is counted once at open and carried in memory. A
-    /// repository's release stream is not: two `onevcs release status` invocations
-    /// for one identity are two processes appending together, and a number each of
-    /// them counted before the other wrote is the same number twice — which is
-    /// exactly the gap a consumer reads as a lost event.
-    shared: bool,
+    /// Shared for every stream, not only the ones several processes append to at
+    /// once. A session's stream is written by whichever process holds the session,
+    /// one at a time — `session open`, then `publish`, then `close` — and each of
+    /// them continues the series the last one left, so a number counted in memory
+    /// from the process's own start would restart it. A repository's release stream
+    /// is written by several `onevcs release status` processes together, where a
+    /// number any of them counted before the other wrote is the same number twice.
+    /// Numbering from the file under its lock answers both.
+    emitter: Emitter,
 }
 
 impl Stream {
@@ -84,17 +65,16 @@ impl Stream {
     pub fn open(token: &str) -> Result<Self> {
         let path = path_for(token)?;
         home::ensure_dir(path.parent().expect("a stream lives in a directory"))?;
-        let seq = recorded(&path);
         let mut labels = Labels::default();
         labels
             .extra
             .insert("session".to_owned(), Value::String(token.to_owned()));
+        let emitter = emitter(token, &path, &labels);
         Ok(Self {
             path,
             id: token.to_owned(),
-            seq,
             labels,
-            shared: false,
+            emitter,
         })
     }
 
@@ -111,9 +91,6 @@ impl Stream {
         let mut stream = Self::open(&releases_token(identity))?;
         stream.labels.extra.remove("session");
         stream.label("identity", identity);
-        // Several `onevcs release status` processes ask about one identity at once,
-        // and every one of them appends here.
-        stream.shared = true;
         Ok(stream)
     }
 
@@ -122,6 +99,9 @@ impl Stream {
         self.labels
             .extra
             .insert(key.to_owned(), Value::String(value.to_owned()));
+        // Rebuilt rather than derived: a derived emitter keeps every label its parent
+        // stamped, and a stream's labels are replaced here as well as added to.
+        self.emitter = emitter(&self.id, &self.path, &self.labels);
     }
 
     /// Append one event, at the phase its kind decides.
@@ -158,15 +138,7 @@ impl Stream {
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
     ) {
-        let phase = match Phase::of(kind) {
-            Some(phase) => phase,
-            // The one kind whose phase its producer decides, and `emit_push` is
-            // where every push in this crate decides it. A push that arrived here
-            // instead is one this build has no target for, and the phase a session's
-            // own stream is in is the honest reading of it.
-            None => Phase::Development,
-        };
-        self.append_stamped(kind, phase, payload, artifacts);
+        self.append_stamped(kind, phase_of(kind), payload, artifacts);
     }
 
     fn append_stamped(
@@ -176,77 +148,66 @@ impl Stream {
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
     ) {
-        // A stream several processes write at once numbers its events under the
-        // lock that orders them, so the sequence is one series over the file rather
-        // than one per process — and the whole envelope is written inside that turn,
-        // because a number taken before the write and used after it is the same
-        // number twice.
-        let _turn = match self.shared {
-            true => match lock::exclusive(&stream_identity(&self.id)) {
-                Ok(turn) => Some(turn),
-                // The record of what a command did, which never fails the command:
-                // an unnumbered event is worse than a numbered one, so this says so
-                // and appends behind whatever the last read said.
-                Err(error) => {
-                    eprintln!(
-                        "onevcs: warning: cannot order a {kind:?} event in {}: {error}",
-                        self.path.display()
-                    );
-                    None
-                }
-            },
-            false => None,
+        let Err(unrecorded) =
+            self.emitter
+                .try_emit_stamped(kind, Dimensions::at(phase), payload, artifacts)
+        else {
+            return;
         };
-        if self.shared {
-            self.seq = recorded(&self.path);
-        }
-        self.seq += 1;
-        let envelope = Envelope {
-            v: ENVELOPE_VERSION,
-            ts: ids::timestamp(),
-            stream: self.id.clone(),
-            seq: self.seq,
-            source: Source::Vcs,
-            kind,
-            phase,
-            labels: self.labels.clone(),
-            payload: bound(payload),
-            artifacts,
-        };
-        if let Err(error) = self.append(&envelope) {
-            eprintln!(
-                "onevcs: warning: cannot record a {kind:?} event in {}: {error}",
-                self.path.display()
-            );
+        // Said in this crate's words rather than the bus's, because this is the line
+        // an operator running `onevcs` reads.
+        let path = self.path.display();
+        match &unrecorded.error {
+            EmitterError::Lock { source, .. } => {
+                eprintln!("onevcs: warning: cannot order a {kind:?} event in {path}: {source}");
+            }
+            EmitterError::Write { source, .. } => {
+                eprintln!("onevcs: warning: cannot record a {kind:?} event in {path}: {source}");
+            }
+            EmitterError::Serialize { source, .. } => {
+                eprintln!("onevcs: warning: cannot record a {kind:?} event in {path}: {source}");
+            }
         }
     }
+}
 
-    fn append(&self, envelope: &Envelope) -> std::io::Result<()> {
-        let mut line = serde_json::to_string(envelope)?;
-        line.push('\n');
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        // One whole line in one call, rather than a `writeln!` that formats in
-        // pieces: an appending write is positioned atomically, and two writes per
-        // line is how two processes appending together interleave into a line
-        // neither of them wrote.
-        file.write_all(line.as_bytes())
-    }
+/// The emitter one stream writes through: this crate's source and envelope version,
+/// numbered from the file, stamping exactly `labels`.
+fn emitter(id: &str, path: &std::path::Path, labels: &Labels) -> Emitter {
+    Emitter::shared(id, Source::Vcs, path)
+        .with_version(ENVELOPE_VERSION)
+        .with_labels(labels.clone())
 }
 
 /// A cursor over one session's stream, handing back only what is new.
 ///
 /// The reading half of `onevcs events`: it resolves the file, refuses a token that
 /// names none, and remembers how far it has read so a second call answers with the
-/// lines appended since the first. Both renderings — the command's bytes and
+/// records appended since the first. Both renderings — the command's bytes and
 /// [`EventStream`]'s values — are this one cursor, so neither can drift from the
 /// other about where a stream lives or when it has been read to its end.
+///
+/// Where one record ends is the bus reader's answer, so a final line no newline has
+/// ended yet is a record still being written rather than one to hand on: it is read
+/// whole once its writer finishes it.
 #[derive(Debug)]
 pub struct Reader {
     path: PathBuf,
+    /// The byte position after the last whole record handed back.
+    position: u64,
+    /// How many records have been handed back, so a refusal names the line of the
+    /// file rather than of the batch it arrived in.
     read: usize,
+}
+
+/// One whole line of a stream, as its writer left it and as the bus read it.
+pub(crate) struct Record {
+    /// Which line of the file it is, one-based.
+    pub number: usize,
+    /// The line's own bytes, without the newline that ended it.
+    pub text: String,
+    /// The envelope it held, or why it is not one.
+    pub read: std::result::Result<Envelope, String>,
 }
 
 impl Reader {
@@ -256,31 +217,60 @@ impl Reader {
         if !path.is_file() {
             return Err(error::invalid(format!("no event stream for {token:?}")));
         }
-        Ok(Self { path, read: 0 })
+        Ok(Self {
+            path,
+            position: 0,
+            read: 0,
+        })
     }
 
-    /// The lines appended since the last call, in the order they were written.
+    /// The records appended since the last call, in the order they were written, each
+    /// with its own bytes and the envelope it held.
     // llmlint: ignore[boundary_inputs_validated] the boundary this cursor owns is the
     // *name*: the token arrives from outside and is joined under the state root, and
     // `path_for` refuses one that is not a plain name before any file is opened. The
-    // envelope shape is checked one layer up, by `EventStream::read`, which refuses a line
-    // it cannot parse and one attributed to another stream, naming the line — that is the
-    // typed surface, and it has a journey for both refusals. `onevcs events` is
-    // deliberately the other rendering: a reader of one file rather than a validator of
-    // it. A line this build cannot parse is the line an operator most needs to see, and
-    // the envelope is versioned, so a command that refused what it could not parse would
-    // stop reading a stream a later build wrote.
-    pub fn lines(&mut self) -> Result<Vec<String>> {
-        let raw = std::fs::read_to_string(&self.path).map_err(error::at("read", &self.path))?;
-        let lines: Vec<&str> = raw.lines().collect();
-        let fresh = lines
-            .iter()
-            .skip(self.read)
-            .map(|line| (*line).to_owned())
-            .collect();
-        self.read = lines.len();
-        Ok(fresh)
+    // envelope shape is checked by the caller that wants values, through
+    // `attributed_record`, which refuses a line it cannot parse and one attributed to
+    // another stream, naming the line — that is the typed surface, and it has a journey
+    // for both refusals. `onevcs events` is deliberately the other rendering: a reader of
+    // one file rather than a validator of it. A line this build cannot parse is the line
+    // an operator most needs to see, and the envelope is versioned, so a command that
+    // refused what it could not parse would stop reading a stream a later build wrote.
+    pub(crate) fn records(&mut self) -> Result<Vec<Record>> {
+        let reading =
+            BusReader::open_at(&self.path, self.position).map_err(error::at("read", &self.path))?;
+        // Read after the records were, so every byte a record's position names is
+        // already in it: a stream is only ever appended to past its last whole record.
+        let bytes = std::fs::read(&self.path).map_err(error::at("read", &self.path))?;
+        let mut records = Vec::new();
+        for read in reading {
+            let (end, envelope) = match read {
+                Reading::Record(record) => (record.position, Ok(record.envelope)),
+                Reading::Refused(refused) => (refused.position, Err(refused.reason)),
+                Reading::Torn(_) => break,
+            };
+            let text = line_between(&bytes, self.position, end);
+            self.position = end;
+            self.read += 1;
+            records.push(Record {
+                number: self.read,
+                text,
+                read: envelope,
+            });
+        }
+        Ok(records)
     }
+}
+
+/// The line of `bytes` that starts at `start` and whose newline ends before `end`.
+fn line_between(bytes: &[u8], start: u64, end: u64) -> String {
+    let (start, end) = (to_index(start), to_index(end).saturating_sub(1));
+    String::from_utf8_lossy(bytes.get(start..end).unwrap_or_default()).into_owned()
+}
+
+/// A position in a file this process has read whole, as an index into its bytes.
+fn to_index(position: u64) -> usize {
+    usize::try_from(position).unwrap_or(usize::MAX)
 }
 
 /// A reader over one session's event stream, as values rather than as text.
@@ -376,7 +366,7 @@ impl EventStream {
             .include
             .iter()
             .chain(&filter.exclude)
-            .filter_map(|matcher| matcher.phase)
+            .filter_map(|matcher| matcher.fields.phase)
         {
             if !phases.contains(&named) {
                 return Err(error::invalid(format!(
@@ -417,19 +407,13 @@ impl EventStream {
     /// filter admits.
     pub fn read(&mut self) -> Result<Vec<Envelope>> {
         let mut events = Vec::new();
-        // One-based, and counted across every read, so a refusal names the line of
-        // the file rather than of the batch it happened to arrive in.
-        let mut line_number = self.reader.read;
-        for line in self.reader.lines()? {
-            line_number += 1;
+        for record in self.reader.records()? {
             // A kind this build has no word for is passed over rather than handed
-            // on: the value this yields is an [`Envelope`], whose `kind` is this
-            // build's own vocabulary, so there is no honest way to hand one over —
-            // and nothing is lost by not, because a consumer reading through this
-            // type could not have named it either.
+            // on: a consumer reading through this type reads `onevcs`'s vocabulary,
+            // and nothing is lost by not, because it could not have named one either.
             //
             // llmlint: ignore[boundary_inputs_validated] the two refusals this reader owes
-            // are `attributed`'s, called below, and both have been asked of this line
+            // are `attributed_record`'s, called below, and both have been asked of this line
             // before the `else` arm can discard it: a line that is not an envelope, and
             // one belonging to another stream. The envelope's *version* and its *stamp*
             // are not checked here and
@@ -438,9 +422,10 @@ impl EventStream {
             // stamp it cannot order, as a gap in its notes. So passing over a kindless
             // line removes no check a line with a kind gets; it removes a value nothing
             // downstream could have named.
-            let Line::Known(envelope) = attributed(&line, &self.session.0, line_number)? else {
+            let Line::Known(known) = attributed_record(record, &self.session.0)? else {
                 continue;
             };
+            let envelope = known.envelope;
             // Filtered last, and only after both refusals above: a filter says which
             // events a consumer wants, never which lines of the file are worth
             // reading. A stream that is not what a writer left is a refusal whichever
@@ -451,10 +436,14 @@ impl EventStream {
             // Dropped in silence, and only ever a phase this session cannot produce:
             // one a filter *named* was refused when the stream was opened. Nothing was
             // asked for and nothing was denied, so there is nothing to say.
-            if !self.phases.contains(&envelope.phase) {
+            if !envelope
+                .dimensions
+                .phase
+                .is_some_and(|phase| self.phases.contains(&phase))
+            {
                 continue;
             }
-            events.push(*envelope);
+            events.push(envelope);
         }
         if let Some(correlated) = &mut self.releases {
             events.extend(correlated.fresh(&self.session, &self.filter)?);
@@ -473,8 +462,8 @@ impl Correlated {
     /// event was written.
     fn fresh(&mut self, session: &SessionToken, filter: &EventFilter) -> Result<Vec<Envelope>> {
         let path = path_for(&self.token)?;
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(raw) => raw,
+        let reading = match BusReader::open(&path) {
+            Ok(reading) => reading,
             // A repository nothing has recorded a release for yet has no such record,
             // and that is an answer rather than a gap: the file is written by the
             // first release verb that says anything about this identity.
@@ -491,20 +480,26 @@ impl Correlated {
             }
         };
         let mut candidates = Vec::new();
-        for (index, line) in raw.lines().enumerate() {
-            let envelope = self.attributed(line, index + 1)?;
+        for (index, read) in reading.enumerate() {
+            let known = match read {
+                Reading::Record(record) => self.attributed(Ok(record.envelope), index + 1)?,
+                Reading::Refused(refused) => self.attributed(Err(refused.reason), index + 1)?,
+                // A record its writer has not finished yet, which the next read sees
+                // whole.
+                Reading::Torn(_) => break,
+            };
             // A probe is not a release. `release-probed` says what a target answered
             // when it was asked, which a session's own stream already carries for the
             // probes its publication ran — handing this stream's back too would
             // report one ask as two.
             if !matches!(
-                envelope.kind,
+                known.kind,
                 EventKind::ReleaseObserved | EventKind::ReleaseAcknowledged
-            ) || self.handed.contains(&envelope.seq)
+            ) || self.handed.contains(&known.envelope.seq)
             {
                 continue;
             }
-            candidates.push((index + 1, envelope));
+            candidates.push((index + 1, known.envelope));
         }
         // Nothing to correlate. The one thing this read is allowed to answer without
         // asking history, because it is a fact about the record rather than about the
@@ -569,20 +564,36 @@ impl Correlated {
         Ok(fresh)
     }
 
-    /// One line of the identity's release stream, refused if it is not an envelope
-    /// or belongs to another stream.
+    /// One record of the identity's release stream, refused if it is not an
+    /// envelope of a kind this build names or belongs to another stream.
     ///
     /// The two refusals [`attributed`] gives, said in the identity's own terms: this
     /// stream's name is not something a consumer of a *session* has, so naming it in
     /// a refusal would hand over the one address this join exists to keep private.
-    fn attributed(&self, line: &str, line_number: usize) -> Result<Envelope> {
-        let envelope: Envelope = serde_json::from_str(line).map_err(|failure| {
+    /// A kind this build has no word for is refused here too, as it always was: every
+    /// line of this record is one of the release kinds this build writes, and a
+    /// release this reader could not name is one it would otherwise report as absent.
+    fn attributed(
+        &self,
+        read: std::result::Result<Envelope, String>,
+        line_number: usize,
+    ) -> Result<Known> {
+        let envelope = read.map_err(|failure| {
             self.refusal(line_number, &format!("is not an event envelope: {failure}"))
         })?;
         if envelope.stream != self.token {
             return Err(self.refusal(line_number, "carries an event of another stream"));
         }
-        Ok(envelope)
+        match Line::of(envelope) {
+            Line::Known(known) => Ok(*known),
+            Line::Unknown(header) => Err(self.refusal(
+                line_number,
+                &format!(
+                    "is not an event envelope: unknown variant {:?} for an event kind",
+                    header.kind.as_str()
+                ),
+            )),
+        }
     }
 
     /// One refusal about this stream, in the identity's own terms.
@@ -688,9 +699,9 @@ fn listed(phases: &BTreeSet<Phase>) -> String {
 /// One line of a stream as the envelope it has to be, refused if it is not one or
 /// if it belongs to another session.
 ///
-/// Both readers that take a stream's *values* share this: [`EventStream`], and
-/// `onevcs events --filter`, which has to read an event to judge it. Two refusals,
-/// and neither is a filter's business.
+/// Every reader that takes a stream's *values* shares this: [`EventStream`], `onevcs
+/// events --filter`, which has to read an event to judge it, and `status`. Two
+/// refusals, and neither is a filter's business.
 ///
 /// A blank line is not an event either, and skipping one would be a reader deciding
 /// that some of the file is not worth reading — the one thing a reader of values
@@ -706,7 +717,24 @@ fn listed(phases: &BTreeSet<Phase>) -> String {
 /// this build: [`Line`] tolerates the kind and nothing else, and it is the caller
 /// that decides what to do with a line it has no word for.
 pub fn attributed(line: &str, session: &str, line_number: usize) -> Result<Line> {
-    let read = Line::read(line).map_err(|e| {
+    attribute(
+        Line::read(line).map_err(|failure| failure.to_string()),
+        session,
+        line_number,
+    )
+}
+
+/// [`attributed`], for a record [`Reader`] has already read.
+pub(crate) fn attributed_record(record: Record, session: &str) -> Result<Line> {
+    attribute(record.read.map(Line::of), session, record.number)
+}
+
+fn attribute(
+    read: std::result::Result<Line, String>,
+    session: &str,
+    line_number: usize,
+) -> Result<Line> {
+    let read = read.map_err(|e| {
         error::invalid(format!(
             "line {line_number} of the stream for {session:?} is not an event envelope: {e}"
         ))
@@ -718,18 +746,6 @@ pub fn attributed(line: &str, session: &str, line_number: usize) -> Result<Line>
         )));
     }
     Ok(read)
-}
-
-/// How many events a stream file already holds.
-fn recorded(path: &PathBuf) -> u64 {
-    std::fs::read_to_string(path)
-        .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count() as u64)
-        .unwrap_or(0)
-}
-
-/// The advisory-lock identity that orders appends to one shared stream.
-fn stream_identity(id: &str) -> String {
-    format!("stream:{id}")
 }
 
 /// The stream one repository's release activity is recorded on.
@@ -750,71 +766,15 @@ pub fn path_for(token: &str) -> Result<PathBuf> {
     Ok(home::streams_dir()?.join(format!("{token}.ndjson")))
 }
 
-/// Redact, then truncate, every string in a payload.
-fn bound(payload: Map<String, Value>) -> Map<String, Value> {
-    let mut bounded = Map::new();
-    let mut truncated = false;
-    for (key, value) in payload {
-        match value {
-            Value::String(text) => {
-                let clean = redact(&text);
-                if clean.len() > PAYLOAD_LIMIT {
-                    truncated = true;
-                    let cut = floor_char_boundary(&clean, PAYLOAD_LIMIT);
-                    bounded.insert(key, Value::String(clean[..cut].to_owned()));
-                } else {
-                    bounded.insert(key, Value::String(clean));
-                }
-            }
-            other => {
-                bounded.insert(key, other);
-            }
-        }
-    }
-    if truncated {
-        bounded.insert("truncated".to_owned(), Value::Bool(true));
-    }
-    bounded
-}
-
-fn floor_char_boundary(value: &str, at: usize) -> usize {
-    let mut index = at.min(value.len());
-    while index > 0 && !value.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
-/// Replace credential-shaped values with [`REDACTED`].
+/// Replace credential-shaped values with `[redacted]`.
 ///
 /// Two sources, because neither covers the other. A value this process was handed
 /// in a credential-shaped environment variable is a credential whatever it looks
-/// like; a value spelled like a host's own token is one whatever it was named.
+/// like; a value spelled like a host's own token is one whatever it was named. Both
+/// tables are the bus's, so what an artifact is redacted of is exactly what an event
+/// is.
 pub fn redact(text: &str) -> String {
-    let mut clean = text.to_owned();
-    for (name, value) in std::env::vars() {
-        let upper = name.to_ascii_uppercase();
-        if value.len() >= 8 && CREDENTIAL_WORDS.iter().any(|word| upper.contains(word)) {
-            clean = clean.replace(&value, REDACTED);
-        }
-    }
-    clean
-        .split_inclusive(|c: char| c.is_whitespace())
-        .map(|word| {
-            let trimmed = word.trim_end();
-            let spacing = &word[trimmed.len()..];
-            let bare = trimmed.trim_end_matches(['"', '\'', ',', ';', ')']);
-            let punctuation = &trimmed[bare.len()..];
-            if CREDENTIAL_PREFIXES
-                .iter()
-                .any(|prefix| bare.starts_with(prefix) && bare.len() >= prefix.len() + 8)
-            {
-                format!("{REDACTED}{punctuation}{spacing}")
-            } else {
-                word.to_owned()
-            }
-        })
-        .collect()
+    Redactor::from_env().redact(text)
 }
 
 /// Store evidence beside the stream and return the reference an event carries.
@@ -826,7 +786,7 @@ pub fn store_artifact(kind: &str, contents: &str) -> Result<ArtifactRef> {
     let path = directory.join(&id);
     std::fs::write(&path, &clean).map_err(error::at("store the artifact at", &path))?;
     Ok(ArtifactRef {
-        id: ArtifactId(id),
+        id,
         kind: kind.to_owned(),
         bytes: clean.len() as u64,
     })
@@ -840,4 +800,135 @@ pub fn read_artifact(id: &str) -> Result<String> {
     let path = home::artifacts_dir()?.join(id);
     std::fs::read_to_string(&path)
         .map_err(|_| error::invalid(format!("no artifact {id:?} is stored")))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Point this process's state root at a directory of its own.
+    ///
+    /// Safe as a process-wide write because `cargo nextest` runs each test in its own
+    /// process, which is what the end-to-end suite's in-process journeys rely on too.
+    fn inhabit() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("a temporary state root");
+        std::env::set_var(home::HOME_ENV, home.path());
+        home
+    }
+
+    fn envelopes(written: &str) -> Vec<Value> {
+        written
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("every line is an envelope"))
+            .collect()
+    }
+
+    #[test]
+    fn a_credential_nested_in_an_object_and_a_list_never_reaches_a_sessions_stream() {
+        // No kind this crate emits today nests an object in its payload, so no verb can
+        // be driven into writing one; the day one does, it is written by this call, the
+        // one every session event goes through. The stream is read back the two ways a
+        // consumer reads it: the file's own bytes, and `EventStream`.
+        let _home = inhabit();
+        let token = "nested-credentials";
+        let credentials = [
+            "ghp_0123456789abcdef",
+            "github_pat_0123456789abcdef",
+            "AKIA0123456789ABCDEF",
+        ];
+        let payload = json!({
+            "name": "check",
+            "detail": {
+                "said": format!("pushed with {}", credentials[0]),
+                "attempts": [
+                    {"output": credentials[1]},
+                    ["retried", format!("{},", credentials[2])],
+                ],
+            },
+        });
+
+        Stream::open(token)
+            .expect("the session's stream")
+            .emit_with(
+                EventKind::ChangeCheck,
+                payload.as_object().expect("an object").clone(),
+                Vec::new(),
+            );
+
+        let written = std::fs::read_to_string(path_for(token).expect("a stream path"))
+            .expect("the stream was written");
+        for credential in credentials {
+            assert!(
+                !written.contains(credential),
+                "{credential:?} reached the stream file:\n{written}"
+            );
+        }
+        let read = EventStream::open(&SessionToken(token.to_owned()))
+            .expect("the session's stream")
+            .read()
+            .expect("every event the session wrote");
+        assert_eq!(read.len(), 1, "{written}");
+        assert_eq!(
+            Value::Object(read[0].payload.clone()),
+            json!({
+                "name": "check",
+                "detail": {
+                    "said": "pushed with [redacted]",
+                    "attempts": [
+                        {"output": "[redacted]"},
+                        ["retried", "[redacted],"],
+                    ],
+                },
+            }),
+            "every string of the payload is redacted, however deeply it is nested"
+        );
+    }
+
+    #[test]
+    fn a_record_a_writer_died_part_way_through_is_healed_before_the_next_event_is_appended() {
+        // A writer killed mid-line leaves bytes no newline finished. The next event this
+        // crate records truncates them first, so it starts a line of its own and takes
+        // the number after the last whole record.
+        let _home = inhabit();
+        let token = "torn-tail";
+        let path = path_for(token).expect("a stream path");
+        Stream::open(token)
+            .expect("the session's stream")
+            .emit(EventKind::SessionOpened, Map::new());
+        let whole = std::fs::read_to_string(&path).expect("the stream was written");
+        let torn = "{\"v\":1,\"ts\":\"2026-09-13T00:00:00.000Z\",\"stream\":\"";
+        {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .and_then(|mut file| file.write_all(torn.as_bytes()))
+                .expect("the stream takes the bytes");
+        }
+
+        Stream::open(token)
+            .expect("the session's stream, reopened")
+            .emit(EventKind::SessionClosed, Map::new());
+
+        let written = std::fs::read_to_string(&path).expect("the stream");
+        assert!(
+            written.starts_with(&whole) && written.ends_with('\n') && !written.contains(torn),
+            "the torn bytes were not truncated away before the append:\n{written}"
+        );
+        let envelopes = envelopes(&written);
+        assert_eq!(
+            envelopes
+                .iter()
+                .map(|envelope| envelope["seq"].as_u64().expect("a seq"))
+                .collect::<Vec<u64>>(),
+            vec![1, 2],
+            "one gapless series:\n{written}"
+        );
+        assert_eq!(
+            envelopes[1]["kind"], "session-closed",
+            "the last record is the one the healing writer wrote:\n{written}"
+        );
+    }
 }

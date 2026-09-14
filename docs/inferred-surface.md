@@ -218,11 +218,11 @@ What is inferred here is only how this crate spells it:
 
 | Item | Shape | Why |
 | --- | --- | --- |
-| `EventMatcher` | one public type, every field `Option` | The grammar names matchers and their fields but no type. A named type rather than a map is what lets a consumer build a filter as a value — which is the whole point of the typed seam — and `Option` per field is "unset asks nothing", which is what the grammar says each field means. |
-| `EventFilter::parse` | `&str` in, `Result<Self>` out | A consumer with a spec as text needs one entry point that refuses it the way the CLI does. It reads YAML, which is the language the grammar is written in and a superset of the JSON the CLI takes inline, so both forms are one parser rather than two that could disagree. |
-| `Deserialize for EventFilter` | routed through the same validation | Hand-written rather than derived, so a filter embedded in a consumer's own configuration is refused by the same rules, with the same message naming the same matcher. A derived one would name the field and not which matcher carried it. |
+| `EventMatcher` | `onemessagebus-agent`'s `Matcher`, re-exported | `source` and `kind` on the matcher, and `phase` with the five reserved labels in its `fields`, every one `Option` — "unset asks nothing", which is what the grammar says each field means. A named type rather than a map is what lets a consumer build a filter as a value. Adopted from the bus rather than inferred here; the shape it had before was flat. |
+| `EventFilter::parse` | `&str` in, `Result<Self, FilterError>` out | The bus's entry point, re-exported with the type. It reads YAML, which is the language the grammar is written in and a superset of the JSON the CLI takes inline, so both forms are one parser. The CLI turns its refusal into this crate's `Invalid`, exit 2. |
+| `Deserialize for EventFilter` | the bus's, refusing an undeclared field by name | A filter embedded in a consumer's own configuration is refused by the same derive `parse` reads through. `parse` alone goes on to refuse a matcher naming no field or an empty one. |
 | `--filter SPEC` | inline when it opens with `{`, a path otherwise | Decided by the text rather than by whether a file happens to exist, so what an invocation means does not change with the directory it runs in. The grammar's document is a mapping, so the two forms cannot collide. |
-| `Phase::of` | `EventKind` in, `Option<Phase>` out | The mapping the amendment's table states, answerable because a kind decides its own phase — except for `push`, whose phase is a fact about the branch it updated. `None` is that one kind saying so, rather than a total function that would have to invent an answer for it. Public because a consumer merging several sources reads envelopes an older producer wrote, which carry no `phase` at all. |
+| `Phase::of` | the `PhaseOf` trait, implemented for `Phase`: `EventKind` in, `Option<Phase>` out | The mapping the amendment's table states, answerable because a kind decides its own phase — except for `push`, whose phase is a fact about the branch it updated. `None` is that one kind saying so, rather than a total function that would have to invent an answer for it. Public because a consumer merging several sources reads envelopes an older producer wrote, which carry no `phase` at all. A trait because `Phase` is the agent profile's type and the mapping is this crate's, so no inherent method can be added to it here; `PhaseOf` is the one name that adds, and with it in scope the call keeps its spelling. |
 | `Phase::as_str` and `Phase::every` | the wire word, and the four in order | Both already reachable through `Serialize`; they exist for the two places a phase is *rendered* rather than serialized — a refusal listing which phases a session has, and a consumer's own log line. `as_str` and the serialized spelling are held together in `tests/contract.rs`. |
 
 Deliberately *not* public: `EventKind::wire`, the kebab-case spelling a `kind` glob
@@ -766,16 +766,15 @@ question was:
    was. What decided it was not a merged stream but this crate's own history: two
    kinds were deleted in 0.11.0 and 30% of the streams on the consuming host became
    one refusal per line, most expensively in a status read that walks every stream
-   there is. The type is unchanged — `EventKind` still names only what the
-   contract names, and an `Envelope` still refuses a kind it cannot name, because
-   its `kind` field is that enum and there is no honest value to put there. So the
-   open half is the one above, unchanged and still a contract question: a consumer
-   that has to know *which* foreign kind it read needs `Other(String)` on the
-   shared type, decided once across the three repositories.
-3. **The bounded-payload constants are documented but not exposed.** The contract
-   fixes truncation at 4096 bytes with `"truncated": true`, and the envelope at
-   `v: 1`. Neither is a public item the contract names, so neither is exported. An
-   implementer will want both; exporting them is a one-line amendment.
+   there is. **Answered by the shared envelope.** `onemessagebus`'s `Envelope`
+   carries `kind` open, as the string it travels as, so a consumer that has to know
+   *which* foreign kind it read reads it there. `EventKind` still names only what the
+   contract names, and is what this crate's readers ask of that string.
+3. **The bounded-payload constants are documented but not exposed by this crate.**
+   The contract fixes truncation at 4096 bytes with `"truncated": true`, and the
+   envelope at `v: 1`. Neither is a public item the contract names, so `onevcs`
+   exports neither. The bound is `onemessagebus::MAX_PAYLOAD_TEXT_BYTES`, public
+   there, which is where an implementer finds it.
 4. ~~**The provenance trailers are spelled by this crate and named by nothing.**~~
    **Resolved: the prefix is configurable, and the keys are no longer an
    inference.** They are an approved amendment, so they are written into the

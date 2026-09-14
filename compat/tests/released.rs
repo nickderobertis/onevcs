@@ -3,9 +3,9 @@
 //! The claim this proves is the one nothing inside the crate can: that `phase` is
 //! **additive inside `v: 1`**, so a build already in the field goes on reading a
 //! stream a newer one wrote. Asserting that from the current sources would only ask
-//! this build about itself — the envelope types are duplicated per repository by
-//! design, and what a consumer actually runs is a version that was published before
-//! the field existed.
+//! this build about itself — a released build carries its own copy of the envelope
+//! types, from before they were `onemessagebus`'s, and what a consumer actually runs
+//! is a version that was published before the field existed.
 //!
 //! So the dependency here is the released crate from the registry, at a pinned
 //! version, and the fixture is the one `docs/contract.md` declares — the same

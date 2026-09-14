@@ -912,7 +912,10 @@ fn a_declaration_nobody_could_read_widens_the_phases_a_session_has_rather_than_r
     let session = onevcs::SessionToken(token);
     let filter = onevcs::EventFilter {
         include: vec![onevcs::EventMatcher {
-            phase: Some(onevcs::Phase::Release),
+            fields: onemessagebus_agent::event::MatchFields {
+                phase: Some(onevcs::Phase::Release),
+                ..Default::default()
+            },
             ..onevcs::EventMatcher::default()
         }],
         exclude: Vec::new(),
@@ -928,7 +931,10 @@ fn a_declaration_nobody_could_read_widens_the_phases_a_session_has_rather_than_r
     let session = onevcs::SessionToken(token);
     let filter = onevcs::EventFilter {
         include: vec![onevcs::EventMatcher {
-            phase: Some(onevcs::Phase::Release),
+            fields: onemessagebus_agent::event::MatchFields {
+                phase: Some(onevcs::Phase::Release),
+                ..Default::default()
+            },
             ..onevcs::EventMatcher::default()
         }],
         exclude: Vec::new(),

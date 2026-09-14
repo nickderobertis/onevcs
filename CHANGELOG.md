@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(event)* [**breaking**] the envelope, its filter, the stream's emitter and reader, and redaction are `onemessagebus` 0.4.0's and `onemessagebus-agent` 0.4.0's, re-exported at the paths they had
+- The minimum supported Rust version is now 1.89, which `onemessagebus` 0.4.0 requires
+
 ## [0.23.0](https://github.com/nickderobertis/onevcs/compare/v0.22.0...v0.23.0) - 2026-09-13
 
 ### Added
