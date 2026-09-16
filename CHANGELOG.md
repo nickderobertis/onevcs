@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1](https://github.com/nickderobertis/onevcs/compare/v0.24.0...v0.24.1) - 2026-09-16
+
+### Fixed
+
+- *(release)* print the resolvable reference in the recovery command ([#153](https://github.com/nickderobertis/onevcs/pull/153))
+
 ## [0.24.0](https://github.com/nickderobertis/onevcs/compare/v0.23.0...v0.24.0) - 2026-09-14
 
 ### Changed
