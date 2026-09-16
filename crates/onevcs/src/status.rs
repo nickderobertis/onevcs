@@ -794,6 +794,8 @@ fn carrier_of(judged: &[(PathBuf, String, Landed)]) -> Option<&(PathBuf, String,
 /// tiers, and asked of history alone — no host is consulted, because the landing
 /// tiers never were and because the caller that asks this has no `Hosting` to hand.
 pub(crate) struct LandingOf {
+    /// The resolvable work reference the caller supplied.
+    pub reference: String,
     /// The identity the work belongs to.
     pub identity: String,
     /// The branch that carries it.
@@ -860,6 +862,7 @@ pub(crate) fn landing_of_within(
     )?;
     let carrier = carrier_of(&judged);
     Ok(LandingOf {
+        reference: reference.to_owned(),
         identity: work.identity.clone(),
         branch: work.branch.clone(),
         // A chain this host cannot follow says nothing about the branch, and the

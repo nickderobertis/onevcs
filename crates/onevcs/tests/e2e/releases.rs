@@ -1893,27 +1893,35 @@ fn a_host_landing_missed_by_onevcs_can_be_acknowledged_for_an_automated_target()
             .env("ONEVCS_ACTOR", "operator")
             .assert()
     };
-    let before = release(&["status", &token, "--target", "crate", "--json"])
+    let change_url = "https://github.com/acme-corp/hosted/pull/1";
+    let before = release(&["status", change_url, "--target", "crate", "--json"])
         .success()
         .get_output()
         .stdout
         .clone();
     let before: Value = serde_json::from_slice(&before).expect("status JSON");
     assert_eq!(before["state"], "not-answered");
-    assert!(before["reason"]
-        .as_str()
-        .expect("a reason")
-        .contains("release acknowledge"));
+    let reason = before["reason"].as_str().expect("a reason");
+    let command = reason
+        .split('`')
+        .find(|part| part.starts_with("onevcs release acknowledge "))
+        .expect("the refusal prints its recovery command");
+    assert!(
+        command.contains(change_url),
+        "the recovery command carries the resolvable reference unchanged: {command}"
+    );
+    assert!(
+        !command.contains(&token),
+        "the recovery command is composed from the caller's reference: {command}"
+    );
 
-    release(&[
-        "acknowledge",
-        &token,
-        "--target",
-        "crate",
-        "--version",
-        "1.0.0",
-    ])
-    .success();
+    hosted
+        .world
+        .onevcs()
+        .args(command.split_whitespace().skip(1))
+        .env("ONEVCS_ACTOR", "operator")
+        .assert()
+        .success();
     let human = release(&["status", &token, "--target", "crate"])
         .success()
         .get_output()
