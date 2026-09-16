@@ -586,7 +586,14 @@ pub fn status(
     };
     let mut stream = Stream::releases(&located.releases.identity)?;
     match target.probe() {
-        Some(configured) => automated_status(&located, target, configured, &commit, &mut stream),
+        Some(configured) => automated_status(
+            &located,
+            target,
+            configured,
+            &commit,
+            &landing.reference,
+            &mut stream,
+        ),
         None => human_step_status(&located, target, &commit, &landing),
     }
 }
@@ -598,6 +605,7 @@ fn automated_status(
     target: &ReleaseTarget,
     configured: &Probe,
     commit: &str,
+    reference: &str,
     stream: &mut Stream,
 ) -> Result<ReleaseStatus> {
     let identity = &located.releases.identity;
@@ -624,7 +632,16 @@ fn automated_status(
             }
             _ => {
                 return Ok(ReleaseStatus::NotAnswered {
-                    reason: unsound(target, commit, other.as_ref()),
+                    reason: unsound(
+                        target,
+                        commit,
+                        reference,
+                        match &answer {
+                            ReleaseAnswer::Released { version } => Some(version.as_str()),
+                            _ => None,
+                        },
+                        other.as_ref(),
+                    ),
                 })
             }
         },
@@ -667,7 +684,13 @@ fn automated_status(
 }
 
 /// The reason a landing with no usable baseline answers "not answered".
-fn unsound(target: &ReleaseTarget, commit: &str, record: Option<&BaselineRecord>) -> String {
+fn unsound(
+    target: &ReleaseTarget,
+    commit: &str,
+    reference: &str,
+    version: Option<&str>,
+    record: Option<&BaselineRecord>,
+) -> String {
     let then = match record {
         Some(BaselineRecord::Unestablished {
             reason,
@@ -675,12 +698,13 @@ fn unsound(target: &ReleaseTarget, commit: &str, record: Option<&BaselineRecord>
         }) => format!("the probe did not answer at {attempted_at}: {reason}"),
         _ => "no probe was run for this target at that landing".to_owned(),
     };
+    let version = version.unwrap_or("<VERSION>");
     format!(
         "no baseline was captured for the release target {name:?} at landing {commit}, so a \
          comparison would be unsound — the release carrying this very change may already be \
          included in whatever the probe answers now. {then}. Record the release that carries \
-         this landing with `onevcs release acknowledge {commit} --target {name} --version \
-         <VERSION>`",
+         this landing with `onevcs release acknowledge {reference} --target {name} --version \
+         {version}`",
         name = target.name,
     )
 }
