@@ -65,18 +65,40 @@ fn contract_path() -> PathBuf {
 
 #[test]
 fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
-    let manifest =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dual-consumer/Cargo.toml");
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture = crate_root.join("tests/fixtures/dual-consumer");
+    let consumer = tempfile::tempdir().expect("a temporary consumer directory");
+    std::fs::create_dir(consumer.path().join("src")).expect("the consumer source directory exists");
+    std::fs::copy(
+        fixture.join("src/lib.rs"),
+        consumer.path().join("src/lib.rs"),
+    )
+    .expect("the consumer source is copied");
+    std::fs::copy(
+        crate_root.join("../../Cargo.lock"),
+        consumer.path().join("Cargo.lock"),
+    )
+    .expect("the finished workspace lockfile seeds the consumer resolution");
+
+    let path = |path: PathBuf| path.to_string_lossy().replace('\\', "/");
+    let manifest = std::fs::read_to_string(fixture.join("Cargo.toml"))
+        .expect("the consumer manifest is readable")
+        .replace(
+            "../../../../onevcs-testing",
+            &path(crate_root.join("../onevcs-testing")),
+        )
+        .replace("../../..", &path(crate_root.to_path_buf()));
+    let manifest_path = consumer.path().join("Cargo.toml");
+    std::fs::write(&manifest_path, manifest).expect("the temporary consumer manifest is written");
     let output = Command::new(env!("CARGO"))
         .args([
             "metadata",
             "--format-version",
             "1",
-            "--locked",
             "--offline",
             "--manifest-path",
         ])
-        .arg(&manifest)
+        .arg(&manifest_path)
         .output()
         .expect("Cargo runs for the downstream consumer");
     assert!(
@@ -90,7 +112,7 @@ fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
         .as_array()
         .expect("cargo metadata lists packages");
     for (name, version) in [
-        ("onevcs", "0.24.1"),
+        ("onevcs", env!("CARGO_PKG_VERSION")),
         ("onemessagebus", "0.7.0"),
         ("onemessagebus-agent", "0.7.0"),
     ] {
