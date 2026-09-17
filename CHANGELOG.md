@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.2](https://github.com/nickderobertis/onevcs/compare/v0.24.1...v0.24.2) - 2026-09-17
+
+### Fixed
+
+- *(deps)* link the onemessagebus release that no longer carries the onejudge codec ([#156](https://github.com/nickderobertis/onevcs/pull/156))
+
 ## [0.24.1](https://github.com/nickderobertis/onevcs/compare/v0.24.0...v0.24.1) - 2026-09-16
 
 ### Fixed
