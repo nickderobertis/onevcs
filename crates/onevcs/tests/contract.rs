@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use clap::CommandFactory;
 use onemessagebus::Kind;
@@ -60,6 +61,75 @@ fn contract_path() -> PathBuf {
         .join("../../docs/contract.md")
         .canonicalize()
         .expect("docs/contract.md must exist beside the crate that implements it")
+}
+
+#[test]
+fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture = crate_root.join("tests/fixtures/dual-consumer");
+    let consumer = tempfile::tempdir().expect("a temporary consumer directory");
+    std::fs::create_dir(consumer.path().join("src")).expect("the consumer source directory exists");
+    std::fs::copy(
+        fixture.join("src/lib.rs"),
+        consumer.path().join("src/lib.rs"),
+    )
+    .expect("the consumer source is copied");
+    std::fs::copy(
+        crate_root.join("../../Cargo.lock"),
+        consumer.path().join("Cargo.lock"),
+    )
+    .expect("the finished workspace lockfile seeds the consumer resolution");
+
+    let path = |path: PathBuf| path.to_string_lossy().replace('\\', "/");
+    let manifest = std::fs::read_to_string(fixture.join("Cargo.toml"))
+        .expect("the consumer manifest is readable")
+        .replace(
+            "../../../../onevcs-testing",
+            &path(crate_root.join("../onevcs-testing")),
+        )
+        .replace("../../..", &path(crate_root.to_path_buf()));
+    let manifest_path = consumer.path().join("Cargo.toml");
+    std::fs::write(&manifest_path, manifest).expect("the temporary consumer manifest is written");
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--offline",
+            "--manifest-path",
+        ])
+        .arg(&manifest_path)
+        .output()
+        .expect("Cargo runs for the downstream consumer");
+    assert!(
+        output.status.success(),
+        "the downstream consumer resolves:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let metadata: Value = serde_json::from_slice(&output.stdout).expect("cargo metadata is JSON");
+    let packages = metadata["packages"]
+        .as_array()
+        .expect("cargo metadata lists packages");
+    for (name, version) in [
+        ("onevcs", env!("CARGO_PKG_VERSION")),
+        ("onemessagebus", "0.7.0"),
+        ("onemessagebus-agent", "0.7.0"),
+    ] {
+        let matches: Vec<_> = packages
+            .iter()
+            .filter(|package| package["name"] == name)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "the consumer must resolve exactly one {name}: {matches:?}"
+        );
+        assert_eq!(
+            matches[0]["version"], version,
+            "the consumer must resolve the adopted {name}"
+        );
+    }
 }
 
 /// Every fenced code block in the contract, as `(language, body)`. The language

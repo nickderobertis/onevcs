@@ -30,6 +30,12 @@ allow = [
     # or near enough for an MIT binary.
     "MIT-0",
     "Zlib",
+    # `onemessagebus`'s pinned-URL schema client uses rustls over ring: ring,
+    # rustls-webpki, and untrusted carry this permissive license.
+    "ISC",
+    # `subtle` supplies ring's constant-time primitives under this permissive
+    # license.
+    "BSD-3-Clause",
 ]
 confidence-threshold = 0.9
 exceptions = []

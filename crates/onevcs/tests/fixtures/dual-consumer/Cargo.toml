@@ -1,0 +1,15 @@
+[package]
+name = "onevcs-dual-consumer"
+version = "0.0.0"
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] A standalone consumer cannot inherit metadata from the workspace whose dependency resolution it exercises.
+edition = "2021"
+publish = false
+
+# Keep this consumer outside the repository workspace so Cargo resolves the two
+# published crates exactly as a downstream project does.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] The acceptance journey requires a consumer outside the repository workspace, matching Cargo's downstream resolution boundary.
+[workspace]
+
+[dependencies]
+onevcs = { path = "../../.." }
+onevcs-testing = { path = "../../../../onevcs-testing" }

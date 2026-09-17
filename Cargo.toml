@@ -97,8 +97,8 @@ libc = "0.2"
 # and the emitter and reader over a stream: one copy shared by every producer in
 # the stack, where each used to keep its own. The core is generic over a
 # vocabulary; the agent profile is the vocabulary `onevcs` writes (`source: vcs`).
-onemessagebus = "0.4.0"
-onemessagebus-agent = "0.4.0"
+onemessagebus = "0.7.0"
+onemessagebus-agent = "0.7.0"
 
 assert_cmd = "2"
 predicates = "3"
