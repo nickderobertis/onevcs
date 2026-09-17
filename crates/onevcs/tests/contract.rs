@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use clap::CommandFactory;
 use onemessagebus::Kind;
@@ -60,6 +61,53 @@ fn contract_path() -> PathBuf {
         .join("../../docs/contract.md")
         .canonicalize()
         .expect("docs/contract.md must exist beside the crate that implements it")
+}
+
+#[test]
+fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
+    let manifest =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dual-consumer/Cargo.toml");
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--locked",
+            "--offline",
+            "--manifest-path",
+        ])
+        .arg(&manifest)
+        .output()
+        .expect("Cargo runs for the downstream consumer");
+    assert!(
+        output.status.success(),
+        "the downstream consumer resolves:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let metadata: Value = serde_json::from_slice(&output.stdout).expect("cargo metadata is JSON");
+    let packages = metadata["packages"]
+        .as_array()
+        .expect("cargo metadata lists packages");
+    for (name, version) in [
+        ("onevcs", "0.24.1"),
+        ("onemessagebus", "0.7.0"),
+        ("onemessagebus-agent", "0.7.0"),
+    ] {
+        let matches: Vec<_> = packages
+            .iter()
+            .filter(|package| package["name"] == name)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "the consumer must resolve exactly one {name}: {matches:?}"
+        );
+        assert_eq!(
+            matches[0]["version"], version,
+            "the consumer must resolve the adopted {name}"
+        );
+    }
 }
 
 /// Every fenced code block in the contract, as `(language, body)`. The language

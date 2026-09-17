@@ -1,0 +1,14 @@
+[package]
+name = "onevcs-dual-consumer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Keep this consumer outside the repository workspace so Cargo resolves the two
+# published crates exactly as a downstream project does.
+[workspace]
+
+[dependencies]
+onevcs = { path = "../../.." }
+onevcs-testing = { path = "../../../../onevcs-testing" }
+
