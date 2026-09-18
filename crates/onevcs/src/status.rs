@@ -809,6 +809,10 @@ pub(crate) struct LandingOf {
     /// *read* that commit has to ask the same way this did, or it reads a landing
     /// this answer just established as one no repository holds.
     pub lent: Option<PathBuf>,
+    /// The stream that recorded this branch's change request being opened — the
+    /// newest one, where several did — which is where a landing discovered after that
+    /// publication ended is recorded, so the next read finds it as a recorded landing.
+    pub change_stream: Option<String>,
 }
 
 pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<LandingOf> {
@@ -851,6 +855,17 @@ pub(crate) fn landing_of_within(
         .as_ref()
         .map(|record| record.token.to_string());
     let told = from_streams(&streams, &work, held_by.as_deref());
+    let change_stream = newest(
+        relevant_streams(&streams, &work.identity, &work.branch, held_by.as_deref())
+            .into_iter()
+            .filter_map(|record| {
+                record.change_url.as_ref().map(|url| Stamped {
+                    at: url.at.clone(),
+                    value: record.token.clone(),
+                })
+            }),
+    )
+    .map(|stamped| stamped.value);
     let judged = judge(
         &carrying(&holders, &answering.superseded),
         &resolution,
@@ -877,6 +892,7 @@ pub(crate) fn landing_of_within(
         },
         carrier: carrier.map(|(repo, _, _)| repo.clone()),
         lent,
+        change_stream,
     })
 }
 

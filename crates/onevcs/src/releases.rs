@@ -456,11 +456,13 @@ pub enum Baseline {
 pub enum BaselineRecord {
     /// A baseline was established at the landing, and can be compared against.
     Established(Baseline),
-    /// No probe answered at landing. **Not a baseline**, and never usable as one: a
-    /// probe answering a *version* later cannot repair it, because the release
-    /// carrying this very change may already be included in it.
+    /// No baseline could be taken at landing: no probe answered then, or the landing
+    /// was found only after a release may already carry it. **Not a baseline**, and
+    /// never usable as one: a probe answering a *version* later cannot repair it,
+    /// because the release carrying this very change may already be included in it.
     Unestablished {
-        /// What the probe said when it was asked at the landing.
+        /// Why: what the probe said when it was asked at the landing, or what says a
+        /// release may already carry a landing found late.
         reason: String,
         /// When it was asked, RFC3339 with millisecond precision, in UTC.
         attempted_at: String,

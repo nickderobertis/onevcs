@@ -911,6 +911,22 @@ released at landing. There is no other automatic recovery and none should be add
 the way out is a person's — fix the probe and land again, or adopt fast. A landing
 this crate never probed at all is the same state and is answered the same way.
 
+**A landing the host made after its publication ended is reconciled where it is
+found.** A `change-auto` publication captures its baselines in the call that watches
+for the merge, and a merge that waits on the host longer than that process lives —
+or a `change-open` change a person merges later — is never seen by it. So the first
+`release status` that decides such a landing from the change request's number in
+the base does what the publication would have: it fast-forwards the publication
+checkout, captures each automated target's baseline **at that landing commit**, and
+records the landing on the stream that opened the change request, after which the
+landing reads as a recorded one and is not reconciled again. A reading taken then
+stands for the landing only while nothing has been released from it since, so where
+a tag in the publication checkout already contains the landing commit — or where
+that cannot be asked — each target is recorded `unestablished` with that reason
+instead, and `release acknowledge` is the answer. Best effort, like the capture at a
+landing: a reconciliation that could not run warns on stderr and is tried again by
+the next read.
+
 Nothing is probed at landing for a human-step target, because there is nothing to
 probe. What the landing starts for one of those is a wait, measured from the landing
 commit's own committer date.

@@ -2072,6 +2072,18 @@ pub fn merge_squash(cwd: &Path, reference: &str, message: &str) -> Result<Option
     head_sha(cwd).map(Some)
 }
 
+/// Every tag whose commit carries `commit`, by name.
+pub fn tags_containing(cwd: &Path, commit: &str) -> Result<Vec<String>> {
+    let output = checked(&["tag", &format!("--contains={commit}")], Some(cwd))?;
+    Ok(output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Fast-forward the current branch to a ref, or fail.
 ///
 /// The only way a publication checkout is ever advanced: it is never worked in,

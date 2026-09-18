@@ -25,11 +25,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use url::Url;
 
 use crate::declaration::{self, Declaration, DeclaredTarget};
 use crate::error::{self, Result};
 use crate::event::EventKind;
-use crate::landed::Landed;
+use crate::landed::{Landed, LandingEvidence};
 use crate::registry::Registry;
 use crate::releases::{
     Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
@@ -585,6 +586,18 @@ pub fn status(
         }
     };
     let mut stream = Stream::releases(&located.releases.identity)?;
+    if let Landed::Yes { evidence } | Landed::InPart { evidence, .. } = &landing.landed {
+        if let LandingEvidence::ChangeRequest { change_url, .. } = evidence {
+            reconcile_discovered(
+                registry,
+                &located,
+                &landing,
+                &commit,
+                change_url,
+                &mut stream,
+            );
+        }
+    }
     match target.probe() {
         Some(configured) => automated_status(
             &located,
@@ -695,7 +708,7 @@ fn unsound(
         Some(BaselineRecord::Unestablished {
             reason,
             attempted_at,
-        }) => format!("the probe did not answer at {attempted_at}: {reason}"),
+        }) => format!("no baseline could be established at {attempted_at}: {reason}"),
         _ => "no probe was run for this target at that landing".to_owned(),
     };
     let version = version.unwrap_or("<VERSION>");
@@ -836,7 +849,22 @@ pub fn record_baselines(registry: &Registry, identity: &str, commit: &str, strea
 }
 
 fn capture(registry: &Registry, identity: &str, commit: &str, stream: &mut Stream) -> Result<()> {
-    let located = for_repository(registry, identity)?;
+    capture_in(&for_repository(registry, identity)?, commit, None, stream)
+}
+
+/// Capture every automated target's baseline at one landing commit that has none yet.
+///
+/// `withheld` is the reason no reading taken now can stand for one taken at the
+/// landing, where there is one: each target is then recorded as unestablished, with
+/// that reason, rather than probed — so the record says why there is no baseline
+/// instead of holding one that may already include the release carrying the change.
+fn capture_in(
+    located: &Located,
+    commit: &str,
+    withheld: Option<&str>,
+    stream: &mut Stream,
+) -> Result<()> {
+    let identity = &located.releases.identity;
     for target in &located.releases.targets {
         // Nothing is probed for a human-step target, because there is nothing to
         // probe: the probe is what this iterates on, so there is no target here
@@ -850,7 +878,15 @@ fn capture(registry: &Registry, identity: &str, commit: &str, stream: &mut Strea
         if read(identity)?.baseline(&target.name, commit).is_some() {
             continue;
         }
-        let answer = ask(&located, target, configured, stream).answer;
+        if let Some(reason) = withheld {
+            let record = BaselineRecord::Unestablished {
+                reason: reason.to_owned(),
+                attempted_at: ids::timestamp(),
+            };
+            write_baseline(identity, &target.name, commit, record)?;
+            continue;
+        }
+        let answer = ask(located, target, configured, stream).answer;
         let record = match answer {
             ReleaseAnswer::Released { version } => {
                 BaselineRecord::Established(Baseline::At { version })
@@ -864,6 +900,95 @@ fn capture(registry: &Registry, identity: &str, commit: &str, stream: &mut Strea
         write_baseline(identity, &target.name, commit, record)?;
     }
     Ok(())
+}
+
+/// Give a landing found in the base's history what the publication that made it
+/// would have given it, had it lived to see the merge.
+///
+/// A `change-auto` publication records the landing, captures the baselines and
+/// fast-forwards the publication checkout in the same call that watches for the
+/// merge — so when a merge waits hours on the host and that process does not
+/// survive to see it, none of the three happens, and a `published` hold reads
+/// "not answered" for ever. The same is true of every change a person merges on the
+/// host after `change-open`. Reached only for a landing the change request's number
+/// in the base decided: a landing this crate saw is a recorded one and is answered
+/// by the tier above it, which is also what makes this run once.
+///
+/// **The baseline is still taken at the landing, or not at all.** A reading taken
+/// now stands for the moment of the landing only if nothing has been released from a
+/// tree carrying the change since, and a tag containing the landing commit is what a
+/// release leaves in history: where one does — or where that cannot be asked — each
+/// target is recorded as having no baseline, with that reason, and `release
+/// acknowledge` remains the answer. The checkout is fast-forwarded *first* because
+/// its fetch is what brings such a tag in.
+///
+/// Best effort, as each of the three is on the live path and for the reason given
+/// there: the change has already landed, and failing the read that found it because
+/// a footnote could not be written would be the worse answer. The landing is recorded
+/// last, and only once the rest is done, because recording it is what stops this
+/// being tried again — a read that could not fetch leaves it for the next one.
+fn reconcile_discovered(
+    registry: &Registry,
+    located: &Located,
+    landing: &status::LandingOf,
+    commit: &str,
+    change: &Url,
+    stream: &mut Stream,
+) {
+    let identity = &located.releases.identity;
+    let warn = |what: &str, failure: &dyn std::fmt::Display| {
+        eprintln!(
+            "onevcs: warning: {identity} landed {branch} at {commit}, discovered after the \
+             publication that made it ended, and {what}: {failure}",
+            branch = landing.branch,
+        );
+    };
+    let publication = match store::resolve(registry, identity) {
+        Ok(resolution) => resolution.publication,
+        Err(failure) => return warn("it has no publication checkout to reconcile", &failure),
+    };
+    let fetched = git::default_branch(&publication, "origin")
+        .and_then(|base| crate::publish::fast_forward_publication(&publication, &base));
+    if let Err(failure) = fetched {
+        return warn(
+            "the publication checkout could not be fast-forwarded, so nothing was captured \
+             for it yet",
+            &failure,
+        );
+    }
+    let withheld = released_since(&publication, commit);
+    if let Err(failure) = capture_in(located, commit, withheld.as_deref(), stream) {
+        return warn("its release baselines were not captured", &failure);
+    }
+    let Some(token) = &landing.change_stream else {
+        return;
+    };
+    match Stream::open(token) {
+        Ok(mut recorded) => recorded.emit(
+            EventKind::ChangeMerged,
+            json_object(json!({"url": change.to_string(), "sha": commit})),
+        ),
+        Err(failure) => warn("the landing was not recorded", &failure),
+    }
+}
+
+/// Why a reading taken now cannot stand for what was out when `commit` landed, or
+/// `None` where nothing in history says a release has been cut since.
+fn released_since(publication: &Path, commit: &str) -> Option<String> {
+    match git::tags_containing(publication, commit) {
+        Ok(tags) if tags.is_empty() => None,
+        Ok(tags) => Some(format!(
+            "the landing was discovered after the publication that made it had ended, and by \
+             then the tag(s) {} already contained it — a release may already carry this change, \
+             so what the probe answers now cannot stand for what was out when it landed",
+            tags.join(", ")
+        )),
+        Err(failure) => Some(format!(
+            "the landing was discovered after the publication that made it had ended, and \
+             whether a release has been cut from it since could not be read ({failure}), so \
+             what the probe answers now cannot stand for what was out when it landed"
+        )),
+    }
 }
 
 /// Record the release a person says carries a landing.
