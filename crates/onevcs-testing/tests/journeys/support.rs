@@ -9,9 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, DraftReason, HeldBy, Holding, Identity, Landed,
-    LineChange, MergeOutcome, MergePolicy, NetNegative, PreservedBranch, Provenance, Publication,
-    PublishOutcome, Recoverable, Session, SessionToken, Sha, TargetName, Url,
+    ChangeId, ChangeRequest, Check, CheckSource, DraftReason, FailureKind, HeldBy, Holding,
+    Identity, Landed, LineChange, MergeOutcome, MergePolicy, NetNegative, PreservedBranch,
+    Provenance, Publication, PublishOutcome, Recoverable, Session, SessionToken, Sha, TargetName,
+    Url,
 };
 use onevcs_testing::{Described, HostState, VcsState};
 
@@ -103,12 +104,38 @@ pub fn full_vcs_state() -> VcsState {
         session_identities,
         closed_sessions: BTreeSet::from([token.clone()]),
         policy: Some(MergePolicy::ChangeAuto),
-        publications: vec![Publication {
-            session: token.clone(),
-            branch: "feature/seeded".to_owned(),
-            policy: MergePolicy::ChangeAuto,
-            outcome: PublishOutcome::Merged(Sha("abc123".to_owned())),
-        }],
+        publications: vec![
+            Publication {
+                session: token.clone(),
+                branch: "feature/seeded".to_owned(),
+                policy: MergePolicy::ChangeAuto,
+                outcome: PublishOutcome::Merged(Sha("abc123".to_owned())),
+            },
+            // A failure spelled as every version has spelled it, beside the one kind
+            // version 10 added, so the golden holds both side by side.
+            Publication {
+                session: token.clone(),
+                branch: "feature/seeded".to_owned(),
+                policy: MergePolicy::LocalDirect,
+                outcome: PublishOutcome::Failed {
+                    kind: FailureKind::PushRejected,
+                    reason: "push rejected: the hook found a secret in the diff".to_owned(),
+                    retained: None,
+                },
+            },
+            Publication {
+                session: token.clone(),
+                branch: "feature/seeded".to_owned(),
+                policy: MergePolicy::LocalDirect,
+                outcome: PublishOutcome::Failed {
+                    kind: FailureKind::HostPrerequisite,
+                    reason: "host prerequisite missing: gh is not installed; install it from \
+                             https://cli.github.com"
+                        .to_owned(),
+                    retained: None,
+                },
+            },
+        ],
         preserved: vec![Recoverable {
             identity: identity().origin,
             branch: PreservedBranch {

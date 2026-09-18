@@ -284,5 +284,8 @@ fn a_document_that_records_anything_about_a_session_nobody_opened_is_refused_by_
     )
     .expect("a written document");
     let held = FileVcs::create(&path).expect("a state that agrees with itself");
-    assert_eq!(held.state().expect("readable").publications.len(), 1);
+    assert_eq!(
+        held.state().expect("readable").publications.len(),
+        full_vcs_state().publications.len()
+    );
 }
