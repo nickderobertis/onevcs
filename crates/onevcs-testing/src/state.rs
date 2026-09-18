@@ -43,7 +43,10 @@ use crate::store::Checked;
 /// takes from the resolved publication policy instead. `9` is the draft reason inside
 /// [`HostState::drafts`] becoming one of two kinds and saying which — `kind` is
 /// `awaiting-release` or `held` — and [`HostState::described`], the descriptions a
-/// host was handed for a change request after it was opened.
+/// host was handed for a change request after it was opened. `10` is the failure
+/// vocabulary a publication's outcome inside [`VcsState::publications`] may name
+/// widening by one kind, `host-prerequisite` — no field moved, but a document naming
+/// it is one a version 9 build cannot read, and the version is how it says so.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -53,7 +56,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 9;
+pub const STATE_VERSION: u32 = 10;
 
 /// The oldest document version this build reads.
 ///
@@ -81,7 +84,9 @@ pub const STATE_VERSION: u32 = 9;
 /// there was — `awaiting-release`, whose four fields it carries unchanged — which is
 /// `drafts_of_any_version`'s whole job; the descriptions beside it are absent from a
 /// document written before them, which is the answer, since that build could describe
-/// nothing.
+/// nothing. `9` to `10` changed no field and no meaning: every failure kind a version 9
+/// document can hold is spelled here as it was there and means what it meant, so it
+/// reads unchanged and needs no carrying forward beyond its version.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a

@@ -19,7 +19,10 @@
 //! consumer's checked-in scenario, read here as that consumer's next run would read
 //! it.
 
-use onevcs::{ChangeSpec, DraftReason, Hosting, Landed, SessionRequest, TargetName, Vcs};
+use onevcs::{
+    ChangeSpec, DraftReason, FailureKind, Hosting, Landed, PublishOutcome, SessionRequest,
+    TargetName, Vcs,
+};
 use onevcs_testing::{
     FileHost, FileVcs, HostState, VcsState, OLDEST_READABLE_VERSION, STATE_VERSION,
 };
@@ -27,19 +30,23 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v9-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v9-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v10-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v10-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v9.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v9.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v10.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v10.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v8.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v8.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v9.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v9.json");
+/// The same, as the build before that wrote them: the documents whose draft reasons
+/// name no kind, which version 9 is the carrying forward of.
+const VCS_V8: &str = include_str!("../golden/vcs-state-v8.json");
+const HOST_V8: &str = include_str!("../golden/host-state-v8.json");
 
 /// Every optional key of a repository state, as the document spells it.
 const VCS_OPTIONAL: &[&str] = &[
@@ -185,22 +192,100 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 #[test]
-fn a_document_at_the_previous_version_is_read_and_written_back_at_this_one() {
-    // A consumer's checked-in scenario, written by the build before this one and
-    // read by this one: the version went up because a draft reason gained a `kind`
-    // and the host gained the descriptions it was handed, and a bump that refused
-    // every scenario already written would make every consumer's suite the thing that
-    // has to change.
+fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written by the build before this one: the
+    // version went up because a publication's failure may now be `host-prerequisite`,
+    // and nothing a version 9 document can hold changed spelling or meaning with it.
+    // So it reads, a failure it recorded reads back as the same kind, and the next
+    // write declares this version and spells that failure exactly as it was spelled.
+    let home = Home::new();
+    let vcs_path = home.path("vcs.json");
+    let host_path = home.path("host.json");
+    let mut scenario: serde_json::Value =
+        serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
+    assert_eq!(scenario["version"], 9);
+    assert!(!VCS_PREVIOUS.contains("host-prerequisite"));
+    // The failure a version 9 build wrote for a push its merge path refused, added by
+    // hand the way a consumer's scenario seeds one.
+    scenario["publications"]
+        .as_array_mut()
+        .expect("the previous document holds publications")
+        .push(serde_json::json!({
+            "session": "s-testing-1",
+            "branch": "feature/seeded",
+            "policy": "local-direct",
+            "outcome": {"failed": {
+                "kind": "push-rejected",
+                "reason": "push rejected: the hook found a secret in the diff",
+            }},
+        }));
+    std::fs::write(
+        &vcs_path,
+        serde_json::to_string_pretty(&scenario).expect("a document"),
+    )
+    .expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+
+    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
+    FileHost::create(&host_path).expect("the previous version reads");
+    let state = vcs.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert_eq!(state.publications.len(), 2);
+    assert!(
+        matches!(
+            state.publications[1].outcome,
+            PublishOutcome::Failed {
+                kind: FailureKind::PushRejected,
+                ..
+            }
+        ),
+        "a failure a previous build recorded reads back as the kind it was: {:?}",
+        state.publications[1]
+    );
+
+    // The next write carries it forward at this version, spelled as it was.
+    vcs.open_session(SessionRequest {
+        repo: "widgets".to_owned(),
+        branch: Some("feature/after-the-bump".to_owned()),
+        base: None,
+        execution_checkout: None,
+    })
+    .expect("a session over the seeded repository");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&vcs_path).expect("a document"))
+            .expect("a document is JSON");
+    assert_eq!(written["version"], STATE_VERSION);
+    assert_eq!(
+        written["publications"][1]["outcome"]["failed"]["kind"],
+        "push-rejected"
+    );
+
+    // …and the kind this version added is what the writer spells beside it, as the
+    // golden this build writes holds both.
+    assert!(
+        VCS_FULL.contains(r#""kind": "push-rejected""#)
+            && VCS_FULL.contains(r#""kind": "host-prerequisite""#)
+            && VCS_FULL.contains(&format!(r#""version": {STATE_VERSION}"#)),
+        "the golden holds a failure of each vocabulary at this version: {VCS_FULL}"
+    );
+}
+
+#[test]
+fn a_version_8_document_is_read_and_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written two builds back: the version went up
+    // there because a draft reason gained a `kind` and the host gained the
+    // descriptions it was handed, and a bump that refused every scenario already
+    // written would make every consumer's suite the thing that has to change.
     let home = Home::new();
     let host_path = home.path("host.json");
     let vcs_path = home.path("vcs.json");
-    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
-    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V8).expect("a document a previous build wrote");
+    std::fs::write(&vcs_path, VCS_V8).expect("a document a previous build wrote");
     assert!(
-        HOST_PREVIOUS.contains(r#""version": 8"#)
-            && HOST_PREVIOUS.contains(r#""drafts""#)
-            && !HOST_PREVIOUS.contains(r#""kind""#)
-            && !HOST_PREVIOUS.contains(r#""described""#),
+        HOST_V8.contains(r#""version": 8"#)
+            && HOST_V8.contains(r#""drafts""#)
+            && !HOST_V8.contains(r#""kind""#)
+            && !HOST_V8.contains(r#""described""#),
         "the previous document is the one whose draft reason names no kind and that \
          holds no description, or it proves nothing"
     );

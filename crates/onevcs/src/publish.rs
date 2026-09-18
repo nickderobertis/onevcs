@@ -426,6 +426,16 @@ pub enum FailureKind {
     /// there: a router branches on the kind, so only a kind can stop work that is
     /// on the remote reading as work that never landed.
     PushedUnverified,
+    /// The publishing push was refused by the merge path because this host is
+    /// missing a tool or a credential a hook needs, which the hook said on the line
+    /// [`HOST_PREREQUISITE_MARKER`] begins. The reason carries what it said is
+    /// missing and how to install it, and the same evidence pointers
+    /// [`PushRejected`](FailureKind::PushRejected) does.
+    ///
+    /// A kind rather than a clause on `PushRejected`, for the reason
+    /// [`PushedUnverified`](FailureKind::PushedUnverified) is one: a router branches
+    /// on the kind, and this is a refusal no change to the work can clear.
+    HostPrerequisite,
 }
 
 impl FailureKind {
@@ -444,7 +454,8 @@ impl FailureKind {
             | FailureKind::ChecksFailed
             | FailureKind::ChecksUnsettled
             | FailureKind::PushRejected
-            | FailureKind::PushedUnverified => 1,
+            | FailureKind::PushedUnverified
+            | FailureKind::HostPrerequisite => 1,
             // llmlint: ignore-end[cli_output_contract]
             FailureKind::Invalid => 2,
             FailureKind::SyncConflict => 3,
@@ -468,6 +479,7 @@ impl FailureKind {
             Error::ChecksUnsettled { .. } => FailureKind::ChecksUnsettled,
             Error::PushRejected { .. } => FailureKind::PushRejected,
             Error::PushedUnverified { .. } => FailureKind::PushedUnverified,
+            Error::HostPrerequisite { .. } => FailureKind::HostPrerequisite,
             _ => FailureKind::Invalid,
         }
     }
@@ -1319,7 +1331,7 @@ fn publish_locally(
             sync(context, stream, compared, None)?;
         }
         let (subject, trailers) = describe(context, compared)?;
-        let message = compose_message(&subject, &trailers);
+        let message = compose_squash(&subject, &closing_lines(context, compared)?, &trailers);
 
         let scratch_parent = context.run_root.join(format!("publish-{}", ids::unique()));
         home::ensure_dir(&scratch_parent)?;
@@ -1430,6 +1442,7 @@ pub(crate) fn rejected(
             .to_owned()
     };
     let wrote = pushed.output().trim();
+    let missing = host_prerequisite(wrote);
     let said = if wrote.is_empty() {
         String::new()
     } else {
@@ -1441,12 +1454,51 @@ pub(crate) fn rejected(
             ))
         )
     };
-    Error::PushRejected {
-        reason: outliving(
-            &format!("{what} was rejected by the merge path: {summary}.{where_it_is}{said}"),
-            removed,
-        ),
+    match missing {
+        Some(missing) => Error::HostPrerequisite {
+            reason: outliving(
+                &format!(
+                    "{what} was refused by the merge path because this host is missing a \
+                     prerequisite: {missing}.{where_it_is}{said}",
+                    missing = missing.trim_end_matches('.'),
+                ),
+                removed,
+            ),
+        },
+        None => Error::PushRejected {
+            reason: outliving(
+                &format!("{what} was rejected by the merge path: {summary}.{where_it_is}{said}"),
+                removed,
+            ),
+        },
     }
+}
+
+/// How a merge-path hook begins the one line saying a refusal is this host's rather
+/// than the work's: a tool or a credential it needs is missing, and what follows the
+/// marker says which and how to install it.
+///
+/// The contract's spelling, stated once. A hook prints it only for a failure that does
+/// not depend on the tree being pushed, because the reader on the other side settles
+/// such a refusal without sending anybody to change the work.
+pub const HOST_PREREQUISITE_MARKER: &str = "onevcs: host-prerequisite:";
+
+/// What a merge path's host-prerequisite line says is missing, where its output
+/// carries one.
+///
+/// Read line by line, and the line has to *begin* with the marker — after the
+/// `remote:` git puts before what a server-side hook printed — so a hook quoting the
+/// marker in prose, or a test log mentioning it, is not read as one. A marker naming
+/// nothing is not the line the contract describes, and the refusal is classified as
+/// though it were absent.
+fn host_prerequisite(output: &str) -> Option<&str> {
+    output.lines().find_map(|line| {
+        let line = line.trim();
+        let line = line.strip_prefix("remote:").map_or(line, str::trim_start);
+        line.strip_prefix(HOST_PREREQUISITE_MARKER)
+            .map(str::trim)
+            .filter(|missing| !missing.is_empty())
+    })
 }
 
 /// The same refusal with every path into a tree that will not outlive this command
@@ -2626,6 +2678,28 @@ pub fn compose_message(subject: &str, trailers: &[String]) -> String {
     } else {
         format!("{subject}\n\n{}", trailers.join("\n"))
     }
+}
+
+/// The issue-closing lines the commits a squash lands carry, each once.
+///
+/// Read from the branch's own commits past what it lands on, which after the sync is
+/// exactly the set the squash folds into one; see [`closing`](crate::closing) for why
+/// these lines, and only these, outlive the squash.
+fn closing_lines(context: &Context<'_>, compared: &str) -> Result<Vec<String>> {
+    let commits = git::log_messages(&context.repo, compared, &context.branch)?;
+    Ok(crate::closing::lines(
+        commits.iter().map(|commit| commit.message.as_str()),
+    ))
+}
+
+/// A squash's message: the subject, the issue-closing lines its commits carried, then
+/// the trailers — so a branch with no closing lines lands exactly as
+/// [`compose_message`] composes it.
+fn compose_squash(subject: &str, closing: &[String], trailers: &[String]) -> String {
+    if closing.is_empty() {
+        return compose_message(subject, trailers);
+    }
+    compose_message(&format!("{subject}\n\n{}", closing.join("\n")), trailers)
 }
 
 /// The policy a run publishes under, once the rules and any `--policy` have both

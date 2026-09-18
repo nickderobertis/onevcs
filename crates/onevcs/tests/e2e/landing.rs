@@ -1497,7 +1497,10 @@ fn a_branch_that_landed_and_then_took_more_commits_answers_with_its_landing_and_
     // The human rendering of the same report, which is what an operator actually
     // reads. The word, the tier, the landing commit, the count, and the sentence
     // under `next:` are one decision spelled five ways, so none of them may say
-    // something the others do not.
+    // something the others do not. The release read above found this landing only
+    // through the change request's number, and recorded it the way the publication
+    // would have had it lived to see the merge — so the same landing now reads as a
+    // recorded one, at the same commit.
     hosted
         .world
         .onevcs()
@@ -1507,12 +1510,12 @@ fn a_branch_that_landed_and_then_took_more_commits_answers_with_its_landing_and_
         .stdout(predicate::str::contains("state: landed in part"))
         .stdout(predicate::str::contains("landed: in part"))
         .stdout(predicate::str::contains(format!(
-            "decided by: the change request's number in the base ({landing}), and 1 commit(s) of \
-             the branch are not in it"
+            "decided by: a recorded landing ({landing}), and 1 commit(s) of the branch are not \
+             in it"
         )))
         .stdout(predicate::str::contains(format!(
-            "landed in part: the change request's number in the base ({landing}) says work of it \
-             reached main, and it has 1 commit(s) since that the landing does not carry"
+            "landed in part: a recorded landing ({landing}) says work of it reached main, and it \
+             has 1 commit(s) since that the landing does not carry"
         )));
 }
 

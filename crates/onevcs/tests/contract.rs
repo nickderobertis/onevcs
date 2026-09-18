@@ -2185,6 +2185,13 @@ fn every_error_says_what_failed_and_which_exit_code_it_is() {
             },
             "pushed, merge path unverified: \"feature/x\" is on origin at 0f1e2d3",
         ),
+        (
+            Error::HostPrerequisite {
+                reason: "gh is not installed; install it from https://cli.github.com".to_owned(),
+            },
+            "host prerequisite missing: gh is not installed; install it from \
+             https://cli.github.com",
+        ),
     ];
     for (error, expected) in cases {
         assert!(
@@ -3721,6 +3728,7 @@ fn all_failure_kinds() -> Vec<(&'static str, u8)> {
         FailureKind::ChecksUnsettled,
         FailureKind::PushRejected,
         FailureKind::PushedUnverified,
+        FailureKind::HostPrerequisite,
     ]
     .into_iter()
     .map(|kind| {
@@ -3733,6 +3741,7 @@ fn all_failure_kinds() -> Vec<(&'static str, u8)> {
             FailureKind::ChecksUnsettled => "ChecksUnsettled",
             FailureKind::PushRejected => "PushRejected",
             FailureKind::PushedUnverified => "PushedUnverified",
+            FailureKind::HostPrerequisite => "HostPrerequisite",
         };
         (named, kind.exit_code())
     })
@@ -3747,7 +3756,7 @@ fn the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_
     // matter as much as the names: four of the eight are new and every one of them
     // keeps the code the contract already fixes for a verification failure, so a
     // process that only reads the code sees nothing change.
-    let declared = amendment_declaring("PushedUnverified }");
+    let declared = amendment_declaring("HostPrerequisite }");
     let kinds = all_failure_kinds();
     for (named, _) in &kinds {
         assert!(
@@ -3764,6 +3773,51 @@ fn the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_
         "the amendment's exit-code row {declared:?} disagrees with FailureKind::exit_code, \
          which reads {}",
         codes.join(" | ")
+    );
+}
+
+#[test]
+fn the_host_prerequisite_marker_has_one_spelling_and_the_amendment_states_it() {
+    // Two consumers outside this repository hold to this line — a hook that writes it
+    // and a router that settles on the kind it produces — so the constant a reader and
+    // every test use and the text a hook's author reads are held to each other here.
+    let declared = amendment_declaring("pub const HOST_PREREQUISITE_MARKER");
+    assert!(
+        declared.contains(&format!(
+            "pub const HOST_PREREQUISITE_MARKER: &str = {:?};",
+            onevcs::HOST_PREREQUISITE_MARKER
+        )),
+        "the amendment declares a marker other than {:?}: {declared}",
+        onevcs::HOST_PREREQUISITE_MARKER
+    );
+    let text = regions().0;
+    assert!(
+        text.contains(&format!(
+            "    {} <what is missing and how to install it>",
+            onevcs::HOST_PREREQUISITE_MARKER
+        )),
+        "the amendment no longer shows the line a hook prints with the crate's marker"
+    );
+    for stated in [
+        "only** for a missing host tool or credential, **never** for a\ncheck whose outcome \
+         depends on the tree being pushed",
+        "`HostPrerequisite` serializes as `host-prerequisite` and keeps **exit code 1**",
+    ] {
+        assert!(
+            text.contains(stated),
+            "the amendment no longer states: {stated}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(FailureKind::HostPrerequisite).expect("a kind serializes"),
+        "host-prerequisite"
+    );
+    assert_eq!(FailureKind::HostPrerequisite.exit_code(), 1);
+    assert_eq!(
+        FailureKind::of(&Error::HostPrerequisite {
+            reason: String::new()
+        }),
+        FailureKind::HostPrerequisite
     );
 }
 

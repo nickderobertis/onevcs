@@ -1153,6 +1153,41 @@ fn a_publication_the_repositorys_subject_policy_refuses_says_so_and_says_where_t
     assert_eq!(kind.exit_code(), 1);
     assert!(reason.contains("rejected by the merge path"), "{reason}");
 
+    // …and one whose hook said, on the line the contract gives it, that this host is
+    // missing what it needs: a kind of its own, serialized the way a router reads it,
+    // carrying the remediation rather than git's per-ref summary.
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(
+        &world,
+        AUTOMATED,
+        "feature/unequipped",
+        &format!(
+            "echo '{} gh is not authenticated; run `gh auth login`' >&2; exit 1",
+            onevcs::HOST_PREREQUISITE_MARKER
+        ),
+    );
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a refused push is an outcome");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a refused push must fail the publication: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::HostPrerequisite);
+    assert_eq!(kind.exit_code(), 1);
+    assert_eq!(
+        serde_json::to_value(kind).expect("a kind serializes"),
+        "host-prerequisite"
+    );
+    assert!(
+        reason.contains("gh is not authenticated; run `gh auth login`"),
+        "{reason}"
+    );
+    assert!(reason.contains("onevcs artifact cat "), "{reason}");
+
     // `merged_at` is defaulted, so a `RemoteHost` written against the six methods
     // the contract fixed still compiles — and defaults to the refusal this
     // repository reserves for a seam with no body. A host that answered `None`

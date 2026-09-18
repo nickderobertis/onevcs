@@ -24,10 +24,10 @@ use std::path::{Path, PathBuf};
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, DIRECT, REVIEWED};
+use crate::host::{Hosted, AUTOMATED, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::support::{documented_actor_limit, documented_probe_environment};
-use crate::world::World;
+use crate::world::{Check, World};
 
 /// A registered repository with release targets, and the answers its probes give.
 ///
@@ -1879,6 +1879,10 @@ fn a_host_landing_missed_by_onevcs_can_be_acknowledged_for_an_automated_target()
         ],
     );
     hosted.world.git(&host, &["push", "-q", "origin", "main"]);
+    // …and a release is cut from it before anything here reads the landing, so what
+    // the probe answers by then may already carry the change.
+    hosted.world.git(&host, &["tag", "v1.0.0"]);
+    hosted.world.git(&host, &["push", "-q", "origin", "v1.0.0"]);
     hosted.world.git(
         &hosted.checkout,
         &["fetch", "-q", "origin", "main:refs/remotes/origin/main"],
@@ -1902,6 +1906,11 @@ fn a_host_landing_missed_by_onevcs_can_be_acknowledged_for_an_automated_target()
     let before: Value = serde_json::from_slice(&before).expect("status JSON");
     assert_eq!(before["state"], "not-answered");
     let reason = before["reason"].as_str().expect("a reason");
+    assert!(
+        reason.contains("the tag(s) v1.0.0 already contained it"),
+        "a baseline that can no longer be captured honestly says why rather than being \
+         invented: {reason}"
+    );
     let command = reason
         .split('`')
         .find(|part| part.starts_with("onevcs release acknowledge "))
@@ -1984,6 +1993,122 @@ fn a_host_landing_missed_by_onevcs_can_be_acknowledged_for_an_automated_target()
         2,
         "the acknowledgement and correction emit: {events:?}"
     );
+}
+
+#[test]
+fn a_change_auto_landing_discovered_after_its_publication_ended_is_reconciled_at_that_landing() {
+    // The host holds the change behind a check that has not settled, so the
+    // publication watches to its bound and exits — the process that would have
+    // recorded the landing and captured the baselines is gone before the merge.
+    let hosted = Hosted::new(AUTOMATED);
+    let answers = hosted.world.path("answers");
+    std::fs::create_dir_all(&answers).expect("an answers directory");
+    std::fs::write(answers.join("crate"), "1.0.0\n").expect("what is released now");
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{host: \
+             github.com, owner: acme-corp, name: hosted}}\n    adoption: published\n    \
+             default_target: crate\n    targets:\n{}",
+            answering("crate")
+        ),
+    )
+    .expect("a release-targets file");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    let token = hosted.change("feature/outlived", "feat: land after the watcher exits");
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("still unsettled"));
+    let asking = |args: &[&str]| -> Value {
+        let assert = hosted
+            .world
+            .onevcs()
+            .arg("release")
+            .args(args)
+            .arg("--json")
+            .assert()
+            .success();
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document")
+    };
+    assert_eq!(
+        asking(&["status", &token, "--target", "crate"])["state"],
+        "not-landed"
+    );
+
+    // The host lands it on its own clock, the next time anybody asks it anything.
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted
+        .world
+        .onevcs()
+        .args(["status", "feature/outlived"])
+        .assert()
+        .success();
+    let landed = hosted.world.git(&hosted.origin, &["rev-parse", "main"]);
+    assert_eq!(
+        hosted.origin_log()[0],
+        "feat: land after the watcher exits (#1)"
+    );
+    assert!(
+        hosted.world.events_of(&token, "change-merged").is_empty(),
+        "nothing recorded the landing while the publication was alive to"
+    );
+    // Something else fetches the checkout's remote — another publication of this
+    // identity does — which is what puts the landing into the history it is read from.
+    // Only the remote-tracking ref moves: the checkout itself is left behind.
+    hosted.world.git(
+        &hosted.checkout,
+        &["fetch", "-q", "origin", "main:refs/remotes/origin/main"],
+    );
+    assert_ne!(
+        hosted.world.git(&hosted.checkout, &["rev-parse", "HEAD"]),
+        landed
+    );
+
+    // The read that finds the landing in history gives it what the publication would
+    // have: a baseline at the landing, which is what the probe answers while nothing
+    // has been released since.
+    let waiting = asking(&["status", &token, "--target", "crate"]);
+    assert_eq!(waiting["state"], "not-released", "{waiting}");
+    assert_eq!(
+        waiting["at_landing"],
+        serde_json::json!({"state": "at", "version": "1.0.0"})
+    );
+    // The landing is recorded where the publication would have recorded it…
+    let merged = hosted.world.events_of(&token, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:?}");
+    assert_eq!(merged[0]["payload"]["sha"], landed.as_str());
+    assert_eq!(
+        merged[0]["payload"]["url"],
+        "https://github.com/acme-corp/hosted/pull/1"
+    );
+    // …and the publication checkout is where the base is.
+    assert_eq!(
+        hosted.world.git(&hosted.checkout, &["rev-parse", "HEAD"]),
+        landed
+    );
+
+    // A second read is answered from that record rather than reconciling again, and
+    // the release that follows is the one that carries the change.
+    std::fs::write(answers.join("crate"), "1.1.0\n").expect("a release goes out");
+    let released = asking(&["status", &token, "--target", "crate"]);
+    assert_eq!(released["state"], "released", "{released}");
+    assert_eq!(released["version"], "1.1.0");
+    assert_eq!(hosted.world.events_of(&token, "change-merged").len(), 1);
 }
 
 #[test]
