@@ -93,6 +93,25 @@ pub enum Error {
         reason: String,
     },
 
+    /// The publishing push was refused by the merge path because this host is
+    /// missing a tool or a credential one of its hooks needs — a failure that does not
+    /// depend on the tree being pushed. The CLI reports this as exit code 1.
+    ///
+    /// Said by the hook itself, on the one line
+    /// [`HOST_PREREQUISITE_MARKER`](crate::HOST_PREREQUISITE_MARKER) begins, and never
+    /// inferred: a refused push carrying no such line is [`Error::PushRejected`]. A
+    /// kind of its own for the reason [`Error::PushedUnverified`] is one: a router
+    /// branches on the kind, and no change to the work can clear this refusal.
+    #[error("host prerequisite missing: {reason}")]
+    // llmlint: ignore[invalid_states_unrepresentable] the approved contract fixes every
+    // variant of this enum as one `reason: String`, and three libraries route on that
+    // shape; the remediation and the evidence pointers are both prose for a reader.
+    HostPrerequisite {
+        /// What the hook said is missing and how to install it, and where the whole
+        /// of what the merge path wrote is kept.
+        reason: String,
+    },
+
     /// The publishing push **reached the remote**, and the merge path could not
     /// then be read. The CLI reports this as exit code 1.
     ///

@@ -2116,6 +2116,86 @@ fn a_refusing_merge_path_stops_the_publication_and_leaves_the_work_where_it_can_
 }
 
 #[test]
+fn a_merge_path_missing_a_host_prerequisite_says_so_as_its_own_failure_with_the_same_evidence() {
+    // A hook that cannot run because this host lacks a tool is not a verdict on the
+    // work, and says so on the one line the contract gives it. What the publication
+    // reports is that line's remediation, under a failure of its own.
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by(&format!(
+        "echo 'checking the release configuration' >&2\n\
+         echo '{} release-plz is not installed; install it with `cargo install release-plz`' >&2\n\
+         exit 1",
+        onevcs::HOST_PREREQUISITE_MARKER
+    ));
+    let (token, worktree) = fixture.open(&["--branch", "feature/unequipped"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "host prerequisite missing: the publishing push of \"feature/unequipped\" was \
+             refused by the merge path because this host is missing a prerequisite: \
+             release-plz is not installed; install it with `cargo install release-plz`.",
+        ))
+        .stderr(predicate::str::contains("push rejected").not())
+        .stderr(predicate::str::contains("is preserved in"));
+    let stderr = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+
+    // The same pointers a rejected push carries: the artifact holding everything the
+    // hook wrote, and the preserved copy that outlives the tree it ran in.
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], false);
+    let id = pushes[0]["artifacts"][0]["id"]
+        .as_str()
+        .expect("a refused push stores what it wrote");
+    let preserved = pushes[0]["payload"]["preserved_log"]
+        .as_str()
+        .expect("a preserved log path");
+    assert!(
+        stderr.contains(&format!("onevcs artifact cat {id}")),
+        "{stderr}"
+    );
+    assert!(stderr.contains(preserved), "{stderr}");
+    assert_eq!(fixture.origin_log().len(), 1, "nothing reached the base");
+}
+
+#[test]
+fn a_refused_push_that_only_mentions_the_host_prerequisite_marker_is_still_a_rejected_push() {
+    // The marker has to begin its line. A hook that quotes it in passing — or one
+    // that prints it with nothing after it — has not said this host is missing
+    // anything, and its refusal reads exactly as any other.
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by(&format!(
+        "echo 'a test asserted the text \"{marker} x\" and failed' >&2\n\
+         echo '{marker}' >&2\n\
+         exit 1",
+        marker = onevcs::HOST_PREREQUISITE_MARKER
+    ));
+    let (token, worktree) = fixture.open(&["--branch", "feature/quoted"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "push rejected: the publishing push of \"feature/quoted\" was rejected by the merge \
+             path",
+        ))
+        .stderr(predicate::str::contains("host prerequisite missing").not());
+}
+
+#[test]
 fn a_title_that_could_not_be_a_subject_is_refused_before_anything_is_committed() {
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/untitled"]);

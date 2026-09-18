@@ -755,6 +755,50 @@ protection is readable and publishable exactly as before. The second is a race a
 refused under its own wording, because reading it as the first would wave a merge
 through on a head no verification has begun on.
 
+**A merge path that cannot run on this host says so, and that is its own failure.**
+Since this crate stopped running a gate of its own, what it knows about a refused
+push is what the merge path wrote — and a hook that failed because this host lacks a
+tool or a credential read exactly like one that found something wrong with the work.
+A router that re-dispatches a worker on every `PushRejected` then spends its retries
+on a refusal no worker can fix: the tree was never the problem.
+
+So the merge path gets one line to say it. A merge-path hook that fails because a
+required host tool or credential is missing — a failure independent of the candidate
+tree — prints exactly one line of the form
+
+    onevcs: host-prerequisite: <what is missing and how to install it>
+
+and a hook emits it **only** for a missing host tool or credential, **never** for a
+check whose outcome depends on the tree being pushed: the router on the other side
+settles such a refusal without re-dispatching a worker, so a tree-sensitive check that
+printed it would let broken work through as a host problem. The line has to *begin*
+with the marker — after the `remote:` git puts before what a server-side hook printed
+— and name something after it; a hook that quotes the marker in prose has not said
+anything.
+
+The vocabulary widens by one kind, for the reason `PushedUnverified` did — a router
+branches on the kind, and only a kind can tell it this refusal is not the work's:
+
+```rust
+pub const HOST_PREREQUISITE_MARKER: &str = "onevcs: host-prerequisite:";
+
+pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented,
+                       ChecksFailed, ChecksUnsettled, PushRejected,
+                       PushedUnverified, HostPrerequisite }  // 1 | 2 | 3 | 70 | 1 | 1 | 1 | 1 | 1
+```
+
+`HostPrerequisite` serializes as `host-prerequisite` and keeps **exit code 1**, the
+code the contract fixes for a verification failure. It is produced exactly when a
+refused push's merge-path output carries that line, and its `reason` carries the text
+after the marker — what is missing and how to install it — with the same evidence
+pointers a `PushRejected` carries: the artifact holding everything the push wrote, and
+the preserved log that outlives the tree it ran in. `Error` gains the matching
+variant, `HostPrerequisite { reason }`, beside `PushRejected`; it is
+`#[non_exhaustive]`, which is what makes that additive. A refused push carrying no
+such line is `PushRejected`, exactly as before. `HOST_PREREQUISITE_MARKER` is the one
+spelling of the marker, exported so a hook's author, a router, and this crate's own
+reader cannot disagree about it.
+
 **`onevcs` knows about the releases that follow a landed change, so an upgrade can
 be sequenced behind the release that carries it.** The approved contract ends at the
 merge: a change reaches its base and this crate has nothing more to say. So a plan

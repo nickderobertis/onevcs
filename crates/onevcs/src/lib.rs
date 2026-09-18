@@ -95,6 +95,7 @@ pub use landed::{Landed, LandingEvidence};
 pub use providers::Providers;
 pub use publish::{
     DraftReason, FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject,
+    HOST_PREREQUISITE_MARKER,
 };
 pub use registry::Identity;
 pub use releases::{
