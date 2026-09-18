@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.5...onevcs-testing-v0.6.6) - 2026-09-18
+
+### Fixed
+
+- *(publish)* keep closing lines in a squash, backfill a late landing, and name a host-prerequisite refusal ([#163](https://github.com/nickderobertis/onevcs/pull/163))
+
 ## [0.6.3](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.2...onevcs-testing-v0.6.3) - 2026-09-14
 
 ### Changed
