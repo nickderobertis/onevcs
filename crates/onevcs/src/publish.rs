@@ -1319,7 +1319,7 @@ fn publish_locally(
             sync(context, stream, compared, None)?;
         }
         let (subject, trailers) = describe(context, compared)?;
-        let message = compose_message(&subject, &trailers);
+        let message = compose_squash(&subject, &closing_lines(context, compared)?, &trailers);
 
         let scratch_parent = context.run_root.join(format!("publish-{}", ids::unique()));
         home::ensure_dir(&scratch_parent)?;
@@ -2626,6 +2626,28 @@ pub fn compose_message(subject: &str, trailers: &[String]) -> String {
     } else {
         format!("{subject}\n\n{}", trailers.join("\n"))
     }
+}
+
+/// The issue-closing lines the commits a squash lands carry, each once.
+///
+/// Read from the branch's own commits past what it lands on, which after the sync is
+/// exactly the set the squash folds into one; see [`closing`](crate::closing) for why
+/// these lines, and only these, outlive the squash.
+fn closing_lines(context: &Context<'_>, compared: &str) -> Result<Vec<String>> {
+    let commits = git::log_messages(&context.repo, compared, &context.branch)?;
+    Ok(crate::closing::lines(
+        commits.iter().map(|commit| commit.message.as_str()),
+    ))
+}
+
+/// A squash's message: the subject, the issue-closing lines its commits carried, then
+/// the trailers — so a branch with no closing lines lands exactly as
+/// [`compose_message`] composes it.
+fn compose_squash(subject: &str, closing: &[String], trailers: &[String]) -> String {
+    if closing.is_empty() {
+        return compose_message(subject, trailers);
+    }
+    compose_message(&format!("{subject}\n\n{}", closing.join("\n")), trailers)
 }
 
 /// The policy a run publishes under, once the rules and any `--policy` have both

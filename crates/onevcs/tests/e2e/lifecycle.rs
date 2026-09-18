@@ -1979,6 +1979,88 @@ fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_che
 }
 
 #[test]
+fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subject_and_trailers() {
+    // GitHub closes an issue only from the commit that reaches the default branch, so
+    // a squash that dropped these lines left every issue the work delivered open.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/closes"]);
+    fixture.world.commit_file(
+        &worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the first thing\n\nProse that explains the change and does not survive.\n\n\
+         Closes owner/name#1071\nfixes: #7",
+    );
+    fixture.world.commit_file(
+        &worktree,
+        "two.txt",
+        "two\n",
+        "docs: describe it\n\nThis resolves https://github.com/owner/name/issues/1071 too.\n\
+         Resolves other/repo#3",
+    );
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
+    assert_eq!(paragraphs[0], "feat: add the first thing", "{published}");
+    assert_eq!(
+        paragraphs[1], "Closes owner/name#1071\nFixes #7\nResolves other/repo#3",
+        "each distinct closing reference once, in order:\n{published}"
+    );
+    assert!(
+        paragraphs[2].starts_with(&documented_trailer(
+            "Landed-Commit",
+            &documented_default_prefix()
+        )),
+        "the trailers follow, unchanged:\n{published}"
+    );
+    assert_eq!(paragraphs.len(), 3, "{published}");
+    assert!(!published.contains("Prose that explains"), "{published}");
+}
+
+#[test]
+fn a_local_squash_of_commits_that_close_nothing_lands_the_subject_and_trailers_alone() {
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/plain"]);
+    fixture.world.commit_file(
+        &worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the thing\n\nIt fixes the #12 problem people keep describing.",
+    );
+
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
+    assert_eq!(paragraphs.len(), 2, "{published}");
+    assert_eq!(paragraphs[0], "feat: add the thing");
+    assert!(
+        paragraphs[1].starts_with(&documented_trailer(
+            "Landed-Commit",
+            &documented_default_prefix()
+        )),
+        "{published}"
+    );
+}
+
+#[test]
 fn a_refusing_merge_path_stops_the_publication_and_leaves_the_work_where_it_can_be_found() {
     let fixture = Fixture::local(&local_direct());
     fixture.verified_by("echo the hook rejected this >&2; exit 1");

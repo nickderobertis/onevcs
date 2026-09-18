@@ -41,6 +41,7 @@ mod app;
 mod branch;
 mod change;
 pub mod cli;
+mod closing;
 pub mod declaration;
 mod error;
 mod event;
