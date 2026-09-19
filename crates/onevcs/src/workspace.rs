@@ -505,18 +505,22 @@ impl Record {
     /// owns. `spent`, `holds_unpublished_work`, `adopt` and `close` all ask this before
     /// they read or touch the worktree, so none of them acts on a slot's tree as a
     /// closed session's.
-    pub fn tree_is_its_own(&self) -> bool {
+    ///
+    /// The other records are what say whether the slot was taken, so a listing that
+    /// cannot be read is an answer nobody got rather than "nobody": it is refused to
+    /// the caller, never read as the tree being this session's.
+    pub fn tree_is_its_own(&self) -> Result<bool> {
         if self.slot.is_none() || self.state == Lifecycle::Open {
-            return true;
+            return Ok(true);
         }
-        let taken = all().unwrap_or_default().into_iter().any(|other| {
+        let taken = all()?.into_iter().any(|other| {
             other.state == Lifecycle::Open
                 && other.run_root == self.run_root
                 && *other.token != *self.token
         });
-        !taken
+        Ok(!taken
             && self.worktree.is_dir()
-            && git::current_branch(&self.worktree).is_ok_and(|current| current == *self.branch)
+            && git::current_branch(&self.worktree).is_ok_and(|current| current == *self.branch))
     }
 }
 
@@ -699,11 +703,13 @@ pub fn all() -> Result<Vec<Record>> {
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, repo)?;
-    Ok(all()?
-        .into_iter()
-        .filter(|record| record.identity == resolution.key && !spent(record))
-        .map(SessionHolder::from)
-        .collect())
+    let mut holders = Vec::new();
+    for record in all()? {
+        if record.identity == resolution.key && !spent(&record)? {
+            holders.push(SessionHolder::from(record));
+        }
+    }
+    Ok(holders)
 }
 
 /// Every session record on this host that nothing answers for and nothing is behind.
@@ -719,7 +725,13 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// asks it is about: the sweep answers for this host's state root rather than for
 /// one repository.
 pub(crate) fn spent_records() -> Result<Vec<Record>> {
-    Ok(all()?.into_iter().filter(spent).collect())
+    let mut records = Vec::new();
+    for record in all()? {
+        if spent(&record)? {
+            records.push(record);
+        }
+    }
+    Ok(records)
 }
 
 /// Whether a record has nobody left to answer for it **and nothing left behind it**,
@@ -761,10 +773,10 @@ pub(crate) fn spent_records() -> Result<Vec<Record>> {
 /// question walks every process on the host, and the branch question runs git in the
 /// clone — so the cheapest answer that retains is the one that runs on every record,
 /// and the dearest runs only on the records the other two have already given up on.
-fn spent(record: &Record) -> bool {
-    !record.owner_is_running()
-        && (!record.tree_is_its_own() || processes::holding(&record.run_root).is_empty())
-        && !holds_unpublished_work(record)
+fn spent(record: &Record) -> Result<bool> {
+    Ok(!record.owner_is_running()
+        && (!record.tree_is_its_own()? || processes::holding(&record.run_root).is_empty())
+        && !holds_unpublished_work(record)?)
 }
 
 /// Whether this session still holds work nobody has published — on its branch, or
@@ -791,7 +803,7 @@ fn spent(record: &Record) -> bool {
 /// not a count of none, and what this decides is whether to destroy the only route
 /// back to somebody's work. A repository that is not there holds nothing, which is
 /// the one negative answer that is a fact rather than a failure.
-fn holds_unpublished_work(record: &Record) -> bool {
+fn holds_unpublished_work(record: &Record) -> Result<bool> {
     // By its full ref name, for the reason `branch::locate` reads a copy of a branch
     // that way: a tag or a remote-tracking ref wearing the same name is not this
     // session's branch.
@@ -811,10 +823,10 @@ fn holds_unpublished_work(record: &Record) -> bool {
     // The worktree only while it is this session's: a record that closed on a slot a
     // later session works in would otherwise read that session's uncommitted work as
     // its own, and retain itself over a tree it has no claim to.
-    carried
-        || (record.tree_is_its_own()
+    Ok(carried
+        || (record.tree_is_its_own()?
             && record.worktree.is_dir()
-            && git::is_dirty(&record.worktree).unwrap_or(true))
+            && git::is_dirty(&record.worktree).unwrap_or(true)))
     // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
@@ -1755,7 +1767,8 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
     // taken, has no tree to re-attach to: what is in the slot is somebody else's, and
     // committing it onto this session's branch is the one thing an adoption must
     // never do. Its branch is where the return put it.
-    if let Some(number) = record.slot.filter(|_| !record.tree_is_its_own()) {
+    let ours = record.tree_is_its_own()?;
+    if let Some(number) = record.slot.filter(|_| !ours) {
         return Err(error::invalid(format!(
             "session {token:?} closed and returned slot {number} of {identity}, so there is no \
              tree of its own to re-attach to; its branch {branch:?} was handed to {checkout}. \
@@ -1878,7 +1891,7 @@ pub fn close(token: &str) -> Result<Record> {
     // a later session has taken it, and from then on the tree is nobody's to read on
     // this record's behalf — the census below would count that later session's
     // worker, and the return would reset its work.
-    let ours = record.tree_is_its_own();
+    let ours = record.tree_is_its_own()?;
     // Before anything is read out of the tree, let alone removed: a session
     // something is working in is not this command's to release, and the answer is a
     // process's own working directory rather than the lease above.
