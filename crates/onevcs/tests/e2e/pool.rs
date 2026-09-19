@@ -117,6 +117,59 @@ fn claim_slot(record_path: &Path, pid: u32, started: u64) {
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 
+/// The creation identity this host answers for a process these journeys started —
+/// what a claim's `started` has to carry for the reader to find its owner still
+/// running, read the way the crate reads it on each host it runs on.
+///
+/// Linux counts it in clock ticks since boot, off the twentieth field after the
+/// parenthesised command name in `/proc/<pid>/stat`; macOS has no `/proc` and answers
+/// it in microseconds through `proc_pidinfo`, which is where CI's `cross` job found
+/// the first spelling of this reading a file only Linux has.
+#[cfg(target_os = "linux")]
+fn creation_identity(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .expect("the worker's stat")
+        .rsplit_once(')')
+        .expect("a parenthesised command")
+        .1
+        .split_whitespace()
+        .nth(19)
+        .expect("the start time field")
+        .parse()
+        .expect("a number")
+}
+
+#[cfg(target_os = "macos")]
+fn creation_identity(pid: u32) -> u64 {
+    use std::ffi::c_int;
+
+    let pid = c_int::try_from(pid).expect("a pid this host listed");
+    let size = c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>())
+        .expect("a process description fits a call's size");
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    // SAFETY: `info` is writable for exactly `size` bytes and is borrowed for the
+    // duration of this call alone; a short read is refused below rather than read.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    assert_eq!(
+        read, size,
+        "this host describes the process it just started"
+    );
+    // SAFETY: the call above filled every byte of it, which is what the length it
+    // answered says.
+    let info = unsafe { info.assume_init() };
+    info.pbi_start_tvsec
+        .saturating_mul(1_000_000)
+        .saturating_add(info.pbi_start_tvusec)
+}
+
 /// One way a slot on disk stops being whole.
 ///
 /// A broken slot is, by the contract's own definition, one whose clone or worktree is
@@ -710,17 +763,7 @@ fn the_run_root_protections_hold_on_a_slot() {
     // A live claim does hold it: with slot 2 idle the open goes there, and with both
     // held the open is refused naming the maintenance run.
     let worker = orphan_working_in(&fixture.checkout);
-    let started: u64 = std::fs::read_to_string(format!("/proc/{worker}/stat"))
-        .expect("the worker's stat")
-        .rsplit_once(')')
-        .expect("a parenthesised command")
-        .1
-        .split_whitespace()
-        .nth(19)
-        .expect("the start time field")
-        .parse()
-        .expect("a number");
-    claim_slot(&record_path, worker, started);
+    claim_slot(&record_path, worker, creation_identity(worker));
     assert_eq!(
         status(&fixture)["slots"][0]["state"]["state"],
         "maintaining"
