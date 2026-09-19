@@ -1090,9 +1090,29 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
     close(&fixture, &b);
     close(&fixture, &c);
 
+    // A record that disagrees with the directory it sits in is a broken slot too —
+    // one copied from another slot, say — and is reported by what disagrees.
+    let b_slot = b_tree.parent().expect("slot 2").to_path_buf();
+    let b_record = std::fs::read_to_string(b_slot.join("slot.json")).expect("slot 2's record");
+    std::fs::copy(
+        a_tree.parent().expect("slot 1").join("slot.json"),
+        b_slot.join("slot.json"),
+    )
+    .expect("slot 1's record over slot 2's");
+    let listed = status(&fixture);
+    assert_eq!(listed["slots"][1]["state"]["state"], "broken");
+    assert!(
+        listed["slots"][1]["state"]["reason"]
+            .as_str()
+            .expect("a reason")
+            .contains("is for slot 1, not for slot 2"),
+        "{listed}"
+    );
+    std::fs::write(b_slot.join("slot.json"), b_record).expect("slot 2's record restored");
+    assert_eq!(status(&fixture)["slots"][1]["state"]["state"], "idle");
+
     // Slot 2 loses its clone: broken, reported so, and recreated in place by the next
     // open that would take it.
-    let b_slot = b_tree.parent().expect("slot 2").to_path_buf();
     std::fs::remove_dir_all(b_slot.join("clone")).expect("break the slot");
     let listed = status(&fixture);
     assert_eq!(listed["slots"][1]["state"]["state"], "broken");
@@ -1100,9 +1120,11 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
         .as_str()
         .expect("a reason")
         .contains("clone"));
+    assert_eq!(listed["capacity"]["slots"], 3);
+    assert_eq!(listed["capacity"]["idle"], 2, "a broken slot is not idle");
     assert_eq!(
-        listed["capacity"]["idle"], 3,
-        "a broken slot counts as takeable"
+        listed["capacity"]["admits"], 3,
+        "but a broken slot is still takeable, recreated as it is taken"
     );
     // The idle slots go first; the broken one is recreated once they are held.
     let (first, _, placed) = open(&fixture, &["--branch", "feature/first"]);

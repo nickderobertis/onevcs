@@ -166,8 +166,9 @@ pub struct WorkspaceCapacity {
     pub pool: u32,
     /// How many slots exist, whatever their state.
     pub slots: u32,
-    /// How many of them a session may take now: the idle ones, and the broken ones a
-    /// session recreates as it takes them.
+    /// How many of them are idle. A broken slot is neither this nor in use — `slots`
+    /// exceeds the three counts by the broken ones — and a session still takes it,
+    /// recreating it in place, which `admits` and `admitted` count.
     pub idle: u32,
     /// How many an open session names.
     pub in_use: u32,
@@ -221,8 +222,19 @@ fn record_path(slot: &Path) -> PathBuf {
     slot.join("slot.json")
 }
 
-/// Read one slot's record, or say why it cannot be read.
-fn read_record(slot: &Path) -> std::result::Result<SlotRecord, String> {
+/// Read one slot's record, or say why it cannot be acted on.
+///
+/// Serde proves the shape and nothing else, and every field here is handed to git or
+/// to the filesystem afterwards — so a record that disagrees with the directory it
+/// was read from is refused here, the way a session record naming a different token
+/// than its file is: one declaring another version, numbered for another slot,
+/// belonging to another identity, or lending from a path that is not absolute is a
+/// broken slot rather than one to place a session on.
+fn read_record(
+    slot: &Path,
+    number: u32,
+    identity: &str,
+) -> std::result::Result<SlotRecord, String> {
     let path = record_path(slot);
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| format!("its record at {} cannot be read: {e}", path.display()))?;
@@ -233,6 +245,27 @@ fn read_record(slot: &Path) -> std::result::Result<SlotRecord, String> {
             "its record at {} declares version {}; this build reads version {SLOT_VERSION}",
             path.display(),
             record.version
+        ));
+    }
+    if record.number != number {
+        return Err(format!(
+            "its record at {} is for slot {}, not for slot {number}",
+            path.display(),
+            record.number
+        ));
+    }
+    if record.identity != identity {
+        return Err(format!(
+            "its record at {} belongs to {:?}, not to {identity:?}",
+            path.display(),
+            record.identity
+        ));
+    }
+    if !record.execution_checkout.is_absolute() {
+        return Err(format!(
+            "its record at {} names an execution checkout at {}, which is not an absolute path",
+            path.display(),
+            record.execution_checkout.display()
         ));
     }
     Ok(record)
@@ -359,7 +392,7 @@ fn survey(identity: &str, pool: &Path) -> Result<Survey> {
         if !dir.is_dir() {
             continue;
         }
-        let (record, state) = state_of(&dir, &open);
+        let (record, state) = state_of(&dir, number, identity, &open);
         slots.push(Surveyed {
             number,
             dir,
@@ -377,8 +410,13 @@ fn survey(identity: &str, pool: &Path) -> Result<Survey> {
 
 /// The state of one slot: broken, in use, maintaining, or idle — in that order, because
 /// each answer is decided by something the next would have to trust.
-fn state_of(dir: &Path, open: &[Record]) -> (Option<SlotRecord>, SlotState) {
-    let record = match read_record(dir) {
+fn state_of(
+    dir: &Path,
+    number: u32,
+    identity: &str,
+    open: &[Record],
+) -> (Option<SlotRecord>, SlotState) {
+    let record = match read_record(dir, number, identity) {
         Ok(record) => record,
         Err(reason) => return (None, SlotState::Broken { reason }),
     };
@@ -875,6 +913,7 @@ fn asked(request: &SessionRequest) -> Result<Asked> {
 fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> WorkspaceCapacity {
     let resolved = &asked.resolved;
     let slots = u32::try_from(survey.slots.len()).unwrap_or(u32::MAX);
+    let idle = survey.count(|state| *state == SlotState::Idle);
     let takeable =
         survey.count(|state| matches!(state, SlotState::Idle | SlotState::Broken { .. }));
     let in_use = survey.count(|state| matches!(state, SlotState::InUse { .. }));
@@ -915,7 +954,7 @@ fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> Work
         identity: asked.resolution.key.clone(),
         pool: resolved.pool.value,
         slots,
-        idle: takeable,
+        idle,
         in_use,
         maintaining,
         overflow: resolved.overflow.value,

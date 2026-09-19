@@ -2121,9 +2121,10 @@ keeps no run roots has nothing to place on.
 `workspace_capacity` is **advisory and `open` is authoritative**: it reads the same
 records `open` reads, applies the request's overrides over the same layering, and
 answers `admitted: true` for a request whose pinned `branch` an open session of the
-identity already holds (that open resumes in place and places nothing). Its `idle`
-counts the broken slots beside the idle ones, since a session recreates a broken slot
-as it takes it. `pool status` renders `pool_status` (`--json` prints the type; the
+identity already holds (that open resumes in place and places nothing). A broken slot
+is counted in `slots` and in neither `idle`, `in_use` nor `maintaining`; `admits` and
+`admitted` still count it, since a session recreates one as it takes it. `pool status`
+renders `pool_status` (`--json` prints the type; the
 lender and the maintenance fields are shown per slot); `pool prune` renders
 `pool_prune`, and removes every idle slot whose clone holds no retained branch, keeping
 every idle slot whose clone does — naming the slot, the branch and that reason.
