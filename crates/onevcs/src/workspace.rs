@@ -1998,6 +1998,21 @@ fn reset_onto_base(worktree: &Path, base: &str, delete: &[PathBuf]) -> Result<()
     git::clean_untracked(worktree)?;
     for path in delete {
         let target = worktree.join(path);
+        // The document was held to a relative path with no `..` when it was read, and
+        // the filesystem is held to it here: a link on the way to the entry could
+        // carry the removal anywhere, so an entry reached through one is refused by
+        // name rather than followed. The entry itself may be a link, and is then
+        // unlinked — never followed.
+        if let Some(link) = symlink_on_the_way(worktree, path) {
+            return Err(error::invalid(format!(
+                "the delete entry {path:?} of the workspaces file passes through {}, which is a \
+                 symbolic link, so deleting it could reach outside the slot worktree at {}; it \
+                 was not deleted. Name the path the link points at, inside the worktree, or \
+                 remove the entry",
+                link.display(),
+                worktree.display()
+            )));
+        }
         let Ok(meta) = std::fs::symlink_metadata(&target) else {
             continue;
         };
@@ -2008,6 +2023,23 @@ fn reset_onto_base(worktree: &Path, base: &str, delete: &[PathBuf]) -> Result<()
         removed.map_err(error::at("delete", &target))?;
     }
     Ok(())
+}
+
+/// The first symbolic link among the directories a worktree-relative path passes
+/// through — every component but the last — or `None` where there is none.
+fn symlink_on_the_way(worktree: &Path, path: &Path) -> Option<PathBuf> {
+    let mut walked = worktree.to_path_buf();
+    let components: Vec<_> = path.components().collect();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        walked.push(component);
+        let is_link = std::fs::symlink_metadata(&walked)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_link {
+            return Some(walked);
+        }
+    }
+    None
 }
 
 /// The paths the workspaces file says to delete when a session of this identity

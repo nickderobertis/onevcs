@@ -27,11 +27,16 @@ pub fn configure_workspaces(world: &World, body: impl AsRef<str>) {
 /// A registered local repository whose origin ignores `target/` and `.logs/`, with the
 /// given workspaces file — the shape a Rust project a pool is for has.
 fn pooled(workspaces: &str) -> Fixture {
+    pooled_ignoring(workspaces, "target/\n.logs/\n")
+}
+
+/// The same, with the origin's ignore file spelled as given.
+fn pooled_ignoring(workspaces: &str, ignored: &str) -> Fixture {
     let fixture = Fixture::local(&local_direct());
     fixture.world.commit_file(
         &fixture.checkout,
         ".gitignore",
-        "target/\n.logs/\n",
+        ignored,
         "chore: ignore build output",
     );
     fixture
@@ -356,6 +361,62 @@ fn opens_reuse_an_idle_slot_fill_the_pool_lazily_overflow_and_then_refuse() {
     close(&fixture, &f);
     close(&fixture, &b);
     close(&fixture, &c);
+}
+
+#[test]
+fn a_delete_entry_that_is_a_link_is_unlinked_and_one_reached_through_a_link_is_refused() {
+    // Both links are ignored paths — by name, since git's `target/` matches a
+    // directory and not a link called that — which is the only way a link outlives
+    // the preservation and the clean a return runs before it deletes anything: an
+    // untracked link is committed with the rest of a dirty tree, and a tracked one is
+    // whatever the base says it is.
+    let fixture = pooled_ignoring(
+        "version: 1\ndefault: {pool: 1, delete: [\".logs\", \"target/current\"]}\n",
+        "target\n.logs\n",
+    );
+    // What the two entries would reach outside the slot if a link were followed.
+    let outside = fixture.world.path("outside");
+    std::fs::create_dir_all(outside.join("current")).expect("a directory outside the slot");
+    std::fs::write(outside.join("current/kept.txt"), "kept").expect("a file outside");
+    std::fs::write(outside.join("log.txt"), "kept").expect("a file outside");
+
+    // `.logs` is itself a link to the outside: the entry is unlinked, never followed.
+    let (linked, tree, _) = open(&fixture, &["--branch", "feature/linked"]);
+    std::os::unix::fs::symlink(&outside, tree.join(".logs")).expect("a link named by an entry");
+    let closed = close(&fixture, &linked);
+    assert_eq!(closed["returned"], serde_json::json!({"slot": 1}));
+    assert!(
+        std::fs::symlink_metadata(tree.join(".logs")).is_err(),
+        "the link itself is gone"
+    );
+    assert!(
+        outside.join("log.txt").is_file(),
+        "what it pointed at is untouched"
+    );
+
+    // `target` is a link and the entry is `target/current` beneath it: refused by
+    // name, and nothing outside is touched.
+    let (through, tree, _) = open(&fixture, &["--branch", "feature/through"]);
+    std::os::unix::fs::symlink(&outside, tree.join("target")).expect("a link on the way");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &through])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "the delete entry \"target/current\" of the workspaces file passes through",
+        ))
+        .stderr(predicates::str::contains("which is a symbolic link"));
+    assert!(
+        outside.join("current/kept.txt").is_file(),
+        "nothing outside the slot was deleted"
+    );
+    // With the link gone the return goes through, and the entry it named — now absent
+    // — is nothing to delete.
+    std::fs::remove_file(tree.join("target")).expect("the link removed by hand");
+    let closed = close(&fixture, &through);
+    assert_eq!(closed["returned"], serde_json::json!({"slot": 1}));
 }
 
 #[test]
