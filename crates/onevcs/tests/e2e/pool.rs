@@ -893,7 +893,7 @@ fn prune_removes_idle_slots_and_keeps_one_retaining_a_branch_naming_why() {
     let fixture = pooled(&sized(3, "unlimited"));
     let (a, a_tree, _) = open(&fixture, &["--branch", "feature/a"]);
     let (b, b_tree, _) = open(&fixture, &["--branch", "feature/b"]);
-    let (c, _, _) = open(&fixture, &["--branch", "feature/c"]);
+    let (c, c_tree, _) = open(&fixture, &["--branch", "feature/c"]);
     fixture
         .world
         .commit_file(&a_tree, "a.txt", "a\n", "feat: unpublished on a");
@@ -979,6 +979,42 @@ fn prune_removes_idle_slots_and_keeps_one_retaining_a_branch_naming_why() {
         )))
         .stdout(predicates::str::contains("last maintained: never"))
         .stdout(predicates::str::contains("last outcome: none"));
+
+    // A broken slot retains nothing a clone that is not there could hold, so a prune
+    // removes it too; one whose record cannot say which lender it borrows from is
+    // kept, because nothing can then say what its clone retains.
+    let c_slot = c_tree.parent().expect("slot 3").to_path_buf();
+    std::fs::remove_dir_all(c_slot.join("clone")).expect("break slot 3");
+    let a_slot = a_tree.parent().expect("slot 1").to_path_buf();
+    std::fs::write(a_slot.join("slot.json"), "not a record").expect("break slot 1's record");
+    let pruned = fixture
+        .world
+        .onevcs()
+        .args(["pool", "prune", "project", "--json"])
+        .output()
+        .expect("runs");
+    let report: serde_json::Value = serde_json::from_slice(&pruned.stdout).expect("JSON");
+    assert_eq!(report["removed"], serde_json::json!([3]), "{report}");
+    assert!(!c_slot.exists());
+    let kept = report["kept"].as_array().expect("kept slots");
+    assert_eq!(kept.len(), 1, "{report}");
+    assert_eq!(kept[0][0], 1);
+    assert!(
+        kept[0][1]
+            .as_str()
+            .expect("a reason")
+            .contains("its clone retains"),
+        "a slot with an unreadable record keeps every branch its clone holds: {report}"
+    );
+    assert!(a_clone.is_dir());
+    std::fs::remove_dir_all(&a_slot).expect("slot 1 removed by hand");
+    let (again, _, placed) = open(&fixture, &["--branch", "feature/again"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 1, "created": true}),
+        "the lowest free number is cut again"
+    );
+    close(&fixture, &again);
 }
 
 #[test]

@@ -78,6 +78,13 @@ fn opening_a_session_records_it_and_emits_the_event_the_real_one_emits() {
             "a session-opened event names its {named}"
         );
     }
+    // Where the session was placed, which every implementation says: a provider that
+    // keeps no pool places every session in a run root of its own, and a consumer
+    // reading the field meets the same shape the real backend writes.
+    assert_eq!(
+        opened["payload"]["placement"],
+        serde_json::json!({"kind": "run-root"})
+    );
 }
 
 #[test]

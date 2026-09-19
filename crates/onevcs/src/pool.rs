@@ -475,14 +475,19 @@ fn state_of(
 /// The local branches of a slot's clone that its lender does not reach: the ones a
 /// hand-back could not copy, which is the only way a branch outlives a return there.
 ///
-/// A repository git cannot be asked answers with every branch it lists — a count nobody
-/// got is not a count of none, and what this decides is whether a slot may be removed.
-fn retained_branches(clone: &Path, lender: Option<&Path>) -> Vec<String> {
+/// A clone that is not there holds nothing, which is the one negative answer that is
+/// a fact rather than a failure. One that is there and cannot be listed is `Err`,
+/// carrying git's refusal: a count nobody got is not a count of none, and what this
+/// decides is whether a slot may be removed.
+fn retained_branches(
+    clone: &Path,
+    lender: Option<&Path>,
+) -> std::result::Result<Vec<String>, String> {
     if !git::is_repo(clone) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    git::branches(clone)
-        .unwrap_or_default()
+    let branches = git::branches(clone).map_err(|e| e.to_string())?;
+    Ok(branches
         .into_iter()
         .filter(|branch| {
             let reached = match (git::tip(clone, &format!("refs/heads/{branch}")), lender) {
@@ -491,7 +496,7 @@ fn retained_branches(clone: &Path, lender: Option<&Path>) -> Vec<String> {
             };
             !reached
         })
-        .collect()
+        .collect())
 }
 
 /// Why an idle slot is kept rather than removed, or `None` where it may go.
@@ -507,7 +512,19 @@ fn keeps(slot: &Surveyed) -> Option<String> {
         }
         SlotState::Idle | SlotState::Broken { .. } => {}
     }
-    let retained = retained_branches(&slot.clone_dir(), slot.lender());
+    // llmlint: ignore[changed_behavior_has_e2e] uncovered: git declining to list the
+    // branches of a repository this crate has just read as one. No interface this
+    // crate exposes produces that, and what it would prove is that the slot is
+    // *kept*, which is the answer every other unknown here resolves to.
+    let retained = match retained_branches(&slot.clone_dir(), slot.lender()) {
+        Ok(retained) => retained,
+        Err(reason) => {
+            return Some(format!(
+                "its clone could not be asked what it retains, and a count nobody got is not \
+                 a count of none: {reason}"
+            ))
+        }
+    };
     if retained.is_empty() {
         return None;
     }
