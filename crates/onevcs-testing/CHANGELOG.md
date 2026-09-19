@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.6...onevcs-testing-v0.6.7) - 2026-09-19
+
+### Added
+
+- *(session)* pool warm worktree slots per identity, lazily, returned rather than removed ([#167](https://github.com/nickderobertis/onevcs/pull/167))
+
 ## [0.6.6](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.5...onevcs-testing-v0.6.6) - 2026-09-18
 
 ### Fixed
