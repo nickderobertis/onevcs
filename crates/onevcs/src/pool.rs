@@ -660,8 +660,8 @@ pub(crate) enum Placement {
         number: u32,
         /// Its directory.
         dir: PathBuf,
-        /// Whether it was cut for this session, as opposed to taken warm.
-        created: bool,
+        /// How much of it the session found already there.
+        cut: Cut,
         /// The exclusive take that keeps every other placement, prune and shed off it
         /// until the session's record names it. Dropped by the caller after the save.
         _held: lock::Guard,
@@ -702,31 +702,22 @@ pub(crate) fn place(ask: &Ask<'_>) -> Result<Placement> {
     shed(&mut survey, ask.resolved.file_pool, ask.execution);
     let wanted = ask.resolved.pool.value;
     if wanted > 0 {
-        if let Some(taken) = take_idle(&survey, ask)? {
+        let taken = match take_idle(&survey, ask)? {
+            Some(taken) => Some(taken),
+            None => match recreate_broken(&survey, ask)? {
+                Some(recreated) => Some(recreated),
+                None if u32::try_from(survey.slots.len()).unwrap_or(u32::MAX) < wanted => {
+                    Some(cut_new(&survey, ask)?)
+                }
+                None => None,
+            },
+        };
+        if let Some(taken) = taken {
             return Ok(Placement::Slot {
                 number: taken.number,
                 dir: taken.dir.clone(),
-                created: false,
+                cut: taken.cut,
                 _held: taken.held,
-                _serial: serial,
-            });
-        }
-        if let Some(recreated) = recreate_broken(&survey, ask)? {
-            return Ok(Placement::Slot {
-                number: recreated.number,
-                dir: recreated.dir.clone(),
-                created: true,
-                _held: recreated.held,
-                _serial: serial,
-            });
-        }
-        if u32::try_from(survey.slots.len()).unwrap_or(u32::MAX) < wanted {
-            let cut = cut_new(&survey, ask)?;
-            return Ok(Placement::Slot {
-                number: cut.number,
-                dir: cut.dir.clone(),
-                created: true,
-                _held: cut.held,
                 _serial: serial,
             });
         }
@@ -740,10 +731,33 @@ pub(crate) fn place(ask: &Ask<'_>) -> Result<Placement> {
     Err(exhausted(ask, &survey))
 }
 
-/// A slot taken for a placement: its number, its directory, and the exclusive take.
+/// How much of a slot a placement found already there, which is how much `open` has
+/// still to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cut {
+    /// Nothing: the clone and the worktree are cut from the lender.
+    Fresh,
+    /// The clone, with every ref it retains; only the worktree is cut, from that
+    /// clone — a broken slot whose clone is still a repository.
+    KeptClone,
+    /// Both, standing as the last return left them: the branch is swapped in place.
+    Warm,
+}
+
+impl Cut {
+    /// Whether the session's opening event reports the slot as cut for it rather
+    /// than taken warm: a worktree built from nothing is, whatever the clone kept.
+    pub(crate) fn created(self) -> bool {
+        self != Cut::Warm
+    }
+}
+
+/// A slot taken for a placement: its number, its directory, how much of it was
+/// there, and the exclusive take.
 struct Taken {
     number: u32,
     dir: PathBuf,
+    cut: Cut,
     held: lock::Guard,
 }
 
@@ -774,43 +788,92 @@ fn take_idle(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
         return Ok(Some(Taken {
             number: slot.number,
             dir: slot.dir.clone(),
+            cut: Cut::Warm,
             held,
         }));
     }
     Ok(None)
 }
 
-/// A broken slot of this lender — or of no readable lender — recreated in place.
+/// A broken slot of this lender — or of no readable lender — recreated in place,
+/// keeping whatever of it is still usable.
 ///
-/// Never one whose clone still retains a branch: recreating it is removing the clone,
-/// and a branch only that clone carries is exactly what a slot is kept for. Such a
-/// slot stays broken and reported until the branch is imported or the slot removed by
-/// hand, and the placement moves on to the next candidate.
+/// Only what is broken is rebuilt, because a slot's clone is where a branch the
+/// hand-back could not copy lives. A clone that is still a repository is kept with
+/// every ref it retains: an unreadable record is rewritten beside it, and a worktree
+/// that is missing or not a repository is cut again from that clone. Only a clone that
+/// is itself unusable — missing, or not a repository git can read — is removed, and
+/// there is nothing it could be asked to retain.
 fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
     for slot in &survey.slots {
         if !matches!(slot.state, SlotState::Broken { .. }) {
             continue;
         }
-        if slot.lender().is_some_and(|lender| lender != ask.execution) {
-            continue;
-        }
-        if keeps(slot, ask.execution).is_some() {
+        let clone = slot.clone_dir();
+        let worktree = slot.worktree();
+        // The lender the slot is bound to: its record's, or — where the record could
+        // not be read — the checkout its clone borrows objects from. A slot bound to
+        // another lender is not this request's to rebuild any more than to take.
+        let lender = slot
+            .lender()
+            .map(Path::to_path_buf)
+            .or_else(|| lender_of(&clone));
+        if lender.is_some_and(|lender| lender != ask.execution) {
             continue;
         }
         let Some(held) = lock::try_exclusive(&workspace::occupancy_identity(&slot.dir))? else {
             continue;
         };
-        std::fs::remove_dir_all(&slot.dir)
-            .map_err(error::at("remove the broken slot at", &slot.dir))?;
-        std::fs::create_dir(&slot.dir).map_err(error::at("create", &slot.dir))?;
+        let cut = if git::is_repo(&clone) {
+            if git::is_repo(&worktree) {
+                Cut::Warm
+            } else {
+                if worktree.exists() {
+                    std::fs::remove_dir_all(&worktree)
+                        .map_err(error::at("remove the broken worktree at", &worktree))?;
+                }
+                // The clone still registers the worktree it lost; a fresh `worktree
+                // add` at the same path is refused until that registration is gone.
+                git::worktree_prune(&clone)?;
+                Cut::KeptClone
+            }
+        } else {
+            std::fs::remove_dir_all(&slot.dir)
+                .map_err(error::at("remove the broken slot at", &slot.dir))?;
+            std::fs::create_dir(&slot.dir).map_err(error::at("create", &slot.dir))?;
+            Cut::Fresh
+        };
         write_record(&slot.dir, &fresh_record(slot.number, ask))?;
         return Ok(Some(Taken {
             number: slot.number,
             dir: slot.dir.clone(),
+            cut,
             held,
         }));
     }
     Ok(None)
+}
+
+/// The checkout a slot's clone borrows its objects from, read off the clone itself
+/// for a slot whose record cannot say.
+///
+/// A shared clone records its lender's object store in `objects/info/alternates`,
+/// which for a checkout is `<checkout>/.git/objects`; anything else there is not a
+/// lender this crate can name, and answers `None`.
+fn lender_of(clone: &Path) -> Option<PathBuf> {
+    let alternates = git::objects_dir(clone).ok()?.join("info/alternates");
+    let recorded = std::fs::read_to_string(alternates).ok()?;
+    let objects = PathBuf::from(recorded.lines().next()?.trim());
+    let git_dir = objects
+        .file_name()
+        .is_some_and(|name| name == "objects")
+        .then(|| objects.parent())
+        .flatten()?;
+    git_dir
+        .file_name()
+        .is_some_and(|name| name == ".git")
+        .then(|| git_dir.parent().map(Path::to_path_buf))
+        .flatten()
 }
 
 /// A new slot at the lowest free number.
@@ -840,7 +903,12 @@ fn cut_new(survey: &Survey, ask: &Ask<'_>) -> Result<Taken> {
             ))
         })?;
         write_record(&dir, &fresh_record(number, ask))?;
-        return Ok(Taken { number, dir, held });
+        return Ok(Taken {
+            number,
+            dir,
+            cut: Cut::Fresh,
+            held,
+        });
     }
 }
 

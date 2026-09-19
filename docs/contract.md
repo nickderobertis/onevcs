@@ -2173,9 +2173,11 @@ candidate: re-pointing alternates is refused because a branch the hand-back coul
 copy may reference objects only the old lender holds, so an identity with several
 execution checkouts spends its pool one slot per lender. A slot found broken — clone or
 worktree missing or not a repository, `slot.json` unreadable — is recreated in place
-rather than refused, and reported `Broken` by `pool status` until then; one whose clone
-still retains a branch is never recreated, since recreating it is removing that clone,
-and stands broken and reported until the branch is imported or the slot removed. Taking a warm
+rather than refused, and reported `Broken` by `pool status` until then. Only what is
+broken is rebuilt: a clone that is still a repository is kept with every ref it retains
+— an unreadable record is rewritten beside it and a lost worktree is cut again from it —
+and only a clone that is itself unusable is removed, there being nothing it can be asked
+to retain. Taking a warm
 slot carries origin's refs in from the lender and then swaps the branch **in place** in
 the existing worktree: a fresh cut is `checkout -b` onto the integrated base, and a
 continued branch is brought in and integrated exactly as a new worktree's would be.

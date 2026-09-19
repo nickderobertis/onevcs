@@ -952,7 +952,9 @@ goes and cuts or takes the slot itself; `workspace::close` returns one through
   request lending from another never takes it — a retained branch may reference
   objects only the old lender holds. A broken slot (clone or worktree missing or not
   a repository, record unreadable) is recreated in place by the session that would
-  take it, bound to that session's lender.
+  take it — rebuilding only what is broken: a clone that is still a repository is
+  kept with every ref it retains and its record or worktree rebuilt beside it, and
+  only an unusable clone is cut again from the lender.
 - **A closed record on a slot owns its tree only until the slot is returned or
   taken.** `Record::tree_is_its_own` is the one place that decides it, and `spent`,
   `holds_unpublished_work`, `adopt` and `close` all ask it first: a publication closes

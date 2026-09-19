@@ -970,15 +970,13 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         })?,
         false => pool::Placement::RunRoot { _serial: None },
     };
-    let (run_root, slot, created) = match &placement {
+    let (run_root, slot, cut) = match &placement {
         pool::Placement::Slot {
-            number,
-            dir,
-            created,
-            ..
-        } => (dir.clone(), Some(*number), *created),
-        pool::Placement::RunRoot { .. } => (runs.join(&token), None, true),
+            number, dir, cut, ..
+        } => (dir.clone(), Some(*number), *cut),
+        pool::Placement::RunRoot { .. } => (runs.join(&token), None, pool::Cut::Fresh),
     };
+    let created = cut.created();
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
     home::ensure_dir(&run_root)?;
@@ -999,15 +997,22 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
 
     let origin = git::remote_url(&execution, "origin")
         .unwrap_or_else(|_| execution.to_string_lossy().into_owned());
-    let (carried, placed) = match created {
-        true => (
+    let (carried, placed) = match cut {
+        pool::Cut::Fresh => (
             git::clone_sharing(&execution, &clone, &origin, &base)?,
+            Placed::NewWorktree,
+        ),
+        // A broken slot whose clone survived keeps that clone and every ref it
+        // retains: its view of origin is brought up to the lender's and the worktree
+        // alone is cut again from it.
+        pool::Cut::KeptClone => (
+            git::carry_remote_refs(&execution, &clone, &base)?,
             Placed::NewWorktree,
         ),
         // A warm slot keeps its clone and its worktree: the clone's view of origin is
         // brought up to the lender's, and whatever its last session left unreturned
         // is returned first, so the swap below starts from a clean tree on the base.
-        false => {
+        pool::Cut::Warm => {
             let carried = git::carry_remote_refs(&execution, &clone, &base)?;
             settle_slot(&run_root, &policy.delete)?;
             (carried, Placed::InPlace)
@@ -1031,11 +1036,17 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         Ok(stack_tip) => stack_tip,
         Err(error) => {
             drop(lease);
-            match created {
-                true => {
+            match cut {
+                pool::Cut::Fresh => {
                     let _ = std::fs::remove_dir_all(&run_root);
                 }
-                false => restore_returned(&clone, &worktree, &branch, &base, &execution),
+                // The clone and what it retains stay; the worktree that could not be
+                // cut goes, and the slot reads broken again until the next take.
+                pool::Cut::KeptClone => {
+                    let _ = std::fs::remove_dir_all(&worktree);
+                    let _ = git::worktree_prune(&clone);
+                }
+                pool::Cut::Warm => restore_returned(&clone, &worktree, &branch, &base, &execution),
             }
             drop(placement);
             return Err(error);
