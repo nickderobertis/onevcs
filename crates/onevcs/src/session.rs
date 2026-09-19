@@ -1,5 +1,6 @@
-//! A session: the per-run clone and worktree a change is made in, and what is
-//! left behind when one does not finish.
+//! A session: the clone and worktree a change is made in — a pooled slot the host
+//! keeps warm, or one cut for this run — and what is left behind when one does not
+//! finish.
 
 use std::path::PathBuf;
 

@@ -11,13 +11,15 @@
 //! # The shape of one change
 //!
 //! ```text
-//! session open  →  a per-run --shared clone and one worktree, occupancy-leased
+//! session open  →  a --shared clone and one worktree, occupancy-leased: a warm
+//!                   pool slot where the host keeps one, else cut for this run
 //!    →  work happens in the worktree
 //!    →  publish   →  fetch and merge the current base  (bounded resolve-and-requeue)
 //!                 →  the repository's own merge path verifies it: its pre-push
 //!                    hook, or the host's required checks on the change request
 //!                 →  local-direct squash, or a change request the host lands
-//!    →  session close  →  the worktree goes; the branch is copied out and stays
+//!    →  session close  →  the branch is copied out and stays; a slot is returned
+//!                         warm, a per-run worktree goes
 //! ```
 //!
 //! Everything durable lives under one state root (`ONEVCS_HOME`, otherwise

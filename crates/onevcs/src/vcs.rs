@@ -32,8 +32,9 @@ pub trait Vcs {
     /// belongs to.
     fn resolve_identity(&self, origin_or_path: &str) -> Result<Identity>;
 
-    /// Open a session: a per-run clone of an execution checkout and an isolated
-    /// worktree cut from it, held under an occupancy lease.
+    /// Open a session: a clone of an execution checkout and an isolated worktree cut
+    /// from it — a warm pool slot where the host keeps one, else cut for this run —
+    /// held under an occupancy lease.
     fn open_session(&self, req: SessionRequest) -> Result<Session>;
 
     /// Re-attach to a session that already exists, claiming its free occupancy

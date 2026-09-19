@@ -889,7 +889,8 @@ pub(crate) fn identity_dir(identity: &str) -> Result<PathBuf> {
     Ok(home::workspaces_dir()?.join(format!("{flattened}-{}", ids::short_digest(identity))))
 }
 
-/// Open a session over a per-run clone and an isolated worktree.
+/// Open a session over a clone and an isolated worktree: a warm pool slot where the
+/// host keeps one for the identity, else a run root cut for this session alone.
 pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, Stream)> {
     let resolution = store::resolve(registry, &request.repo)?;
     let execution =

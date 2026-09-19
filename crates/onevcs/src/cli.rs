@@ -152,7 +152,8 @@ pub struct ResolveArgs {
 /// The `onevcs session` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SessionCommand {
-    /// Open a session over a per-run clone and worktree.
+    /// Open a session over a clone and worktree: a warm pool slot where the host
+    /// keeps one, else one cut for this run.
     Open(SessionOpenArgs),
     /// Re-attach to an existing session.
     Adopt(SessionTokenArgs),
