@@ -117,6 +117,64 @@ fn claim_slot(record_path: &Path, pid: u32, started: u64) {
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 
+/// One way a slot on disk stops being whole.
+///
+/// A broken slot is, by the contract's own definition, one whose clone or worktree is
+/// missing or not a repository or whose record cannot be read — states nothing this
+/// crate offers a verb for and every one of which a host reaches from outside it: a
+/// disk that filled half way through a clone, an operator with a broom, a record a
+/// build wrote that a later one refuses. These are the ways the journeys stage that.
+enum Damage<'a> {
+    /// The clone is gone.
+    LoseClone,
+    /// The worktree is gone.
+    LoseWorktree,
+    /// The record is not a record.
+    GarbleRecord,
+    /// The record is another slot's, copied over this one's.
+    RecordOf(&'a Path),
+    /// The record's `created` is not a timestamp.
+    BadClock,
+    /// The whole slot is gone, as an operator's broom leaves it.
+    LoseSlot,
+}
+
+// llmlint: ignore-block[tests_mirror_real_usage] no verb of this crate produces a
+// broken slot, and the contract defines one by what is missing or unreadable on disk
+// — so damaging the disk is the one way a journey can stage the state the product
+// then has to recover from, exactly as `sweep.rs` backdates run roots it could not
+// age through any verb. Every assertion around a damaged slot goes through `pool
+// status`, `session open`, `session close` and `pool prune`.
+fn damage(slot: &Path, how: Damage<'_>) {
+    let record = slot.join("slot.json");
+    let done = match how {
+        Damage::LoseClone => std::fs::remove_dir_all(slot.join("clone")),
+        Damage::LoseWorktree => std::fs::remove_dir_all(slot.join("worktree")),
+        Damage::GarbleRecord => std::fs::write(&record, "not a record"),
+        Damage::RecordOf(other) => std::fs::copy(other.join("slot.json"), &record).map(|_| ()),
+        Damage::BadClock => {
+            let mut stamped: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&record).expect("the slot's record"))
+                    .expect("the slot's record is JSON");
+            stamped["created"] = serde_json::json!("yesterday");
+            std::fs::write(&record, stamped.to_string())
+        }
+        Damage::LoseSlot => std::fs::remove_dir_all(slot),
+    };
+    done.expect("the slot is damaged as the journey means it to be");
+}
+
+/// A slot's record as it stands, so a journey can put it back after damaging it.
+fn record_of(slot: &Path) -> String {
+    std::fs::read_to_string(slot.join("slot.json")).expect("the slot's record")
+}
+
+/// Put a slot's record back as [`record_of`] read it.
+fn restore_record(slot: &Path, record: &str) {
+    std::fs::write(slot.join("slot.json"), record).expect("the slot's record restored");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
 /// `pool status --json`, as a consumer reads it.
 fn status(fixture: &Fixture) -> serde_json::Value {
     let output = fixture
@@ -1045,9 +1103,9 @@ fn prune_removes_idle_slots_and_keeps_one_retaining_a_branch_naming_why() {
     // removes it too; one whose record cannot say which lender it borrows from is
     // kept, because nothing can then say what its clone retains.
     let c_slot = c_tree.parent().expect("slot 3").to_path_buf();
-    std::fs::remove_dir_all(c_slot.join("clone")).expect("break slot 3");
+    damage(&c_slot, Damage::LoseClone);
     let a_slot = a_tree.parent().expect("slot 1").to_path_buf();
-    std::fs::write(a_slot.join("slot.json"), "not a record").expect("break slot 1's record");
+    damage(&a_slot, Damage::GarbleRecord);
     let pruned = fixture
         .world
         .onevcs()
@@ -1068,7 +1126,7 @@ fn prune_removes_idle_slots_and_keeps_one_retaining_a_branch_naming_why() {
         "a slot with an unreadable record keeps every branch its clone holds: {report}"
     );
     assert!(a_clone.is_dir());
-    std::fs::remove_dir_all(&a_slot).expect("slot 1 removed by hand");
+    damage(&a_slot, Damage::LoseSlot);
     let (again, _, placed) = open(&fixture, &["--branch", "feature/again"]);
     assert_eq!(
         placed,
@@ -1191,12 +1249,8 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
     // A record that disagrees with the directory it sits in is a broken slot too —
     // one copied from another slot, say — and is reported by what disagrees.
     let b_slot = b_tree.parent().expect("slot 2").to_path_buf();
-    let b_record = std::fs::read_to_string(b_slot.join("slot.json")).expect("slot 2's record");
-    std::fs::copy(
-        a_tree.parent().expect("slot 1").join("slot.json"),
-        b_slot.join("slot.json"),
-    )
-    .expect("slot 1's record over slot 2's");
+    let b_record = record_of(&b_slot);
+    damage(&b_slot, Damage::RecordOf(a_tree.parent().expect("slot 1")));
     let listed = status(&fixture);
     assert_eq!(listed["slots"][1]["state"]["state"], "broken");
     assert!(
@@ -1206,11 +1260,8 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
             .contains("is for slot 1, not for slot 2"),
         "{listed}"
     );
-    let mut stamped: serde_json::Value =
-        serde_json::from_str(&b_record).expect("slot 2's record is JSON");
-    stamped["created"] = serde_json::json!("yesterday");
-    std::fs::write(b_slot.join("slot.json"), stamped.to_string())
-        .expect("a record with a bad clock");
+    restore_record(&b_slot, &b_record);
+    damage(&b_slot, Damage::BadClock);
     let listed = status(&fixture);
     assert_eq!(listed["slots"][1]["state"]["state"], "broken");
     assert!(
@@ -1220,12 +1271,12 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
             .contains("\"yesterday\" is not a timestamp"),
         "{listed}"
     );
-    std::fs::write(b_slot.join("slot.json"), b_record).expect("slot 2's record restored");
+    restore_record(&b_slot, &b_record);
     assert_eq!(status(&fixture)["slots"][1]["state"]["state"], "idle");
 
     // Slot 2 loses its clone: broken, reported so, and recreated in place by the next
     // open that would take it.
-    std::fs::remove_dir_all(b_slot.join("clone")).expect("break the slot");
+    damage(&b_slot, Damage::LoseClone);
     let listed = status(&fixture);
     assert_eq!(listed["slots"][1]["state"]["state"], "broken");
     assert!(listed["slots"][1]["state"]["reason"]
@@ -1258,9 +1309,9 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
     // still usable: a record nothing can read is rewritten beside an intact clone and
     // worktree, which are then taken warm; a worktree that is gone is cut again from
     // the clone that kept it.
-    std::fs::remove_dir_all(b_slot.join("worktree")).expect("lose slot 2's worktree");
+    damage(&b_slot, Damage::LoseWorktree);
     let a_slot = a_tree.parent().expect("slot 1").to_path_buf();
-    std::fs::write(a_slot.join("slot.json"), "not a record").expect("break slot 1's record");
+    damage(&a_slot, Damage::GarbleRecord);
     let listed = status(&fixture);
     assert!(listed["slots"][0]["state"]["reason"]
         .as_str()
@@ -1366,7 +1417,7 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
             "the retained commit is still reachable {what}"
         );
     };
-    std::fs::write(c_slot.join("slot.json"), "not a record").expect("lose slot 3's record");
+    damage(&c_slot, Damage::GarbleRecord);
     assert_eq!(status(&fixture)["slots"][0]["state"]["state"], "broken");
     let (recorded, recorded_tree, placed) = open(&fixture, &["--branch", "feature/recorded"]);
     assert_eq!(
@@ -1378,7 +1429,7 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
     close(&fixture, &recorded);
     retained("after that session returned the slot");
 
-    std::fs::remove_dir_all(c_slot.join("worktree")).expect("lose slot 3's worktree");
+    damage(&c_slot, Damage::LoseWorktree);
     assert_eq!(status(&fixture)["slots"][0]["state"]["state"], "broken");
     let (rebuilt, rebuilt_tree, placed) = open(&fixture, &["--branch", "feature/rebuilt"]);
     assert_eq!(
