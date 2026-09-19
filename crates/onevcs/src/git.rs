@@ -2031,6 +2031,46 @@ pub fn worktree_add_detached(cwd: &Path, path: &Path, reference: &str) -> Result
     .map(|_| ())
 }
 
+/// Create `branch` off `base` and check it out in the worktree that is already there.
+///
+/// The in-place form of [`worktree_add`], for a pool slot whose worktree stands
+/// detached on the base: git rewrites only the files that differ between the two
+/// trees, which is what lets an incremental build in the slot see a branch diff.
+pub fn checkout_new(worktree: &Path, branch: &str, base: &str) -> Result<()> {
+    checked(&["checkout", "-q", "-b", branch, base], Some(worktree)).map(|_| ())
+}
+
+/// Check out an existing local branch in the worktree that is already there.
+///
+/// The in-place form of [`worktree_add_existing`], for the same slot.
+pub fn checkout_existing(worktree: &Path, branch: &str) -> Result<()> {
+    checked(&["checkout", "-q", branch], Some(worktree)).map(|_| ())
+}
+
+/// Leave the branch the worktree is on, staying at the commit it stands on.
+///
+/// What a return does first, so that the reset that follows moves a detached head
+/// rather than the session's branch, and so that the branch can then be deleted out
+/// from under nothing.
+pub fn checkout_detached(worktree: &Path) -> Result<()> {
+    checked(&["checkout", "-q", "--detach"], Some(worktree)).map(|_| ())
+}
+
+/// Move the worktree's head to `reference` and make the index and the tracked files
+/// match it, leaving untracked files where they are.
+pub fn reset_hard(worktree: &Path, reference: &str) -> Result<()> {
+    checked(&["reset", "-q", "--hard", reference], Some(worktree)).map(|_| ())
+}
+
+/// Remove every untracked file and directory the ignore rules do not cover.
+///
+/// Deliberately without `-x`: what `.gitignore` names is the repository's own
+/// declaration of its build output, and keeping that across sessions is the whole
+/// point of a warm slot.
+pub fn clean_untracked(worktree: &Path) -> Result<()> {
+    checked(&["clean", "-q", "-f", "-d"], Some(worktree)).map(|_| ())
+}
+
 /// Remove a worktree, forcing past an unclean tree.
 pub fn worktree_remove(cwd: &Path, path: &Path) -> Result<()> {
     let path = git_path(path).to_string_lossy();

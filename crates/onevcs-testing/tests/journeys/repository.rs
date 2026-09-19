@@ -101,6 +101,8 @@ fn preserved_work_is_what_recoverable_reports() {
             branch: Some("feature/interrupted".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session over a known repository");
 
@@ -190,6 +192,8 @@ fn preserving_the_same_branch_twice_reports_it_once() {
             branch: Some("feature/twice".to_owned()),
             base: Some("release".to_owned()),
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session named by its identity key");
 
@@ -240,6 +244,8 @@ fn a_session_is_adopted_back_out_of_the_state_that_recorded_it() {
             branch: None,
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
 

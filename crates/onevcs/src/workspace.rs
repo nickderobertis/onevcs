@@ -41,7 +41,7 @@ use crate::remainder::Remainder;
 use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::{git, guidance, home, ids, lock, processes};
+use crate::{git, guidance, home, ids, lock, pool, processes, workspaces};
 
 /// How many dead run roots still holding unpublished work are retained.
 ///
@@ -206,8 +206,17 @@ pub struct Record {
     pub worktree: PathBuf,
     /// The per-session clone the worktree was cut from.
     pub clone: PathBuf,
-    /// The run root holding both.
+    /// The run root holding both: a disposable directory under the identity's `runs/`,
+    /// or — where [`slot`](Self::slot) is set — the pool slot the session was placed on.
     pub run_root: PathBuf,
+    /// The pool slot this session was placed on, when it was placed on one rather than
+    /// cut a run root of its own. The slot directory is then [`run_root`](Self::run_root)
+    /// and outlives the session: a close *returns* it rather than removing it.
+    ///
+    /// Absent on every session cut under `runs/`, which is every session of a host that
+    /// configures no pool — and on every record written before there were slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
     /// The checkout the clone borrows from.
     pub execution_checkout: PathBuf,
     /// The checkout publication fast-forwards, never worked in.
@@ -320,7 +329,7 @@ impl From<Record> for SessionHolder {
 }
 
 #[cfg(windows)]
-fn process_started(pid: u32) -> Option<ProcessStart> {
+pub(crate) fn process_started(pid: u32) -> Option<ProcessStart> {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -355,7 +364,7 @@ fn process_started(pid: u32) -> Option<ProcessStart> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_started(pid: u32) -> Option<ProcessStart> {
+pub(crate) fn process_started(pid: u32) -> Option<ProcessStart> {
     if pid == 0 {
         return None;
     }
@@ -376,7 +385,7 @@ fn process_started(pid: u32) -> Option<ProcessStart> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_started(pid: u32) -> Option<ProcessStart> {
+pub(crate) fn process_started(pid: u32) -> Option<ProcessStart> {
     use std::ffi::{c_int, c_void};
 
     #[repr(C)]
@@ -483,6 +492,31 @@ impl Record {
     /// The occupancy lease identity for this session's run root.
     pub fn lease(&self) -> String {
         occupancy_identity(&self.run_root)
+    }
+
+    /// Whether the tree under this record's run root is still this session's to act on.
+    ///
+    /// Always, for a session cut under `runs/`: nothing else is ever placed there. For
+    /// a session placed on a slot it is true while the record is open — an open record
+    /// is what holds a slot — and afterwards only until the slot is *returned* or
+    /// taken: a publication closes the record and leaves the return to `session close`,
+    /// so between the two the tree is still this session's, but a record that closed
+    /// on a slot a later session has since opened on describes a tree that session
+    /// owns. `spent`, `holds_unpublished_work`, `adopt` and `close` all ask this before
+    /// they read or touch the worktree, so none of them acts on a slot's tree as a
+    /// closed session's.
+    pub fn tree_is_its_own(&self) -> bool {
+        if self.slot.is_none() || self.state == Lifecycle::Open {
+            return true;
+        }
+        let taken = all().unwrap_or_default().into_iter().any(|other| {
+            other.state == Lifecycle::Open
+                && other.run_root == self.run_root
+                && *other.token != *self.token
+        });
+        !taken
+            && self.worktree.is_dir()
+            && git::current_branch(&self.worktree).is_ok_and(|current| current == *self.branch)
     }
 }
 
@@ -729,7 +763,7 @@ pub(crate) fn spent_records() -> Result<Vec<Record>> {
 /// and the dearest runs only on the records the other two have already given up on.
 fn spent(record: &Record) -> bool {
     !record.owner_is_running()
-        && processes::holding(&record.run_root).is_empty()
+        && (!record.tree_is_its_own() || processes::holding(&record.run_root).is_empty())
         && !holds_unpublished_work(record)
 }
 
@@ -774,7 +808,13 @@ fn holds_unpublished_work(record: &Record) -> bool {
         .any(|repo| {
             git::is_repo(repo) && !matches!(git::unpublished_ahead(repo, &reference, &[]), Ok(0))
         });
-    carried || (record.worktree.is_dir() && git::is_dirty(&record.worktree).unwrap_or(true))
+    // The worktree only while it is this session's: a record that closed on a slot a
+    // later session works in would otherwise read that session's uncommitted work as
+    // its own, and retain itself over a tree it has no claim to.
+    carried
+        || (record.tree_is_its_own()
+            && record.worktree.is_dir()
+            && git::is_dirty(&record.worktree).unwrap_or(true))
     // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
@@ -822,8 +862,8 @@ pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<
     Ok(searched)
 }
 
-/// The directory one identity's run roots live under.
-fn identity_dir(identity: &str) -> Result<PathBuf> {
+/// The directory one identity's run roots and pool slots live under.
+pub(crate) fn identity_dir(identity: &str) -> Result<PathBuf> {
     let flattened: String = identity
         .chars()
         .map(|c| {
@@ -909,36 +949,95 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     home::ensure_dir(&runs)?;
     reclaim(&runs)?;
 
-    let run_root = runs.join(&token);
+    // Where this session goes: a warm slot of the identity's pool, a slot cut for it,
+    // a disposable run root under `runs/`, or nowhere. A host that configures no pool
+    // and has never had one takes the run-root path with nothing else asked, so it
+    // opens exactly as it always did.
+    let policy = workspaces::resolve_for(
+        &resolution,
+        workspaces::Overrides {
+            pool: request.pool,
+            overflow: request.overflow,
+        },
+    )?;
+    let placement = match policy.configured || pool::pool_dir(&identity_root).is_dir() {
+        true => pool::place(&pool::Ask {
+            resolution: &resolution,
+            execution: &execution,
+            resolved: &policy,
+            pinned: request.branch.is_some().then_some(&branch),
+            identity_root: &identity_root,
+        })?,
+        false => pool::Placement::RunRoot,
+    };
+    let (run_root, slot, created) = match &placement {
+        pool::Placement::Slot {
+            number,
+            dir,
+            created,
+            ..
+        } => (dir.clone(), Some(*number), *created),
+        pool::Placement::RunRoot => (runs.join(&token), None, true),
+    };
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
     home::ensure_dir(&run_root)?;
 
-    let lease =
-        lock::try_shared(&occupancy_identity(&run_root))?.ok_or_else(|| Error::Invalid {
-            reason: format!("the run root {} is already occupied", run_root.display()),
-        })?;
+    // A run root is held shared for the length of the open, which keeps reclamation
+    // off it until its record exists. A slot is already held exclusively by the
+    // placement above, which keeps every other placement, prune and shed off it for
+    // the same span — and an exclusive take and a shared one on one file cannot be
+    // held together, so a slot takes no second lease here.
+    let lease = match placement {
+        pool::Placement::RunRoot => Some(
+            lock::try_shared(&occupancy_identity(&run_root))?.ok_or_else(|| Error::Invalid {
+                reason: format!("the run root {} is already occupied", run_root.display()),
+            })?,
+        ),
+        pool::Placement::Slot { .. } => None,
+    };
 
     let origin = git::remote_url(&execution, "origin")
         .unwrap_or_else(|_| execution.to_string_lossy().into_owned());
-    let carried = git::clone_sharing(&execution, &clone, &origin, &base)?;
-    // A refusal here is a refusal to open at all, so the run root goes with it: the
-    // branch itself is untouched wherever it was found, and a clone and a worktree
-    // left behind under a token no record names is litter nothing would come back
-    // for.
-    let stack_tip = match cut_or_continue(
-        &clone,
-        &worktree,
-        &branch,
-        &base,
-        root.as_deref(),
-        continued.as_ref(),
-        &resolution.publication,
-    ) {
+    let (carried, placed) = match created {
+        true => (
+            git::clone_sharing(&execution, &clone, &origin, &base)?,
+            Placed::NewWorktree,
+        ),
+        // A warm slot keeps its clone and its worktree: the clone's view of origin is
+        // brought up to the lender's, and whatever its last session left unreturned
+        // is returned first, so the swap below starts from a clean tree on the base.
+        false => {
+            let carried = git::carry_remote_refs(&execution, &clone, &base)?;
+            settle_slot(&run_root, &policy.delete)?;
+            (carried, Placed::InPlace)
+        }
+    };
+    // A refusal here is a refusal to open at all. A run root or a slot cut for this
+    // session goes with it — the branch itself is untouched wherever it was found, and
+    // a clone and a worktree left behind under a token no record names is litter
+    // nothing would come back for. A warm slot is put back as it was found: detached
+    // on the base, clean, and idle.
+    let stack_tip = match cut_or_continue(&Cut {
+        clone: &clone,
+        worktree: &worktree,
+        branch: &branch,
+        base: &base,
+        root: root.as_deref(),
+        continued: continued.as_ref(),
+        publication: &resolution.publication,
+        placed,
+    }) {
         Ok(stack_tip) => stack_tip,
         Err(error) => {
             drop(lease);
-            let _ = std::fs::remove_dir_all(&run_root);
+            match created {
+                true => {
+                    let _ = std::fs::remove_dir_all(&run_root);
+                }
+                false => restore_returned(&clone, &worktree, &branch, &base, &execution),
+            }
+            drop(placement);
             return Err(error);
         }
     };
@@ -955,6 +1054,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         worktree,
         clone,
         run_root,
+        slot,
         execution_checkout: execution,
         publication_checkout: resolution.publication.clone(),
         state: Lifecycle::Open,
@@ -964,6 +1064,9 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         carried: Remainder::default(),
     };
     save(&record)?;
+    // The record is what holds a slot from here on, so the placement's exclusive
+    // take has done its work.
+    drop(placement);
     let reuse = match continued {
         Some(_) => Reuse::Continued,
         None => Reuse::Cut,
@@ -981,9 +1084,73 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         &record.worktree,
         &record.execution_checkout,
     );
-    stream.emit(EventKind::SessionOpened, opened(&record, reuse));
+    stream.emit(EventKind::SessionOpened, opened(&record, reuse, created));
     drop(lease);
     Ok((record, stream))
+}
+
+/// Put a warm slot's tree back as a return leaves it, before a session takes it.
+///
+/// A slot is idle the moment no open record names it, and a publication closes the
+/// record while leaving the return to `session close` — so a slot can be idle with its
+/// last session's branch still checked out and its tree still that session's. The
+/// return is performed here on that session's behalf, through the same steps its own
+/// close would take: its uncommitted work preserved onto its branch, the branch handed
+/// back, stray work refused over, and the tree reset. A refusal is that session's
+/// refusal, naming it and the close that resolves it, and the open does not proceed
+/// over it. A tree no record of this slot names is reset without preserving anything,
+/// which is the same answer reclamation gives a run root no record names.
+fn settle_slot(slot: &Path, delete: &[PathBuf]) -> Result<()> {
+    let worktree = slot.join("worktree");
+    if pool::returned(&worktree) {
+        return Ok(());
+    }
+    let current = git::current_branch(&worktree)?;
+    let previous = all()?
+        .into_iter()
+        .filter(|record| record.run_root == slot)
+        .max_by_key(|record| {
+            (
+                *record.branch == *current,
+                record_path(&record.token)
+                    .ok()
+                    .and_then(|path| std::fs::metadata(path).ok())
+                    .and_then(|meta| meta.modified().ok())
+                    .unwrap_or(std::time::UNIX_EPOCH),
+            )
+        });
+    match previous {
+        Some(record) => {
+            let mut stream = Stream::open(&record.token)?;
+            let handed = preserve_and_hand_back(&record, &mut stream)?;
+            let stray = stray_work(&record)?;
+            if !stray.is_empty() {
+                return Err(stranding(&record, &stray));
+            }
+            return_tree(&record, delete, handed.copied)
+        }
+        None => {
+            let clone = slot.join("clone");
+            let base = git::default_branch(&clone, "origin")
+                .map(Ref::from_git)
+                .unwrap_or_else(|_| Ref::from_git("HEAD"));
+            reset_onto_base(&worktree, &integrated_base(&clone, &base), delete)
+        }
+    }
+}
+
+/// Put a warm slot back as it was found after a swap that refused, so the slot is idle
+/// again rather than left half way into a session nothing recorded.
+fn restore_returned(clone: &Path, worktree: &Path, branch: &Ref, base: &Ref, lender: &Path) {
+    let _ = reset_onto_base(worktree, &integrated_base(clone, base), &[]);
+    // The branch the swap created or brought in, and nothing else: one the lender
+    // already reaches loses nothing by going, and one it does not is left where a
+    // locating verb can still find it.
+    if let Some(tip) = git::tip(clone, &format!("refs/heads/{branch}")) {
+        if git::refs_reach(lender, &tip) {
+            git::delete_ref(clone, &format!("refs/heads/{branch}"));
+        }
+    }
 }
 
 /// Say what a session found when it could not bring its base up to origin's.
@@ -1066,7 +1233,13 @@ enum Reuse {
 /// that keeps no run roots can do, so an event that says neither is one such an
 /// implementation still emits unchanged. A reader tells them apart by the field
 /// being there.
-fn opened(record: &Record, reuse: Reuse) -> Map<String, Value> {
+fn opened(record: &Record, reuse: Reuse, created: bool) -> Map<String, Value> {
+    // Where the session was placed, always: a slot it took or was cut, or a run root
+    // of its own. A resumed session reports the slot it already held, taken warm.
+    let placement = match record.slot {
+        Some(number) => json!({"kind": "slot", "slot": number, "created": created}),
+        None => json!({"kind": "run-root"}),
+    };
     let mut payload = object(json!({
         "token": record.token,
         "identity": record.identity,
@@ -1076,6 +1249,7 @@ fn opened(record: &Record, reuse: Reuse) -> Map<String, Value> {
         "clone": record.clone.display().to_string(),
         "execution_checkout": record.execution_checkout.display().to_string(),
         "publication_checkout": record.publication_checkout.display().to_string(),
+        "placement": placement,
     }));
     match reuse {
         Reuse::Cut => {}
@@ -1189,7 +1363,10 @@ fn resume(held: &Record, lease: lock::Guard, execution: &Path) -> Result<(Record
     // names included.
     let carried = git::carry_remote_refs(execution, &record.clone, &record.base)?;
     note_base(&carried, &record.base, &record.worktree, execution);
-    stream.emit(EventKind::SessionOpened, opened(&record, Reuse::Resumed));
+    stream.emit(
+        EventKind::SessionOpened,
+        opened(&record, Reuse::Resumed, false),
+    );
     Ok((record, stream))
 }
 
@@ -1358,33 +1535,76 @@ fn diverged(branch: &Ref, held: &Carried, pushed: &Carried) -> Error {
     }
 }
 
+/// Whether the session's worktree is cut for it or already there.
+///
+/// A run root, and a slot cut for this session, get a **new worktree** added from
+/// the clone. A warm slot has one, standing detached and clean on the base, and the
+/// branch is swapped into it **in place** — a checkout rather than a worktree add —
+/// so an incremental build in it sees a branch diff rather than an empty tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placed {
+    NewWorktree,
+    InPlace,
+}
+
+/// The base as a clone can name it: its remote-tracking copy where there is one, and
+/// a local branch of that name otherwise.
+fn integrated_base(clone: &Path, base: &Ref) -> String {
+    let remote = format!("origin/{base}");
+    match git::ref_exists(clone, &format!("refs/remotes/{remote}")) {
+        true => remote,
+        false => base.to_string(),
+    }
+}
+
+/// Everything putting a branch into a worktree needs to know, in one value rather
+/// than eight arguments: two of them transposed would cut a session that reads
+/// perfectly and works in the wrong tree.
+struct Cut<'a> {
+    /// The session's clone, whose refs the worktree shares.
+    clone: &'a Path,
+    /// The worktree the branch goes into.
+    worktree: &'a Path,
+    /// The branch.
+    branch: &'a Ref,
+    /// What it is cut from or merged with.
+    base: &'a Ref,
+    /// The identity's root, where the session named its own base.
+    root: Option<&'a str>,
+    /// Where the branch already is, for a continuation.
+    continued: Option<&'a Continued>,
+    /// The publication checkout, which a refusal names.
+    publication: &'a Path,
+    /// Whether the worktree is cut for this session or already there.
+    placed: Placed,
+}
+
 /// Put the session's branch in its worktree, and answer the stack its record has to
 /// write down.
 ///
-/// Two shapes. A name nothing carries is **cut** from the base with `worktree add
-/// -b`, which is every session that generates its own name and every pin that is
-/// new. A name something already carries is **continued**: the worktree is opened at
-/// that branch's tip and the base is merged into it, so the session starts from the
-/// work rather than from an empty branch wearing its name.
-fn cut_or_continue(
-    clone: &Path,
-    worktree: &Path,
-    branch: &Ref,
-    base: &Ref,
-    root: Option<&str>,
-    continued: Option<&Continued>,
-    publication: &Path,
-) -> Result<Option<String>> {
-    // The base as this clone can name it: its remote-tracking copy where there is
-    // one, and a local branch of that name otherwise.
-    let remote = format!("origin/{base}");
-    let carried = git::ref_exists(clone, &format!("refs/remotes/{remote}"));
-    let integrated = match carried {
-        true => remote,
-        false => base.to_string(),
-    };
+/// Two shapes. A name nothing carries is **cut** from the base — `worktree add -b`
+/// for a worktree that does not exist yet, `checkout -b` in one that does — which is
+/// every session that generates its own name and every pin that is new. A name
+/// something already carries is **continued**: the worktree is opened at that
+/// branch's tip and the base is merged into it, so the session starts from the work
+/// rather than from an empty branch wearing its name.
+fn cut_or_continue(cut: &Cut<'_>) -> Result<Option<String>> {
+    let Cut {
+        clone,
+        worktree,
+        branch,
+        base,
+        root,
+        continued,
+        publication,
+        placed,
+    } = *cut;
+    let integrated = integrated_base(clone, base);
     let Some(continued) = continued else {
-        git::worktree_add(clone, worktree, branch, &integrated)?;
+        match placed {
+            Placed::NewWorktree => git::worktree_add(clone, worktree, branch, &integrated)?,
+            Placed::InPlace => git::checkout_new(worktree, branch, &integrated)?,
+        }
         // Read off the worktree that was just cut, which is where the commit it was
         // cut at is by construction — asking the name it was cut from again could
         // answer something else, or nothing.
@@ -1398,7 +1618,10 @@ fn cut_or_continue(
     git::update_ref(clone, &format!("refs/heads/{branch}"), &opened.tip)?;
     git::delete_ref(clone, CONTINUED_REF);
     git::detach_head(clone)?;
-    git::worktree_add_existing(clone, worktree, branch)?;
+    match placed {
+        Placed::NewWorktree => git::worktree_add_existing(clone, worktree, branch)?,
+        Placed::InPlace => git::checkout_existing(worktree, branch)?,
+    }
 
     // Where this branch's own work begins, read *before* the base is merged in:
     // afterwards the two have the base's tip in common and the fork point is gone.
@@ -1484,7 +1707,7 @@ fn same_branch_and_base(base: &Ref) -> Error {
     }
 }
 
-fn execution_checkout(
+pub(crate) fn execution_checkout(
     registry: &Registry,
     resolution: &Resolution,
     alias: Option<&str>,
@@ -1517,6 +1740,28 @@ fn execution_checkout(
 /// before it may be published.
 pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
     let mut record = load(token)?;
+    // A closed session that returned its slot, or whose slot a later session has
+    // taken, has no tree to re-attach to: what is in the slot is somebody else's, and
+    // committing it onto this session's branch is the one thing an adoption must
+    // never do. Its branch is where the return put it.
+    if let Some(number) = record.slot.filter(|_| !record.tree_is_its_own()) {
+        return Err(error::invalid(format!(
+            "session {token:?} closed and returned slot {number} of {identity}, so there is no \
+             tree of its own to re-attach to; its branch {branch:?} was handed to {checkout}. \
+             Open a session pinned to that branch to continue it: `{open}`",
+            identity = record.identity,
+            branch = record.branch,
+            checkout = record.execution_checkout.display(),
+            open = guidance::command([
+                "onevcs",
+                "session",
+                "open",
+                &record.alias,
+                "--branch",
+                &record.branch
+            ]),
+        )));
+    }
     let mut stream = Stream::open(token)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!(
@@ -1563,7 +1808,7 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
 }
 
 /// What `git rev-parse --abbrev-ref HEAD` answers in a worktree that is on no branch.
-const DETACHED_HEAD: &str = "HEAD";
+pub(crate) const DETACHED_HEAD: &str = "HEAD";
 
 /// How much of a commit a minted branch name carries, which is enough for an
 /// operator to recognise it in `git log` and short enough to read.
@@ -1617,37 +1862,48 @@ pub fn close(token: &str) -> Result<Record> {
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
     })?;
+    // Whether the tree under the run root is still this session's. It always is for
+    // a run root; a slot session's stops being so once the slot has been returned or
+    // a later session has taken it, and from then on the tree is nobody's to read on
+    // this record's behalf — the census below would count that later session's
+    // worker, and the return would reset its work.
+    let ours = record.tree_is_its_own();
     // Before anything is read out of the tree, let alone removed: a session
     // something is working in is not this command's to release, and the answer is a
     // process's own working directory rather than the lease above.
-    let occupants = occupants(&record);
-    if !occupants.is_empty() {
-        return Err(occupied(&record, &occupants));
+    if ours {
+        let occupants = occupants(&record);
+        if !occupants.is_empty() {
+            return Err(occupied(&record, &occupants));
+        }
     }
     let mut stream = Stream::open(token)?;
     let mut closed = json!({"token": record.token, "branch": record.branch});
-    if record.clone.is_dir() {
-        // Whatever the worktree still holds uncommitted, before any of it can be
-        // removed. `git worktree remove` forces past an unclean tree, so what is not
-        // committed here is deleted a few lines below without ever having been
-        // reported — which is how about fifteen minutes of finished work went.
-        if record.worktree.is_dir() && git::is_dirty(&record.worktree)? {
-            let preserved = crate::vcs::preserve_into(
-                &record,
-                &mut stream,
-                crate::session::Provenance::IncompleteStep,
-            )?;
-            closed["preserved"] = json!(preserved.branch);
+    if ours && record.clone.is_dir() {
+        let handed = preserve_and_hand_back(&record, &mut stream)?;
+        if let Some(preserved) = &handed.preserved {
+            closed["preserved"] = json!(preserved);
         }
-        if !hand_back(&record) {
+        if !handed.copied {
             closed["retained"] = json!(record.clone.to_string_lossy());
         }
         let stray = stray_work(&record)?;
         if !stray.is_empty() {
             return Err(stranding(&record, &stray));
         }
-        if record.worktree.is_dir() {
-            git::worktree_remove(&record.clone, &record.worktree)?;
+        match record.slot {
+            // The slot outlives the session: its tree is put back on the base, clean
+            // of everything but what the repository itself calls build output, for the
+            // next session to take warm.
+            Some(number) => {
+                return_tree(&record, &delete_paths_for(&record)?, handed.copied)?;
+                closed["returned"] = json!({"slot": number});
+            }
+            None => {
+                if record.worktree.is_dir() {
+                    git::worktree_remove(&record.clone, &record.worktree)?;
+                }
+            }
         }
     }
     // Publish the terminator before making `Closed` observable. An event follower
@@ -1668,6 +1924,104 @@ pub fn close(token: &str) -> Result<Record> {
 /// dispatch that had stepped into any of the rest.
 fn occupants(record: &Record) -> Vec<processes::Holder> {
     processes::holding(&record.run_root)
+}
+
+/// What became of a session's own branch as its tree was released.
+struct HandedBack {
+    /// The branch its uncommitted work was committed onto, where there was any.
+    preserved: Option<String>,
+    /// Whether the execution checkout took the branch.
+    // llmlint: ignore[invalid_states_unrepresentable] total and binary, as `Stray::preserved`
+    // is: the checkout took the copy or it did not, and the two readers of it — the
+    // `retained` line of the close and the ref deletion of a return — each want exactly
+    // that answer.
+    copied: bool,
+}
+
+/// Commit whatever the worktree still holds and hand the branch back, which is the
+/// first half of every release of a tree — a run root's removal and a slot's return
+/// alike — and is done before anything is torn down.
+///
+/// `git worktree remove` forces past an unclean tree and a reset discards one, so
+/// what is not committed here is gone a few lines later without ever having been
+/// reported — which is how about fifteen minutes of finished work went.
+fn preserve_and_hand_back(record: &Record, stream: &mut Stream) -> Result<HandedBack> {
+    let mut preserved = None;
+    if record.worktree.is_dir() && git::is_dirty(&record.worktree)? {
+        let branch =
+            crate::vcs::preserve_into(record, stream, crate::session::Provenance::IncompleteStep)?;
+        preserved = Some(branch.branch);
+    }
+    Ok(HandedBack {
+        preserved,
+        copied: hand_back(record),
+    })
+}
+
+/// Put a slot's worktree back on the base for the next session, once everything the
+/// session made is reachable outside it.
+///
+/// Detached onto the base — the same integrated ref a fresh cut starts from — reset
+/// hard, and cleaned of untracked files and directories **without** touching ignored
+/// ones: `.gitignore` is the repository's own declaration of what is build output, and
+/// keeping it is the whole reason a slot exists. Then every configured `delete` path,
+/// for state the ignore file keeps that should not leak between sessions. Then the
+/// session's own branch ref, **only** where the hand-back copied it: a branch the
+/// checkout would not take stays in the slot's clone, where `checkouts_of` keeps it
+/// on every locating verb's list, and the record that names it is retained by
+/// `holds_unpublished_work` for as long as it is there.
+fn return_tree(record: &Record, delete: &[PathBuf], copied: bool) -> Result<()> {
+    let integrated = integrated_base(&record.clone, &record.base);
+    reset_onto_base(&record.worktree, &integrated, delete)?;
+    if copied {
+        git::delete_ref(&record.clone, &format!("refs/heads/{}", record.branch));
+    }
+    Ok(())
+}
+
+/// Detach a worktree onto a ref, reset it there, clean it of untracked files, and
+/// delete the configured paths.
+///
+/// `base` is spelled as the clone names it — `origin/main`, or a bare `main` where the
+/// clone has no remote-tracking copy — and a name that resolves to nothing is git's
+/// refusal rather than a tree left half reset.
+fn reset_onto_base(worktree: &Path, base: &str, delete: &[PathBuf]) -> Result<()> {
+    if !git::is_repo(worktree) {
+        return Err(error::invalid(format!(
+            "the slot worktree at {} is not a repository, so it cannot be returned; the next \
+             session to take the slot recreates it",
+            worktree.display()
+        )));
+    }
+    git::checkout_detached(worktree)?;
+    git::reset_hard(worktree, base)?;
+    git::clean_untracked(worktree)?;
+    for path in delete {
+        let target = worktree.join(path);
+        let Ok(meta) = std::fs::symlink_metadata(&target) else {
+            continue;
+        };
+        let removed = match meta.is_dir() {
+            true => std::fs::remove_dir_all(&target),
+            false => std::fs::remove_file(&target),
+        };
+        removed.map_err(error::at("delete", &target))?;
+    }
+    Ok(())
+}
+
+/// The paths the workspaces file says to delete when a session of this identity
+/// returns its slot.
+///
+/// The file as it stands at the return rather than as it stood at the open, because
+/// the list is about what the *next* session must not inherit. An identity the
+/// registry no longer resolves deletes nothing beyond what git cleans.
+fn delete_paths_for(record: &Record) -> Result<Vec<PathBuf>> {
+    let registry = store::load()?;
+    let Ok(resolution) = store::resolve(&registry, &record.identity) else {
+        return Ok(Vec::new());
+    };
+    Ok(workspaces::resolve_for(&resolution, workspaces::Overrides::default())?.delete)
 }
 
 /// Why a close refused a session something is still working in, and what to do.
@@ -1766,9 +2120,28 @@ fn stray_work(record: &Record) -> Result<Vec<Stray>> {
             found.push((Ref::from_git(branch), commits));
         }
     }
+    // On a slot the clone outlives the session, and a branch an earlier session's
+    // hand-back could not copy is retained there deliberately — answered for by that
+    // session's own record, listed by `onevcs recoverable`, and not this session's to
+    // be refused over. Every other branch in a slot's clone is this session's own.
+    let retained_by_others: Vec<String> = match record.slot {
+        Some(_) => all()?
+            .into_iter()
+            .filter(|other| {
+                other.identity == record.identity
+                    && *other.token != *record.token
+                    && other.state == Lifecycle::Closed
+            })
+            .map(|other| other.branch.to_string())
+            .collect(),
+        None => Vec::new(),
+    };
     for branch in git::branches(&record.clone)? {
         let branch = Ref::from_git(branch);
-        if *branch == *record.branch || found.iter().any(|(held, _)| **held == *branch) {
+        if *branch == *record.branch
+            || found.iter().any(|(held, _)| **held == *branch)
+            || retained_by_others.iter().any(|held| **held == *branch)
+        {
             continue;
         }
         if let Some(commits) = stranded(record, &branch)? {
@@ -2030,6 +2403,7 @@ mod process_tests {
             worktree: PathBuf::from("worktree"),
             clone: PathBuf::from("clone"),
             run_root: PathBuf::from("run"),
+            slot: None,
             execution_checkout: PathBuf::from("execution"),
             publication_checkout: PathBuf::from("publication"),
             state: Lifecycle::Open,

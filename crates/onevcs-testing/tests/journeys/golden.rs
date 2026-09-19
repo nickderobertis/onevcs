@@ -249,6 +249,8 @@ fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_
         branch: Some("feature/after-the-bump".to_owned()),
         base: None,
         execution_checkout: None,
+        pool: None,
+        overflow: None,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -367,6 +369,8 @@ fn a_version_8_document_is_read_and_written_back_at_this_one() {
         branch: Some("feature/after-the-bump".to_owned()),
         base: None,
         execution_checkout: None,
+        pool: None,
+        overflow: None,
     })
     .expect("a session over the seeded repository");
 

@@ -11,11 +11,12 @@ use std::path::Path;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
-    EventsArgs, ImportArgs, IntegrateArgs, PublishArgs, PublishBranchArgs, RecoverArgs,
-    RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
-    ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
+    EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolPruneArgs, PoolStatusArgs, PublishArgs,
+    PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
+    ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs,
+    ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand,
+    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SweepArgs,
+    SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -37,13 +38,27 @@ use crate::{
     status, stream, sweep, workspace,
 };
 
+/// The exit code `onevcs session open` answers a pool that admits nothing with.
+///
+/// Its own code, beside the three the contract fixes for a publication and the `70`
+/// this repository fixes for a seam with no body: a caller that queues on it has to
+/// tell "come back later" from "this request was wrong" by `$?` alone.
+// llmlint: ignore[cli_output_contract] the amendment in docs/contract.md fixes this code.
+pub const POOL_EXHAUSTED_EXIT: u8 = 4;
+
 /// Run one parsed command, returning its exit code.
 pub fn run(command: &Command, providers: &Providers<'_>) -> u8 {
     match dispatch(command, providers) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("onevcs: {error}");
-            publish::exit_code(&error)
+            // Not a publication failure, so not `FailureKind`'s to name: that
+            // vocabulary is fixed across three libraries and routes what became of a
+            // change, and an open that found no room is a different question.
+            match error {
+                Error::PoolExhausted { .. } => POOL_EXHAUSTED_EXIT,
+                other => publish::exit_code(&other),
+            }
         }
     }
 }
@@ -93,7 +108,86 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ReleaseCommand::Acknowledge(args) => release_acknowledge(args),
             ReleaseCommand::Declaration(args) => release_declaration(args),
         },
+        Command::Pool { command } => match command {
+            PoolCommand::Status(args) => pool_status(args),
+            PoolCommand::Prune(args) => pool_prune(args),
+        },
     }
+}
+
+/// Render a repository's pool the way `onevcs pool status` reports it.
+///
+/// The answer is [`crate::pool_status`], so a caller embedding the crate and a caller
+/// reading this command's output are told the same thing by the same code.
+fn pool_status(args: &PoolStatusArgs) -> Result<u8> {
+    let status = crate::pool_status(&args.repo)?;
+    if args.json {
+        return print_json(&status);
+    }
+    let capacity = &status.capacity;
+    println!("identity: {}", capacity.identity);
+    println!(
+        "pool: {} (slots: {} created, {} idle, {} in use, {} maintaining)",
+        capacity.pool, capacity.slots, capacity.idle, capacity.in_use, capacity.maintaining
+    );
+    println!(
+        "overflow: {} ({} in use)",
+        capacity.overflow, capacity.overflow_in_use
+    );
+    println!("admits: {}", capacity.admits);
+    for slot in &status.slots {
+        let state = match &slot.state {
+            crate::SlotState::Idle => "idle".to_owned(),
+            crate::SlotState::InUse { session } => format!("in use by {}", session.0),
+            crate::SlotState::Maintaining { pid, since } => {
+                format!("maintaining (pid {pid}, since {since})")
+            }
+            crate::SlotState::Broken { reason } => format!("broken: {reason}"),
+        };
+        println!("slot {}: {state}", slot.number);
+        println!("  path: {}", slot.path.display());
+        println!(
+            "  execution checkout: {}",
+            slot.execution_checkout.display()
+        );
+        println!(
+            "  last maintained: {}",
+            slot.last_maintained.as_deref().unwrap_or("never")
+        );
+        println!(
+            "  last outcome: {}",
+            match slot.last_outcome {
+                None => "none".to_owned(),
+                Some(crate::MaintenanceOutcome::Succeeded) => "succeeded".to_owned(),
+                Some(crate::MaintenanceOutcome::Failed { exit: Some(exit) }) => {
+                    format!("failed (exit {exit})")
+                }
+                Some(crate::MaintenanceOutcome::Failed { exit: None }) => {
+                    "failed (ended by a signal)".to_owned()
+                }
+                Some(crate::MaintenanceOutcome::TimedOut) => "timed out".to_owned(),
+            }
+        );
+    }
+    Ok(0)
+}
+
+/// Render what `onevcs pool prune` did, which is [`crate::pool_prune`]'s answer.
+fn pool_prune(args: &PoolPruneArgs) -> Result<u8> {
+    let report = crate::pool_prune(&args.repo)?;
+    if args.json {
+        return print_json(&report);
+    }
+    for number in &report.removed {
+        println!("removed slot {number}");
+    }
+    for (number, why) in &report.kept {
+        println!("kept slot {number}: {why}");
+    }
+    if report.removed.is_empty() && report.kept.is_empty() {
+        println!("no slots");
+    }
+    Ok(0)
 }
 
 fn register(args: &RegisterArgs) -> Result<u8> {
@@ -295,6 +389,8 @@ fn session_open(args: &SessionOpenArgs, providers: &Providers<'_>) -> Result<u8>
         branch: args.branch.clone(),
         base: args.base.clone(),
         execution_checkout: args.execution_checkout.clone(),
+        pool: args.pool,
+        overflow: args.overflow,
     };
     let _ = &registry;
     let session = providers.vcs.open_session(request)?;

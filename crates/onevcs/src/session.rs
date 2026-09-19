@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::landed::Landed;
+use crate::workspaces::Bound;
 
 /// What to open a session over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +33,17 @@ pub struct SessionRequest {
     /// Which registered checkout to clone from. Absent means the identity's
     /// default execution checkout.
     pub execution_checkout: Option<String>,
+    /// The pool size this one open places against, over everything the host
+    /// configures: `0` places this session fresh under `runs/` — and still spends the
+    /// overflow, because the cap is about disk — and `N` may cut a slot while fewer
+    /// than `N` exist. It removes no slot. Absent means the host's resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<u32>,
+    /// The overflow bound this one open is admitted against, over everything the
+    /// host configures; `Bound::Unlimited` is how one open opts out of the cap.
+    /// Absent means the host's resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<Bound>,
 }
 
 /// The handle a session is adopted, published, and closed by.

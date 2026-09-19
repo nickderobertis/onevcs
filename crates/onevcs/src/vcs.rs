@@ -113,8 +113,17 @@ impl Vcs for Git {
 
     fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
         let record = workspace::load(&token.0)?;
-        let base = judging_base(&record)?;
         let trailers = provenance::configured()?;
+        // Where the branch is now. A session's clone holds it for the session's
+        // life, and a run root's clone keeps holding it after the close — but a slot's
+        // clone lets a copied branch go when the slot is returned, and the execution
+        // checkout the hand-back copied it to is then where the branch lives.
+        let held_in = match git::branch_exists(&record.clone, &record.branch) {
+            true => record.clone.clone(),
+            false => record.execution_checkout.clone(),
+        };
+        let target = publish::standing_target(&record)?;
+        let base = base_ref(&held_in, target.base());
         Ok(SessionRecord {
             session: record.session(),
             identity: record.identity.clone(),
@@ -122,7 +131,7 @@ impl Vcs for Git {
             // Read off the branch rather than remembered: an adoption that met a
             // dirty tree writes the marker, and a recovery clears it, so what the
             // branch carries now is the only answer that stays true.
-            provenance: provenance::provenance_of(&record.clone, &base, &record.branch, &trailers)?,
+            provenance: provenance::provenance_of(&held_in, &base, &record.branch, &trailers)?,
             retried_by: record
                 .retried_by
                 .as_ref()

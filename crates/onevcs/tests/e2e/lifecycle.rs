@@ -1586,7 +1586,7 @@ fn is_running(pid: u32) -> bool {
 }
 
 /// Stop one this journey started that is nobody's child to wait on.
-fn stop_orphan(pid: u32) {
+pub fn stop_orphan(pid: u32) {
     let signalled = libc::pid_t::try_from(pid).expect("a pid this host listed");
     // SAFETY: as above, on the one pid this journey started and named.
     unsafe { libc::kill(signalled, libc::SIGKILL) };
@@ -6785,6 +6785,8 @@ fn opening_a_session_leaves_a_live_session_of_the_same_identity_alone() {
             branch: Some("feature/live".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("the embedding process opens a real session");
     let run_root = live.worktree.parent().expect("a run root").to_owned();

@@ -1995,6 +1995,210 @@ It belongs to the `review` phase, beside the two the draft amendment added.
 The `onevcs-testing` hosts implement the two new methods and record what was
 described, so a consumer's journeys can drive a whole closeout against them.
 
+**A pool of warm worktree slots, per identity, per host.** Some languages build large
+outputs — a Rust `target/`, a `node_modules/`, a `.venv/` — and a session that cuts a
+fresh worktree builds them from nothing and deletes gigabytes on close; every node of a
+run pays that, and the disk wears for it. So an identity may keep a **pool** of warm
+worktree slots, database-pool style: a `session open` takes an idle slot when one
+exists, cuts one when the pool is under its size, overflows into a disposable run root
+under `runs/` exactly as today, or is refused with a typed error; a `session close` on
+a slot **returns** it — detached onto the base, reset, cleaned of untracked files but
+**not** of ignored ones — instead of removing it, so the next session on that slot
+finds the build output still there. The pool is lazy: a slot is cut when a session
+needs one, so an identity that only ever has one concurrent task only ever has one.
+Sizing is the host's, per identity, because each host can afford a different amount of
+concurrent disk. Nothing about nodes or queues enters the library; it stays generally
+useful standalone.
+
+**Pooling is off until a host writes `$ONEVCS_HOME/workspaces.yml`**, a separate file
+beside `rules.yml` and `releases.yml`, so an older `onevcs` sharing the host reads a
+byte-identical registry and rules file and every existing host opens and closes
+sessions exactly as before. Absent, every value is the shipped default. It declares
+`version: 1`; a lower version is refused by number and a higher one is read as this
+shape. It is matched on the rules file's own `RuleMatch`, first match wins; every rule
+field is optional and falls to `default:`, which falls to the shipped default.
+
+```yaml
+version: 1
+default:
+  pool: 0               # non-negative integer; 0 = pooling off, every session fresh
+  overflow: unlimited   # `unlimited` or a non-negative integer; sessions admitted past the pool
+  delete: []            # worktree-relative paths deleted on every return (state that would leak)
+  # maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}   # what maintenance is
+rules:
+  - match: {host: github.com, owner: nickderobertis, name: onevcs}
+    pool: 2
+    overflow: 4
+    delete: [".logs/"]
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+```
+
+The shipped default is `pool: 0`, `overflow: unlimited`, `delete: []` and no
+`maintain` — today's behaviour exactly. `pool: 0` with `overflow: 0` admits nothing and
+is refused where the document loads, and again at open when the resolved combination is
+that (`--pool 0 --overflow 0`, say), naming the identity and where each value came from.
+A `delete` entry is a relative path inside the worktree; an absolute or escaping (`..`)
+entry is refused at load. `maintain.command` is a non-empty argv list spawned with no
+shell — `&&` and pipes are passed through literally, so a host that wants composition
+writes a script and names it — and `timeout` is a `Span`, default `30m`. What the
+maintain verb *does* is the next amendment's; this one declares the configuration it
+reads and the stored shape it fills.
+
+Resolution is per open, highest wins: `--pool` / `--overflow` on `session open`, then
+`ONEVCS_POOL` / `ONEVCS_OVERFLOW` in the environment, then the matching rule, then
+`default:`, then the shipped value. `--pool 0` places that one session fresh under
+`runs/` and it **still counts against `overflow`** — the cap is about disk, and a
+session that opted out of reuse still spends it; opting out of the cap is `--overflow
+unlimited` on that open. **Surplus shedding measures against the file's pool alone** —
+the matching rule, else `default:`, else the shipped `0` — and never against a
+per-process override: neither `--pool` on the open nor `ONEVCS_POOL` in the
+environment removes a slot, because a node override reaching a dispatch as an exported
+variable would otherwise take the warm pool down every time one was handed out. `--pool`
+and `ONEVCS_POOL` govern only where *this* session is placed (`0` fresh under `runs/`,
+`N` may cut a slot while fewer than `N` exist for the identity); `--overflow` and
+`ONEVCS_OVERFLOW` govern only this open's admission. A slot is removed only by shedding
+against the file's pool at an open, or by `pool prune`, and never one holding a retained
+branch.
+
+**`Span` is the one duration grammar of this crate's documents**: one or more digits
+then exactly one unit letter, `s`, `m`, `h` or `d` — `7d`, `36h`, `90m`, `600s` — no
+spaces, no combination, no fraction, no sign, and no zero in any spelling (`0s`, `00m`).
+It is exported because a consumer parses its own schedule file's `every:` through it.
+`Bound` is `unlimited` or a non-negative integer, spelled that way in a document, on
+`--overflow`, and in JSON (the string `"unlimited"` or the number).
+
+```rust
+pub struct Span { .. }                              // FromStr, Display (as written), serde as that string
+impl Span { pub fn as_duration(&self) -> Duration; }
+pub enum Bound { Unlimited, Bounded(u32) }          // serde/FromStr/Display: `unlimited` | integer
+
+pub struct WorkspacesFile { pub version: u32, pub default: WorkspaceDefault,
+                            pub rules: Vec<WorkspaceRule> }
+pub struct WorkspaceDefault { pub pool: u32, pub overflow: Bound, pub delete: Vec<PathBuf>,
+                              pub maintain: Option<Maintenance> }
+pub struct WorkspaceRule { pub r#match: rules::RuleMatch, pub pool: Option<u32>,
+                           pub overflow: Option<Bound>, pub delete: Option<Vec<PathBuf>>,
+                           pub maintain: Option<Maintenance> }
+pub struct Maintenance { pub command: Vec<String>, pub timeout: Span }   // argv, no shell; 30m
+
+pub struct SessionRequest { /* repo, branch, base, execution_checkout as today, plus: */
+    pub pool: Option<u32>, pub overflow: Option<Bound> }
+Error::PoolExhausted { reason: String }         // `session open` exits 4; reason names the
+    // identity, pool (size, created, idle, in use, maintaining) and overflow (bound, in use)
+    // with the source of each limit, and every holder: token, branch, worktree, owner pid,
+    // liveness — the way `close`'s occupancy refusal names processes.
+pub fn workspace_capacity(request: &SessionRequest) -> Result<WorkspaceCapacity>;
+pub struct WorkspaceCapacity { pub identity: String, pub pool: u32, pub slots: u32,
+    pub idle: u32, pub in_use: u32, pub maintaining: u32, pub overflow: Bound,
+    pub overflow_in_use: u32, pub admits: Bound,   // how many more opens the identity admits now
+    pub admitted: bool }                           // whether *this* request would be placed now
+pub fn pool_status(repo: &str) -> Result<PoolStatus>;
+pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus> }
+pub struct SlotStatus { pub number: u32, pub path: PathBuf, pub execution_checkout: PathBuf,
+    pub state: SlotState, pub last_maintained: Option<String>,   // RFC3339
+    pub last_outcome: Option<MaintenanceOutcome> }
+pub enum SlotState { Idle, InUse { session: SessionToken },
+    Maintaining { pid: u32, since: String }, Broken { reason: String } }   // tagged `state`
+pub enum MaintenanceOutcome { Succeeded, Failed { exit: Option<i32> }, TimedOut }
+pub fn pool_prune(repo: &str) -> Result<PruneReport>;
+pub struct PruneReport { pub removed: Vec<u32>, pub kept: Vec<(u32, String)> }  // number, why kept
+pub fn first_matching(criteria: &[RuleMatch], repo: &str) -> Result<Option<usize>>;
+    // the index of the first criteria entry matching `repo`, by exactly the matcher the
+    // rules and releases files use, resolved through the registry as `session_holders` is
+```
+
+`Error` gains `PoolExhausted`; it is `#[non_exhaustive]`, which is what makes that
+additive. **`session open` exits 4 on it** — its own code beside the three the approved
+text fixes for `publish` and the `70` this repository fixes for a seam with no body,
+because a caller that queues on it has to tell "come back later" from "this request
+was wrong" by `$?` alone. It is never a publication failure, so `FailureKind` — the
+vocabulary fixed across the three libraries that route a publication's outcome — gains
+no kind and reports one as `Invalid` should one ever reach it. `SessionRequest` gains
+two optional fields, which cargo-semver-checks reads as a minor bump on a pre-1.0
+crate; the implementations in `onevcs-testing` ignore them, because a provider that
+keeps no run roots has nothing to place on.
+
+`workspace_capacity` is **advisory and `open` is authoritative**: it reads the same
+records `open` reads, applies the request's overrides over the same layering, and
+answers `admitted: true` for a request whose pinned `branch` an open session of the
+identity already holds (that open resumes in place and places nothing). Its `idle`
+counts the broken slots beside the idle ones, since a session recreates a broken slot
+as it takes it. `pool status` renders `pool_status` (`--json` prints the type; the
+lender and the maintenance fields are shown per slot); `pool prune` renders
+`pool_prune`, and removes every idle slot whose clone holds no retained branch, keeping
+every idle slot whose clone does — naming the slot, the branch and that reason.
+
+```
+onevcs session open REPO [--branch B] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited]
+onevcs pool status REPO [--json] | pool prune REPO [--json]
+```
+
+**The stored shape.** A slot is structurally a run root that survives `close`, under
+`<identity dir>/pool/<n>/` with `clone` (its own `--shared --no-checkout` clone; never
+several slots on one clone, for the per-clone lock reason the session module gives),
+`worktree`, and `slot.json`:
+
+```json
+{"version": 1, "number": 1, "identity": "<key>", "execution_checkout": "/abs/lender",
+ "created": "<RFC3339>",
+ "maintaining": null,
+ "last_maintained": null, "last_outcome": null}
+```
+
+`maintaining` is `null` or `{"pid": N, "started": <ProcessStart>, "since": "<RFC3339>"}`
+— the claim the maintain verb writes, **declared and read here and first written by
+that verb**. `last_maintained` is `null` or RFC3339; `last_outcome` is `null` or one of
+`"succeeded"`, `{"failed": {"exit": N|null}}`, `"timed-out"`. The session record gains
+`slot: Option<u32>` (serde default; the record version stays 3); a slot session's
+`run_root` is the slot directory, so the occupancy lease, the process census, the
+dirty-tree preservation, the hand-back and the stray-work refusal all work unchanged.
+
+**A slot is idle iff** no session record in state `open` names it (its `run_root` is
+the slot directory) **and** `maintaining` is `null` or names a process that is no longer
+running — a claim's owner *is* the process running the command, so a gone owner is a
+void claim, cleared by the next reader. That is the same record-based proof the run-root
+reclamation uses, and deliberately no second liveness test: an open record whose owner
+exited holds its slot until `session close` or `onevcs sweep` forgets it.
+
+**Placement on `open`**, in order, never waiting: a resumable open session for the
+pinned branch is resumed in place as today; else, while more slots exist than the file's
+`pool`, the highest-numbered idle slot is removed (one retaining a branch is kept); else
+an idle slot **whose lender is the request's execution checkout** — preferring, for a
+pinned branch, the slot its most recent closed session of this identity used; else, when
+fewer than `pool` slots exist, a new slot at the lowest free number; else, when the
+identity's open sessions under `runs/` are below `overflow`, a run root under `runs/`
+exactly as today; else `PoolExhausted`. A slot bound to another lender is never a
+candidate: re-pointing alternates is refused because a branch the hand-back could not
+copy may reference objects only the old lender holds, so an identity with several
+execution checkouts spends its pool one slot per lender. A slot found broken — clone or
+worktree missing or not a repository, `slot.json` unreadable — is recreated in place
+rather than refused, and reported `Broken` by `pool status` until then. Taking a warm
+slot carries origin's refs in from the lender and then swaps the branch **in place** in
+the existing worktree: a fresh cut is `checkout -b` onto the integrated base, and a
+continued branch is brought in and integrated exactly as a new worktree's would be.
+
+**Return on `close`** of a slot session: everything `close` does today up to and
+instead of the worktree removal — the occupancy refusal, the dirty-tree preservation,
+the hand-back, the stray-work refusal — then detach onto the base, hard reset, clean
+untracked files and directories without touching ignored paths, delete every `delete`
+path (absent ones ignored), delete the session's branch ref from the slot's clone
+**only when the hand-back copied it** (a branch the checkout would not take stays in
+the slot clone, is reported `retained`, and stays on every locating verb's list through
+the record that names it), and close the record. A record that closed on a slot
+describes a tree a later session owns: nothing reads the slot's worktree as that closed
+session's. A publication closes the record and leaves the return to `session close`;
+a slot taken in that state is returned on the closed session's behalf first, through
+those same steps, and a stray-work refusal there is that session's. The run-root
+reclamation walks `runs/` alone and `onevcs sweep` names the pool beside the run roots
+as outside its verb, with `pool status` and `pool prune` as its owners. Lowering `pool`
+prunes nothing eagerly.
+
+Event kinds added: none.
+
+Two existing kinds gain a field. `session-opened` gains an additive `placement` —
+`{"kind": "slot", "slot": N, "created": bool}` or `{"kind": "run-root"}`, on every
+implementation — and `session-closed` gains `returned: {"slot": N}` on a slot return.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

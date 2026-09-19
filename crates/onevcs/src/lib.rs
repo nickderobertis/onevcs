@@ -57,6 +57,7 @@ mod landed;
 mod lock;
 mod merge_path;
 mod policy;
+mod pool;
 mod probe;
 mod processes;
 pub mod provenance;
@@ -77,6 +78,7 @@ mod stream;
 mod sweep;
 mod vcs;
 mod workspace;
+pub mod workspaces;
 
 pub use change::{ChangeDescription, SessionChange};
 pub use declaration::{
@@ -92,6 +94,10 @@ pub use host::{
     Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
 pub use landed::{Landed, LandingEvidence};
+pub use pool::{
+    pool_prune, pool_status, workspace_capacity, MaintenanceOutcome, PoolStatus, PruneReport,
+    SlotState, SlotStatus, WorkspaceCapacity,
+};
 pub use providers::Providers;
 pub use publish::{
     DraftReason, FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject,
@@ -111,6 +117,7 @@ pub use session::{
 };
 pub use stream::EventStream;
 pub use vcs::{Git, Vcs};
+pub use workspaces::{first_matching, Bound, Span};
 
 /// A parsed absolute URL, re-exported so a caller needs no direct dependency on
 /// the parser this crate validates change-request URLs with.

@@ -492,11 +492,21 @@ fn probe(directory: &Path) -> std::io::Result<()> {
 
 /// Why a directory under the workspaces root is none of this verb's business.
 fn outside_this_verb(path: &Path) -> String {
-    if path.join("runs").is_dir() {
-        return "the per-run lifecycle clone root, which `onevcs session open` keeps as a \
-                bounded recovery history so a dead run's branch stays reachable; this verb \
-                does not reach into it"
+    if path.join("runs").is_dir() || path.join("pool").is_dir() {
+        let mut reason = "the per-run lifecycle clone root, which `onevcs session open` keeps \
+                          as a bounded recovery history so a dead run's branch stays \
+                          reachable; this verb does not reach into it"
             .to_owned();
+        // The pool is named where there is one: its slots are `pool status`'s to
+        // report and `pool prune`'s to remove, and a sweep that said nothing about
+        // them would read as having examined them.
+        if path.join("pool").is_dir() {
+            reason.push_str(
+                ", nor into the pool of warm slots beside it, which `onevcs pool status` \
+                 reports and `onevcs pool prune` removes",
+            );
+        }
+        return reason;
     }
     "not a family this verb cuts run roots under".to_owned()
 }

@@ -13,6 +13,7 @@ use url::Url;
 use crate::releases::TargetName;
 use crate::rules::MergePolicy;
 use crate::sweep;
+use crate::workspaces::Bound;
 
 /// Version control and its remote host, behind one host-neutral vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -82,6 +83,42 @@ pub enum Command {
         #[command(subcommand)]
         command: ReleaseCommand,
     },
+    /// Report or prune a repository's pool of warm worktree slots.
+    Pool {
+        /// Which pool question.
+        #[command(subcommand)]
+        command: PoolCommand,
+    },
+}
+
+/// The `onevcs pool` subcommands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum PoolCommand {
+    /// Report a repository's capacity and every slot of its pool.
+    Status(PoolStatusArgs),
+    /// Remove every idle slot whose clone retains no branch, and say why the rest
+    /// were kept.
+    Prune(PoolPruneArgs),
+}
+
+/// Arguments for `onevcs pool status`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct PoolStatusArgs {
+    /// An identity key, a registered alias, an origin URL, or a path.
+    pub repo: String,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs pool prune`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct PoolPruneArgs {
+    /// An identity key, a registered alias, an origin URL, or a path.
+    pub repo: String,
+    /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs register`.
@@ -141,6 +178,15 @@ pub struct SessionOpenArgs {
     /// Which registered checkout to clone from.
     #[arg(long, value_name = "ALIAS")]
     pub execution_checkout: Option<String>,
+    /// The pool size this open places against, over the host's configuration: 0 cuts
+    /// this session fresh under runs/ (and still spends the overflow), N may cut a
+    /// slot while fewer than N exist. It removes no slot.
+    #[arg(long, value_name = "N")]
+    pub pool: Option<u32>,
+    /// The overflow bound this open is admitted against, over the host's
+    /// configuration: an integer, or `unlimited` to opt this open out of the cap.
+    #[arg(long, value_name = "N|unlimited")]
+    pub overflow: Option<Bound>,
 }
 
 /// A session token, for the commands that take nothing else.

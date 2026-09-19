@@ -121,6 +121,8 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
             branch: Some("feature/embedded".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("the embedding process opens a real session")
         .token;
@@ -225,6 +227,8 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
             branch: Some("feature/closed".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("the embedding process opens a real session")
         .token;
@@ -236,6 +240,8 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
             branch: Some("feature/live".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("the embedding process opens a real session")
         .token
@@ -949,6 +955,8 @@ fn launch(repo: &str, branch: &str, acknowledged: &[&str]) -> std::result::Resul
         branch: Some(branch.to_owned()),
         base: None,
         execution_checkout: None,
+        pool: None,
+        overflow: None,
     })
     .map_err(|refused| format!("{refused}"))
 }

@@ -83,6 +83,10 @@ mod lifecycle;
 #[cfg(unix)]
 mod llmlint_cache;
 mod packaging;
+// Unix only: real slots under a real state root, cut and returned through the binary,
+// with two in-process reads of the typed surface; its own header carries the reason.
+#[cfg(unix)]
+mod pool;
 // Unix only: its hosted journeys publish through the same substituted `gh` as
 // `host.rs`. Its own header carries the reason in full.
 #[cfg(unix)]
