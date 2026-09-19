@@ -968,7 +968,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
             pinned: request.branch.is_some().then_some(&branch),
             identity_root: &identity_root,
         })?,
-        false => pool::Placement::RunRoot,
+        false => pool::Placement::RunRoot { _serial: None },
     };
     let (run_root, slot, created) = match &placement {
         pool::Placement::Slot {
@@ -977,7 +977,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
             created,
             ..
         } => (dir.clone(), Some(*number), *created),
-        pool::Placement::RunRoot => (runs.join(&token), None, true),
+        pool::Placement::RunRoot { .. } => (runs.join(&token), None, true),
     };
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
@@ -989,7 +989,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     // the same span — and an exclusive take and a shared one on one file cannot be
     // held together, so a slot takes no second lease here.
     let lease = match placement {
-        pool::Placement::RunRoot => Some(
+        pool::Placement::RunRoot { .. } => Some(
             lock::try_shared(&occupancy_identity(&run_root))?.ok_or_else(|| Error::Invalid {
                 reason: format!("the run root {} is already occupied", run_root.display()),
             })?,

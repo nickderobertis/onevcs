@@ -86,6 +86,32 @@ fn close(fixture: &Fixture, token: &str) -> serde_json::Value {
     closed[0]["payload"].clone()
 }
 
+/// Write a maintenance claim onto a slot's record, as the maintain verb will.
+///
+/// The claim is declared and read by this build and first *written* by the verb the
+/// next amendment adds, so nothing a user can type produces one yet — and what these
+/// journeys hold is exactly the reader's side of that contract: a claim by a gone
+/// process is void and cleared, a claim by a live one holds the slot. The record is
+/// written in the shape the contract fixes, so a build that wrote it differently
+/// fails here rather than downstream.
+// llmlint: ignore-block[tests_mirror_real_usage] no user-facing interface writes a
+// maintenance claim in this build: the verb that will is the next amendment's, and
+// the contract fixes the stored shape precisely so that the reader can be held to it
+// before the writer exists. Writing the declared JSON is that fixture, and every
+// assertion around it goes through `pool status` and `session open`.
+fn claim_slot(record_path: &Path, pid: u32, started: u64) {
+    let mut record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(record_path).expect("a slot record"))
+            .expect("the slot record is JSON");
+    record["maintaining"] = serde_json::json!({
+        "pid": pid,
+        "started": started,
+        "since": "2026-09-19T00:00:00.000Z",
+    });
+    std::fs::write(record_path, record.to_string()).expect("a claim on the slot");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
 /// `pool status --json`, as a consumer reads it.
 fn status(fixture: &Fixture) -> serde_json::Value {
     let output = fixture
@@ -545,17 +571,9 @@ fn the_run_root_protections_hold_on_a_slot() {
     // next reader clears it and the open takes the slot.
     let slot = held_tree.parent().expect("the slot").to_path_buf();
     let record_path = slot.join("slot.json");
-    let mut record: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&record_path).expect("a slot record"))
-            .expect("the slot record is JSON");
     let dead = orphan_working_in(&fixture.checkout);
     stop_orphan(dead);
-    record["maintaining"] = serde_json::json!({
-        "pid": dead,
-        "started": 1,
-        "since": "2026-09-19T00:00:00.000Z",
-    });
-    std::fs::write(&record_path, record.to_string()).expect("a claim by a gone process");
+    claim_slot(&record_path, dead, 1);
     assert_eq!(status(&fixture)["slots"][0]["state"]["state"], "idle");
     let reread: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&record_path).expect("a slot record"))
@@ -583,12 +601,7 @@ fn the_run_root_protections_hold_on_a_slot() {
         .expect("the start time field")
         .parse()
         .expect("a number");
-    record["maintaining"] = serde_json::json!({
-        "pid": worker,
-        "started": started,
-        "since": "2026-09-19T00:00:00.000Z",
-    });
-    std::fs::write(&record_path, record.to_string()).expect("a live claim");
+    claim_slot(&record_path, worker, started);
     assert_eq!(
         status(&fixture)["slots"][0]["state"]["state"],
         "maintaining"

@@ -324,28 +324,48 @@ fn survey(identity: &str, pool: &Path) -> Result<Survey> {
         .filter(|record| record.identity == identity && record.state == Lifecycle::Open)
         .collect();
     let mut slots = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(pool) {
-        for entry in entries.flatten() {
-            let dir = entry.path();
-            let Some(number) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.parse::<u32>().ok())
-                .filter(|number| *number > 0)
-            else {
-                continue;
-            };
-            if !dir.is_dir() {
-                continue;
-            }
-            let (record, state) = state_of(&dir, &open);
-            slots.push(Surveyed {
-                number,
-                dir,
-                record,
-                state,
-            });
+    // A pool nothing has cut a slot under yet is empty; one that is there and cannot
+    // be read is refused naming it, because every answer below — idle, in use, how
+    // many exist — would otherwise be answered from a listing nobody got.
+    let entries = match std::fs::read_dir(pool) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Survey {
+                pool: pool.to_path_buf(),
+                slots,
+                open,
+            })
         }
+        Err(e) => return Err(error::at("read the pool at", pool)(e)),
+    };
+    for entry in entries {
+        // llmlint: ignore[changed_behavior_has_e2e] uncovered: a listing that yields
+        // an entry it cannot even name. No interface this crate exposes can produce
+        // one — the entries here are directories this crate created — so a journey for
+        // it would be a fixture standing in for the kernel's `readdir`; it is refused
+        // rather than skipped for the reason the directory itself is.
+        let entry = entry.map_err(error::at("read the pool at", pool))?;
+        let dir = entry.path();
+        // Anything that is not a numbered directory is not a slot: a stray file an
+        // operator dropped here is neither counted nor removed.
+        let Some(number) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+            .filter(|number| *number > 0)
+        else {
+            continue;
+        };
+        if !dir.is_dir() {
+            continue;
+        }
+        let (record, state) = state_of(&dir, &open);
+        slots.push(Surveyed {
+            number,
+            dir,
+            record,
+            state,
+        });
     }
     slots.sort_by_key(|slot| slot.number);
     Ok(Survey {
@@ -528,7 +548,12 @@ pub(crate) enum Placement {
         _serial: lock::Guard,
     },
     /// Under `runs/`, exactly as every session was placed before there were slots.
-    RunRoot,
+    RunRoot {
+        /// The serialization over the whole pool, held through the record's save so
+        /// two overflow opens cannot both count the same headroom. `None` where the
+        /// identity is not pooled and nothing was counted.
+        _serial: Option<lock::Guard>,
+    },
 }
 
 /// Everything a placement decision needs to know about the request.
@@ -587,7 +612,9 @@ pub(crate) fn place(ask: &Ask<'_>) -> Result<Placement> {
     }
     let overflow_in_use = u32::try_from(survey.overflow().len()).unwrap_or(u32::MAX);
     if ask.resolved.overflow.value.admits(overflow_in_use) {
-        return Ok(Placement::RunRoot);
+        return Ok(Placement::RunRoot {
+            _serial: Some(serial),
+        });
     }
     Err(exhausted(ask, &survey))
 }
