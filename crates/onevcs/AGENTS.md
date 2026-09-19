@@ -971,9 +971,6 @@ goes and cuts or takes the slot itself; `workspace::close` returns one through
   `stranded` asks of stray work. A later session's `stray_work` passes over a branch
   another closed record of the identity names, because that record answers for it.
 
-`tests/e2e/pool.rs` drives every one of these through the binary; the two in-process
-journeys at its end are the typed reads — `workspace_capacity`, `first_matching` —
-which no binary can show a consumer reaches.
 
 ## Everything durable lives under one state root
 
