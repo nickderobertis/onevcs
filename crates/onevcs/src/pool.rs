@@ -44,6 +44,44 @@ use crate::{git, guidance, ids, lock, processes};
 /// The version of the slot record this build writes and reads.
 pub const SLOT_VERSION: u32 = 1;
 
+/// A stored instant, checked where it is read.
+///
+/// The check is in the conversion, so a slot record carrying a `created`, a
+/// `last_maintained` or a claim's `since` that is not a timestamp this build can order
+/// by does not deserialize at all — it is a broken slot rather than a status line
+/// carrying whatever was in the file. The shape is the one [`ids::timestamp`] writes,
+/// which is what every other stored instant in this crate is held to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub(crate) struct Timestamp(String);
+
+impl TryFrom<String> for Timestamp {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        match ids::is_timestamp(&value) {
+            true => Ok(Timestamp(value)),
+            false => Err(format!(
+                "{value:?} is not a timestamp this build can order by (RFC3339, millisecond, \
+                 UTC)"
+            )),
+        }
+    }
+}
+
+impl From<Timestamp> for String {
+    fn from(stamp: Timestamp) -> Self {
+        stamp.0
+    }
+}
+
+impl Timestamp {
+    /// Now, as [`ids::timestamp`] writes it.
+    fn now() -> Self {
+        Timestamp(ids::timestamp())
+    }
+}
+
 /// What one slot records about itself, in `slot.json`.
 ///
 /// The fields a maintenance verb fills — `maintaining`, `last_maintained` and
@@ -60,12 +98,12 @@ pub(crate) struct SlotRecord {
     /// The execution checkout the slot's clone borrows from — its lender. A slot is
     /// bound to it: a session cloning from another checkout never takes this slot.
     pub execution_checkout: PathBuf,
-    /// When the slot was cut, RFC3339.
-    pub created: String,
+    /// When the slot was cut.
+    pub created: Timestamp,
     /// The claim the maintenance verb holds while it runs in the slot, or `null`.
     pub maintaining: Option<Claim>,
-    /// When maintenance last finished, RFC3339, or `null` where none has run.
-    pub last_maintained: Option<String>,
+    /// When maintenance last finished, or `null` where none has run.
+    pub last_maintained: Option<Timestamp>,
     /// How the last maintenance ended, or `null` where none has run.
     pub last_outcome: Option<MaintenanceOutcome>,
 }
@@ -80,8 +118,8 @@ pub(crate) struct Claim {
     pub pid: u32,
     /// Its creation identity, so a later process wearing the same pid is not it.
     pub started: ProcessStart,
-    /// When the claim was written, RFC3339.
-    pub since: String,
+    /// When the claim was written.
+    pub since: Timestamp,
 }
 
 impl Claim {
@@ -122,7 +160,12 @@ pub enum SlotState {
     Maintaining {
         /// The process running the maintenance command.
         pid: u32,
-        /// When it claimed the slot, RFC3339.
+        /// When it claimed the slot, RFC3339 — checked where the record was read, and
+        /// spelled here as the amendment declares it.
+        // llmlint: ignore[invalid_states_unrepresentable] the approved amendment fixes
+        // this field as `String`, the way `Acknowledgement::recorded_at` is fixed; the
+        // value came through `Timestamp`'s conversion at the read boundary, so nothing
+        // that is not a timestamp reaches here.
         since: String,
     },
     /// Its clone or worktree is missing or not a repository, or its record is
@@ -145,7 +188,11 @@ pub struct SlotStatus {
     pub execution_checkout: PathBuf,
     /// Where it is in its life.
     pub state: SlotState,
-    /// When maintenance last finished, RFC3339.
+    /// When maintenance last finished, RFC3339 — checked where the record was read,
+    /// and spelled here as the amendment declares it.
+    // llmlint: ignore[invalid_states_unrepresentable] the approved amendment fixes this
+    // field as `Option<String>`, the way `Acknowledgement::recorded_at` is fixed; the
+    // value came through `Timestamp`'s conversion at the read boundary.
     pub last_maintained: Option<String>,
     /// How the last maintenance ended.
     pub last_outcome: Option<MaintenanceOutcome>,
@@ -316,7 +363,8 @@ impl Surveyed {
             last_maintained: self
                 .record
                 .as_ref()
-                .and_then(|record| record.last_maintained.clone()),
+                .and_then(|record| record.last_maintained.clone())
+                .map(String::from),
             last_outcome: self.record.as_ref().and_then(|record| record.last_outcome),
         }
     }
@@ -458,7 +506,7 @@ fn state_of(
                 Some(record),
                 SlotState::Maintaining {
                     pid: claim.pid,
-                    since: claim.since,
+                    since: claim.since.into(),
                 },
             );
         }
@@ -802,7 +850,7 @@ fn fresh_record(number: u32, ask: &Ask<'_>) -> SlotRecord {
         number,
         identity: ask.resolution.key.clone(),
         execution_checkout: ask.execution.to_path_buf(),
-        created: ids::timestamp(),
+        created: Timestamp::now(),
         maintaining: None,
         last_maintained: None,
         last_outcome: None,

@@ -1144,6 +1144,20 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
             .contains("is for slot 1, not for slot 2"),
         "{listed}"
     );
+    let mut stamped: serde_json::Value =
+        serde_json::from_str(&b_record).expect("slot 2's record is JSON");
+    stamped["created"] = serde_json::json!("yesterday");
+    std::fs::write(b_slot.join("slot.json"), stamped.to_string())
+        .expect("a record with a bad clock");
+    let listed = status(&fixture);
+    assert_eq!(listed["slots"][1]["state"]["state"], "broken");
+    assert!(
+        listed["slots"][1]["state"]["reason"]
+            .as_str()
+            .expect("a reason")
+            .contains("\"yesterday\" is not a timestamp"),
+        "{listed}"
+    );
     std::fs::write(b_slot.join("slot.json"), b_record).expect("slot 2's record restored");
     assert_eq!(status(&fixture)["slots"][1]["state"]["state"], "idle");
 

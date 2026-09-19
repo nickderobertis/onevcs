@@ -84,7 +84,12 @@ mod lifecycle;
 mod llmlint_cache;
 mod packaging;
 // Unix only: real slots under a real state root, cut and returned through the binary,
-// with two in-process reads of the typed surface; its own header carries the reason.
+// with the typed surface's in-process journeys at its end; its own header carries the
+// reason.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice, and the
+// affected selection already fails closed to everything on a base it cannot derive.
 #[cfg(unix)]
 mod pool;
 // Unix only: its hosted journeys publish through the same substituted `gh` as

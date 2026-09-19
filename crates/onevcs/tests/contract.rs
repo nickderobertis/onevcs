@@ -5622,3 +5622,43 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         );
     }
 }
+
+#[test]
+fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
+    // The README's tour of the pool restates two things the amendment fixes — the
+    // spelling of the two verbs and the exit code the refusal answers — so this holds
+    // the copy to its source: a verb respelled in one document and not the other is
+    // a user typing a command that does not exist.
+    // The README wraps its prose, so it is compared with its line breaks folded.
+    let readme = repo_file("README.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|block| block.contains("pool status"))
+        .expect("the amendment spells the pool verbs");
+    let verbs: Vec<String> = usage
+        .lines()
+        .find(|line| line.starts_with("onevcs pool "))
+        .expect("the pool verbs share one usage line")
+        .split(" | ")
+        .map(|verb| {
+            verb.trim()
+                .strip_prefix("onevcs ")
+                .unwrap_or(verb.trim())
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(verbs.len(), 2, "two pool verbs: {verbs:?}");
+    for verb in verbs {
+        assert!(
+            readme.contains(&format!("onevcs {verb}")),
+            "the README no longer spells `onevcs {verb}` as the amendment does"
+        );
+    }
+    assert!(
+        regions().0.contains("`session open` exits 4 on it") && readme.contains("exit code `4`"),
+        "the amendment and the README disagree about the code the refusal answers"
+    );
+}
