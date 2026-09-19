@@ -1178,6 +1178,40 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
     close(&fixture, &third);
     close(&fixture, &recreated);
 
+    // The other two ways a slot breaks are recreated the same way: a worktree that is
+    // gone, and a record nothing can read — whose clone is judged against the
+    // requester's checkout, which reaches everything it holds.
+    std::fs::remove_dir_all(b_slot.join("worktree")).expect("lose slot 2's worktree");
+    let a_slot = a_tree.parent().expect("slot 1").to_path_buf();
+    std::fs::write(a_slot.join("slot.json"), "not a record").expect("break slot 1's record");
+    let listed = status(&fixture);
+    assert!(listed["slots"][0]["state"]["reason"]
+        .as_str()
+        .expect("a reason")
+        .contains("is malformed"));
+    assert!(listed["slots"][1]["state"]["reason"]
+        .as_str()
+        .expect("a reason")
+        .contains("worktree"));
+    let (only_idle, _, placed) = open(&fixture, &["--branch", "feature/only-idle"]);
+    assert_eq!(placed["slot"], 3);
+    let (unreadable, _, placed) = open(&fixture, &["--branch", "feature/unreadable"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 1, "created": true})
+    );
+    let (no_worktree, no_worktree_tree, placed) =
+        open(&fixture, &["--branch", "feature/no-worktree"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 2, "created": true})
+    );
+    assert_eq!(no_worktree_tree, b_tree);
+    assert!(b_tree.join("README.md").is_file());
+    close(&fixture, &only_idle);
+    close(&fixture, &unreadable);
+    close(&fixture, &no_worktree);
+
     // `--pool 0` against a warm pool places fresh under runs/ and sheds nothing.
     configure_workspaces(&fixture.world, sized(3, "unlimited"));
     let (fresh, fresh_tree, placed) = open(&fixture, &["--pool", "0"]);
@@ -1233,6 +1267,32 @@ fn a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slo
         .status
         .success());
     close(&fixture, &after);
+
+    // A broken slot whose clone retains a branch is never recreated — recreating it is
+    // removing that clone — so it stands broken and reported, the open goes on to the
+    // next candidate, and a prune keeps it for the same reason.
+    std::fs::remove_dir_all(c_tree.parent().expect("slot 3").join("worktree"))
+        .expect("lose slot 3's worktree");
+    let (past, past_tree, placed) = open(&fixture, &["--branch", "feature/past"]);
+    assert_eq!(placed, serde_json::json!({"kind": "run-root"}));
+    assert_eq!(slot_of(&past_tree), None);
+    let listed = status(&fixture);
+    assert_eq!(listed["slots"][0]["number"], 3);
+    assert_eq!(listed["slots"][0]["state"]["state"], "broken");
+    assert!(
+        c_clone.is_dir(),
+        "the clone with the retained branch is untouched"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "prune", "project"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept slot 3: its clone retains \"feature/c\"",
+        ));
+    close(&fixture, &past);
 }
 
 #[test]

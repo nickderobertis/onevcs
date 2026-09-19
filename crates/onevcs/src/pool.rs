@@ -500,7 +500,12 @@ fn retained_branches(
 }
 
 /// Why an idle slot is kept rather than removed, or `None` where it may go.
-fn keeps(slot: &Surveyed) -> Option<String> {
+///
+/// `judge` is the checkout a slot with no readable lender is judged against — the
+/// requester's execution checkout at a placement, the publication checkout at a prune
+/// — so a slot whose record is gone can still be shown to retain nothing, rather than
+/// standing broken for ever because nothing could say.
+fn keeps(slot: &Surveyed, judge: &Path) -> Option<String> {
     match &slot.state {
         SlotState::InUse { session } => {
             return Some(format!("session {} is working in it", session.0));
@@ -516,7 +521,8 @@ fn keeps(slot: &Surveyed) -> Option<String> {
     // branches of a repository this crate has just read as one. No interface this
     // crate exposes produces that, and what it would prove is that the slot is
     // *kept*, which is the answer every other unknown here resolves to.
-    let retained = match retained_branches(&slot.clone_dir(), slot.lender()) {
+    let lender = slot.lender().unwrap_or(judge);
+    let retained = match retained_branches(&slot.clone_dir(), Some(lender)) {
         Ok(retained) => retained,
         Err(reason) => {
             return Some(format!(
@@ -537,9 +543,7 @@ fn keeps(slot: &Surveyed) -> Option<String> {
             1 => "a branch",
             _ => "branches",
         },
-        slot.lender()
-            .map(|lender| lender.display().to_string())
-            .unwrap_or_else(|| "(unknown)".to_owned()),
+        lender.display(),
         match retained.len() {
             1 => "it",
             _ => "them",
@@ -565,7 +569,7 @@ fn remove(slot: &Surveyed) -> std::result::Result<(), String> {
 /// and `ONEVCS_POOL` in a dispatch's environment place that one session, and a
 /// per-process value that removed slots would take the warm pool down every time a
 /// node was handed one.
-fn shed(survey: &mut Survey, file_pool: u32) {
+fn shed(survey: &mut Survey, file_pool: u32, judge: &Path) {
     let mut surplus = u32::try_from(survey.slots.len())
         .unwrap_or(u32::MAX)
         .saturating_sub(file_pool);
@@ -574,7 +578,7 @@ fn shed(survey: &mut Survey, file_pool: u32) {
         if surplus == 0 {
             break;
         }
-        if !slot.takeable() || keeps(slot).is_some() {
+        if !slot.takeable() || keeps(slot, judge).is_some() {
             continue;
         }
         if remove(slot).is_ok() {
@@ -633,7 +637,7 @@ pub(crate) fn place(ask: &Ask<'_>) -> Result<Placement> {
     crate::home::ensure_dir(&pool)?;
     let serial = lock::exclusive(&placement_identity(&pool))?;
     let mut survey = survey(&ask.resolution.key, &pool)?;
-    shed(&mut survey, ask.resolved.file_pool);
+    shed(&mut survey, ask.resolved.file_pool, ask.execution);
     let wanted = ask.resolved.pool.value;
     if wanted > 0 {
         if let Some(taken) = take_idle(&survey, ask)? {
@@ -715,12 +719,20 @@ fn take_idle(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
 }
 
 /// A broken slot of this lender — or of no readable lender — recreated in place.
+///
+/// Never one whose clone still retains a branch: recreating it is removing the clone,
+/// and a branch only that clone carries is exactly what a slot is kept for. Such a
+/// slot stays broken and reported until the branch is imported or the slot removed by
+/// hand, and the placement moves on to the next candidate.
 fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
     for slot in &survey.slots {
         if !matches!(slot.state, SlotState::Broken { .. }) {
             continue;
         }
         if slot.lender().is_some_and(|lender| lender != ask.execution) {
+            continue;
+        }
+        if keeps(slot, ask.execution).is_some() {
             continue;
         }
         let Some(held) = lock::try_exclusive(&workspace::occupancy_identity(&slot.dir))? else {
@@ -1032,7 +1044,7 @@ pub fn pool_prune(repo: &str) -> Result<PruneReport> {
     let _serial = lock::exclusive(&placement_identity(&pool))?;
     let survey = survey(&asked.resolution.key, &pool)?;
     for slot in &survey.slots {
-        if let Some(why) = keeps(slot) {
+        if let Some(why) = keeps(slot, &asked.resolution.publication) {
             report.kept.push((slot.number, why));
             continue;
         }
