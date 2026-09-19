@@ -3,7 +3,8 @@
 //! Everything here writes its result to stdout and its diagnosis to stderr, and
 //! returns the exit code the contract fixes: `0` published, `1` the merge path
 //! refused it — its hooks, or the host's required checks — `2` invalid, `3` a sync
-//! conflict that the bounded retry did not settle.
+//! conflict that the bounded retry did not settle, and — for `session open` alone —
+//! `4` a pool that admits nothing right now ([`POOL_EXHAUSTED_EXIT`]).
 
 use std::io::Write;
 use std::path::Path;

@@ -1,8 +1,8 @@
 //! The command-line argument surface.
 //!
-//! This is the parser only: it validates what a user typed and nothing else. The
-//! binary in `src/main.rs` decides what to do with the result — today, refuse
-//! with exit code 70, because nothing behind the contract is implemented yet.
+//! This is the parser only: it validates what a user typed and nothing else. What
+//! each command then does is `app.rs`'s, reached through `crate::run`; a seam with
+//! no body behind it answers exit code 70 from there, never from here.
 
 use std::path::PathBuf;
 use std::time::Duration;

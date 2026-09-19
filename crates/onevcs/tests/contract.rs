@@ -5661,4 +5661,31 @@ fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
         regions().0.contains("`session open` exits 4 on it") && readme.contains("exit code `4`"),
         "the amendment and the README disagree about the code the refusal answers"
     );
+    // The library paragraph names four reads and four spans; each name is one the
+    // amendment declares as a `pub fn`, and each span is one `Span` reads.
+    let declarations = amendment_declaring("pub struct WorkspacesFile");
+    let paragraph = readme
+        .split("The library forms of the pool are ")
+        .nth(1)
+        .expect("the README tours the pool's library forms")
+        .split("host files use.")
+        .next()
+        .expect("the tour ends where it says what first_matching matches by");
+    let mut names = 0;
+    for spelled in paragraph.split('`').skip(1).step_by(2) {
+        let name = spelled.split('(').next().unwrap_or(spelled);
+        if name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+            names += 1;
+            assert!(
+                declarations.contains(&format!("pub fn {name}(")),
+                "the README names `{name}`, which the amendment does not declare"
+            );
+        } else if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            assert!(
+                name.parse::<Span>().is_ok(),
+                "the README spells `{name}` as a span, and it is not one"
+            );
+        }
+    }
+    assert_eq!(names, 4, "the README names the four library reads");
 }
