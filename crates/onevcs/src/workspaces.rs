@@ -353,6 +353,12 @@ pub struct Maintenance {
     /// the program and the rest are its arguments, so `&&`, pipes and globs are passed
     /// through literally rather than composed. A host that wants composition writes a
     /// script and names it here. Never empty.
+    // llmlint: ignore[invalid_states_unrepresentable] the contract's amendment
+    // declares this field as `pub command: Vec<String>` — the YAML list as the host
+    // wrote it — and `tests/contract.rs` holds that shape, which the next verb and
+    // `onepipeline` build against; a non-empty argv type here is a change to that
+    // shared surface, not this crate's to make alone. The empty list is refused by
+    // name in `validate`, where the document loads, before anything reads it.
     pub command: Vec<String>,
     /// The bound the command runs under. Absent, [`DEFAULT_MAINTAIN_TIMEOUT`].
     #[serde(default = "default_timeout")]
