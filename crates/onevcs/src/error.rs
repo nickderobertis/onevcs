@@ -58,25 +58,6 @@ pub enum Error {
         reason: String,
     },
 
-    /// A session could not be placed: every slot of the identity's pool is held and
-    /// its overflow admits no more. `onevcs session open` reports this as exit code 4,
-    /// and nothing waits — a caller decides whether to queue, close something, or open
-    /// with `--overflow unlimited`.
-    ///
-    /// Never a publication failure, so [`FailureKind`](crate::FailureKind) — the
-    /// vocabulary fixed across the three libraries that route a publication's outcome
-    /// — has no kind for it and reports it as `Invalid` should one ever reach there.
-    #[error("pool exhausted: {reason}")]
-    // llmlint: ignore[invalid_states_unrepresentable] one `reason: String` like every
-    // sibling variant, which is the shape three libraries route on; the identity, the
-    // limits with their sources, and every holder are prose for the operator who reads
-    // the refusal, and `workspace_capacity` is the typed form of the same answer.
-    PoolExhausted {
-        /// The identity, its pool and overflow with where each limit came from, and
-        /// every holder: token, branch, worktree, owner pid and liveness.
-        reason: String,
-    },
-
     /// A required check the host reports concluded red. The CLI reports this as
     /// exit code 1, which is the code the contract fixes for a verification
     /// failure — this says *which* verification failed, not a different one.
@@ -146,6 +127,25 @@ pub enum Error {
     // surface the contract does not name and leave one variant unlike its siblings.
     PushedUnverified {
         /// Where the push landed, and what stopped the merge path being read.
+        reason: String,
+    },
+
+    /// A session could not be placed: every slot of the identity's pool is held and
+    /// its overflow admits no more. `onevcs session open` reports this as exit code 4,
+    /// and nothing waits — a caller decides whether to queue, close something, or open
+    /// with `--overflow unlimited`.
+    ///
+    /// Never a publication failure, so [`FailureKind`](crate::FailureKind) — the
+    /// vocabulary fixed across the three libraries that route a publication's outcome
+    /// — has no kind for it and reports it as `Invalid` should one ever reach there.
+    #[error("pool exhausted: {reason}")]
+    // llmlint: ignore[invalid_states_unrepresentable] one `reason: String` like every
+    // sibling variant, which is the shape three libraries route on; the identity, the
+    // limits with their sources, and every holder are prose for the operator who reads
+    // the refusal, and `workspace_capacity` is the typed form of the same answer.
+    PoolExhausted {
+        /// The identity, its pool and overflow with where each limit came from, and
+        /// every holder: token, branch, worktree, owner pid and liveness.
         reason: String,
     },
 }
