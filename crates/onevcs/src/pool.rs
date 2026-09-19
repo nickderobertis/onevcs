@@ -570,10 +570,26 @@ fn remove(slot: &Surveyed) -> std::result::Result<(), String> {
 /// per-process value that removed slots would take the warm pool down every time a
 /// node was handed one.
 fn shed(survey: &mut Survey, file_pool: u32, judge: &Path) {
+    let mut removed = Vec::new();
+    for slot in sheddable(survey, file_pool, judge) {
+        if remove(slot).is_ok() {
+            removed.push(slot.number);
+        }
+    }
+    survey.slots.retain(|slot| !removed.contains(&slot.number));
+}
+
+/// The slots a shed against `file_pool` removes, in the order it removes them:
+/// takeable ones above the pool size, highest number first, passing over any that is
+/// kept for what it retains.
+///
+/// One answer for the shed itself and for the capacity that predicts it, so the
+/// advisory read cannot count a slot as gone that the shed keeps.
+fn sheddable<'a>(survey: &'a Survey, file_pool: u32, judge: &Path) -> Vec<&'a Surveyed> {
     let mut surplus = u32::try_from(survey.slots.len())
         .unwrap_or(u32::MAX)
         .saturating_sub(file_pool);
-    let mut removed = Vec::new();
+    let mut shed = Vec::new();
     for slot in survey.slots.iter().rev() {
         if surplus == 0 {
             break;
@@ -581,12 +597,10 @@ fn shed(survey: &mut Survey, file_pool: u32, judge: &Path) {
         if !slot.takeable() || keeps(slot, judge).is_some() {
             continue;
         }
-        if remove(slot).is_ok() {
-            removed.push(slot.number);
-            surplus -= 1;
-        }
+        shed.push(slot);
+        surplus -= 1;
     }
-    survey.slots.retain(|slot| !removed.contains(&slot.number));
+    shed
 }
 
 /// Where a session was placed.
@@ -948,11 +962,13 @@ fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> Work
     let in_use = survey.count(|state| matches!(state, SlotState::InUse { .. }));
     let maintaining = survey.count(|state| matches!(state, SlotState::Maintaining { .. }));
     let overflow_in_use = u32::try_from(survey.overflow().len()).unwrap_or(u32::MAX);
-    // What the next open finds after the shed it performs first: the takeable slots
-    // above the file's pool are gone, and the rest stay.
-    let shed = slots.saturating_sub(resolved.file_pool).min(takeable);
-    let takeable_after = takeable - shed;
-    let slots_after = slots - shed;
+    // What the next open finds after the shed it performs first: exactly the slots
+    // the shed would remove are gone — never one it keeps for what it retains — and
+    // the rest stay.
+    let shed = u32::try_from(sheddable(survey, resolved.file_pool, &asked.execution).len())
+        .unwrap_or(u32::MAX);
+    let takeable_after = takeable.saturating_sub(shed);
+    let slots_after = slots.saturating_sub(shed);
     let can_create = resolved.pool.value.saturating_sub(slots_after);
     let admits = match resolved.pool.value {
         0 => resolved.overflow.value.headroom(overflow_in_use),

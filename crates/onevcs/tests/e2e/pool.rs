@@ -1451,11 +1451,68 @@ fn workspace_capacity_answers_every_field_and_agrees_with_what_open_then_does() 
         (1, 1, Bound::Bounded(1))
     );
     assert!(freed.admitted);
-    let (again, _, placed) = open(&fixture, &[]);
+    let (again, again_tree, placed) = open(&fixture, &[]);
     assert_eq!(placed["slot"], 1);
+    // Both slots come to retain a branch the checkout would not take, and the file's
+    // pool is lowered below them: the shed the next open performs keeps both, so the
+    // capacity counts both as staying rather than as surplus that is gone.
+    fixture
+        .world
+        .commit_file(&again_tree, "again.txt", "again\n", "feat: retained on 1");
+    diverge_in_checkout(&fixture, &format!("onevcs/{again}"));
     close(&fixture, &again);
+    fixture.world.commit_file(
+        &worktree_of_open(&fixture, &b),
+        "b.txt",
+        "b\n",
+        "feat: retained on 2",
+    );
+    diverge_in_checkout(&fixture, "feature/b");
     close(&fixture, &b);
     close(&fixture, &c);
+    configure_workspaces(&fixture.world, sized(1, "0"));
+    let kept = ask(None, None, None);
+    assert_eq!((kept.pool, kept.slots, kept.idle), (1, 2, 2));
+    assert_eq!(
+        kept.admits,
+        Bound::Bounded(2),
+        "neither retained slot is shed, so both admit"
+    );
+    assert!(kept.admitted);
+    let (one, _, placed) = open(&fixture, &[]);
+    assert_eq!(placed["kind"], "slot");
+    let (two, _, placed) = open(&fixture, &[]);
+    assert_eq!(placed["kind"], "slot");
+    assert_eq!(ask(None, None, None).admits, Bound::Bounded(0));
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project"])
+        .assert()
+        .code(4);
+    close(&fixture, &one);
+    close(&fixture, &two);
+}
+
+/// The worktree an open session was handed, off its record as `status` reports it.
+fn worktree_of_open(fixture: &Fixture, token: &str) -> PathBuf {
+    let report = fixture
+        .world
+        .onevcs()
+        .args(["status", token, "--json"])
+        .output()
+        .expect("runs");
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).expect("JSON");
+    PathBuf::from(
+        report["session"]["worktree"]
+            .as_str()
+            .expect("a session report names the worktree"),
+    )
 }
 
 #[test]
