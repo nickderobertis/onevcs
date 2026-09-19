@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0](https://github.com/nickderobertis/onevcs/compare/v0.26.0...v0.27.0) - 2026-09-19
+
+### Added
+
+- *(pool)* maintain idle slots one at a time, recording when each was last maintained ([#169](https://github.com/nickderobertis/onevcs/pull/169))
+
 ## [0.26.0](https://github.com/nickderobertis/onevcs/compare/v0.25.0...v0.26.0) - 2026-09-19
 
 ### Added
