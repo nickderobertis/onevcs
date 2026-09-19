@@ -717,6 +717,35 @@ point of the check is that two releases are compared by semantic-version orderin
 It is stated here because it is the one place an operator meets the rule as a
 surprise.
 
+## The pool of warm worktree slots, and the shapes its amendment left to inference
+
+The pool is an **approved amendment** in `docs/contract.md`: the host file
+`$ONEVCS_HOME/workspaces.yml`, the `Span` and `Bound` grammars, the types and the four
+library reads, the two verbs, exit code `4`, the stored slot shape, the idle proof, the
+placement order and the return — held to the code by
+`the_amendment_declares_the_pool_surface_it_added`,
+`the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaults`,
+`a_span_is_digits_then_one_unit_letter_and_everything_else_is_refused_by_name` and
+`a_bound_is_unlimited_or_an_integer_in_every_spelling` in `tests/contract.rs`, and driven
+through the compiled binary by `tests/e2e/pool.rs`. What is recorded here is what the
+amendment left to inference.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| what surplus shedding measures against | the **file's** pool — the matching rule, else `default:`, else the shipped `0` — never `--pool` on an open or `ONEVCS_POOL` in the environment | The manager's ruling. Read literally, `session open --pool 0` would first shed every idle slot before placing one session fresh, wiping the warm pool a single opted-out session was meant to leave alone; an `ONEVCS_POOL` a node exports to a dispatch would do the same. Both are per-process, so both govern only where *that* session is placed. `a_broken_slot_is_recreated_in_place_and_a_lowered_pool_sheds_surplus_idle_slots` drives `--pool 0` and `ONEVCS_POOL` against a warm pool and shows every idle slot still there. |
+| the file's own types | `pub mod workspaces`, exporting `WorkspacesFile`, `WorkspaceDefault`, `WorkspaceRule` and `Maintenance` beside `Span` and `Bound` | The amendment's first draft named the reads and not the parsed file. The contract suite has to hold the `workspaces.yml` example to the types, which an integration test can only do through public ones — the precedent is `rules::RulesFile` and `releases::ReleasesFile` — and a consumer reading `maintain:` for a differently-shaped host file reuses the one `RuleMatch`. Confirmed by the manager and recorded in the amendment. |
+| `WorkspaceCapacity.idle` | the idle slots **and** the broken ones | A broken slot is recreated in place by the session that takes it, so it is takeable, and the declared struct has no field for a count of broken ones. `pool status` still reports each slot's state, so a reader who needs the distinction has it per slot. |
+| which takeable slot an open prefers | idle before broken; among the idle, the pinned branch's most recent slot, then the lowest number | Recreating a broken slot cuts a clone and a worktree from nothing, which is what a warm slot exists to avoid, so a slot that is already warm wins. The pinned branch's predecessor's slot is the amendment's; the lowest number after that keeps the pool dense so a shed removes from the top. |
+| a slot whose last session a publication closed | returned on that session's behalf by the next open that takes it, through the same steps its own close takes; refused over stray work exactly as that close would be | A publication closes the record and leaves the return to `session close`, so between the two the slot reads idle with the closed session's branch still checked out. A tree no record of the slot names is reset without preserving anything, which is the answer reclamation gives a run root no record names. A slot in that state with a live process inside it is skipped rather than taken, by the same census the close refuses on. |
+| what a closed slot session's tree is | its own until the slot is returned or a later session takes it, and nobody's on its behalf afterwards | `Record::tree_is_its_own` is the one place that decides it, asked by `spent`, `holds_unpublished_work`, `adopt` and `close`, so none of them reads a later session's uncommitted work as the closed session's, counts that session's worker as the closed session's occupant, or commits it onto the closed session's branch. |
+| another session's retained branch in a slot's clone | not this session's stray work | A branch an earlier hand-back could not copy is answered for by that session's own record and listed by `recoverable`; a close that refused over it would make the slot unreturnable by anyone but the operator who resolves the divergence. Every other branch a slot's clone holds at a close is this session's own. |
+| the branch refs a return deletes | the session's own where the hand-back copied it, and nothing else | The amendment's rule, kept narrow: a stray branch the checkout took stays in the clone until the lender reaches it, where the next return's stray check passes it over, and `pool prune` judges a slot by what its lender does **not** reach. |
+| `slot.json`'s `started` | the crate's own `ProcessStart`, a transparent non-zero integer | The amendment writes `<ProcessStart>` and the session record already serializes one as its `owner_started`; a claim is checked against the running process by exactly the comparison `Record::owner_is_running` makes. |
+| a `delete` entry's shape | a relative path with no `..` component, refused at load; an entry that is a symlink is unlinked rather than followed | The amendment says relative and inside the worktree. Following a link would delete something the entry does not name. |
+| what `pool prune` calls retained | a local branch of the slot's clone whose tip the lender does not reach | The same test the close uses to decide whether stray work is stranded, so the verb that keeps a slot and the close that leaves a branch in it cannot disagree about what is worth keeping. |
+| `PoolExhausted` and `FailureKind` | no new kind; `FailureKind::of` answers `Invalid` | The vocabulary is fixed across three libraries and routes what became of a publication; a pool refusal is never one. `session open` answers `4` from the error's own kind, and `workspace_capacity` is the typed form of the same answer. |
+| the exit code | `4`, from `session open` alone | Its own code beside `1`, `2`, `3` and `70`, because a caller that queues on it has to tell "come back later" from "this request was wrong" by `$?` alone. |
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.

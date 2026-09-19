@@ -70,3 +70,51 @@ already shipped. So a publication asks the *tree*, not the history — a branch 
 landed keeps every one of its commits — and settles as `NothingToPublish`. The
 question is asked on the publication path itself rather than at a call site, so
 every caller gets it.
+
+## A pool of warm worktree slots, per identity, per host
+
+The user's words: "some languages like rust have large build outputs that put a lot
+of wear on the disc to repeatedly wipe and recreate"; the pool lets "you trade off
+disc wear for not blocking work. some users may turn overflow off to save their disk
+and others have overflow on"; "most users who are working in languages that have
+these problems would want to set the pool size to the amount of concurrent work that
+they expect to do on that project and have a small overflow to prevent blocking
+work"; "much like a database pool"; "the pool should also be lazy ... a reasonable
+default say 2, then projects that only ever have one concurrent task will only ever
+get one work tree"; "this all lives on the host per identity because each host will
+be able to handle different amounts of concurrency mainly based on available disk
+space".
+
+So `$ONEVCS_HOME/workspaces.yml` sizes a pool and an overflow per identity, on the
+host; a `session open` takes an idle slot, cuts one while the pool is under its
+size, overflows into a disposable run root, or is refused with `PoolExhausted` and
+never waits; a `session close` returns the slot with its ignored files — the
+repository's own declaration of what is build output — still there. Pooling is off
+until a host writes the file, so every existing host is unchanged. The shipped
+default is `pool: 0` rather than the user's "reasonable default say 2" because the
+file is what turns pooling on: a host that has said nothing keeps today's behaviour,
+and the moment it writes the file it says its own number.
+
+**A slot is bound to its lender.** The manager's ruling: re-pointing a slot's clone at
+another execution checkout is refused, because a branch the hand-back could not copy
+may reference objects only the old lender holds. An identity with several execution
+checkouts spends its pool one slot per lender.
+
+**Surplus shedding measures against the file's pool, never a per-process override.**
+The manager's ruling on a literal reading that would have `session open --pool 0`
+shed every idle slot before placing one session fresh: `--pool` and `ONEVCS_POOL`
+govern only where *this* session is placed (`0` fresh under `runs/`, `N` may cut a
+slot while fewer than `N` exist), `--overflow` and `ONEVCS_OVERFLOW` only this open's
+admission, and a slot is removed only by shedding against the file's pool at an open,
+or by `pool prune`, and never one holding a retained branch.
+
+**The idle proof is the records', and there is no second liveness test.** A slot is
+idle iff no open session record names it and its maintenance claim is void. An open
+record whose owner exited holds its slot until `session close` or `onevcs sweep`
+forgets it — the same proof the run-root reclamation uses, for the same reason: a
+session opened from the command line has no owner process from the instant its token
+is printed.
+
+**Nothing about nodes or queues enters the library.** The refusal names the identity,
+the limits with their sources and every holder, and a caller decides whether to wait,
+close something, or open with `--overflow unlimited`.
