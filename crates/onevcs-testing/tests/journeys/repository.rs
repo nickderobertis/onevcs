@@ -78,6 +78,13 @@ fn opening_a_session_records_it_and_emits_the_event_the_real_one_emits() {
             "a session-opened event names its {named}"
         );
     }
+    // Where the session was placed, which every implementation says: a provider that
+    // keeps no pool places every session in a run root of its own, and a consumer
+    // reading the field meets the same shape the real backend writes.
+    assert_eq!(
+        opened["payload"]["placement"],
+        serde_json::json!({"kind": "run-root"})
+    );
 }
 
 #[test]
@@ -101,6 +108,8 @@ fn preserved_work_is_what_recoverable_reports() {
             branch: Some("feature/interrupted".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session over a known repository");
 
@@ -190,6 +199,8 @@ fn preserving_the_same_branch_twice_reports_it_once() {
             branch: Some("feature/twice".to_owned()),
             base: Some("release".to_owned()),
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session named by its identity key");
 
@@ -240,6 +251,8 @@ fn a_session_is_adopted_back_out_of_the_state_that_recorded_it() {
             branch: None,
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
 

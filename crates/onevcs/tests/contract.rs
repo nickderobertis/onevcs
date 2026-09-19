@@ -36,15 +36,17 @@ use onevcs::releases::{
     SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
+use onevcs::workspaces::{WorkspaceDefault, WorkspacesFile};
 use onevcs::{
-    ArtifactId, ArtifactRef, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest, ChangeSpec,
-    Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter, EventKind,
-    EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, Labels, Landed, LandingEvidence,
-    Lifecycle, LineChange, Liveness, MergeOutcome, MergePolicy, NetNegative, Phase, PhaseOf,
-    PreservedBranch, ProtectionSource, Provenance, Providers, Publication, PublishOutcome,
-    PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Session,
-    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Source,
-    Subject, Url, Vcs,
+    ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest,
+    ChangeSpec, Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter,
+    EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, Labels, Landed,
+    LandingEvidence, Lifecycle, LineChange, Liveness, MaintenanceOutcome, MergeOutcome,
+    MergePolicy, NetNegative, Phase, PhaseOf, PoolStatus, PreservedBranch, ProtectionSource,
+    Provenance, Providers, PruneReport, Publication, PublishOutcome, PublishRequest, Recoverable,
+    RemoteHost, RequiredChecks, Retention, Scope, Session, SessionChange, SessionHolder,
+    SessionRecord, SessionRequest, SessionToken, Sha, SlotState, SlotStatus, Source, Span, Subject,
+    Url, Vcs, WorkspaceCapacity,
 };
 use serde_json::{json, Value};
 
@@ -2099,6 +2101,8 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         branch: None,
         base: None,
         execution_checkout: None,
+        pool: None,
+        overflow: None,
     };
     let change = ChangeRequest {
         id: ChangeId("42".to_owned()),
@@ -2191,6 +2195,12 @@ fn every_error_says_what_failed_and_which_exit_code_it_is() {
             },
             "host prerequisite missing: gh is not installed; install it from \
              https://cli.github.com",
+        ),
+        (
+            Error::PoolExhausted {
+                reason: "no session of github.com/acme/x can be placed now".to_owned(),
+            },
+            "pool exhausted: no session of github.com/acme/x can be placed now",
         ),
     ];
     for (error, expected) in cases {
@@ -2394,6 +2404,8 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             branch: Some("feature".to_owned()),
             base: Some("main".to_owned()),
             execution_checkout: Some("isolated".to_owned()),
+            pool: None,
+            overflow: None,
         })
         .expect("a session request serializes"),
         json!({
@@ -5234,4 +5246,446 @@ fn the_published_smoke_asks_when_the_answer_can_have_changed_and_reports_when_it
         "the `{name}` job does not wait on {unreported:?}, so a failure of those \
          jobs is reported nowhere"
     );
+}
+
+/// The `workspaces.yml` example the pool amendment spells, as its own document.
+fn documented_workspaces() -> String {
+    amendment_yaml_spelling("overflow: unlimited")
+}
+
+#[test]
+fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaults() {
+    let fixture = documented_workspaces();
+    let file: WorkspacesFile =
+        serde_yaml_ng::from_str(&fixture).expect("the contract's workspaces file parses");
+    assert_eq!(file.version, onevcs::workspaces::VERSION);
+    assert_eq!(
+        file.default,
+        WorkspaceDefault {
+            pool: 0,
+            overflow: Bound::Unlimited,
+            delete: Vec::new(),
+            maintain: None,
+        },
+        "the example's default: is the shipped default, spelled out"
+    );
+    assert_eq!(file.default, WorkspaceDefault::default());
+    assert_eq!(file.rules.len(), 1);
+    let rule = &file.rules[0];
+    assert_eq!(
+        rule.r#match,
+        RuleMatch {
+            host: Some("github.com".to_owned()),
+            owner: Some("nickderobertis".to_owned()),
+            name: Some("onevcs".to_owned()),
+            path: None,
+        },
+        "a rule matches on the rules file's own RuleMatch"
+    );
+    assert_eq!(rule.pool, Some(2));
+    assert_eq!(rule.overflow, Some(Bound::Bounded(4)));
+    assert_eq!(rule.delete, Some(vec![PathBuf::from(".logs/")]));
+    let maintain = rule
+        .maintain
+        .as_ref()
+        .expect("the example names maintenance");
+    assert_eq!(
+        maintain.command,
+        vec!["cargo", "sweep", "--time", "7"],
+        "the command is an argv list, spawned with no shell"
+    );
+    assert_eq!(maintain.timeout, "30m".parse::<Span>().expect("a span"));
+    assert_eq!(
+        maintain.timeout.as_duration(),
+        std::time::Duration::from_secs(30 * 60)
+    );
+
+    // Round trip: what this build writes is what it read, with the absent keys
+    // written as the values the amendment says they default to.
+    let written = serde_yaml_ng::to_string(&file).expect("it serializes");
+    let reread: WorkspacesFile = serde_yaml_ng::from_str(&written).expect("it reads back");
+    assert_eq!(reread, file);
+    let as_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&written).expect("YAML");
+    assert_eq!(
+        as_value["default"]["overflow"],
+        serde_yaml_ng::Value::from("unlimited")
+    );
+    assert_eq!(
+        as_value["rules"][0]["overflow"],
+        serde_yaml_ng::Value::from(4)
+    );
+    assert_eq!(
+        as_value["rules"][0]["maintain"]["timeout"],
+        serde_yaml_ng::Value::from("30m")
+    );
+
+    // A document with only a version is the shipped default whole: every rule
+    // field is optional and so is `default:` itself.
+    let bare: WorkspacesFile = serde_yaml_ng::from_str("version: 1\n").expect("a bare file");
+    assert_eq!(bare.default, WorkspaceDefault::default());
+    assert!(bare.rules.is_empty());
+    let unset: WorkspacesFile = serde_yaml_ng::from_str(
+        "version: 1\nrules:\n  - match: {name: x}\n    maintain: {command: [make, clean]}\n",
+    )
+    .expect("a maintenance with no timeout");
+    assert_eq!(
+        unset.rules[0]
+            .maintain
+            .as_ref()
+            .expect("maintenance")
+            .timeout,
+        onevcs::workspaces::DEFAULT_MAINTAIN_TIMEOUT
+            .parse::<Span>()
+            .expect("the shipped bound is a span"),
+        "a maintenance naming no timeout gets the documented default"
+    );
+}
+
+#[test]
+fn a_span_is_digits_then_one_unit_letter_and_everything_else_is_refused_by_name() {
+    for (text, seconds) in [
+        ("7d", 7 * 86_400),
+        ("36h", 36 * 3_600),
+        ("90m", 90 * 60),
+        ("600s", 600),
+        ("1s", 1),
+    ] {
+        let span: Span = text
+            .parse()
+            .unwrap_or_else(|e| panic!("{text} is a span: {e}"));
+        assert_eq!(span.as_duration(), std::time::Duration::from_secs(seconds));
+        assert_eq!(span.to_string(), text, "a span displays as it was written");
+        assert_eq!(
+            serde_json::to_value(span).expect("serializes"),
+            json!(text),
+            "a span serializes as that string"
+        );
+        let back: Span = serde_json::from_value(json!(text)).expect("deserializes");
+        assert_eq!(back, span);
+    }
+    for (refused, why) in [
+        ("0s", "zero"),
+        ("00m", "zero"),
+        ("7 d", "space"),
+        ("7", "no unit"),
+        ("7w", "unit letter"),
+        ("1h30m", "more than one unit"),
+        ("1.5h", "whole number"),
+        ("-7d", "signed"),
+        ("+7d", "signed"),
+        ("", "empty"),
+        ("d", "no number"),
+        ("99999999999999999999s", "too large"),
+    ] {
+        let error = refused
+            .parse::<Span>()
+            .expect_err(&format!("{refused:?} is not a span"));
+        assert!(
+            error.contains(&format!("{refused:?}")) || refused.is_empty(),
+            "the refusal of {refused:?} names what it refused: {error}"
+        );
+        assert!(
+            error.contains(why),
+            "the refusal of {refused:?} says why ({why}): {error}"
+        );
+        assert!(
+            error.contains("s, m, h or d"),
+            "the refusal of {refused:?} states the grammar: {error}"
+        );
+        assert!(
+            serde_json::from_value::<Span>(json!(refused)).is_err(),
+            "{refused:?} does not deserialize either"
+        );
+    }
+}
+
+#[test]
+fn a_bound_is_unlimited_or_an_integer_in_every_spelling() {
+    assert_eq!("unlimited".parse::<Bound>(), Ok(Bound::Unlimited));
+    assert_eq!("4".parse::<Bound>(), Ok(Bound::Bounded(4)));
+    assert_eq!("0".parse::<Bound>(), Ok(Bound::Bounded(0)));
+    for refused in ["", "-1", "four", "1.5", "Unlimited"] {
+        let error = refused.parse::<Bound>().expect_err("not a bound");
+        assert!(error.contains("unlimited"), "{error}");
+    }
+    assert_eq!(Bound::Unlimited.to_string(), "unlimited");
+    assert_eq!(Bound::Bounded(4).to_string(), "4");
+    assert_eq!(
+        serde_json::to_value(Bound::Unlimited).expect("serializes"),
+        json!("unlimited")
+    );
+    assert_eq!(
+        serde_json::to_value(Bound::Bounded(4)).expect("serializes"),
+        json!(4)
+    );
+    assert_eq!(
+        serde_json::from_value::<Bound>(json!("unlimited")).expect("reads"),
+        Bound::Unlimited
+    );
+    assert_eq!(
+        serde_json::from_value::<Bound>(json!(4)).expect("reads"),
+        Bound::Bounded(4)
+    );
+    assert!(serde_json::from_value::<Bound>(json!(-1)).is_err());
+    assert!(serde_json::from_value::<Bound>(json!(u64::MAX)).is_err());
+    assert!(Bound::Unlimited.admits(u32::MAX));
+    assert!(Bound::Bounded(2).admits(1));
+    assert!(!Bound::Bounded(2).admits(2));
+    assert_eq!(Bound::Bounded(4).headroom(1), Bound::Bounded(3));
+    assert_eq!(Bound::Bounded(1).headroom(5), Bound::Bounded(0));
+    assert_eq!(Bound::Unlimited.headroom(5), Bound::Unlimited);
+}
+
+#[test]
+fn the_amendment_declares_the_pool_surface_it_added() {
+    // Built from outside the crate with every field named, which is the half a
+    // compiler checks; the amendment is then held to declaring each of them.
+    let capacity = WorkspaceCapacity {
+        identity: "github.com/nickderobertis/onevcs".to_owned(),
+        pool: 2,
+        slots: 2,
+        idle: 1,
+        in_use: 1,
+        maintaining: 0,
+        overflow: Bound::Bounded(4),
+        overflow_in_use: 0,
+        admits: Bound::Bounded(5),
+        admitted: true,
+    };
+    let status = PoolStatus {
+        capacity: capacity.clone(),
+        slots: vec![
+            SlotStatus {
+                number: 1,
+                path: PathBuf::from("/state/workspaces/identity/pool/1"),
+                execution_checkout: PathBuf::from("/checkouts/onevcs"),
+                state: SlotState::InUse {
+                    session: SessionToken("s-1".to_owned()),
+                },
+                last_maintained: Some("2026-09-19T10:00:00.000Z".to_owned()),
+                last_outcome: Some(MaintenanceOutcome::Succeeded),
+            },
+            SlotStatus {
+                number: 2,
+                path: PathBuf::from("/state/workspaces/identity/pool/2"),
+                execution_checkout: PathBuf::from("/checkouts/onevcs"),
+                state: SlotState::Idle,
+                last_maintained: None,
+                last_outcome: None,
+            },
+        ],
+    };
+    let report = PruneReport {
+        removed: vec![2],
+        kept: vec![(1, "session s-1 is working in it".to_owned())],
+    };
+    let request = SessionRequest {
+        repo: "onevcs".to_owned(),
+        branch: None,
+        base: None,
+        execution_checkout: None,
+        pool: Some(0),
+        overflow: Some(Bound::Unlimited),
+    };
+    assert_eq!(
+        serde_json::to_value(&request).expect("serializes")["overflow"],
+        json!("unlimited")
+    );
+    let json = serde_json::to_value(&status).expect("a status serializes");
+    assert_eq!(json["capacity"]["overflow"], json!(4));
+    assert_eq!(json["capacity"]["admits"], json!(5));
+    assert_eq!(
+        json["slots"][0]["state"],
+        json!({"state": "in-use", "session": "s-1"}),
+        "a slot's state is tagged `state`, so a consumer reads one key"
+    );
+    assert_eq!(json["slots"][1]["state"], json!({"state": "idle"}));
+    assert_eq!(json["slots"][0]["last_outcome"], json!("succeeded"));
+    assert_eq!(
+        serde_json::to_value(SlotState::Maintaining {
+            pid: 7,
+            since: "2026-09-19T10:00:00.000Z".to_owned(),
+        })
+        .expect("serializes"),
+        json!({"state": "maintaining", "pid": 7, "since": "2026-09-19T10:00:00.000Z"})
+    );
+    assert_eq!(
+        serde_json::to_value(SlotState::Broken {
+            reason: "its clone is missing".to_owned(),
+        })
+        .expect("serializes"),
+        json!({"state": "broken", "reason": "its clone is missing"})
+    );
+    let reread: PoolStatus = serde_json::from_value(json).expect("a status reads back");
+    assert_eq!(reread, status);
+    assert_eq!(
+        serde_json::to_value(&report).expect("a report serializes"),
+        json!({"removed": [2], "kept": [[1, "session s-1 is working in it"]]})
+    );
+
+    // The three spellings of a maintenance outcome, exactly as the stored shape
+    // declares them.
+    for (outcome, spelled) in [
+        (MaintenanceOutcome::Succeeded, json!("succeeded")),
+        (
+            MaintenanceOutcome::Failed { exit: Some(2) },
+            json!({"failed": {"exit": 2}}),
+        ),
+        (
+            MaintenanceOutcome::Failed { exit: None },
+            json!({"failed": {"exit": null}}),
+        ),
+        (MaintenanceOutcome::TimedOut, json!("timed-out")),
+    ] {
+        assert_eq!(serde_json::to_value(outcome).expect("serializes"), spelled);
+        assert_eq!(
+            serde_json::from_value::<MaintenanceOutcome>(spelled).expect("reads"),
+            outcome
+        );
+    }
+    let error = Error::PoolExhausted {
+        reason: "no session of x can be placed now".to_owned(),
+    };
+    assert!(error
+        .to_string()
+        .starts_with("pool exhausted: no session of x can be placed now"));
+    assert_eq!(
+        FailureKind::of(&error),
+        FailureKind::Invalid,
+        "a pool refusal is not a publication failure, so the fixed vocabulary has no kind for it"
+    );
+
+    // The stored slot record, held to the shape the amendment declares for the next
+    // verb to fill.
+    let slot: Value = serde_json::from_str(&amendment_block_declaring("json", "\"maintaining\""))
+        .expect("the slot record fixture is JSON");
+    assert_eq!(slot["version"], json!(1));
+    assert_eq!(slot["number"], json!(1));
+    assert_eq!(slot["maintaining"], Value::Null);
+    assert_eq!(slot["last_maintained"], Value::Null);
+    assert_eq!(slot["last_outcome"], Value::Null);
+    for key in ["identity", "execution_checkout", "created"] {
+        assert!(slot[key].is_string(), "slot.json carries {key}");
+    }
+
+    let declarations = amendment_declaring("pub struct WorkspacesFile");
+    for declared in [
+        "pub struct Span { .. }",
+        "impl Span { pub fn as_duration(&self) -> Duration; }",
+        "pub enum Bound { Unlimited, Bounded(u32) }",
+        "pub struct WorkspacesFile { pub version: u32, pub default: WorkspaceDefault,",
+        "pub rules: Vec<WorkspaceRule> }",
+        "pub struct WorkspaceDefault { pub pool: u32, pub overflow: Bound, pub delete: Vec<PathBuf>,",
+        "pub maintain: Option<Maintenance> }",
+        "pub struct WorkspaceRule { pub r#match: rules::RuleMatch, pub pool: Option<u32>,",
+        "pub overflow: Option<Bound>, pub delete: Option<Vec<PathBuf>>,",
+        "pub struct Maintenance { pub command: Vec<String>, pub timeout: Span }",
+        "pub pool: Option<u32>, pub overflow: Option<Bound> }",
+        "Error::PoolExhausted { reason: String }",
+        "pub fn workspace_capacity(request: &SessionRequest) -> Result<WorkspaceCapacity>;",
+        "pub struct WorkspaceCapacity { pub identity: String, pub pool: u32, pub slots: u32,",
+        "pub idle: u32, pub in_use: u32, pub maintaining: u32, pub overflow: Bound,",
+        "pub overflow_in_use: u32, pub admits: Bound,",
+        "pub admitted: bool }",
+        "pub fn pool_status(repo: &str) -> Result<PoolStatus>;",
+        "pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus> }",
+        "pub struct SlotStatus { pub number: u32, pub path: PathBuf, pub execution_checkout: PathBuf,",
+        "pub state: SlotState, pub last_maintained: Option<String>,",
+        "pub last_outcome: Option<MaintenanceOutcome> }",
+        "pub enum SlotState { Idle, InUse { session: SessionToken },",
+        "Maintaining { pid: u32, since: String }, Broken { reason: String } }",
+        "pub enum MaintenanceOutcome { Succeeded, Failed { exit: Option<i32> }, TimedOut }",
+        "pub fn pool_prune(repo: &str) -> Result<PruneReport>;",
+        "pub struct PruneReport { pub removed: Vec<u32>, pub kept: Vec<(u32, String)> }",
+        "pub fn first_matching(criteria: &[RuleMatch], repo: &str) -> Result<Option<usize>>;",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+    // The exit code the amendment fixes for the refusal, stated where a reader looks
+    // for exit codes.
+    assert!(
+        regions().0.contains("`session open` exits 4 on it"),
+        "the amendment states the exit code session open answers a pool refusal with"
+    );
+    // And the additive event fields, on the lines a reader of the stream reads.
+    for spelled in [
+        "`{\"kind\": \"slot\", \"slot\": N, \"created\": bool}`",
+        "`{\"kind\": \"run-root\"}`",
+        "`returned: {\"slot\": N}`",
+    ] {
+        assert!(
+            regions().0.contains(spelled),
+            "the amendment spells the event field {spelled}"
+        );
+    }
+}
+
+#[test]
+fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
+    // The README's tour of the pool restates two things the amendment fixes — the
+    // spelling of the two verbs and the exit code the refusal answers — so this holds
+    // the copy to its source: a verb respelled in one document and not the other is
+    // a user typing a command that does not exist.
+    // The README wraps its prose, so it is compared with its line breaks folded.
+    let readme = repo_file("README.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|block| block.contains("pool status"))
+        .expect("the amendment spells the pool verbs");
+    let verbs: Vec<String> = usage
+        .lines()
+        .find(|line| line.starts_with("onevcs pool "))
+        .expect("the pool verbs share one usage line")
+        .split(" | ")
+        .map(|verb| {
+            verb.trim()
+                .strip_prefix("onevcs ")
+                .unwrap_or(verb.trim())
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(verbs.len(), 2, "two pool verbs: {verbs:?}");
+    for verb in verbs {
+        assert!(
+            readme.contains(&format!("onevcs {verb}")),
+            "the README no longer spells `onevcs {verb}` as the amendment does"
+        );
+    }
+    assert!(
+        regions().0.contains("`session open` exits 4 on it") && readme.contains("exit code `4`"),
+        "the amendment and the README disagree about the code the refusal answers"
+    );
+    // The library paragraph names four reads and four spans; each name is one the
+    // amendment declares as a `pub fn`, and each span is one `Span` reads.
+    let declarations = amendment_declaring("pub struct WorkspacesFile");
+    let paragraph = readme
+        .split("The library forms of the pool are ")
+        .nth(1)
+        .expect("the README tours the pool's library forms")
+        .split("host files use.")
+        .next()
+        .expect("the tour ends where it says what first_matching matches by");
+    let mut names = 0;
+    for spelled in paragraph.split('`').skip(1).step_by(2) {
+        let name = spelled.split('(').next().unwrap_or(spelled);
+        if name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+            names += 1;
+            assert!(
+                declarations.contains(&format!("pub fn {name}(")),
+                "the README names `{name}`, which the amendment does not declare"
+            );
+        } else if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            assert!(
+                name.parse::<Span>().is_ok(),
+                "the README spells `{name}` as a span, and it is not one"
+            );
+        }
+    }
+    assert_eq!(names, 4, "the README names the four library reads");
 }

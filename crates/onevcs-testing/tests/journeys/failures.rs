@@ -66,6 +66,8 @@ fn a_state_root_that_cannot_hold_a_stream_does_not_fail_the_operation() {
             branch: Some("feature/unrecorded".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("the session opens even though its event cannot be written");
     vcs.preserve(&session, Provenance::Complete)
@@ -148,6 +150,8 @@ fn an_unusable_state_root_is_refused_by_name() {
             branch: None,
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
     assert!(fallback
@@ -301,6 +305,8 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
                 branch: Some(name.to_owned()),
                 base: None,
                 execution_checkout: None,
+                pool: None,
+                overflow: None,
             })
             .err()
             .unwrap_or_else(|| panic!("{name:?} is a name git would not accept"));
@@ -316,6 +322,8 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             branch: None,
             base: Some("release branch".to_owned()),
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .is_err());
     assert!(
@@ -331,6 +339,8 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             branch: Some(name.to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .unwrap_or_else(|e| panic!("{name:?} is a name git accepts: {e}"));
     }
@@ -380,6 +390,8 @@ fn a_file_backed_session_needs_somewhere_to_put_its_worktree() {
             branch: None,
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect_err("nowhere to put the worktree");
 

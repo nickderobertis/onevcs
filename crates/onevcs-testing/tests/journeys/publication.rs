@@ -29,6 +29,8 @@ fn open(vcs: &dyn Vcs, branch: &str) -> Session {
         branch: Some(branch.to_owned()),
         base: None,
         execution_checkout: None,
+        pool: None,
+        overflow: None,
     })
     .expect("a session over the seeded repository")
 }

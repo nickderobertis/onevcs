@@ -918,18 +918,74 @@ an *open* record names it, and hand a live directory to the next `session open` 
 reap. Same answer, same reason, as the close refusal above. Ask the owner first: it is
 two file reads, and the occupancy question walks every process on the host.
 
+## A slot is a run root that survives its session, and one proof says whether it is idle
+
+`pool.rs` is the pool — the slots under `<identity dir>/pool/<n>/`, each a `clone`, a
+`worktree` and a `slot.json` — and `workspaces.rs` is the host file that sizes it,
+`$ONEVCS_HOME/workspaces.yml`, read leniently like the other two host files and
+matched on the one `RuleMatch`. `workspace::open` asks `pool::place` where a session
+goes and cuts or takes the slot itself; `workspace::close` returns one through
+`return_tree`. Seven things are easy to undo.
+
+- **A slot is structurally a run root.** Its directory is the session record's
+  `run_root`, so the occupancy lease, `processes::holding`, the dirty-tree
+  preservation, the hand-back and the stray-work refusal all address it unchanged;
+  `Record::slot` is the one thing that says a close returns it rather than removing
+  it. `reclaim` walks `runs/` alone, and `sweep` names the pool as outside its verb.
+- **Idle is decided from the records and nothing else.** No open record names the
+  slot, and its maintenance claim is void — null, or naming a process that is gone,
+  which the next reader clears. An open record whose owner exited still holds its
+  slot, for the reason `reclaim` keeps such a run root: a session opened from the
+  command line has no owner process from the instant its token is printed. Do not
+  add a liveness test here; `sweep` forgetting the record is how such a slot frees.
+- **Placement is serialized per pool and each slot is taken under its exclusive
+  lease.** `pool::place` holds `pool:<dir>` from the survey to the record's save, and
+  takes the slot's own occupancy identity exclusively for the same span — which is
+  why a slot takes no shared lease in `open`: an exclusive take and a shared one on
+  one file cannot be held together. `prune` and the shed skip a slot whose exclusive
+  take fails, exactly as `reclaim` skips a run root's.
+- **Shedding measures against the file's pool, never `--pool` or `ONEVCS_POOL`.**
+  Both are per-process and govern only where that session is placed; a per-process
+  value that removed slots would take the warm pool down every time a dispatch was
+  handed one. `Resolved::file_pool` is the number, and `Resolved::pool` the request's.
+- **A slot is bound to its lender.** `slot.json` names the execution checkout, and a
+  request lending from another never takes it — a retained branch may reference
+  objects only the old lender holds. A broken slot (clone or worktree missing or not
+  a repository, record unreadable) is recreated in place by the session that would
+  take it — rebuilding only what is broken: a clone that is still a repository is
+  kept with every ref it retains and its record or worktree rebuilt beside it, and
+  only an unusable clone is cut again from the lender.
+- **A closed record on a slot owns its tree only until the slot is returned or
+  taken.** `Record::tree_is_its_own` is the one place that decides it, and `spent`,
+  `holds_unpublished_work`, `adopt` and `close` all ask it first: a publication closes
+  the record and leaves the return to `session close`, and between the two the tree
+  is still the session's — `settle_slot` returns it on that session's behalf when the
+  next open takes the slot — but once a later session is in the slot, reading its
+  uncommitted work as the closed session's, counting its worker as the closed
+  session's occupant, or committing its tree onto the closed session's branch is the
+  defect every one of those checks exists to prevent.
+- **A return deletes the session's branch ref only where the hand-back copied it.** A
+  branch the checkout would not take stays in the slot's clone, is reported
+  `retained`, and is the one reason `pool prune` and the shed keep an idle slot:
+  `retained_branches` asks whether the lender reaches the tip, the same test
+  `stranded` asks of stray work. A later session's `stray_work` passes over a branch
+  another closed record of the identity names, because that record answers for it.
+
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory
-locks and merge-queue state, the per-session workspaces, the conventional
-`rules.yml`, and the event streams with their artifacts. A journey points it at a
+locks and merge-queue state, the per-session workspaces — each identity's `runs/`
+and its `pool/` of warm slots — the conventional `rules.yml`, `releases.yml` and
+`workspaces.yml`, and the event streams with their artifacts. A journey points it at a
 scratch directory, which is what lets the suite drive the real binary without
 touching an operator's own state.
 
 The other environment seams exist for the same reason and nothing else: `ONEVCS_GH`
 names the program that answers as `gh`, `ONEVCS_CHECK_SOURCE` narrows which of the
-host's check sources may be consulted (`auto`, `status-checks`, `actions`), and the
-bounds
+host's check sources may be consulted (`auto`, `status-checks`, `actions`),
+`ONEVCS_POOL` and `ONEVCS_OVERFLOW` override one process's pool placement and
+admission (never the pool's size on disk), and the bounds
 (`ONEVCS_GIT_TIMEOUT`, `ONEVCS_GIT_HOOK_TIMEOUT`, `ONEVCS_LOCK_TIMEOUT_SECONDS`,
 `ONEVCS_CHECKS_TIMEOUT_SECONDS`, `ONEVCS_CHECKS_POLL_SECONDS`) are operator knobs a
 journey turns down so a bound can be *proved* rather than waited out.

@@ -104,6 +104,20 @@ work a stopped run left in its own. It writes refs and nothing else — no check
 no working tree — and refuses a non-fast-forward overwrite by naming the commits
 it would lose.
 
+`onevcs session open` places a session on a **pool of warm worktree slots** when the
+host keeps one for the repository — `$ONEVCS_HOME/workspaces.yml`, per identity,
+sizes the `pool` and the `overflow` past it, and names the paths to `delete` on
+every return. An idle slot is taken first, one is cut while the pool is under its
+size, a session past the pool is placed under `runs/` exactly as before until the
+overflow is spent, and then `session open` refuses with exit code `4` rather than
+waiting. Closing a session on a slot **returns** it — detached onto the base, reset,
+cleaned of untracked files but not of ignored ones — so the next session on it finds
+`target/`, `node_modules/` or `.venv/` still there. `onevcs pool status REPO
+[--json]` reports the capacity and every slot; `onevcs pool prune REPO [--json]`
+removes the idle ones whose clone retains no branch. A host that writes no file keeps
+every session fresh, as it always has; `--pool N` and `--overflow N|unlimited` on one
+open override its resolution for that session alone.
+
 `onevcs sweep [--dry-run] [--min-age-hours HOURS]` reclaims the workspaces those
 landings leave behind. Every branch published by name cuts a run root — a clone, a
 worktree, and the merge path's preserved logs — under the state root, and until this rule
@@ -132,6 +146,12 @@ unlinking files a live process holds open frees none of their blocks.
 
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.
+
+The library forms of the pool are `workspace_capacity(&request)`, which says how many
+more opens an identity admits and whether one request would be placed now,
+`pool_status` and `pool_prune`; `Span` is the one duration grammar of the host files
+(`7d`, `36h`, `90m`, `600s`), and `first_matching` matches a `RuleMatch` list against a
+repository by exactly the matcher the three host files use.
 
 GitHub is reached through `gh`, so whatever `gh auth status` reports is the
 credential. A **fine-grained personal access token needs `Actions: Read`** on the

@@ -11,13 +11,15 @@
 //! # The shape of one change
 //!
 //! ```text
-//! session open  →  a per-run --shared clone and one worktree, occupancy-leased
+//! session open  →  a --shared clone and one worktree, occupancy-leased: a warm
+//!                   pool slot where the host keeps one, else cut for this run
 //!    →  work happens in the worktree
 //!    →  publish   →  fetch and merge the current base  (bounded resolve-and-requeue)
 //!                 →  the repository's own merge path verifies it: its pre-push
 //!                    hook, or the host's required checks on the change request
 //!                 →  local-direct squash, or a change request the host lands
-//!    →  session close  →  the worktree goes; the branch is copied out and stays
+//!    →  session close  →  the branch is copied out and stays; a slot is returned
+//!                         warm, a per-run worktree goes
 //! ```
 //!
 //! Everything durable lives under one state root (`ONEVCS_HOME`, otherwise
@@ -57,6 +59,7 @@ mod landed;
 mod lock;
 mod merge_path;
 mod policy;
+mod pool;
 mod probe;
 mod processes;
 pub mod provenance;
@@ -77,6 +80,7 @@ mod stream;
 mod sweep;
 mod vcs;
 mod workspace;
+pub mod workspaces;
 
 pub use change::{ChangeDescription, SessionChange};
 pub use declaration::{
@@ -92,6 +96,10 @@ pub use host::{
     Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
 pub use landed::{Landed, LandingEvidence};
+pub use pool::{
+    pool_prune, pool_status, workspace_capacity, MaintenanceOutcome, PoolStatus, PruneReport,
+    SlotState, SlotStatus, WorkspaceCapacity,
+};
 pub use providers::Providers;
 pub use publish::{
     DraftReason, FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject,
@@ -111,6 +119,7 @@ pub use session::{
 };
 pub use stream::EventStream;
 pub use vcs::{Git, Vcs};
+pub use workspaces::{first_matching, Bound, Span};
 
 /// A parsed absolute URL, re-exported so a caller needs no direct dependency on
 /// the parser this crate validates change-request URLs with.

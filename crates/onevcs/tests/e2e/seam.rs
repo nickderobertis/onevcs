@@ -107,6 +107,8 @@ fn session_adopt_hands_back_the_supplied_repository_sides_session() {
             branch: Some("feature/adopted".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
 
@@ -159,6 +161,8 @@ fn publishing_goes_through_the_supplied_repository_side() {
             branch: Some("feature/provided".to_owned()),
             base: Some("main".to_owned()),
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
     let host = MemoryHost::new();
@@ -214,6 +218,8 @@ fn closing_a_session_goes_through_the_supplied_repository_side() {
             branch: Some("feature/closed".to_owned()),
             base: Some("main".to_owned()),
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
 
@@ -263,6 +269,8 @@ fn recovering_a_branch_opens_its_change_on_the_supplied_host() {
             branch: Some("feature/interrupted".to_owned()),
             base: None,
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
     // A commit that describes the change, and then work that did not finish: a
@@ -331,6 +339,8 @@ fn the_change_verbs_go_through_the_supplied_repository_side_and_host() {
             branch: Some("feature/described".to_owned()),
             base: Some("main".to_owned()),
             execution_checkout: None,
+            pool: None,
+            overflow: None,
         })
         .expect("a session");
     let host = MemoryHost::new();

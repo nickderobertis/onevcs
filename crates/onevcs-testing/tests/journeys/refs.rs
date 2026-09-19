@@ -73,6 +73,8 @@ fn provider_accepts(vcs: &MemoryVcs, name: &str) -> bool {
         branch: Some(name.to_owned()),
         base: None,
         execution_checkout: None,
+        pool: None,
+        overflow: None,
     })
     .is_ok()
 }

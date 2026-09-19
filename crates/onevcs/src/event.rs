@@ -43,7 +43,7 @@ pub use onemessagebus_agent::event::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
-    /// A session was opened over a per-run clone and worktree.
+    /// A session was opened over a clone and worktree, on a pool slot or a run root.
     SessionOpened,
     /// Objects were fetched, deliberately outside any exclusive section.
     Fetch,

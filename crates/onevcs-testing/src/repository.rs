@@ -201,6 +201,10 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                     "clone": run_root.join("clone").display().to_string(),
                     "execution_checkout": run_root.join("checkout").display().to_string(),
                     "publication_checkout": run_root.join("checkout").display().to_string(),
+                    // A run root of its own, which is the one placement a provider
+                    // that keeps no pool can make — and the one every real session
+                    // gets on a host that configures none.
+                    "placement": {"kind": "run-root"},
                 })),
             };
             Ok((session, emission))
