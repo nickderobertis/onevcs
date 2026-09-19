@@ -97,8 +97,9 @@ pub use host::{
 };
 pub use landed::{Landed, LandingEvidence};
 pub use pool::{
-    pool_prune, pool_status, workspace_capacity, MaintenanceOutcome, PoolStatus, PruneReport,
-    SlotState, SlotStatus, WorkspaceCapacity,
+    pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
+    IdentityOutcome, MaintainReport, MaintenanceOutcome, PoolStatus, PruneReport, SlotMaintenance,
+    SlotOutcome, SlotState, SlotStatus, WorkspaceCapacity,
 };
 pub use providers::Providers;
 pub use publish::{

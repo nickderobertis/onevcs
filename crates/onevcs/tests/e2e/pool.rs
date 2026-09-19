@@ -26,7 +26,7 @@ pub fn configure_workspaces(world: &World, body: impl AsRef<str>) {
 
 /// A registered local repository whose origin ignores `target/` and `.logs/`, with the
 /// given workspaces file — the shape a Rust project a pool is for has.
-fn pooled(workspaces: &str) -> Fixture {
+pub fn pooled(workspaces: &str) -> Fixture {
     pooled_ignoring(workspaces, "target/\n.logs/\n")
 }
 
@@ -47,7 +47,7 @@ fn pooled_ignoring(workspaces: &str, ignored: &str) -> Fixture {
 }
 
 /// A pool of `pool` slots and `overflow` sessions past it, for every repository.
-fn sized(pool: u32, overflow: &str) -> String {
+pub fn sized(pool: u32, overflow: &str) -> String {
     format!("version: 1\ndefault: {{pool: {pool}, overflow: {overflow}, delete: [\".logs/\"]}}\n")
 }
 
@@ -59,7 +59,7 @@ fn placement_of(world: &World, token: &str) -> serde_json::Value {
 }
 
 /// The slot number a worktree path names, or `None` for a run root under `runs/`.
-fn slot_of(worktree: &Path) -> Option<u32> {
+pub fn slot_of(worktree: &Path) -> Option<u32> {
     let slot = worktree.parent().expect("a worktree has a run root");
     let family = slot.parent().expect("a run root has a family");
     (family.file_name().is_some_and(|name| name == "pool"))
@@ -72,14 +72,14 @@ fn slot_of(worktree: &Path) -> Option<u32> {
 }
 
 /// Open a session expecting it to be placed, and say where it went.
-fn open(fixture: &Fixture, extra: &[&str]) -> (String, PathBuf, serde_json::Value) {
+pub fn open(fixture: &Fixture, extra: &[&str]) -> (String, PathBuf, serde_json::Value) {
     let (token, worktree) = fixture.open(extra);
     let placement = placement_of(&fixture.world, &token);
     (token, worktree, placement)
 }
 
 /// Close a session and hand back its closing event.
-fn close(fixture: &Fixture, token: &str) -> serde_json::Value {
+pub fn close(fixture: &Fixture, token: &str) -> serde_json::Value {
     fixture
         .world
         .onevcs()
@@ -91,20 +91,23 @@ fn close(fixture: &Fixture, token: &str) -> serde_json::Value {
     closed[0]["payload"].clone()
 }
 
-/// Write a maintenance claim onto a slot's record, as the maintain verb will.
+/// Write a maintenance claim onto a slot's record, as `pool maintain` writes one —
+/// naming a process *these journeys* started rather than the verb's own.
 ///
-/// The claim is declared and read by this build and first *written* by the verb the
-/// next amendment adds, so nothing a user can type produces one yet — and what these
-/// journeys hold is exactly the reader's side of that contract: a claim by a gone
-/// process is void and cleared, a claim by a live one holds the slot. The record is
-/// written in the shape the contract fixes, so a build that wrote it differently
-/// fails here rather than downstream.
-// llmlint: ignore-block[tests_mirror_real_usage] no user-facing interface writes a
-// maintenance claim in this build: the verb that will is the next amendment's, and
-// the contract fixes the stored shape precisely so that the reader can be held to it
-// before the writer exists. Writing the declared JSON is that fixture, and every
-// assertion around it goes through `pool status` and `session open`.
-fn claim_slot(record_path: &Path, pid: u32, started: u64) {
+/// `pool maintain` claims a slot only with its own pid, for exactly as long as its
+/// command runs, and only while it holds the identity's maintenance lock; so a claim
+/// left by a run that crashed mid-command, or one another run holds, is a state no
+/// user-facing interface produces on demand. What these journeys hold is the reader's
+/// side of that contract: a claim by a gone process is void and cleared, a claim by
+/// a live one holds the slot against `open` and against a second `maintain`. The
+/// record is written in the shape the contract fixes, so a build that wrote it
+/// differently fails here rather than downstream.
+// llmlint: ignore-block[tests_mirror_real_usage] the verb writes a claim naming
+// itself and clears it before it returns, so a claim naming another process — a
+// crashed run's, or a live one's — can only be staged by writing the declared JSON;
+// every assertion around it goes through `pool status`, `session open` and `pool
+// maintain`.
+pub fn claim_slot(record_path: &Path, pid: u32, started: u64) {
     let mut record: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(record_path).expect("a slot record"))
             .expect("the slot record is JSON");
@@ -126,7 +129,7 @@ fn claim_slot(record_path: &Path, pid: u32, started: u64) {
 /// it in microseconds through `proc_pidinfo`, which is where CI's `cross` job found
 /// the first spelling of this reading a file only Linux has.
 #[cfg(target_os = "linux")]
-fn creation_identity(pid: u32) -> u64 {
+pub fn creation_identity(pid: u32) -> u64 {
     std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .expect("the worker's stat")
         .rsplit_once(')')
@@ -140,7 +143,7 @@ fn creation_identity(pid: u32) -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-fn creation_identity(pid: u32) -> u64 {
+pub fn creation_identity(pid: u32) -> u64 {
     use std::ffi::c_int;
 
     let pid = c_int::try_from(pid).expect("a pid this host listed");
@@ -229,7 +232,7 @@ fn restore_record(slot: &Path, record: &str) {
 // llmlint: ignore-end[tests_mirror_real_usage]
 
 /// `pool status --json`, as a consumer reads it.
-fn status(fixture: &Fixture) -> serde_json::Value {
+pub fn status(fixture: &Fixture) -> serde_json::Value {
     let output = fixture
         .world
         .onevcs()

@@ -971,6 +971,18 @@ goes and cuts or takes the slot itself; `workspace::close` returns one through
   `stranded` asks of stray work. A later session's `stray_work` passes over a branch
   another closed record of the identity names, because that record answers for it.
 
+`pool/maintain.rs` is the one verb that writes the maintenance claim, and three things
+about it are easy to undo. **It holds no schedule**: `--older-than` is the caller's
+interval, measured against `last_maintained` on the slot, and the attempt is what is
+stamped — success, failure or timeout alike — so a broken script costs one run per
+interval rather than one per idle tick. **One slot per identity at a time**: the
+identity is maintained under `maintain:<pool>` held for as long as every command takes,
+and each slot is claimed under the placement lock with its state re-read *then* — never
+holding the placement lock across a command, which is what keeps `open` from waiting.
+**The command is bounded the way a git command is**: its own process group, both pipes
+read as they arrive, the group ended when the bound fires; a second spelling of that
+would be a second answer to what a fired bound takes down.
+
 
 ## Everything durable lives under one state root
 

@@ -41,6 +41,13 @@ use crate::workspace::{self, ProcessStart, Record, Ref};
 use crate::workspaces::{self, Bound, Overrides, Resolved};
 use crate::{git, guidance, ids, lock, processes};
 
+mod maintain;
+
+pub use maintain::{
+    pool_maintain, IdentityMaintenance, IdentityOutcome, MaintainReport, SlotMaintenance,
+    SlotOutcome,
+};
+
 /// The version of the slot record this build writes and reads.
 pub const SLOT_VERSION: u32 = 1;
 

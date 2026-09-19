@@ -216,3 +216,18 @@ fn recorded_owner(path: &Path) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown owner".to_owned())
 }
+
+/// The pid the exclusive holder of `identity` stamped, where one has.
+///
+/// For a caller whose own exclusive take was refused and who reports who holds the
+/// identity rather than waiting for it — the pool's maintenance verb, which answers
+/// `Claimed` naming the other run. `None` where nothing is stamped: the holder
+/// writes its pid the instant after the kernel grants the lock, so a reader can
+/// arrive inside that instant, and the file is truncated by the next holder rather
+/// than cleared by the last.
+pub(crate) fn stamped_owner(identity: &str) -> Result<Option<u32>> {
+    let path = path_for(identity)?;
+    Ok(std::fs::read_to_string(path)
+        .ok()
+        .and_then(|value| value.trim().strip_prefix("pid=")?.parse().ok()))
+}

@@ -99,3 +99,62 @@ pub fn is_timestamp(value: &str) -> bool {
                 other => had == other,
             })
 }
+
+/// The instant a stored timestamp of [`timestamp`]'s shape names.
+///
+/// `None` where the shape holds and the calendar does not — a thirteenth month, a
+/// sixty-first second — which [`is_timestamp`] cannot tell from a date, and which a
+/// reader deciding how long ago something happened must not read as *now*. Built
+/// field by field rather than parsed, because the shape is fixed-width and the
+/// formatting feature is the only one of the clock crate this build carries.
+pub fn instant_of(value: &str) -> Option<SystemTime> {
+    if !is_timestamp(value) {
+        return None;
+    }
+    let field = |from: usize, to: usize| value.get(from..to)?.parse::<u32>().ok();
+    let year = i32::try_from(field(0, 4)?).ok()?;
+    let month = time::Month::try_from(u8::try_from(field(5, 7)?).ok()?).ok()?;
+    let day = u8::try_from(field(8, 10)?).ok()?;
+    let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    let clock = time::Time::from_hms_milli(
+        u8::try_from(field(11, 13)?).ok()?,
+        u8::try_from(field(14, 16)?).ok()?,
+        u8::try_from(field(17, 19)?).ok()?,
+        u16::try_from(field(20, 23)?).ok()?,
+    )
+    .ok()?;
+    Some(SystemTime::from(
+        time::PrimitiveDateTime::new(date, clock).assume_utc(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_written_timestamp_reads_back_as_the_instant_it_was_written_at() {
+        let before = SystemTime::now();
+        let written = timestamp();
+        let after = SystemTime::now();
+        let read = instant_of(&written).expect("what this build writes, it reads");
+        // Millisecond precision: the stamp floors what the clock answered.
+        let floor = |instant: SystemTime| {
+            let since = instant.duration_since(UNIX_EPOCH).expect("after the epoch");
+            UNIX_EPOCH + std::time::Duration::from_millis(since.as_millis() as u64)
+        };
+        assert!(floor(before) <= read && read <= after);
+    }
+
+    #[test]
+    fn a_stamp_of_the_right_shape_and_no_calendar_date_names_no_instant() {
+        assert_eq!(instant_of("2026-13-01T00:00:00.000Z"), None);
+        assert_eq!(instant_of("2026-02-30T00:00:00.000Z"), None);
+        assert_eq!(instant_of("2026-09-19T24:00:00.000Z"), None);
+        assert_eq!(instant_of("yesterday"), None);
+        assert_eq!(
+            instant_of("1970-01-01T00:00:01.500Z"),
+            Some(UNIX_EPOCH + std::time::Duration::from_millis(1_500))
+        );
+    }
+}

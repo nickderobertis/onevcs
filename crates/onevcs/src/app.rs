@@ -12,12 +12,12 @@ use std::path::Path;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
-    EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolPruneArgs, PoolStatusArgs, PublishArgs,
-    PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
-    ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs,
-    ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RulesCheckArgs, RulesCommand,
-    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SweepArgs,
-    SyncArgs,
+    EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
+    PoolStatusArgs, PublishArgs, PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs,
+    ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs,
+    ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs,
+    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
+    SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -112,6 +112,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::Pool { command } => match command {
             PoolCommand::Status(args) => pool_status(args),
             PoolCommand::Prune(args) => pool_prune(args),
+            PoolCommand::Maintain(args) => pool_maintain(args),
         },
     }
 }
@@ -189,6 +190,111 @@ fn pool_prune(args: &PoolPruneArgs) -> Result<u8> {
         println!("no slots");
     }
     Ok(0)
+}
+
+/// Render what `onevcs pool maintain` did, which is [`crate::pool_maintain`]'s answer.
+///
+/// The human report follows `sweep`'s shape — what it did, then what it kept and why,
+/// per identity — and the exit code is the report's own: `0` when nothing ran or
+/// every command succeeded, `1` when any failed or timed out.
+fn pool_maintain(args: &PoolMaintainArgs) -> Result<u8> {
+    let scope = match &args.repo {
+        Some(repo) => Scope::Repo(repo.clone()),
+        None => Scope::All,
+    };
+    let report = crate::pool_maintain(scope, args.older_than)?;
+    let code = match report.every_command_succeeded() {
+        true => 0,
+        false => 1,
+    };
+    if args.json {
+        print_json(&report)?;
+        return Ok(code);
+    }
+    let mut ran = 0;
+    let mut succeeded = 0;
+    let mut failed = 0;
+    let mut timed_out = 0;
+    for identity in &report.identities {
+        if let crate::IdentityOutcome::Slots(slots) = &identity.outcome {
+            for slot in slots {
+                if let crate::SlotOutcome::Ran { outcome, .. } = &slot.outcome {
+                    ran += 1;
+                    match outcome {
+                        crate::MaintenanceOutcome::Succeeded => succeeded += 1,
+                        crate::MaintenanceOutcome::Failed { .. } => failed += 1,
+                        crate::MaintenanceOutcome::TimedOut => timed_out += 1,
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "onevcs pool maintain: ran {ran} command(s) — {succeeded} succeeded, {failed} failed, \
+         {timed_out} timed out — over {} identity(ies){}.",
+        report.identities.len(),
+        match args.older_than {
+            Some(span) => format!(", skipping slots maintained within {span}"),
+            None => String::new(),
+        }
+    );
+    for identity in &report.identities {
+        match &identity.outcome {
+            crate::IdentityOutcome::NoMaintainCommand => {
+                println!("{} — no maintain command", identity.identity);
+            }
+            crate::IdentityOutcome::NoSlots => println!("{} — no slots", identity.identity),
+            crate::IdentityOutcome::Claimed { by_pid } => println!(
+                "{} — claimed: another pool maintain (pid {by_pid}) is maintaining it right now",
+                identity.identity
+            ),
+            crate::IdentityOutcome::Slots(slots) => {
+                println!("{}:", identity.identity);
+                for slot in slots {
+                    println!(
+                        "  slot {} — {}",
+                        slot.number,
+                        describe_slot_outcome(&slot.outcome)
+                    );
+                }
+            }
+        }
+    }
+    Ok(code)
+}
+
+/// One slot's line of the maintain report: what was done, or what was kept and why.
+fn describe_slot_outcome(outcome: &crate::SlotOutcome) -> String {
+    match outcome {
+        crate::SlotOutcome::NotDue { last_maintained } => {
+            format!("kept: not due, last maintained {last_maintained}")
+        }
+        crate::SlotOutcome::InUse { session } => {
+            format!("kept: session {} is working in it", session.0)
+        }
+        crate::SlotOutcome::Broken { reason } => format!("kept: {reason}"),
+        crate::SlotOutcome::Ran {
+            outcome,
+            duration_ms,
+            log,
+        } => format!(
+            "ran: {} in {duration_ms} ms{}",
+            match outcome {
+                crate::MaintenanceOutcome::Succeeded => "succeeded".to_owned(),
+                crate::MaintenanceOutcome::Failed { exit: Some(exit) } => {
+                    format!("failed (exit {exit})")
+                }
+                crate::MaintenanceOutcome::Failed { exit: None } => {
+                    "failed (ended by a signal, or never started)".to_owned()
+                }
+                crate::MaintenanceOutcome::TimedOut => "timed out".to_owned(),
+            },
+            match log {
+                Some(log) => format!(", log: onevcs artifact cat {}", log.0),
+                None => String::new(),
+            }
+        ),
+    }
 }
 
 fn register(args: &RegisterArgs) -> Result<u8> {

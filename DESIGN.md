@@ -118,3 +118,36 @@ is printed.
 **Nothing about nodes or queues enters the library.** The refusal names the identity,
 the limits with their sources and every holder, and a caller decides whether to wait,
 close something, or open with `--overflow unlimited`.
+
+## Maintaining a slot is a verb, and the schedule is the caller's
+
+The user's words: "we should also design a hook that can be run on idle slots
+opportunistically up to a schedule so users can configure that to cargo sweep or
+whatever else per identity"; "it's weird for onevcs to have cron config if it's not
+doing anything with cron"; "it should be a persistent schedule and recorded time last
+done not every x time within a run as maintenance intervals will usually be longer
+than dag run times".
+
+So `onevcs` owns *what* maintenance is per identity — `maintain.command` and its
+`timeout` in `workspaces.yml` — and the fact of when it last ran, on the slot record,
+and nothing else. **It holds no schedule.** A schedule would be cron configuration in
+a tool that runs no cron: the process that knows when a host is idle is the caller —
+a driver's idle branch, a cron entry, a person — so `onevcs pool maintain
+[--older-than SPAN]` is imperative, and `--older-than` is how each caller brings its
+own interval. That is also why the interval is measured against a stamp on the slot
+rather than counted within a run: maintenance intervals are usually longer than a
+run, and a counter reset by every run would never fire.
+
+**The attempt is what is recorded.** `last_maintained` is stamped whether the command
+succeeded, failed or timed out, and `last_outcome` says which. Recording only success
+would have every idle tick of every driver re-running a maintenance script that is
+broken — the same command, the same failure, the same disk — until somebody noticed;
+recording the attempt makes a failure cost one run per interval, and `pool status`
+shows the outcome beside the stamp so it is noticed.
+
+**One slot per identity at a time.** Maintenance takes a slot out of service, and a
+run that claimed every idle slot at once would turn the pool's headroom into a queue
+— the very wait the placement order promises never to impose. The claim is written
+under the placement lock and the placement lock is never held across a command, so
+an `open` meeting a claimed slot takes another or falls through to create or
+overflow, exactly as it would meet a session.

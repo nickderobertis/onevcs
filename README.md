@@ -118,6 +118,17 @@ removes the idle ones whose clone retains no branch. A host that writes no file 
 every session fresh, as it always has; `--pool N` and `--overflow N|unlimited` on one
 open override its resolution for that session alone.
 
+A warm slot that is never swept grows without bound, so the workspaces file may also
+name what maintenance *is* per identity — `maintain: {command: ["cargo", "sweep",
+"--time", "7"], timeout: 30m}` — and `onevcs pool maintain [REPO] [--older-than SPAN]
+[--json]` runs it in each idle slot's worktree, one slot at a time, claiming the slot
+so a `session open` goes elsewhere rather than waiting, and records the attempt on
+the slot. `onevcs` holds no schedule: *when* to maintain is the caller's — a driver's
+idle tick, a cron, a person — and `--older-than` is what makes every caller cheap, by
+skipping a slot maintained within that span. It exits `0` when nothing ran or every
+command succeeded, `1` when any command failed or timed out, naming the artifact that
+holds what it wrote.
+
 `onevcs sweep [--dry-run] [--min-age-hours HOURS]` reclaims the workspaces those
 landings leave behind. Every branch published by name cuts a run root — a clone, a
 worktree, and the merge path's preserved logs — under the state root, and until this rule
@@ -149,9 +160,10 @@ Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 
 The library forms of the pool are `workspace_capacity(&request)`, which says how many
 more opens an identity admits and whether one request would be placed now,
-`pool_status` and `pool_prune`; `Span` is the one duration grammar of the host files
-(`7d`, `36h`, `90m`, `600s`), and `first_matching` matches a `RuleMatch` list against a
-repository by exactly the matcher the three host files use.
+`pool_status`, `pool_prune` and `pool_maintain(scope, older_than)`; `Span` is the one
+duration grammar of the host files (`7d`, `36h`, `90m`, `600s`), and `first_matching`
+matches a `RuleMatch` list against a repository by exactly the matcher the three host
+files use.
 
 GitHub is reached through `gh`, so whatever `gh auth status` reports is the
 credential. A **fine-grained personal access token needs `Actions: Read`** on the

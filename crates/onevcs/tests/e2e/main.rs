@@ -77,6 +77,10 @@ mod landing;
 mod library;
 #[cfg(unix)]
 mod lifecycle;
+// Unix only: its maintenance command is a POSIX shell script, and a fired bound takes a
+// process *group*, which has no portable spelling. Its own header carries the reason.
+#[cfg(unix)]
+mod maintain;
 // Unix only: it copies this checkout, shares its Nx install through a symlink, and
 // resolves the judged tier's `llmlint` off PATH — all POSIX. Its own header carries
 // the reason the judge it resolves is one this suite installs.

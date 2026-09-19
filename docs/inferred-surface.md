@@ -748,6 +748,25 @@ amendment left to inference.
 | `PoolExhausted` and `FailureKind` | no new kind; `FailureKind::of` answers `Invalid` | The vocabulary is fixed across three libraries and routes what became of a publication; a pool refusal is never one. `session open` answers `4` from the error's own kind, and `workspace_capacity` is the typed form of the same answer. |
 | the exit code | `4`, from `session open` alone | Its own code beside `1`, `2`, `3` and `70`, because a caller that queues on it has to tell "come back later" from "this request was wrong" by `$?` alone. |
 
+## `pool maintain`, and the shapes its amendment left to inference
+
+The maintenance verb is the second pool amendment in `docs/contract.md`: `pool_maintain`,
+its report types, the usage line, the exit codes, the one-slot rule and the order one
+identity is maintained in — held to the code by
+`the_amendment_declares_the_maintain_surface_it_added` in `tests/contract.rs` and driven
+through the compiled binary by `tests/e2e/maintain.rs`. What is recorded here is what the
+amendment left to inference.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| a slot kept for a reason the report has no variant for | `Broken { reason }`, with the reason: a live claim this run did not write, an exclusive occupancy take that failed, or a process still working inside an unreturned tree | `SlotOutcome` names four outcomes and three reasons to keep, and each of these is a slot that cannot be claimed *now* rather than one that is not due or in use by a session. `Broken` is the one variant that carries prose, and `pool status` says which state the slot is really in. The declared enum is `onepipeline`'s to read, so a fifth variant is a question for the contract owner rather than this crate's to add. |
+| `Claimed.by_pid` where the holder has not stamped its pid | `0` | The holder writes its pid the instant after the kernel grants the lock, so a reader can arrive inside that instant; `0` names no process an operator could look at, which is what an unknown holder is, and the next call reads the stamp. |
+| which slots one run visits | the ones the survey found, after the shed, in number order — a slot cut while an earlier one was being maintained is left for the next call | A survey is one read; re-reading the pool after every command would have a run chase opens for as long as they kept coming. Each slot's *state* is still read when its turn comes, because a slot idle at the survey may be a session's by then. |
+| the artifact | one `log` artifact per ran command, standard output first then standard error, stored even when empty | `Output::combined`'s order, for the reason it gives: interleaving is not recoverable from two captured pipes, and what matters is that the whole run survives. Stored even when empty so `log` is `None` only where storing failed, which is warned about on stderr. |
+| a command that cannot be started | `Failed { exit: None }`, with the spawn failure in the log, and the attempt recorded | A missing program is the host's maintenance being misconfigured, and it is no more worth retrying on every tick than a command that fails. |
+| a timestamp of the right shape naming no instant | due | The record's conversion holds the shape and not the calendar. What such a stamp fails to prove is that the slot was maintained recently, and a slot nothing can prove maintained is one that is not. |
+| the occupancy lease during a run | held exclusively for the duration of the command, beside the claim | The claim is what `open`, `prune` and the shed read; the exclusive take is what `remove` proves nobody is inside on, and holding it is what a prune meeting the slot mid-command refuses on rather than reasoning about. |
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.
