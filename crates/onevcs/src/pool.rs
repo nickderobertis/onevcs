@@ -241,7 +241,7 @@ pub struct PoolStatus {
     pub slots: Vec<SlotStatus>,
 }
 
-/// What `pool prune` did: which idle slots it removed, and which it kept and why.
+/// What `pool prune` did: which slots it removed, and which it kept and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PruneReport {
     /// The slots removed, by number.
@@ -1151,8 +1151,12 @@ pub fn pool_status(repo: &str) -> Result<PoolStatus> {
     })
 }
 
-/// Remove every idle slot of one repository whose clone retains no branch, and say why
-/// each other one was kept.
+/// Remove every slot of one repository nobody is in — idle, or broken — whose clone
+/// retains no branch, and say why each other one was kept.
+///
+/// A broken slot goes the way an idle one does because it is takeable the way an idle
+/// one is: the next open would recreate it in place, and what that recreation keeps is
+/// exactly the retained branch that keeps a slot here.
 pub fn pool_prune(repo: &str) -> Result<PruneReport> {
     let request = SessionRequest {
         repo: repo.to_owned(),
