@@ -557,6 +557,9 @@ pub(crate) struct Resolved {
     pub file_pool: u32,
     /// The paths deleted on return.
     pub delete: Vec<PathBuf>,
+    /// What maintaining an idle slot is, for the verb that performs it. `None` is no
+    /// maintenance ever.
+    pub maintain: Option<Maintenance>,
     /// Whether anything about this identity departs from the shipped default: a pool
     /// above nought, a bounded overflow, a delete list, or maintenance. A host that
     /// departs in nothing takes today's path exactly.
@@ -652,8 +655,6 @@ pub(crate) fn resolve(
     let maintain = rule
         .and_then(|rule| rule.maintain.clone())
         .or_else(|| file.default.maintain.clone());
-    // What maintenance is belongs to the verb that performs it, which reads the file
-    // for itself; here it only says the identity is configured.
     let configured = pool.value > 0
         || overflow.value != Bound::Unlimited
         || file_pool > 0
@@ -664,6 +665,7 @@ pub(crate) fn resolve(
         overflow,
         file_pool,
         delete,
+        maintain,
         configured,
     })
 }

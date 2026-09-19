@@ -13,7 +13,7 @@ use url::Url;
 use crate::releases::TargetName;
 use crate::rules::MergePolicy;
 use crate::sweep;
-use crate::workspaces::Bound;
+use crate::workspaces::{Bound, Span};
 
 /// Version control and its remote host, behind one host-neutral vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -83,7 +83,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ReleaseCommand,
     },
-    /// Report or prune a repository's pool of warm worktree slots.
+    /// Report, prune or maintain a repository's pool of warm worktree slots.
     Pool {
         /// Which pool question.
         #[command(subcommand)]
@@ -99,6 +99,9 @@ pub enum PoolCommand {
     /// Remove every idle slot whose clone retains no branch, and say why the rest
     /// were kept.
     Prune(PoolPruneArgs),
+    /// Run the host's maintain command in each idle slot, one slot at a time, and
+    /// record the attempt on the slot.
+    Maintain(PoolMaintainArgs),
 }
 
 /// Arguments for `onevcs pool status`.
@@ -117,6 +120,21 @@ pub struct PoolPruneArgs {
     /// An identity key, a registered alias, an origin URL, or a path.
     pub repo: String,
     /// Report as JSON rather than as a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs pool maintain`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct PoolMaintainArgs {
+    /// An identity key, a registered alias, an origin URL, or a path. Omitted, every
+    /// registered identity.
+    pub repo: Option<String>,
+    /// Skip a slot maintained within this span (`7d`, `36h`, `90m`, `600s`). Omitted,
+    /// every idle slot is due; a slot never maintained is always due.
+    #[arg(long, value_name = "SPAN")]
+    pub older_than: Option<Span>,
+    /// Report as JSON rather than as a human report.
     #[arg(long)]
     pub json: bool,
 }

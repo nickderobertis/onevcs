@@ -2204,6 +2204,76 @@ Two existing kinds gain a field. `session-opened` gains an additive `placement` 
 `{"kind": "slot", "slot": N, "created": bool}` or `{"kind": "run-root"}`, on every
 implementation — and `session-closed` gains `returned: {"slot": N}` on a slot return.
 
+**Maintaining the pool.** A warm slot that is never swept grows without bound — a Rust
+`target/` accumulates every build it has ever made — which would turn the disk-wear
+fix into a disk-space problem. So the one imperative maintenance verb runs the
+identity's `maintain.command` in each **idle** slot's worktree under the identity's
+`timeout`, and records on the slot that it ran. **`onevcs` holds no schedule** and
+keeps no state beyond the slot record: *when* to maintain is the caller's — a driver's
+idle branch, a cron, a person — and the verb is idempotent and cheap when nothing
+qualifies, so all three can call it and never run a slot twice.
+
+```rust
+pub fn pool_maintain(scope: Scope, older_than: Option<Span>) -> Result<MaintainReport>;
+    // Scope::All = every registered identity; Scope::Repo(repo) = one, in any spelling
+    // `session_holders` takes. `older_than` skips a slot maintained within that span;
+    // absent, every idle slot is due; a slot never maintained is always due.
+pub struct MaintainReport { pub identities: Vec<IdentityMaintenance> }
+pub struct IdentityMaintenance { pub identity: String, pub outcome: IdentityOutcome }
+pub enum IdentityOutcome {
+    NoMaintainCommand,               // the resolved policy names no `maintain`
+    NoSlots,                         // nothing has cut a slot for this identity
+    Claimed { by_pid: u32 },         // another maintain holds this identity right now
+    Slots(Vec<SlotMaintenance>) }
+pub struct SlotMaintenance { pub number: u32, pub outcome: SlotOutcome }
+pub enum SlotOutcome {
+    NotDue { last_maintained: String },
+    InUse { session: SessionToken },
+    Broken { reason: String },
+    Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }
+```
+
+```
+onevcs pool maintain [REPO] [--older-than SPAN] [--json]
+```
+
+`MaintenanceOutcome` is the type the pool amendment declares. `IdentityOutcome` and
+`SlotOutcome` serialize externally tagged in kebab case, the way `MaintenanceOutcome`
+does: `"no-slots"`, `{"claimed": {"by_pid": N}}`, `{"slots": [...]}`; `{"not-due":
+{"last_maintained": "<RFC3339>"}}`, `{"ran": {"outcome": "succeeded", "duration_ms":
+N, "log": "<id>"}}`. Exit codes: **`0`** when nothing ran or every command succeeded;
+**`1`** when any ran command failed or timed out (the report says which); **`2`** for
+an invalid request — a `REPO` nothing resolves, a malformed `SPAN`. The human report
+follows `sweep`'s shape: what it did, then per identity what it kept and why.
+
+**How one identity is maintained.** Take the identity's maintenance lock — an
+exclusive, non-blocking take keyed on the identity, the way run-root occupancy is
+keyed; held by another process, the outcome is `Claimed` naming the holder's pid and
+nothing else is touched. Shed surplus idle slots exactly as `open` does. Then for each
+slot in number order, with its state read *then* rather than at the survey: skip one
+in use (an open record names it, `InUse`), one whose claim names a live process this
+run did not write, one not due, one broken; otherwise **claim it** — write
+`maintaining` with this process's `pid`, `started` and `since` — run `command` with the
+slot's worktree as working directory, no shell, this process's environment, stdout and
+stderr captured as one artifact, bounded by `timeout` with the process tree ended on
+expiry; then write `last_maintained` (now) and `last_outcome` (`succeeded` / `failed
+{exit}` / `timed-out`), clear the claim, and only then move to the next slot. A crash
+mid-command leaves a claim naming a dead process, which the idle proof already reads
+as void. **`last_maintained` records the attempt**: a failing or timed-out command is
+not retried until `older_than` has elapsed again, and `pool status` shows
+`last_outcome` beside it.
+
+**At most one slot per identity at a time**, so maintenance never removes more than
+one slot from service — and that is what keeps the placement order true: an `open`
+that finds an idle slot claimed takes another, or falls through to create or overflow,
+rather than waiting, because the claim is written under the placement lock and the
+placement lock is never held across a command.
+
+The captured output is an artifact `onevcs artifact cat` reads back, named by the
+report, so nothing new is written to a stream.
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

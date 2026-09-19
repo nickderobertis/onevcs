@@ -40,13 +40,14 @@ use onevcs::workspaces::{WorkspaceDefault, WorkspacesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest,
     ChangeSpec, Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter,
-    EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, Labels, Landed,
-    LandingEvidence, Lifecycle, LineChange, Liveness, MaintenanceOutcome, MergeOutcome,
-    MergePolicy, NetNegative, Phase, PhaseOf, PoolStatus, PreservedBranch, ProtectionSource,
-    Provenance, Providers, PruneReport, Publication, PublishOutcome, PublishRequest, Recoverable,
-    RemoteHost, RequiredChecks, Retention, Scope, Session, SessionChange, SessionHolder,
-    SessionRecord, SessionRequest, SessionToken, Sha, SlotState, SlotStatus, Source, Span, Subject,
-    Url, Vcs, WorkspaceCapacity,
+    EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, IdentityMaintenance,
+    IdentityOutcome, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
+    MaintainReport, MaintenanceOutcome, MergeOutcome, MergePolicy, NetNegative, Phase, PhaseOf,
+    PoolStatus, PreservedBranch, ProtectionSource, Provenance, Providers, PruneReport, Publication,
+    PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope,
+    Session, SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
+    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, Url, Vcs,
+    WorkspaceCapacity,
 };
 use serde_json::{json, Value};
 
@@ -5624,6 +5625,129 @@ fn the_amendment_declares_the_pool_surface_it_added() {
 }
 
 #[test]
+fn the_amendment_declares_the_maintain_surface_it_added() {
+    // Built from outside the crate with every field and variant named, which is the
+    // half a compiler checks; the amendment is then held to declaring each of them,
+    // and the wire spellings to what it says they are.
+    let report = MaintainReport {
+        identities: vec![
+            IdentityMaintenance {
+                identity: "github.com/nickderobertis/onevcs".to_owned(),
+                outcome: IdentityOutcome::Slots(vec![
+                    SlotMaintenance {
+                        number: 1,
+                        outcome: SlotOutcome::NotDue {
+                            last_maintained: "2026-09-19T10:00:00.000Z".to_owned(),
+                        },
+                    },
+                    SlotMaintenance {
+                        number: 2,
+                        outcome: SlotOutcome::InUse {
+                            session: SessionToken("s-1".to_owned()),
+                        },
+                    },
+                    SlotMaintenance {
+                        number: 3,
+                        outcome: SlotOutcome::Broken {
+                            reason: "its clone is missing".to_owned(),
+                        },
+                    },
+                    SlotMaintenance {
+                        number: 4,
+                        outcome: SlotOutcome::Ran {
+                            outcome: MaintenanceOutcome::Failed { exit: Some(3) },
+                            duration_ms: 1_200,
+                            log: Some(ArtifactId("a-1".to_owned())),
+                        },
+                    },
+                ]),
+            },
+            IdentityMaintenance {
+                identity: "github.com/nickderobertis/onepipeline".to_owned(),
+                outcome: IdentityOutcome::NoMaintainCommand,
+            },
+            IdentityMaintenance {
+                identity: "github.com/nickderobertis/onejudge".to_owned(),
+                outcome: IdentityOutcome::NoSlots,
+            },
+            IdentityMaintenance {
+                identity: "github.com/nickderobertis/onemessagebus".to_owned(),
+                outcome: IdentityOutcome::Claimed { by_pid: 7 },
+            },
+        ],
+    };
+    let json = serde_json::to_value(&report).expect("a report serializes");
+    assert_eq!(
+        json["identities"][0]["outcome"]["slots"],
+        json!([
+            {"number": 1, "outcome": {"not-due": {"last_maintained": "2026-09-19T10:00:00.000Z"}}},
+            {"number": 2, "outcome": {"in-use": {"session": "s-1"}}},
+            {"number": 3, "outcome": {"broken": {"reason": "its clone is missing"}}},
+            {"number": 4, "outcome": {"ran": {
+                "outcome": {"failed": {"exit": 3}}, "duration_ms": 1200, "log": "a-1"}}},
+        ]),
+        "a slot's outcome is externally tagged in kebab case, as the amendment spells it"
+    );
+    assert_eq!(
+        json["identities"][1]["outcome"],
+        json!("no-maintain-command")
+    );
+    assert_eq!(json["identities"][2]["outcome"], json!("no-slots"));
+    assert_eq!(
+        json["identities"][3]["outcome"],
+        json!({"claimed": {"by_pid": 7}})
+    );
+    let reread: MaintainReport = serde_json::from_value(json).expect("a report reads back");
+    assert_eq!(reread, report);
+
+    let declarations = amendment_declaring("pub fn pool_maintain");
+    for declared in [
+        "pub fn pool_maintain(scope: Scope, older_than: Option<Span>) -> Result<MaintainReport>;",
+        "pub struct MaintainReport { pub identities: Vec<IdentityMaintenance> }",
+        "pub struct IdentityMaintenance { pub identity: String, pub outcome: IdentityOutcome }",
+        "pub enum IdentityOutcome {",
+        "NoMaintainCommand,",
+        "NoSlots,",
+        "Claimed { by_pid: u32 },",
+        "Slots(Vec<SlotMaintenance>) }",
+        "pub struct SlotMaintenance { pub number: u32, pub outcome: SlotOutcome }",
+        "pub enum SlotOutcome {",
+        "NotDue { last_maintained: String },",
+        "InUse { session: SessionToken },",
+        "Broken { reason: String },",
+        "Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+    // The verb, its exit codes and the one-slot rule, stated where a reader looks.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|block| block.contains("pool maintain"))
+        .expect("the amendment spells the maintain verb");
+    assert_eq!(
+        usage.trim(),
+        "onevcs pool maintain [REPO] [--older-than SPAN] [--json]"
+    );
+    let amendments = regions().0;
+    for stated in [
+        "**`0`** when nothing ran or every command succeeded",
+        "**`1`** when any ran command failed or timed out",
+        "**`2`** for",
+        "**At most one slot per identity at a time**",
+        "**`onevcs` holds no schedule**",
+        "**`last_maintained` records the attempt**",
+    ] {
+        assert!(
+            amendments.contains(stated),
+            "the amendment no longer states: {stated}"
+        );
+    }
+}
+
+#[test]
 fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
     // The README's tour of the pool restates two things the amendment fixes — the
     // spelling of the two verbs and the exit code the refusal answers — so this holds
@@ -5657,13 +5781,27 @@ fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
             "the README no longer spells `onevcs {verb}` as the amendment does"
         );
     }
+    // The third pool verb has a usage block of its own, in the amendment that added it.
+    let maintain = usage_in(&regions().0)
+        .into_iter()
+        .find(|block| block.contains("pool maintain"))
+        .expect("the amendment spells the maintain verb");
+    assert!(
+        readme.contains(maintain.trim()),
+        "the README no longer spells `{}` as the amendment does",
+        maintain.trim()
+    );
     assert!(
         regions().0.contains("`session open` exits 4 on it") && readme.contains("exit code `4`"),
         "the amendment and the README disagree about the code the refusal answers"
     );
-    // The library paragraph names four reads and four spans; each name is one the
-    // amendment declares as a `pub fn`, and each span is one `Span` reads.
-    let declarations = amendment_declaring("pub struct WorkspacesFile");
+    // The library paragraph names five reads and four spans; each name is one of the
+    // two pool amendments declares as a `pub fn`, and each span is one `Span` reads.
+    let declarations = format!(
+        "{}\n{}",
+        amendment_declaring("pub struct WorkspacesFile"),
+        amendment_declaring("pub fn pool_maintain")
+    );
     let paragraph = readme
         .split("The library forms of the pool are ")
         .nth(1)
@@ -5687,5 +5825,5 @@ fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
             );
         }
     }
-    assert_eq!(names, 4, "the README names the four library reads");
+    assert_eq!(names, 5, "the README names the five library reads");
 }
