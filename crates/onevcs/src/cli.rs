@@ -429,6 +429,20 @@ pub struct RecoverableArgs {
     /// base and the ones nothing here can decide about.
     #[arg(long)]
     pub all: bool,
+    /// Only the branches of sessions whose labels carry this KEY=VALUE; repeatable,
+    /// and every pair given must match. Combines with `--repo` and `--session`.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
+    /// Only the branches this session holds or held; repeatable. A token no session
+    /// record on this host names is refused by name.
+    // llmlint: ignore[invalid_states_unrepresentable] a token is typed text here for
+    // the reason a branch name is on `PublishBranchArgs`: this module is the parser
+    // only, and what makes a token one this host knows is a read of the session
+    // records — which argument parsing must not do. `vcs::asked` is the one boundary
+    // that decides it, and it refuses an unknown token by name rather than with
+    // clap's usage text.
+    #[arg(long, value_name = "TOKEN")]
+    pub session: Vec<String>,
     /// Report as JSON rather than as a human table.
     #[arg(long)]
     pub json: bool,

@@ -1,8 +1,9 @@
 //! The repository side of the seam.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
+use crate::error::{self, Error, Result};
 use crate::event::EventKind;
 use crate::host::{Hosting, Sha};
 use crate::landed::{self, Landed};
@@ -10,11 +11,11 @@ use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
     HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
-    Recoverable, Scope, Session, SessionRecord, SessionRequest, SessionToken,
+    Recoverable, Scope, Selection, Session, SessionRecord, SessionRequest, SessionToken,
 };
 use crate::stream::Stream;
 use crate::workspace::{self, object};
-use crate::{git, lock, provenance, publish, store};
+use crate::{git, label, lock, provenance, publish, store};
 
 use serde_json::json;
 use url::Url;
@@ -86,6 +87,30 @@ pub trait Vcs {
     /// default would answer the *narrower* question under this one's name, and an
     /// implementation whose wider answer is the same one has only to say so.
     fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>>;
+
+    /// [`recoverable`](Self::recoverable), narrowed to the sessions a
+    /// [`Selection`] names.
+    ///
+    /// Defaulted rather than required, and the default is the whole meaning: a row is
+    /// answered with when some session record of this host naming its branch is one
+    /// the selection picked — by token, by carrying every label pair asked for, or by
+    /// both. So every implementation narrows identically, and what an override buys is
+    /// not a different answer but a cheaper one: an implementation that knows *where*
+    /// it looks can decline to look, which is what [`Git`] does with it. A selection
+    /// that asks nothing is the whole report, which is what every caller before this
+    /// existed asked for.
+    fn recoverable_matching(
+        &self,
+        scope: Scope,
+        selection: &Selection,
+    ) -> Result<Vec<Recoverable>> {
+        retain(self.recoverable(scope)?, selection)
+    }
+
+    /// [`preserved`](Self::preserved), narrowed the same way and for the same reason.
+    fn preserved_matching(&self, scope: Scope, selection: &Selection) -> Result<Vec<Recoverable>> {
+        retain(self.preserved(scope)?, selection)
+    }
 }
 
 /// The git implementation of [`Vcs`].
@@ -166,6 +191,18 @@ impl Vcs for Git {
 
     fn preserved(&self, scope: Scope) -> Result<Vec<Recoverable>> {
         collect(&scope, Reporting::Everything)
+    }
+
+    fn recoverable_matching(
+        &self,
+        scope: Scope,
+        selection: &Selection,
+    ) -> Result<Vec<Recoverable>> {
+        collect_matching(&scope, Reporting::UnpublishedOnly, selection)
+    }
+
+    fn preserved_matching(&self, scope: Scope, selection: &Selection) -> Result<Vec<Recoverable>> {
+        collect_matching(&scope, Reporting::Everything, selection)
     }
 }
 
@@ -305,16 +342,134 @@ pub enum Reporting {
     Everything,
 }
 
+/// Which preserved branches a [`Selection`] asks about, read out of this host's
+/// session records, and where a process has to look to answer.
+///
+/// The three sets are one question asked three ways, and the last two are what makes
+/// a filter cheap rather than merely narrow: a report that selected its rows at the
+/// end would still have walked every checkout of every identity and decided every
+/// branch in them, which is exactly the cost a filtered read exists to avoid. So a
+/// selection names sessions, the sessions name branches, and the branches name the
+/// few places they can be — and everything else is never opened.
+struct Narrowed {
+    /// The identities the selected sessions belong to.
+    identities: BTreeSet<String>,
+    /// The `(identity, branch)` pairs they hold or held.
+    branches: BTreeSet<(String, String)>,
+    /// The checkouts that can be holding one of those branches: each selected
+    /// session's own clone, and the execution checkout its branch is handed back to
+    /// when it closes. A branch this host knows about is in one of the two.
+    checkouts: BTreeSet<PathBuf>,
+}
+
+impl Narrowed {
+    /// Whether a branch is one of the ones asked about.
+    fn wants(&self, identity: &str, branch: &str) -> bool {
+        self.branches
+            .contains(&(identity.to_owned(), branch.to_owned()))
+    }
+}
+
+/// What a selection asks for, or `None` where it asks nothing.
+///
+/// A session token no record on this host names is refused **by name**: "nothing of
+/// that session is left to publish" and "there is no such session" are different
+/// answers, and a consumer sequencing its own work behind the first must never be
+/// handed it in place of the second. A label pair nothing carries is the first of
+/// those and answers an empty report, because a run whose branches all landed is
+/// exactly the run that has nothing here.
+fn narrowed(selection: &Selection, sessions: &[workspace::Record]) -> Result<Option<Narrowed>> {
+    if selection.is_empty() {
+        return Ok(None);
+    }
+    for token in &selection.sessions {
+        if !sessions.iter().any(|record| *record.token == *token.0) {
+            return Err(error::invalid(format!(
+                "no session record on this host names {}; \
+                 `onevcs session holders REPO` lists the sessions of one repository",
+                token.0
+            )));
+        }
+    }
+    let mut narrowed = Narrowed {
+        identities: BTreeSet::new(),
+        branches: BTreeSet::new(),
+        checkouts: BTreeSet::new(),
+    };
+    for record in sessions {
+        let named = selection.sessions.is_empty()
+            || selection
+                .sessions
+                .iter()
+                .any(|token| *record.token == *token.0);
+        if !named || !label::matches(&record.labels, &selection.labels) {
+            continue;
+        }
+        narrowed.identities.insert(record.identity.clone());
+        narrowed
+            .branches
+            .insert((record.identity.clone(), record.branch.to_string()));
+        narrowed.checkouts.insert(record.clone.clone());
+        narrowed.checkouts.insert(record.execution_checkout.clone());
+    }
+    Ok(Some(narrowed))
+}
+
+/// The rows of an answer a selection asks about, for an implementation that has
+/// already made the whole answer.
+///
+/// The one definition of what a selection *means*, so the narrowing [`Git`] does to
+/// its scan and the narrowing every other implementation gets by default cannot come
+/// to disagree about which rows an answer holds.
+pub(crate) fn retain(rows: Vec<Recoverable>, selection: &Selection) -> Result<Vec<Recoverable>> {
+    let Some(narrowed) = narrowed(selection, &workspace::all()?)? else {
+        return Ok(rows);
+    };
+    Ok(rows
+        .into_iter()
+        .filter(|row| narrowed.wants(&row.identity, &row.branch.branch))
+        .collect())
+}
+
 /// Every preserved branch in scope, newest first, and whether its work landed.
 ///
 /// Read-only in the strongest sense: it opens repositories to ask questions, writes
 /// nothing, and takes no lease, so it is safe to run beside live work — which is
 /// exactly when somebody reaches for it.
 pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> {
+    collect_matching(scope, reporting, &Selection::default())
+}
+
+/// The same report, narrowed to what a [`Selection`] asks about before it is made.
+///
+/// Every git read inside one invocation is answered once ([`git::memoized`]), because
+/// this asks the same questions of the same repositories over and over — one base tip
+/// per checkout read by every branch in it, one branch log read by four provenance
+/// readers — and each asking used to be a process. The memo is this call's and ends
+/// with it: the repositories a library caller holds move between invocations, and a
+/// fact remembered across one would be this report answering from a tree that has
+/// changed.
+pub fn collect_matching(
+    scope: &Scope,
+    reporting: Reporting,
+    selection: &Selection,
+) -> Result<Vec<Recoverable>> {
+    git::memoized(|| collected(scope, reporting, selection))
+}
+
+fn collected(
+    scope: &Scope,
+    reporting: Reporting,
+    selection: &Selection,
+) -> Result<Vec<Recoverable>> {
     let registry = store::load()?;
     let (rules, _source) = crate::policy::load(&registry)?;
     let trailers = provenance::from_rules(&rules);
     let sessions = workspace::all()?;
+    // Which sessions were asked about, and therefore which identities, checkouts and
+    // branch names the scan below may stop at. Read before anything is opened, so a
+    // token naming no record is refused before a single repository is.
+    let narrowed = narrowed(selection, &sessions)?;
     // What this host's own runs recorded, read once: the change request each branch
     // opened and any landing seen for it. A gap in the streams is not reported here —
     // this report has nowhere to say one — and costs only certainty: a branch whose
@@ -333,6 +488,16 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
     // they join the answer only where no such copy did.
     let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
+    // Every copy of a name this report has already put the question to, with the
+    // commit that copy stands at. A branch of one identity lives in as many clones as
+    // ever held it — a busy host keeps dozens — and deciding it is the expensive part
+    // of this report: the landing tiers, the provenance reads and, at the bottom, a
+    // content comparison, all of which answer the same for two copies standing at the
+    // same commit. So the second copy of one is not asked. The tip is in the key
+    // rather than assumed away, because two clones of a name that has been retried do
+    // *not* hold the same work, and a verdict borrowed across that difference would be
+    // this report answering about commits it never looked at.
+    let mut decided: BTreeSet<(String, String, String)> = BTreeSet::new();
     // Once per identity rather than once per checkout of one, because the places a
     // branch of it can be are a property of the identity — and they are read from
     // the one list the verbs that go on to *land* a branch read, so this report
@@ -348,6 +513,15 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
         if wanted.as_ref().is_some_and(|key| key != identity) {
             continue;
         }
+        // An identity none of the selected sessions belongs to holds none of the
+        // branches asked about, so nothing of it is opened at all — not its
+        // publication checkout, not its base, not one of its clones.
+        if narrowed
+            .as_ref()
+            .is_some_and(|only| !only.identities.contains(identity))
+        {
+            continue;
+        }
         let resolution = store::resolve(&registry, identity)?;
         let publication = resolution.publication.clone();
         let current = git::default_branch(&publication, "origin")
@@ -358,6 +532,16 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
         // fetched since read the commit that carries them.
         let lent = git::objects_dir(&publication).ok();
         for repo in workspace::checkouts_of(&registry, &resolution)? {
+            // A checkout none of the selected sessions can be holding a branch in is
+            // not opened: that is the difference between a filter that narrows the
+            // answer and one that narrows the work, and on a host with forty retained
+            // clones per identity it is the whole difference.
+            if narrowed
+                .as_ref()
+                .is_some_and(|only| !only.checkouts.contains(&repo))
+            {
+                continue;
+            }
             if !git::is_repo(&repo) {
                 continue;
             }
@@ -367,7 +551,15 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
             };
             let asked = git::Asked::borrowing(&repo, lent.as_deref());
             let compared = judged_against(asked, &base, current.as_ref());
-            for branch in git::unpublished_branches(&repo)? {
+            // Only the names asked about are counted against their remote-tracking
+            // refs, which is a process per branch per checkout that a filtered read
+            // has no reason to spend.
+            let listed = git::unpublished_branches_among(&repo, |branch| {
+                narrowed
+                    .as_ref()
+                    .is_none_or(|only| only.wants(identity, branch))
+            })?;
+            for (branch, tip) in listed {
                 let key = (identity.to_owned(), branch.clone());
                 if seen.contains(&key) {
                     continue;
@@ -378,6 +570,15 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                 // is a paste-ready publication of commits a later session already
                 // replaced.
                 if superseded_copy(&sessions, &repo, identity, &branch) {
+                    continue;
+                }
+                // A copy of this name standing at this commit has already been
+                // decided, in another checkout of the same identity — and the answer
+                // is a property of the two, so asking again would spend the whole
+                // decision to be told what is already known. Which copy answers is
+                // unchanged: the first one reached is the one whose row survives the
+                // deduplication below, and it is now also the only one asked.
+                if !decided.insert((identity.to_owned(), branch.clone(), tip.clone())) {
                     continue;
                 }
                 // Unpublished by ref is not the same as unfinished: publication

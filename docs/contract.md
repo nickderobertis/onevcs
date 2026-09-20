@@ -2382,6 +2382,60 @@ onevcs session open REPO [--branch B] [--base B] [--execution-checkout ALIAS] [-
 onevcs session holders REPO [--label KEY=VALUE]... [--json]
 ```
 
+**Every `recoverable` row says which session it belongs to, and the report filters on
+that.** The listing a `Stop` hook reads is `onevcs recoverable --json`, and it could
+not answer "which of these are mine" at all: a row named a branch and a checkout and
+nothing that joined it to a run. Every row now carries two more keys, beside every
+field it carried before and with the same values:
+
+- `session` — the token of the newest session record naming the row's branch, or
+  `null` where no record on this host names it, which is what a `worktree-agent-*`
+  orphan reads as. Newest is the end of that branch's chain of retries, an open
+  record preferred, which is the record `onevcs status` already answers for the
+  branch with.
+- `labels` — that session's labels, and `{}` where it has none or `session` is
+  `null`.
+
+Both are always written, `null` and `{}` included, so a reader routing on them meets
+the key on every row.
+
+**`--label KEY=VALUE` and `--session TOKEN`, both repeatable, narrow the report**, and
+each combines with the other and with `--repo`. One meaning covers both: a row is
+answered with when some session record of this host naming its branch was selected —
+by token, by carrying every label pair asked for, or by both. So a branch a retried
+session continued is still that session's, which is what *the branches a session holds
+or held* means. A session token no record on this host names is refused **by name**
+with a non-zero status, because "nothing of that session is left to publish" and
+"there is no such session" are different answers to act on; a label pair nothing
+carries is the first of those and answers an empty report with status `0`. A filtered
+row has exactly the shape an unfiltered one has.
+
+The filters narrow what is *read*, not only what is printed: an identity no selected
+session belongs to, a checkout none of them can hold a branch in, and a branch name
+none of them holds are never opened, listed or decided. That is the property the
+consuming host's hook needs — it asks this at the end of every turn under a ten-second
+bound — and it is why the flags are here rather than in a consumer's own filter over
+the whole report.
+
+```rust
+pub trait Vcs {                              // the declared methods, unchanged, plus:
+    fn recoverable_matching(&self, scope: Scope, selection: &Selection)
+        -> Result<Vec<Recoverable>>;         // defaulted: filters what `recoverable` answered
+    fn preserved_matching(&self, scope: Scope, selection: &Selection)
+        -> Result<Vec<Recoverable>>;         // defaulted the same way
+}
+pub struct Selection { pub sessions: Vec<SessionToken>,
+                       pub labels: BTreeMap<String, String> }   // empty asks for everything
+
+// One declared type gains two fields, and nothing else about it moves:
+//   Recoverable  pub session: Option<SessionToken>             // always written, `null` for none
+//   Recoverable  pub labels: BTreeMap<String, String>          // always written, `{}` for none
+```
+
+```
+onevcs recoverable [--repo PATH] [--all] [--label KEY=VALUE]... [--session TOKEN]... [--json]
+```
+
 Event kinds added: none.
 
 ---

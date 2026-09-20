@@ -31,7 +31,9 @@ use crate::releases::{
     Acknowledgement, Baseline, DeclarationSource, Probe, ReleaseAnswer, ReleaseMethod,
     ReleaseStatus, ReleaseTarget, RepositoryReleases, TargetName, TargetSource,
 };
-use crate::session::{Lifecycle, Provenance, Scope, SessionHolder, SessionRequest, SessionToken};
+use crate::session::{
+    Lifecycle, Provenance, Scope, Selection, SessionHolder, SessionRequest, SessionToken,
+};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::{
@@ -586,6 +588,33 @@ fn spell_labels(labels: &std::collections::BTreeMap<String, String>) -> String {
         .collect()
 }
 
+/// What a `--session` or `--label` narrowing left out, in the words that made it.
+///
+/// `None` for a read that asked for everything, which is what every read before
+/// these flags existed asked for — so an unfiltered answer says exactly what it
+/// always said.
+fn selection_named(selection: &Selection) -> Option<String> {
+    if selection.is_empty() {
+        return None;
+    }
+    let spelled: Vec<String> = selection
+        .sessions
+        .iter()
+        .map(|token| format!("--session {}", token.0))
+        .chain(
+            selection
+                .labels
+                .iter()
+                .map(|(key, value)| format!("--label {key}={value}")),
+        )
+        .collect();
+    Some(format!(
+        "Only the preserved branches of the sessions `{}` names are listed; nothing else \
+         here was looked at.",
+        spelled.join(" ")
+    ))
+}
+
 /// Render one publication the way `onevcs publish` reports it.
 ///
 /// The command is this and nothing else now: the publication itself is
@@ -930,9 +959,16 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
         None => Scope::All,
     };
+    // Refused here, where the command line handed them over, so a pair that is not a
+    // label is answered before a repository is opened. Which *sessions* a selection
+    // names is decided behind the seam, where the records are.
+    let selection = Selection {
+        sessions: args.session.iter().cloned().map(SessionToken).collect(),
+        labels: label::parse_all(&args.label)?,
+    };
     let rows = match args.all {
-        true => providers.vcs.preserved(scope)?,
-        false => providers.vcs.recoverable(scope)?,
+        true => providers.vcs.preserved_matching(scope, &selection)?,
+        false => providers.vcs.recoverable_matching(scope, &selection)?,
     };
     // Where nobody typed the scope the directory decided it, and where `--repo` did
     // it may still be pasted from a wrapper nobody reads — so every rendering names
@@ -968,6 +1004,11 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     let withheld = "Branches whose work reached their base are not listed; \
                     `onevcs recoverable --all` lists every preserved branch, each saying what \
                     became of its work and what says so.";
+    // What a filter left out is the hazard the note above names, met one step
+    // earlier: a read narrowed to one run's sessions says nothing about anybody
+    // else's work, and its empty answer reads exactly like an empty host. So the
+    // narrowing is named wherever the scope is, and in the same place.
+    let narrowed = selection_named(&selection);
     if args.json {
         // The document itself is the answer and stays exactly what a consumer
         // parses; the scope it was answered under is *about* the answer, so it goes
@@ -978,6 +1019,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         // Said to a parser's operator as well, and in the same place: a consumer
         // reading this document is deciding what to publish, and a branch missing
         // from it because it landed reads exactly like one nothing found.
+        if let Some(narrowed) = &narrowed {
+            eprintln!("onevcs: {narrowed}");
+        }
         if !args.all {
             eprintln!("onevcs: {withheld}");
         }
@@ -994,11 +1038,17 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             true => "No preserved branches",
             false => "No preserved unpublished branches",
         };
-        match &scoped {
-            Some(scoped) => {
+        match (&scoped, &narrowed) {
+            // Under a filter the sentence about every branch would be a claim this
+            // read never looked into, so it is not made: what is empty is the
+            // selection, and the line says which one.
+            (Some(scoped), Some(narrowed)) => println!("{none} in {scoped}. {narrowed}"),
+            (None, Some(narrowed)) => println!("{none} across the registered identities. \
+                                                {narrowed}"),
+            (Some(scoped), None) => {
                 println!("{none} in {scoped}. Every branch of it has reached its base or a remote.")
             }
-            None => println!(
+            (None, None) => println!(
                 "{none}. Every branch across the registered identities has reached its base \
                  or a remote."
             ),
@@ -1014,6 +1064,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     match &scoped {
         Some(scoped) => println!("{} {what} in {scoped}:", rows.len()),
         None => println!("{} {what} across every registered identity:", rows.len()),
+    }
+    if let Some(narrowed) = &narrowed {
+        println!("{narrowed}");
     }
     for row in rows {
         let kind = match row.branch.provenance {

@@ -45,7 +45,8 @@ use onevcs::{
     MaintainReport, MaintenanceOutcome, MergeOutcome, MergePolicy, NetNegative, Phase, PhaseOf,
     PoolStatus, PreservedBranch, ProtectionSource, Provenance, Providers, PruneReport, Publication,
     PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope,
-    Session, SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
+    Selection, Session, SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken,
+    Sha,
     SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, Url, Vcs,
     WorkspaceCapacity,
 };
@@ -2644,6 +2645,73 @@ fn the_labels_amendment_spells_exactly_the_flags_the_session_verbs_take() {
             "the amendment no longer declares: {declared}"
         );
     }
+}
+
+#[test]
+fn the_labels_amendment_spells_exactly_the_flags_recoverable_takes_and_the_fields_it_added() {
+    // `recoverable`'s own flags are already held to `docs/inferred-surface.md` above.
+    // This holds them to the *contract*, which is where the two filters and the two
+    // row fields are stated and what six repositories read — so a flag added to the
+    // parser without amending the contract, or amended without existing, fails here.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|body| body.starts_with("onevcs recoverable "))
+        .expect("the labels amendment spells the `recoverable` usage");
+    assert_eq!(
+        spelled_flags(&usage),
+        parser_flags(&["recoverable"]),
+        "the amendment's `recoverable` usage and the parser disagree about its flags"
+    );
+
+    let declarations = amendment_declaring("Recoverable  pub session");
+    for declared in [
+        "fn recoverable_matching(&self, scope: Scope, selection: &Selection)",
+        "fn preserved_matching(&self, scope: Scope, selection: &Selection)",
+        "pub struct Selection { pub sessions: Vec<SessionToken>,",
+        "Recoverable  pub session: Option<SessionToken>",
+        "Recoverable  pub labels: BTreeMap<String, String>",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+
+    // …and the two fields are written on every row, `null` and `{}` included, which is
+    // what the amendment promises a reader routing on them.
+    let value = serde_json::to_value(Recoverable {
+        identity: "github.com/acme/project".to_owned(),
+        branch: PreservedBranch {
+            branch: "feature/x".to_owned(),
+            base: "main".to_owned(),
+            provenance: Provenance::Complete,
+            change_url: None,
+            change_base: None,
+        },
+        checkout: PathBuf::from("/tmp/project"),
+        landed: Landed::No,
+        stopped_because: "session s-1 closed without publishing".to_owned(),
+        recover_command: Vec::new(),
+        held_by: None,
+        net_negative: None,
+        session: None,
+        labels: BTreeMap::new(),
+    })
+    .expect("a recoverable serializes");
+    assert_eq!(value["session"], Value::Null);
+    assert_eq!(value["labels"], json!({}));
+
+    // The selection is the shape the amendment declares, and an empty one asks for
+    // everything — which is what every caller before these flags existed asked for.
+    assert!(Selection::default().is_empty());
+    assert_eq!(
+        serde_json::to_value(Selection {
+            sessions: vec![SessionToken("s-1".to_owned())],
+            labels: BTreeMap::from([("run".to_owned(), "r-1".to_owned())]),
+        })
+        .expect("a selection serializes"),
+        json!({"sessions": ["s-1"], "labels": {"run": "r-1"}})
+    );
 }
 
 /// The age floor `onevcs sweep` applies when a caller says nothing.
