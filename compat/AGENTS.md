@@ -39,6 +39,7 @@ build and `serde_json`, and adding a third means saying so here.
 `just _crate-compat`, which `_crate-test` and `test-quick` call, so it is inside
 `just check` and `just gate` like everything else. `_crate-fmt-check` and
 `_crate-lint` hold it to the same bar, `just bootstrap` fetches its committed
-lockfile, and its build lands under `target/compat` so there is no second directory
-to clean. `nx.json` names `compat/**/*` among the crate test target's inputs, so a
-change here re-runs it rather than replaying a cached pass.
+lockfile, and its build lands in the clone's own `target` — `.cargo/config.toml`
+reaches every crate under the clone — so there is no second directory to clean.
+`nx.json` names `compat/**/*` among the crate test target's inputs, so a change
+here re-runs it rather than replaying a cached pass.

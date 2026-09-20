@@ -139,8 +139,7 @@ _crate-format:
 # tree, and one nothing formatted or linted is one nobody reads.
 _crate-lint:
     @cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
-    @cargo clippy --manifest-path compat/Cargo.toml --all-targets --locked --quiet \
-      --target-dir target/compat -- -D warnings
+    @cargo clippy --manifest-path compat/Cargo.toml --all-targets --locked --quiet -- -D warnings
 
 # The offline tier: every binary but `smoke`, which needs a GitHub credential and
 # a scratch repository and is run by `just smoke-real` alone. Excluded by name
@@ -158,12 +157,12 @@ _crate-test: _crate-compat
 # A build of `onevcs` that actually shipped, reading what this one writes. It is a
 # separate cargo project, and `compat/Cargo.toml` says why: two packages named
 # `onevcs` in one resolve graph make `--package onevcs` ambiguous, and that spelling
-# is on the release path. Its target directory is under this one's, so the two share
-# a cache location and neither is a second thing to clean.
+# is on the release path. It builds into this clone's own `target` like everything
+# else — `.cargo/config.toml` reaches it there — and the released `onevcs` it pins
+# and the workspace's own carry different versions, so cargo keys the two apart.
 # The compatibility check: a released `onevcs` reading this build's envelopes.
 _crate-compat:
-    @cargo nextest run --manifest-path compat/Cargo.toml --locked \
-      --target-dir target/compat --status-level fail \
+    @cargo nextest run --manifest-path compat/Cargo.toml --locked --status-level fail \
       || { echo "a released onevcs no longer reads what this build writes — see compat/tests" >&2; exit 1; }
 
 # Coverage instrumentation is measured on Linux only, so the cross-platform CI
