@@ -4963,6 +4963,64 @@ fn a_pre_push_hook_that_rejects_the_push_is_reported_as_the_merge_path_refusing(
 }
 
 #[test]
+fn a_publishing_push_killed_by_a_signal_is_refused_by_naming_it_and_saying_nothing_was_written() {
+    // `onevcs` issue 161, as its reporter met it: a publishing push ran for
+    // seventeen minutes, recorded `accepted: false` with an empty output and a
+    // zero-byte artifact, and the whole account its caller could give of it was
+    // `rejected by the merge path: .` — indistinguishable from a tree the merge
+    // path turned down, so the entire gate was run again to learn anything.
+    //
+    // The hook kills **git itself**, which is the shape that leaves nothing behind:
+    // a process a signal terminates has no exit code, writes no diagnostic, and
+    // closes no stream of its own. What is left to say about it is how it ended, and
+    // this is the journey that says the refusal now says it.
+    //
+    // The hook reaches git by the *process group* this crate puts every bounded
+    // command in a group of its own: its leader is the `git push` under test and its
+    // id is this hook's own, so what is signalled is identified rather than matched
+    // by name, and nothing outside the command this journey started is reachable
+    // from it.
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("pushed=$(ps -o pgid= -p $$ | tr -d ' ')\nkill -KILL \"$pushed\"\nsleep 2");
+    let (token, worktree) = fixture.open(&["--branch", "feature/signalled"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: add the thing");
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(
+        stderr.contains("the merge path wrote nothing"),
+        "the refusal does not say the merge path was silent:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("terminated by signal 9 (SIGKILL)"),
+        "the refusal does not name the signal that ended the push:\n{stderr}"
+    );
+    // …and it is still the push rejection it always was: the same kind, the same
+    // exit code, and the same pointer at the evidence — which is the whole of the
+    // account when the evidence itself is empty.
+    assert!(stderr.contains("rejected by the merge path"), "{stderr}");
+    assert_eq!(fixture.origin_log().len(), 1, "nothing reached the origin");
+
+    // The recorded shape the report described, driven rather than described: the
+    // push event says the merge path refused and carries nothing it wrote.
+    let pushes = fixture.world.events_of(&token, "push");
+    assert_eq!(pushes[0]["payload"]["accepted"], false);
+    assert_eq!(
+        pushes[0]["payload"]["output"].as_str().unwrap_or_default(),
+        "",
+        "a push whose git was killed wrote nothing, which is the state under test"
+    );
+}
+
+#[test]
 fn a_merge_path_that_echoes_a_credential_records_only_that_it_had_one() {
     let fixture = Fixture::local(&local_direct());
     fixture.verified_by(

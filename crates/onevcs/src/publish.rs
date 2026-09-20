@@ -1409,6 +1409,15 @@ fn publishing(branch: &Ref) -> String {
 /// pointers above are for; [`excerpt`] is where the bound and the end it is taken
 /// from are reasoned about.
 ///
+/// **A refusal that captured nothing is a different sentence.** There is no excerpt
+/// to quote and no per-ref summary to name, so the two clauses above collapse into
+/// prose that describes nothing — `rejected by the merge path: .` is what one
+/// seventeen-minute publishing push was reported as, and its caller had to run the
+/// whole gate again to learn anything. What is said instead is that the merge path
+/// wrote nothing, and what the run itself reported: the exit status or the signal
+/// that terminated the push, and any read of its pipes that stopped short. A
+/// refusal that *did* capture output is reported exactly as it always was.
+///
 /// This is also what an *unclassified* rejection is reported as, deliberately: it
 /// names the push and hands over git's own per-ref summary without deciding what
 /// produced it. The fallback below it is for a failure that never reached a ref at
@@ -1454,6 +1463,23 @@ pub(crate) fn rejected(
             ))
         )
     };
+    // The one case the sentence above cannot describe: nothing was captured, so
+    // `summary` is empty and `said` is empty, and what an operator is handed reads
+    // `rejected by the merge path: .` — which is how a seventeen-minute push was
+    // reported, and why the whole gate had to be run again to learn anything about
+    // it. The run's own account of itself is what is left, so it is said outright.
+    if wrote.is_empty() && missing.is_none() {
+        return Error::PushRejected {
+            reason: outliving(
+                &format!(
+                    "{what} was rejected by the merge path, and the merge path wrote nothing: \
+                     {diagnosis}.{where_it_is}",
+                    diagnosis = diagnosis(pushed),
+                ),
+                removed,
+            ),
+        };
+    }
     match missing {
         Some(missing) => Error::HostPrerequisite {
             reason: outliving(
@@ -1472,6 +1498,28 @@ pub(crate) fn rejected(
             ),
         },
     }
+}
+
+/// What the push's own run says about itself: how it ended, and any read of its
+/// pipes that stopped short.
+///
+/// Both, and neither inferred from the other — a push terminated by a signal and a
+/// push whose output this process could not read are different failures with
+/// different next moves, and a push can be both. A refusal reaching here with no
+/// diagnostics at all is one no `git push` produced, and says so rather than
+/// claiming an ending nobody reported.
+fn diagnosis(pushed: &git::Pushed) -> String {
+    let Some(diagnostics) = pushed.diagnostics() else {
+        return "nothing was recorded about how the push itself ended".to_owned();
+    };
+    let mut said = format!("the push {}", diagnostics.ended);
+    if !diagnostics.read_failures.is_empty() {
+        said.push_str(&format!(
+            ", and its output could not be read whole ({})",
+            diagnostics.read_failures.join("; "),
+        ));
+    }
+    said
 }
 
 /// How a merge-path hook begins the one line saying a refusal is this host's rather

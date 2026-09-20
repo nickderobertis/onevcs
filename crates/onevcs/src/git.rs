@@ -103,10 +103,17 @@ const HOOK_RUNNING: &[&[&str]] = &[
 pub struct Output {
     /// git's exit status.
     pub status: i32,
+    /// How it ended, which [`status`](Output::status) cannot hold whole: a
+    /// signalled command has no exit code, and the 128 recorded above for it says
+    /// nothing about which signal.
+    pub ended: Ended,
     /// git's standard output.
     pub stdout: String,
     /// git's standard error.
     pub stderr: String,
+    /// Why a read of one of its pipes stopped short, where one did — so that an
+    /// empty answer can be reported as unread rather than as unwritten.
+    pub read_failures: Vec<String>,
 }
 
 impl Output {
@@ -169,8 +176,10 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     )?;
     Ok(Output {
         status: ran.status,
+        ended: ran.ended,
         stdout: text(ran.stdout),
         stderr: text(ran.stderr),
+        read_failures: ran.read_failures,
     })
 }
 
@@ -250,10 +259,22 @@ fn bounded(
     let status = collected.map_err(|e| error::invalid(format!("cannot collect {label}: {e}")))?;
     Ok(Ran {
         status: status.code().unwrap_or(128),
-        stdout: out,
-        stderr: err,
+        ended: Ended::of(&status),
+        stdout: out.bytes,
+        stderr: err.bytes,
+        read_failures: [(STDOUT, out.failure), (STDERR, err.failure)]
+            .into_iter()
+            .filter_map(|(stream, failure)| {
+                failure.map(|failure| format!("{label}: reading its {stream} failed: {failure}"))
+            })
+            .collect(),
     })
 }
+
+/// How the two pipes are named where a read of one of them is reported.
+const STDOUT: &str = "standard output";
+/// See [`STDOUT`].
+const STDERR: &str = "standard error";
 
 /// One stream of a bounded command, read as it arrives and handed over once the
 /// command is over.
@@ -274,7 +295,21 @@ fn bounded(
 /// tick.
 pub(crate) struct PipeCapture {
     stopping: Arc<AtomicBool>,
-    reader: std::thread::JoinHandle<Vec<u8>>,
+    reader: std::thread::JoinHandle<Captured>,
+}
+
+/// What one stream's reader recovered, and why it stopped short where it did.
+///
+/// The failure travels with the bytes rather than beside them, because the two are
+/// one answer: bytes with a failure are *everything up to that failure* and not
+/// everything the command wrote, and a caller that reported the first as the second
+/// would describe a truncated — or empty — answer as the command having been silent.
+pub(crate) struct Captured {
+    /// Every byte this reader took off the pipe.
+    pub(crate) bytes: Vec<u8>,
+    /// Why the read stopped, where it stopped for a reason other than the stream
+    /// ending or the command being over.
+    pub(crate) failure: Option<String>,
 }
 
 impl PipeCapture {
@@ -293,6 +328,7 @@ impl PipeCapture {
         let requested = Arc::clone(&stopping);
         let reader = std::thread::spawn(move || {
             let mut output = Vec::new();
+            let mut failure = None;
             let mut chunk = [0_u8; READ_BUFFER];
             loop {
                 // Asked *before* the read it decides, and that order is the whole
@@ -318,23 +354,41 @@ impl PipeCapture {
                         }
                         pipe.await_readable(EXIT_POLL);
                     }
-                    Err(_) => break,
+                    // Nothing is left to do but retire — the read will not start
+                    // working again — so what is owed is the reason. Kept rather
+                    // than dropped: this is the difference between "the command
+                    // wrote nothing" and "this process could not read what it
+                    // wrote", and a refusal built from the bytes alone states the
+                    // first while the second is what happened.
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
                 }
             }
             let _ = ended.send(());
-            output
+            Captured {
+                bytes: output,
+                failure,
+            }
         });
         Self { stopping, reader }
     }
 
-    /// Every byte the command wrote, once its exit has been collected.
+    /// Every byte the command wrote, and any failure that cut the read short, once
+    /// its exit has been collected.
     ///
     /// Call it only then: the reader retires on a read taken after this store is
     /// visible to it, and what makes that read's emptiness mean *finished* rather
     /// than *not yet* is that the command was already gone when the store happened.
-    pub(crate) fn finish(self) -> Vec<u8> {
+    pub(crate) fn finish(self) -> Captured {
         self.stopping.store(true, Ordering::Release);
-        self.reader.join().unwrap_or_default()
+        self.reader.join().unwrap_or_else(|_| Captured {
+            bytes: Vec::new(),
+            // A reader thread that panicked collected nothing this process can
+            // reach, and saying so is the whole of what is left to say about it.
+            failure: Some("the reader of this stream ended abnormally".to_owned()),
+        })
     }
 }
 
@@ -427,6 +481,85 @@ pub(crate) trait PipeRead: Read + std::os::windows::io::AsRawHandle {
 #[cfg(windows)]
 impl<T: Read + std::os::windows::io::AsRawHandle> PipeRead for T {}
 
+/// How a bounded command ended, as the operating system reports it.
+///
+/// Two endings and not one number, because the number cannot hold both: a process a
+/// signal terminated has **no exit code at all**, and the 128 this module maps that
+/// to is indistinguishable from a command that chose to exit 128. A push whose git
+/// was killed and a push whose hook refused it therefore read the same, and where
+/// the command also wrote nothing — which is what a killed one usually leaves — the
+/// refusal an operator is handed describes nothing whatsoever. That is
+/// `onevcs`'s own issue 161: a publishing push that ran for seventeen minutes and
+/// was reported as `rejected by the merge path: .`
+///
+/// Reported rather than classified on: nothing here branches on which ending it
+/// was, and the one caller that reads it prints it for a person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ended {
+    /// It exited of its own accord, with this code.
+    Code(i32),
+    /// This signal terminated it, and it never reached an exit code.
+    Signal(i32),
+}
+
+impl Ended {
+    /// How one collected `ExitStatus` ended.
+    ///
+    /// Unix is the only platform that reports a terminating signal, and it reports
+    /// it exactly where the exit code is absent — so the two arms are total on both
+    /// platforms and neither can be mistaken for the other.
+    fn of(status: &ExitStatus) -> Self {
+        if let Some(code) = status.code() {
+            return Ended::Code(code);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(signal) = status.signal() {
+                return Ended::Signal(signal);
+            }
+        }
+        // No code and no signal: nothing was reported about how it ended, so what is
+        // said is the number this module maps that to rather than an invented signal.
+        Ended::Code(128)
+    }
+}
+
+impl std::fmt::Display for Ended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ended::Code(code) => write!(f, "exited with status {code}"),
+            Ended::Signal(signal) => match signal_name(*signal) {
+                Some(name) => write!(f, "was terminated by signal {signal} ({name})"),
+                None => write!(f, "was terminated by signal {signal}"),
+            },
+        }
+    }
+}
+
+/// The POSIX name of a terminating signal, for the ones a bounded command here
+/// actually meets.
+///
+/// The number is always printed beside it, so a signal with no name here is
+/// reported by its number rather than by a guess: the numbers above the list are
+/// real-time signals and platform extensions whose spelling differs per system.
+fn signal_name(signal: i32) -> Option<&'static str> {
+    Some(match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        _ => return None,
+    })
+}
+
 /// One bounded run's own answer: how it ended, and the bytes it wrote.
 ///
 /// Bytes and not text, because the two callers need different answers to "what if
@@ -437,8 +570,21 @@ impl<T: Read + std::os::windows::io::AsRawHandle> PipeRead for T {}
 /// publish a change the repository turned down.
 struct Ran {
     status: i32,
+    /// How the operating system says it ended: an exit code, or the signal that
+    /// terminated it. A signalled command has no code at all, and `status` above
+    /// carries the 128 this module maps that to — which says nothing about *which*
+    /// signal, and a command with no output is then a failure with no description.
+    ended: Ended,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    /// Why a read of one of its pipes stopped short, where one did.
+    ///
+    /// A reader that meets an error other than `WouldBlock` has nothing left to do
+    /// but retire, and what it has collected is then everything up to that error
+    /// rather than everything the command wrote. Carried so that a caller reporting
+    /// an empty answer can say the pipe failed rather than that the command was
+    /// silent.
+    read_failures: Vec<String>,
 }
 
 /// git's own answer as text, or nothing at all when it is not text.
@@ -2159,7 +2305,25 @@ pub enum Pushed {
         /// before any ref was negotiated, which a credential or an unreachable
         /// remote does.
         refs: Vec<String>,
+        /// How the push itself ended, and why a read of either of its pipes
+        /// stopped short where one did.
+        ///
+        /// A refusal that captured output describes itself, and these add nothing
+        /// to it. A refusal that captured **none** describes nothing at all without
+        /// them — which is the state a push whose git was killed leaves, and the
+        /// one an operator could not tell from a tree the merge path turned down.
+        diagnostics: PushDiagnostics,
     },
+}
+
+/// What a push's own run said about itself, for a refusal its captured output
+/// cannot describe.
+#[derive(Debug, Clone)]
+pub struct PushDiagnostics {
+    /// How the push ended: an exit code, or the signal that terminated it.
+    pub ended: Ended,
+    /// Why a read of one of its pipes stopped short, where one did.
+    pub read_failures: Vec<String>,
 }
 
 impl Pushed {
@@ -2185,6 +2349,17 @@ impl Pushed {
         match self {
             Pushed::Accepted { .. } => false,
             Pushed::Refused { refs, .. } => refs.contains(&reference),
+        }
+    }
+
+    /// What the push's own run said about itself, where git refused it.
+    ///
+    /// Read only where the captured output describes nothing — see
+    /// [`PushDiagnostics`].
+    pub fn diagnostics(&self) -> Option<&PushDiagnostics> {
+        match self {
+            Pushed::Accepted { .. } => None,
+            Pushed::Refused { diagnostics, .. } => Some(diagnostics),
         }
     }
 
@@ -2238,6 +2413,10 @@ pub fn push_replacing(
     } else {
         Pushed::Refused {
             refs: refused_refs(&output.stdout),
+            diagnostics: PushDiagnostics {
+                ended: output.ended.clone(),
+                read_failures: output.read_failures.clone(),
+            },
             output: output.combined(),
         }
     })
@@ -2624,6 +2803,12 @@ mod collecting {
         assert!(status.success(), "the command itself succeeded");
 
         let collected = reader.finish();
+        assert!(
+            collected.failure.is_none(),
+            "no read failed: {:?}",
+            collected.failure
+        );
+        let collected = collected.bytes;
 
         assert_eq!(
             collected.len(),

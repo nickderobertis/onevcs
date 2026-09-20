@@ -2346,6 +2346,28 @@ form moved.
 
 Event kinds added: none.
 
+### A push the merge path refused with nothing captured is diagnosed by how it ended
+
+A publishing push is verified by the repository's own merge path, and what that path
+wrote is the whole of the account a refusal can give. A push that wrote **nothing** —
+which is what a `git push` a signal terminated leaves behind — therefore used to be
+reported as `rejected by the merge path: .`, indistinguishable from a tree the merge
+path turned down and diagnosable only by running the whole gate again.
+
+Such a refusal now says that the merge path wrote nothing, and says how the push
+itself ended: `exited with status N`, or `was terminated by signal N (NAME)` for the
+signals a bounded command here meets, and `was terminated by signal N` for any other.
+Where a read of the push's own pipes stopped short, that failure is reported beside
+it, so an answer this process could not read whole is never reported as one the
+command never wrote.
+
+A refusal that **did** capture output is reported exactly as before: git's own per-ref
+summary, the pointers at the preserved evidence, and an excerpt of what it wrote. The
+failure kind is unchanged in both cases — `push-rejected`, exit code `1` — and no
+`FailureKind` is added.
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

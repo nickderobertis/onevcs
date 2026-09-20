@@ -5827,3 +5827,59 @@ fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
     }
     assert_eq!(names, 5, "the README names the five library reads");
 }
+
+#[test]
+fn the_amendment_states_how_a_refusal_that_captured_nothing_diagnoses_itself() {
+    // The amendment is what an operator reads to know what a refusal owes them, and
+    // the words it quotes are the words the code writes — so the two are reconciled
+    // here rather than left to agree by memory. `tests/e2e/lifecycle.rs` drives the
+    // behaviour through the compiled binary, over a push a signal terminates; this
+    // holds the document to the statements that behaviour rests on.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "Such a refusal now says that the merge path wrote nothing, and says how the push \
+         itself ended",
+        "Where a read of the push's own pipes stopped short, that failure is reported beside \
+         it, so an answer this process could not read whole is never reported as one the \
+         command never wrote",
+        "A refusal that **did** capture output is reported exactly as before",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the empty-output refusal amendment no longer says: {sentence}"
+        );
+    }
+    // …and the phrases it quotes are the ones the code composes. Read out of the
+    // sources because both are private — the renderings are this build's answer and
+    // not part of the surface, and widening the surface to reconcile them would be
+    // the wrong repair.
+    for (relative, quoted) in [
+        (
+            "crates/onevcs/src/publish.rs",
+            "the merge path wrote nothing",
+        ),
+        ("crates/onevcs/src/git.rs", "exited with status {code}"),
+        (
+            "crates/onevcs/src/git.rs",
+            "was terminated by signal {signal} ({name})",
+        ),
+        (
+            "crates/onevcs/src/git.rs",
+            "was terminated by signal {signal}",
+        ),
+    ] {
+        assert!(
+            repo_file(relative).contains(quoted),
+            "{relative} no longer composes {quoted:?}, which the amendment quotes"
+        );
+    }
+    // The kind and the code the amendment says are unchanged, asked of the type that
+    // fixes them.
+    assert_eq!(
+        FailureKind::of(&Error::PushRejected {
+            reason: String::new()
+        }),
+        FailureKind::PushRejected
+    );
+    assert_eq!(FailureKind::PushRejected.exit_code(), 1);
+}
