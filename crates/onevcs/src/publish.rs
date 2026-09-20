@@ -931,6 +931,11 @@ fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishO
             )));
         }
     }
+    // Before anything is compared, because what it may establish is that this branch
+    // already landed: a change request a `checks-unsettled` close stopped watching
+    // merges on the host's clock, and a publication that met it again republished the
+    // work the base already carried.
+    take_up_a_late_merge(context);
     // Where this repository last saw the host's copy of the branch, read before the
     // fetch that is about to update it: a publication that replays its own commits
     // pushes over that copy, and what it may replace is what it had already seen —
@@ -2767,4 +2772,144 @@ pub fn exit_code(error: &Error) -> u8 {
 /// A session's own record, once publication has decided what it publishes onto.
 pub fn preserved_change_base(record_base: &Ref, recorded: Option<&Ref>) -> Ref {
     recorded.unwrap_or(record_base).clone()
+}
+
+/// A change request this host opened, stopped watching, and may meet again.
+///
+/// Everything the question below is asked from, read out of the records this host
+/// already holds rather than derived a second way: the event stream's own
+/// `change-opened`, and the branch as some copy of it here stands. One value rather
+/// than seven arguments, for the reason [`Advance`](crate::status) is one.
+pub(crate) struct Watched<'a> {
+    /// The identity the work belongs to.
+    pub identity: &'a str,
+    /// The branch that carries it.
+    pub branch: &'a str,
+    /// Where a human reads the change request, as `change-opened` recorded it.
+    pub url: &'a Url,
+    /// The host's own identifier for it, as `change-opened` recorded it.
+    pub id: &'a str,
+    /// The branch it targets, as `change-opened` recorded it.
+    pub base: &'a str,
+    /// The commit this host last saw the branch at, which is the head the change
+    /// request was opened from.
+    pub head: &'a str,
+    /// The stream that recorded it being opened, which is where a landing found
+    /// after that publication ended is recorded.
+    pub stream: Option<&'a str>,
+}
+
+/// Ask the host **once** whether a change request this host stopped watching has
+/// merged since, and record the landing where it has.
+///
+/// A `change-auto` publication watches the host for a fixed span and closes
+/// [`ChecksUnsettled`](FailureKind::ChecksUnsettled) when that span runs out. The
+/// merge often happens seconds later, and nothing afterwards asks: the landing tiers
+/// read stored records and the base's history, a `status` deliberately never fetches,
+/// and the host is asked only which change requests are *open* — where a merged one
+/// is simply absent. So a change request merged five seconds after its last required
+/// check went on reading `closed without landing`, and the next attempt republished
+/// work the base already carried.
+///
+/// The question is asked of exactly one state and asked once per read: a change
+/// request this host recorded, which it asked the host to land, and for which no
+/// landing is recorded — which is what a `checks-unsettled` close leaves behind.
+/// [`RemoteHost::merged_at`] answers it, and its three answers are three outcomes: a
+/// merge commit is recorded as the landing, `None` and every refusal leave the record
+/// exactly as it stands. A change request the host reports open or closed-unmerged is
+/// the `None`.
+///
+/// What a recorded landing then gets is what a witnessed one gets, through the one
+/// function that gives it: the publication checkout fast-forwarded, each automated
+/// target's baseline captured at the landing commit, and the merge recorded on the
+/// stream that opened the change. The caller recomputes from that record, which is
+/// what puts the landing into the same read rather than into the next one.
+pub(crate) fn reconcile_late_merge(
+    registry: &crate::registry::Registry,
+    watched: &Watched<'_>,
+    hosting: &dyn Hosting,
+) -> Option<String> {
+    let host = hosting
+        .for_repo(&change_host(watched.identity).ok()?)
+        .ok()?;
+    let merged = host
+        .merged_at(&ChangeRequest {
+            id: crate::host::ChangeId(watched.id.to_owned()),
+            url: watched.url.clone(),
+            head_sha: Sha(watched.head.to_owned()),
+            base: watched.base.to_owned(),
+        })
+        .ok()??;
+    let located = match crate::release::for_repository(registry, watched.identity) {
+        Ok(located) => located,
+        // Best effort throughout, as every part of recording a landing after the
+        // fact is: the change has merged whatever this host can write about it, and
+        // refusing the read that found it would be the worse answer.
+        Err(failure) => return warn_unreconciled(watched, &merged.0, &failure),
+    };
+    let mut stream = match Stream::releases(watched.identity) {
+        Ok(stream) => stream,
+        Err(failure) => return warn_unreconciled(watched, &merged.0, &failure),
+    };
+    crate::release::reconcile_landing(
+        registry,
+        &located,
+        watched.branch,
+        watched.stream,
+        &merged.0,
+        watched.url,
+        &mut stream,
+    );
+    Some(merged.0)
+}
+
+/// Say on stderr that a merge the host reported could not be recorded here, and
+/// answer as though it had not been found.
+///
+/// Answering `None` is the point: the caller goes on to decide the landing from the
+/// records as they stand, which is what they still say. Reporting the merge without
+/// having recorded it would leave a read answering `landed` that the next read,
+/// reading the same records, answers `closed` — one landing, two answers.
+fn warn_unreconciled(
+    watched: &Watched<'_>,
+    commit: &str,
+    failure: &dyn std::fmt::Display,
+) -> Option<String> {
+    eprintln!(
+        "onevcs: warning: the host reports {url} merged at {commit}, and this host could not \
+         record that landing for {branch} ({failure}); `onevcs status {branch}` still answers \
+         from what is recorded",
+        url = watched.url,
+        branch = watched.branch,
+    );
+    None
+}
+
+/// Take up a merge the host performed after a publication of this branch stopped
+/// watching for it, before this one decides what there is to publish.
+///
+/// The third of the three reads that meet such a change request, and it asks through
+/// the *same* path the other two ask through — `status`'s landing read — so a
+/// publication and a status cannot come to two answers about one change request.
+/// What that read does with a merge the host reports is recorded on
+/// [`reconcile_late_merge`]: the landing is written, the publication checkout is
+/// fast-forwarded, and each automated target's baseline is captured at the merge
+/// commit. The fetch below then brings the merge into this publication's own
+/// comparison, which is what answers `nothing to publish` instead of opening a
+/// second change request for work already on the base.
+///
+/// Best effort, and deliberately silent about its own failures: everything it could
+/// establish is established again by the comparison this publication is about to
+/// make, and a publication refused because a question about the host could not be
+/// asked would be a worse answer than one that simply asks nobody.
+fn take_up_a_late_merge(context: &Context<'_>) {
+    let Ok(registry) = store::load() else {
+        return;
+    };
+    let _ = crate::status::landing_of_within(
+        &registry,
+        &context.branch,
+        Some(&context.resolution.key),
+        Some(context.hosting),
+    );
 }

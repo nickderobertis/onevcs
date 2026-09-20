@@ -597,15 +597,35 @@ struct Told {
     asked_the_host_to_land: bool,
     merge_path: Option<MergePathReport>,
     recorded: landed::Recorded,
+    /// The newest `change-opened` across every stream of this branch, whole — which
+    /// is what addresses the change request to the host on a later read.
+    opened: Option<Opened>,
+    /// The stream that recorded that `change-opened` — the newest one, where several
+    /// did — which is where a landing discovered after that publication ended is
+    /// written, so the next read finds it as a recorded landing.
+    change_stream: Option<String>,
+}
+
+/// What a `change-opened` event recorded about the change request it opened.
+///
+/// The URL is what a person reads and what this crate stores; the id is how the
+/// host is addressed about it afterwards, and the base is the branch it targets.
+/// Read back together, because a change request is addressed by all three or by
+/// none — see [`Told::opened`].
+#[derive(Debug, Clone)]
+struct Opened {
+    /// Where a human reads it.
+    url: String,
+    /// The host's own identifier for it, where the stream recorded one.
+    id: Option<String>,
+    /// The branch it targets, where the stream recorded one.
+    base: Option<String>,
 }
 
 fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Told {
     let relevant = relevant_streams(streams, &work.identity, &work.branch, session);
-    let change_url = latest(
-        relevant
-            .iter()
-            .filter_map(|record| record.change_url.clone()),
-    );
+    let opened = latest(relevant.iter().filter_map(|record| record.opened.clone()));
+    let change_url = opened.as_ref().map(|opened| opened.url.clone());
     Told {
         draft: standing_draft(&relevant),
         described: latest(
@@ -627,6 +647,14 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
             change: change_url.as_deref().and_then(|url| Url::parse(url).ok()),
         },
         change_url,
+        opened,
+        change_stream: newest(relevant.iter().filter_map(|record| {
+            record.opened.as_ref().map(|opened| Stamped {
+                at: opened.at.clone(),
+                value: record.token.clone(),
+            })
+        }))
+        .map(|stamped| stamped.value),
     }
 }
 
@@ -787,12 +815,79 @@ fn carrier_of(judged: &[(PathBuf, String, Landed)]) -> Option<&(PathBuf, String,
     })
 }
 
+/// Ask the host once whether a change request a `checks-unsettled` close stopped
+/// watching has merged since, and take a landing it reports into *this* read.
+///
+/// The state it is asked of is the state that close leaves: this host recorded a
+/// change request for the branch, it asked the host to land it, and no landing is
+/// recorded for it. A branch nobody proposed, one nothing was asked to land, and one
+/// whose landing is already on the record all pass straight through — so the question
+/// is one host call on one read, and no read makes it twice.
+///
+/// Three things have to be recorded for the host to be addressed at all: the change
+/// request's URL, the host's identifier for it, and the branch it targets — all three
+/// out of the one `change-opened` event. The head is the commit some copy of the
+/// branch here stands at, which is what this host last pushed as the change's head.
+/// Anything missing leaves the record exactly as it stands, which is also what an
+/// open or closed-unmerged change request leaves.
+///
+/// What it writes into `told` is the landing itself, so the tiers below run against
+/// it: [`landed::decide`]'s first tier reads exactly this record, and the publication
+/// checkout that the reconciliation fast-forwarded is the store every copy is asked
+/// through. That is the whole of "recomputed from that state" — the state, the word,
+/// and the planner guidance all come out of the one pass that found it.
+fn reconcile_late_merge(
+    registry: &Registry,
+    work: &Work,
+    told: &mut Told,
+    carrying: &[&Holder],
+    hosting: &dyn Hosting,
+) {
+    if told.recorded.landing.is_some() || !told.asked_the_host_to_land {
+        return;
+    }
+    let (Some(opened), Some(url)) = (told.opened.as_ref(), told.recorded.change.as_ref()) else {
+        return;
+    };
+    let (Some(id), Some(base)) = (opened.id.as_deref(), opened.base.as_deref()) else {
+        return;
+    };
+    // A superseded clone's copy is not asked: what it holds is the work that was
+    // taken over, and the head of the change request is the head of the work that
+    // went on. `carrying` is that distinction, already made for the tiers.
+    let Some(head) = carrying
+        .iter()
+        .find_map(|holder| git::tip(&holder.path, &work.branch))
+    else {
+        return;
+    };
+    let merged = publish::reconcile_late_merge(
+        registry,
+        &publish::Watched {
+            identity: &work.identity,
+            branch: &work.branch,
+            url,
+            id,
+            base,
+            head: &head,
+            stream: told.change_stream.as_deref(),
+        },
+        hosting,
+    );
+    // Through the conversion that decides what an object id is, for the reason every
+    // other commit this module takes from outside goes through it: the value is
+    // handed to git as a revision, and one that is not an id names no commit.
+    told.recorded.landing = merged.as_deref().and_then(ObjectId::parse);
+}
+
 /// Where a reference's work stands in history, for a caller that needs the landing
 /// and nothing else.
 ///
 /// The same decision `run` reports, reached through the same helpers and the same
-/// tiers, and asked of history alone — no host is consulted, because the landing
-/// tiers never were and because the caller that asks this has no `Hosting` to hand.
+/// tiers, and decided from history alone. The host is asked exactly one question
+/// before those tiers run and none after — whether a change request a
+/// `checks-unsettled` close stopped watching has merged since — and a caller with
+/// no [`Hosting`] to hand asks even that of nobody.
 pub(crate) struct LandingOf {
     /// The resolvable work reference the caller supplied.
     pub reference: String,
@@ -815,8 +910,12 @@ pub(crate) struct LandingOf {
     pub change_stream: Option<String>,
 }
 
-pub(crate) fn landing_of(registry: &Registry, reference: &str) -> Result<LandingOf> {
-    landing_of_within(registry, reference, None)
+pub(crate) fn landing_of(
+    registry: &Registry,
+    reference: &str,
+    hosting: Option<&dyn Hosting>,
+) -> Result<LandingOf> {
+    landing_of_within(registry, reference, None, hosting)
 }
 
 /// The landing of one reference, narrowed to the repository a caller named.
@@ -829,6 +928,7 @@ pub(crate) fn landing_of_within(
     registry: &Registry,
     reference: &str,
     repo: Option<&str>,
+    hosting: Option<&dyn Hosting>,
 ) -> Result<LandingOf> {
     // Resolved before anything is searched, so a repository this host does not know is
     // refused as the unregistered repository it is rather than silently widening the
@@ -854,20 +954,17 @@ pub(crate) fn landing_of_within(
         .session
         .as_ref()
         .map(|record| record.token.to_string());
-    let told = from_streams(&streams, &work, held_by.as_deref());
-    let change_stream = newest(
-        relevant_streams(&streams, &work.identity, &work.branch, held_by.as_deref())
-            .into_iter()
-            .filter_map(|record| {
-                record.change_url.as_ref().map(|url| Stamped {
-                    at: url.at.clone(),
-                    value: record.token.clone(),
-                })
-            }),
-    )
-    .map(|stamped| stamped.value);
+    let mut told = from_streams(&streams, &work, held_by.as_deref());
+    let change_stream = told.change_stream.clone();
+    let carrying = carrying(&holders, &answering.superseded);
+    // Before the tiers are asked, because a landing it records is one tier 1 then
+    // answers from — which is what puts a late merge into *this* read rather than
+    // into the next one. It takes no host where the caller has none to give.
+    if let Some(hosting) = hosting {
+        reconcile_late_merge(registry, &work, &mut told, &carrying, hosting);
+    }
     let judged = judge(
-        &carrying(&holders, &answering.superseded),
+        &carrying,
         &resolution,
         lent.as_deref(),
         &base,
@@ -926,7 +1023,12 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     });
 
     let held_by = session.as_ref().map(|session| session.token.to_string());
-    let told = from_streams(&streams, &work, held_by.as_deref());
+    let mut told = from_streams(&streams, &work, held_by.as_deref());
+    let carrying = carrying(&holders, &answering.superseded);
+    // Before the tiers, so a merge the host performed after this host stopped
+    // watching is decided *in* this read: it becomes a recorded landing, the word
+    // below is the word a record fixes, and the next step is recomputed from it.
+    reconcile_late_merge(registry, &work, &mut told, &carrying, hosting);
     let change_url = told.change_url.clone();
     let draft = told.draft.clone();
     let described = told.described.clone();
@@ -934,7 +1036,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let merge_path = told.merge_path.clone();
 
     let judged = judge(
-        &carrying(&holders, &answering.superseded),
+        &carrying,
         &resolution,
         lent.as_deref(),
         &base,
@@ -1484,7 +1586,14 @@ pub(crate) struct Recorded {
     token: String,
     identity: Option<String>,
     branch: Option<String>,
-    change_url: Option<Stamped<String>>,
+    /// What the newest `change-opened` on this stream recorded: the change
+    /// request's URL, the host's own identifier for it, and the branch it targets.
+    ///
+    /// One value rather than three, because they are one event's three fields and a
+    /// reader that took each by "whichever is newest" could compose an identifier
+    /// from one change request with a URL from another — which is a change request
+    /// nobody opened, addressed to a host.
+    opened: Option<Stamped<Opened>>,
     /// The commit a merge this host saw landed the work at, which is the record the
     /// most certain landing tier reads. An object id, because a stream is a file
     /// whichever process wrote it and this value goes on to be handed to git as a
@@ -1690,7 +1799,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         token: token.to_owned(),
         identity: None,
         branch: None,
-        change_url: None,
+        opened: None,
         landing: None,
         draft: None,
         lifted: None,
@@ -1777,7 +1886,18 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         match kind {
             EventKind::ChangeOpened => {
                 if let Some(url) = field("url") {
-                    record.change_url = Some(Stamped { at, value: url });
+                    record.opened = Some(Stamped {
+                        at,
+                        value: Opened {
+                            url,
+                            // Both are optional here because a stream written before
+                            // either was recorded is still a stream this reads: what
+                            // is missing leaves the change request unaddressable
+                            // rather than addressed by a guess.
+                            id: field("id"),
+                            base: field("base"),
+                        },
+                    });
                 }
             }
             // The publication record the draft amendment puts the reason in, read back:
@@ -1908,12 +2028,8 @@ pub(crate) fn recorded_for(
     let relevant = relevant_streams(streams, identity, branch, session);
     landed::Recorded {
         landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
-        change: latest(
-            relevant
-                .iter()
-                .filter_map(|record| record.change_url.clone()),
-        )
-        .and_then(|url| Url::parse(&url).ok()),
+        change: latest(relevant.iter().filter_map(|record| record.opened.clone()))
+            .and_then(|opened| Url::parse(&opened.url).ok()),
     }
 }
 
@@ -2037,9 +2153,9 @@ fn change_url(
         .iter()
         .find(|record| {
             record
-                .change_url
+                .opened
                 .as_ref()
-                .is_some_and(|recorded| recorded.value == url)
+                .is_some_and(|recorded| recorded.value.url == url)
         })
         .ok_or_else(|| Error::Invalid {
             reason: format!(

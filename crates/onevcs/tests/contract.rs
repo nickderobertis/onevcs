@@ -5883,3 +5883,47 @@ fn the_amendment_states_how_a_refusal_that_captured_nothing_diagnoses_itself() {
     );
     assert_eq!(FailureKind::PushRejected.exit_code(), 1);
 }
+
+#[test]
+fn the_amendment_states_the_once_per_read_reconciliation_of_a_late_merge() {
+    // `tests/e2e/library.rs` drives all three reads over the in-memory host — a
+    // publication that closes `checks-unsettled`, a merge the host performs
+    // afterwards, and the `status`, `release status` and `publish` that meet it.
+    // This holds the document to the rule those journeys prove.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "**A `status`, a `release status` or a `publish` that meets a recorded change request \
+         after such a close asks the host once.**",
+        "this host recorded a change request for the branch, it asked the host to land it, and \
+         no landing is recorded for it",
+        "the publication checkout is fast-forwarded onto it, each automated release target's \
+         baseline is captured at it, and the merge is written to the stream that opened the \
+         change",
+        "A change request the host reports open or closed-unmerged, and one the host cannot be \
+         asked about at all, each leave the record exactly as it stands.",
+        "`landing_status` asks nobody.",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the late-merge amendment no longer says: {sentence}"
+        );
+    }
+    // The landing is recorded as a kind the contract already names, and the two
+    // reads named above keep the signatures the contract fixes — which is what says
+    // the host reaches `release status` without widening the surface.
+    assert_eq!(
+        serde_json::to_value(EventKind::ChangeMerged).expect("a kind serializes"),
+        "change-merged"
+    );
+    let declared = amendment_declaring("pub fn release_status");
+    for line in [
+        "pub fn release_status(reference: &str, target: Option<&TargetName>) \
+         -> Result<ReleaseStatus>;",
+        "pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed>;",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the release amendment no longer declares: {line}"
+        );
+    }
+}

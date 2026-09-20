@@ -318,7 +318,28 @@ pub fn release_latest(repo: &str, target: Option<&TargetName>) -> Result<Release
 /// reference `onevcs status` takes: a change request's URL, a session token, a
 /// branch name, or a commit.
 pub fn release_status(reference: &str, target: Option<&TargetName>) -> Result<ReleaseStatus> {
-    release::status(&store::load()?, reference, target)
+    release::status(
+        &store::load()?,
+        reference,
+        target,
+        Providers::real().hosting,
+    )
+}
+
+/// [`release_status`] against supplied implementations, which is what the command
+/// line runs.
+///
+/// The signature above is the contract's and takes no [`Providers`], so it answers
+/// through the real host. The command line was handed implementations and asks the
+/// same question of those — the one question a release read puts to a host, which is
+/// whether a change request a `checks-unsettled` close stopped watching has merged
+/// since.
+pub(crate) fn release_status_with(
+    providers: &Providers<'_>,
+    reference: &str,
+    target: Option<&TargetName>,
+) -> Result<ReleaseStatus> {
+    release::status(&store::load()?, reference, target, providers.hosting)
 }
 
 /// Whether one piece of work reached its base, and what says so.
@@ -349,7 +370,7 @@ pub fn release_status(reference: &str, target: Option<&TargetName>) -> Result<Re
 /// decided from the history of the repositories under this host's own state root, and
 /// there is nothing here for an implementation of either interface to answer.
 pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
-    Ok(status::landing_of_within(&store::load()?, reference, repo)?.landed)
+    Ok(status::landing_of_within(&store::load()?, reference, repo, None)?.landed)
 }
 
 /// Record the release somebody says carries a landing.

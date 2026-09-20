@@ -2368,6 +2368,36 @@ failure kind is unchanged in both cases — `push-rejected`, exit code `1` — a
 
 Event kinds added: none.
 
+### A change request a `checks-unsettled` close stopped watching is reconciled once
+
+A `change-auto` publication watches the host for a fixed span and closes
+`checks-unsettled` when that span runs out. The merge often happens after it, and nothing
+afterwards asked: the landing tiers read stored records and the base's history, a status
+read deliberately never fetches, and the host is asked only which change requests are
+*open* — where a merged one is simply absent. A change merged five seconds after its last
+required check completed therefore went on being reported `closed without landing`, and
+the next attempt republished work the base already carried.
+
+**A `status`, a `release status` or a `publish` that meets a recorded change request after
+such a close asks the host once.** The question is asked in exactly one state — this host
+recorded a change request for the branch, it asked the host to land it, and no landing is
+recorded for it — and at most once per read, so a read that establishes the landing is the
+last one to ask. Where the host reports it merged, that merge commit is recorded as the
+landing the way a witnessed landing is recorded: the publication checkout is
+fast-forwarded onto it, each automated release target's baseline is captured at it, and
+the merge is written to the stream that opened the change. The read that found it then
+answers from that record — its landing tier, its publication state, and its planner
+guidance all recomputed in the same pass.
+
+A change request the host reports open or closed-unmerged, and one the host cannot be
+asked about at all, each leave the record exactly as it stands.
+
+`landing_status` asks nobody. The contract fixes its signature with no `Providers`, so it
+is the one landing read that consults no host and decides from history alone.
+
+Event kinds added: none — a landing found this way is recorded as the existing
+`change-merged`.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)
