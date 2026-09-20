@@ -129,7 +129,7 @@ skipping a slot maintained within that span. It exits `0` when nothing ran or ev
 command succeeded, `1` when any command failed or timed out, naming the artifact that
 holds what it wrote.
 
-`onevcs sweep [--dry-run] [--min-age-hours HOURS]` reclaims the workspaces those
+`onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]` reclaims the workspaces those
 landings leave behind. Every branch published by name cuts a run root — a clone, a
 worktree, and the merge path's preserved logs — under the state root, and until this rule
 existed nothing removed one; thirty-one of them filled a host's disk twice in a
@@ -143,7 +143,10 @@ outside the age floor `--min-age-hours` sets, and removing it is something this 
 can do at all. Everything else is retained and reported with the reason — a
 workspace somebody is still publishing in is never removed, and neither is one
 belonging to another manager on a shared state root — and the per-run lifecycle
-clones a session keeps as recovery history are outside it entirely.
+clones a session keeps as recovery history, the pool of warm slots beside them, and
+the unpublished branches sessions left behind are outside it entirely, each named in
+the report with the verb that reaches it. `--format json` writes the same report as
+one object a consumer reads by field name.
 
 Two things a proven-finished workspace still gets to keep. Its preserved logs
 last at least as long as the age floor, because they are what an operator reads
