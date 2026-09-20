@@ -211,3 +211,208 @@ fn a_resumed_session_takes_the_keys_the_request_names_and_keeps_the_rest() {
         serde_json::json!({"run": "r-2", "launcher": "s-manager"})
     );
 }
+
+/// Every row `recoverable --json` answers with, under `extra`.
+fn recoverable(fixture: &Fixture, extra: &[&str]) -> Vec<Value> {
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .args(extra)
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout).expect("`recoverable --json` prints rows")
+}
+
+/// The branch each row names, sorted, so a comparison is about which rows answered
+/// rather than about the order this report happens to put them in.
+fn branches(rows: &[Value]) -> Vec<String> {
+    let mut named: Vec<String> = rows
+        .iter()
+        .map(|row| row["branch"]["branch"].as_str().expect("a branch").to_owned())
+        .collect();
+    named.sort();
+    named
+}
+
+fn row<'a>(rows: &'a [Value], branch: &str) -> &'a Value {
+    rows.iter()
+        .find(|row| row["branch"]["branch"] == branch)
+        .unwrap_or_else(|| panic!("{branch} is reported: {rows:?}"))
+}
+
+/// One preserved branch of its own session, stamped with `labels`.
+fn preserved(fixture: &Fixture, branch: &str, labels: &[&str]) -> String {
+    let mut extra = vec!["--branch", branch];
+    for label in labels {
+        extra.extend(["--label", label]);
+    }
+    let (token, worktree) = fixture.open(&extra);
+    fixture
+        .world
+        .commit_file(&worktree, "a.txt", branch, &format!("feat: {branch}"));
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    token
+}
+
+#[test]
+fn every_recoverable_row_names_the_session_that_answers_for_it_and_the_labels_it_carries() {
+    let fixture = Fixture::local(&local_direct());
+    let mine = preserved(&fixture, "feature/mine", &["run=r-1", "node=implement"]);
+    let plain = preserved(&fixture, "feature/plain", &[]);
+    // Work no session of this crate ever opened, which is what a `worktree-agent-*`
+    // branch left behind by something else is. Made with real git in the registered
+    // checkout, because that is how one gets there.
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "-b", "worktree-agent-7"]);
+    fixture
+        .world
+        .commit_file(&fixture.checkout, "b.txt", "b\n", "feat: agent work");
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    let rows = recoverable(&fixture, &[]);
+    assert_eq!(row(&rows, "feature/mine")["session"], mine);
+    assert_eq!(
+        row(&rows, "feature/mine")["labels"],
+        serde_json::json!({"run": "r-1", "node": "implement"})
+    );
+    // A session opened without labels answers for its branch and carries none.
+    assert_eq!(row(&rows, "feature/plain")["session"], plain);
+    assert_eq!(
+        row(&rows, "feature/plain")["labels"],
+        serde_json::json!({})
+    );
+    // And a branch no record names says so, rather than borrowing somebody's.
+    assert_eq!(row(&rows, "worktree-agent-7")["session"], Value::Null);
+    assert_eq!(
+        row(&rows, "worktree-agent-7")["labels"],
+        serde_json::json!({})
+    );
+    // Every field the report carried before these two is still there, and the row is
+    // still the row a consumer parses.
+    let mine_row = row(&rows, "feature/mine");
+    for field in [
+        "identity",
+        "branch",
+        "checkout",
+        "landed",
+        "stopped_because",
+        "recover_command",
+    ] {
+        assert!(
+            mine_row.get(field).is_some(),
+            "{field} is still on the row: {mine_row}"
+        );
+    }
+}
+
+#[test]
+fn the_two_filters_narrow_recoverable_and_a_token_no_record_names_is_refused() {
+    let fixture = Fixture::local(&local_direct());
+    let first = preserved(&fixture, "feature/first", &["run=r-1", "node=implement"]);
+    let second = preserved(&fixture, "feature/second", &["run=r-1", "node=review"]);
+    preserved(&fixture, "feature/other", &["run=r-2"]);
+    let whole = recoverable(&fixture, &[]);
+    assert_eq!(whole.len(), 3, "three preserved branches: {whole:?}");
+
+    // A label pair every row of one run carries answers that run's branches, and each
+    // filtered row is byte for byte the row the unfiltered read answered with — the
+    // narrowing chooses rows and never shapes them.
+    let run = recoverable(&fixture, &["--label", "run=r-1"]);
+    assert_eq!(
+        branches(&run),
+        vec!["feature/first".to_owned(), "feature/second".to_owned()]
+    );
+    for carried in &run {
+        assert_eq!(
+            carried,
+            row(&whole, carried["branch"]["branch"].as_str().expect("a branch name")),
+            "a filtered row is the unfiltered row"
+        );
+    }
+
+    // Every pair given must match.
+    let narrower = recoverable(&fixture, &["--label", "run=r-1", "--label", "node=review"]);
+    assert_eq!(narrower, vec![row(&whole, "feature/second").clone()]);
+
+    // A pair nothing carries is an answer, not a refusal: status 0 and an empty
+    // report, because "nothing of that run is left to publish" is what a consumer
+    // holding its work behind this read acts on.
+    assert_eq!(
+        recoverable(&fixture, &["--label", "run=r-9"]),
+        Vec::<Value>::new()
+    );
+
+    // A token names the branches its session holds or held.
+    assert_eq!(
+        recoverable(&fixture, &["--session", &first]),
+        vec![row(&whole, "feature/first").clone()]
+    );
+    assert_eq!(
+        branches(&recoverable(
+            &fixture,
+            &["--session", &first, "--session", &second]
+        )),
+        vec!["feature/first".to_owned(), "feature/second".to_owned()]
+    );
+
+    // The two combine with each other and with `--repo`.
+    assert_eq!(
+        recoverable(
+            &fixture,
+            &[
+                "--repo",
+                "project",
+                "--session",
+                &first,
+                "--session",
+                &second,
+                "--label",
+                "node=review",
+            ]
+        ),
+        vec![row(&whole, "feature/second").clone()]
+    );
+
+    // …and a token no record on this host names is refused by name. "Nothing of that
+    // session is left to publish" and "there is no such session" are different
+    // answers, and a consumer sequencing work behind the first must never be handed
+    // it in place of the second.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json", "--session", "s-nobody"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("s-nobody"));
+    // The filter reads the label grammar the session verbs read, and refuses it the
+    // same way.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--label", "run"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("is not a label"));
+
+    // A narrowed human rendering says it was narrowed, for the reason a scoped one
+    // says it was scoped: an answer about one run's sessions reads exactly like an
+    // empty host.
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--label", "run=r-9"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--label run=r-9"));
+}
