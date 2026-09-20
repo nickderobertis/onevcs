@@ -17,7 +17,7 @@ use crate::cli::{
     ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs,
     ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs,
     RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StatusArgs, SweepArgs, SyncArgs,
+    SessionTokenArgs, StatusArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -1250,9 +1250,18 @@ fn sync(args: &SyncArgs) -> Result<u8> {
 /// outcome it reports is a decision, so a directory somebody else owns is an expected
 /// outcome of a shared state root rather than a failure, and a status code that fell
 /// over on one would say nothing a composing caller could act on.
+///
+/// The two formats are two renderings of the one report, so a consumer reading the
+/// JSON and an operator reading the prose are told the same decisions.
 fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
-    println!("{}", sweep::run(args.dry_run, args.min_age_hours)?);
-    Ok(0)
+    let report = sweep::run(args.dry_run, args.min_age_hours)?;
+    match args.format {
+        SweepFormat::Json => print_json(&report),
+        SweepFormat::Text => {
+            println!("{report}");
+            Ok(0)
+        }
+    }
 }
 
 fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {

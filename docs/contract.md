@@ -2274,6 +2274,78 @@ report, so nothing new is written to a stream.
 
 Event kinds added: none.
 
+**`onevcs sweep` reports in a machine-readable form, and every family it names is
+swept or owned.** The verb takes `--format text|json`, defaulting to `text`, so every
+caller that says nothing sees what it saw. Under `json` it writes **one JSON object**
+to stdout: the same report the text form renders, serialized from the same value, so
+the two cannot disagree. The field names are the contract, and a consumer reads them
+by name:
+
+```
+onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]
+```
+
+```json
+{"schema_version": 1,
+ "verb": "onevcs sweep",
+ "dry_run": false,
+ "min_age_hours": 4.0,
+ "root": "/home/me/.onevcs/workspaces",
+ "examined": [
+   {"family": "publications", "path": "/home/me/.onevcs/workspaces/publications",
+    "roots": 3, "unreadable": []},
+   {"family": "recoveries", "path": "/home/me/.onevcs/workspaces/recoveries",
+    "roots": null, "unreadable": []}],
+ "not_examined": [
+   {"family": "lifecycle-runs", "path": "/home/me/.onevcs/workspaces/<identity>/runs",
+    "reason": "the per-run lifecycle clone root, which `onevcs session open` keeps as a bounded recovery history so a dead run's branch stays reachable; this verb does not reach into it",
+    "owner": "`onevcs recoverable --repo project` names the branch each retained run left and the verb that lands or discards it; the next `onevcs session open` of this repository reclaims a run root once nothing holds it"},
+   {"family": "pool", "path": "/home/me/.onevcs/workspaces/<identity>/pool",
+    "reason": "the pool of warm slots a session of this repository may be placed on next; this verb does not reach into it",
+    "owner": "`onevcs pool status project` reads the slots; `onevcs pool prune project` empties the idle ones"},
+   {"family": "preserved-branches", "path": "/home/me/src/project",
+    "reason": "the unpublished branches sessions of this repository left behind — handed back into this checkout, or still only in a run clone under runs/ — each of which holds its run root from reclamation; this verb lands and discards none of them",
+    "owner": "`onevcs recoverable --repo project` names each one and the verb that lands or discards it"}],
+ "reclaimed": [{"path": "/home/me/.onevcs/workspaces/publications/feature-x-1a2b-3c4d-1",
+                "bytes": 12345, "processes": [4242]}],
+ "retained": [{"path": "/home/me/.onevcs/workspaces/publications/feature-y-1a2b-3c4e-1",
+               "why": "a live session holds its occupancy lease; nothing was removed and nothing was terminated"}],
+ "session_records": [{"path": "/home/me/.onevcs/sessions/s-abc.json", "session": "s-abc",
+                      "branch": "feature/z", "why": "forgotten"}],
+ "totals": {"examined_roots": 3, "reclaimed": 1, "reclaimed_bytes": 12345, "retained": 1}}
+```
+
+`schema_version` is `1`, and moves when a field is renamed or removed, never when one
+is added. `verb` names the tool, so a caller composing this report with another
+sweep's can tell them apart. `min_age_hours` is the floor the run used, as a number.
+`examined[].roots` is `null` for a family nothing has cut a run root under yet (the
+text form's *nothing has cut a run root at … yet*), and `unreadable` lists the entries
+of it the listing would not name. `reclaimed[].processes` is the pids of the
+processes that were working inside the workspace, and `dry_run` says whether they
+were signalled or would have been — a rehearsal signals nothing. `retained[].why` and
+`session_records[].why` are the sentences the text form prints; `session_records[]`
+names each spent record by its token and the branch its session worked on. `totals`
+is what a consumer counts without walking the sections.
+
+**Every family the report names is either examined by this verb, or carries a
+non-empty `owner` naming the verb or the concrete operator action that reaches it.**
+`family` is a stable lowercase-hyphenated word a consumer switches on; `reason` and
+`owner` are prose it prints. The families examined are `publications` and
+`recoveries`. The families this verb never examines and always owns — one entry per
+identity that has a directory under the root — are `lifecycle-runs`
+(`<identity>/runs`, reached by `onevcs recoverable` and the identity's next `session
+open`), `pool` (`<identity>/pool`, reached by `pool status` and `pool prune`), and
+`preserved-branches` (the identity's registered checkout, where a hand-back puts
+them, reached by `onevcs recoverable`). Three more can appear, each owned by whoever
+can reach it: `stray`, for an entry under the root that is not onevcs state; `root`,
+when an entry of the root itself could not be read; and an examined family's own
+name, when it is there and cannot be listed. The text form's `Families not examined:`
+section prints the same entries — each one's path and reason on one line, and
+`<family>, reached by <owner>` indented on the next — and nothing else in the text
+form moved.
+
+Event kinds added: none.
+
 ### A session record carries the labels its opener stamped, and the listings filter on them
 
 **The join between a run and the session its node opened belongs on the session

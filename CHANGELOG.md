@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0](https://github.com/nickderobertis/onevcs/compare/v0.27.0...v0.28.0) - 2026-09-20
+
+### Added
+
+- *(sweep)* report the sweep as JSON and name every owned family the verb does not reach ([#183](https://github.com/nickderobertis/onevcs/pull/183))
+
 ## [0.27.0](https://github.com/nickderobertis/onevcs/compare/v0.26.0...v0.27.0) - 2026-09-19
 
 ### Added

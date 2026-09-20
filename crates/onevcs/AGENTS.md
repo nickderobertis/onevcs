@@ -866,7 +866,19 @@ Six rules govern how it decides.
   half-emptied.
 
 The flag surface is shared with `oneagentgraph sweep`, spelling for spelling and
-default for default; neither side may amend it alone.
+default for default; neither side may amend it alone. That includes `--format
+text|json`, which is why the report's JSON form is not this crate's usual `--json`.
+
+**The report is one value rendered two ways, and every family it names is examined
+or owned.** `--format json` is `sweep::Report`'s `Serialize` and the text form is its
+`Display`, so neither can say something the other does not; the field names are an
+approved amendment in `docs/contract.md`, and
+`the_json_report_is_the_text_report_and_every_family_it_names_is_swept_or_owned`
+holds both forms to the fixture spelled there. A `NotExamined` entry's `owner` is
+never empty — it names the verb or the operator action that reaches the family,
+because the consumer host used to compose that list itself from the prose — so a
+family this verb newly leaves alone is added with its owner, in the code and in the
+amendment's fixture, or that journey refuses it.
 
 **A session's own run roots are reaped by `workspace::reclaim`, and the occupancy
 lease is not what proves one abandoned.** The lease is per command and outlives
