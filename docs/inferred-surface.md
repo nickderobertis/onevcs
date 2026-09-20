@@ -492,13 +492,17 @@ Recording the shared surface is what lets the composing caller reconcile it, and
 neither side may amend it alone. -->
 
 ```
-onevcs sweep [--dry-run] [--min-age-hours HOURS]
+onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]
 ```
 
 The flag surface is **shared with `oneagentgraph sweep`**, spelling for spelling
 and default for default, because one composing caller (`ai-orchestrator`'s
 `just sweep-scratch`) forwards its own arguments to both unchanged. Neither side
-may depart from it alone.
+may depart from it alone. That is why the report's machine-readable form is
+`--format json` rather than this crate's usual `--json`: the other verb spells it
+that way, and the two are forwarded to as one. The JSON shape, and the rule that
+every family the report names is examined or owned, are an approved amendment in
+`docs/contract.md`.
 
 **Why the verb is here rather than in a general-purpose sweeper.** What makes a
 publication workspace reclaimable is `onevcs` state: its merge path has recorded a
@@ -516,8 +520,9 @@ something to read.
 | `sweep` with no operand | the two families this crate cuts run roots under, and the session records beside them — nothing else | It is asked about this tool's own disk, and a path operand would make it a general-purpose remover pointed at whatever a caller typed. `branch::Verb::ALL` is the list, so the verbs that make the directories and the verb that reaps them cannot come to disagree about where they are. |
 | `--dry-run` | reports the same decisions and removes nothing | What a caller wants from a rehearsal is what the real run would decide, so the two runs differ in the removal alone. |
 | `--min-age-hours HOURS` | a window, defaulting to 24 hours | Parsed into a `Duration` at the boundary, so nothing past the parser can be handed hours that are negative, infinite, or not a number. |
+| `--format text\|json` | `text` unless asked; `json` is one object, from the same value the text form renders | A consumer host was parsing the prose with `awk` to count what the sweep examined and to compose the list of families it left alone and who owns each — and both verbs it composed answered that in no form a script could read. One value rendered two ways is what keeps the JSON and the prose from ever disagreeing. |
 | the exit code | `0` whenever the sweep *ran* | A run root it could not prove dead, or could not remove, is a line in the report. A caller that got a non-zero code for a directory somebody else is inside could not tell that from a sweep that never happened. |
-| the report | every family examined, every family it did not examine and why, what it reclaimed, every retained directory with its reason, and every session record it considered with what became of it | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. A record silently removed is the same defect one verb along: it is a session an operator can no longer close, publish, or adopt. |
+| the report | every family examined, every family it did not examine with why and **who reaches it**, what it reclaimed, every retained directory with its reason, and every session record it considered with what became of it | It is read to decide whether the disk is accounted for, and a directory that vanished from it reads as one nobody had to think about. A record silently removed is the same defect one verb along: it is a session an operator can no longer close, publish, or adopt. A family named with nobody to reach it is the same defect again: the consumer host composed the owners itself, from prose. |
 
 **The session records are litter of the same kind, and this is the one verb that
 removes one.** A record whose owner process has gone, whose run root nobody is
@@ -561,13 +566,18 @@ exists to prevent.
 | which processes those are | the ones whose **working directory** is inside the run root | It is what a hook's children inherit and what nothing else on a shared host has. A name or a command line would be this crate guessing which of a host's processes are its business. This process, everything it descends from, and any pid at or below `1` are never signalled — an operator who ran a sweep from inside a workspace is not a daemon. |
 | a workspace whose holders would not stop | kept, reported, and not removed | Half-emptying a tree a live process is still writing into is worse than the tree that was there, and the space would not come back anyway. |
 
-**One boundary is deliberately outside it.** `workspaces/<identity>/runs` is the
-per-run lifecycle clone root, which `workspace::reclaim` keeps as a bounded
-recovery history so a dead run's branch stays reachable. This verb reports it as a
-family it does not reach into rather than reaping it — and forgetting a record is not
-reaching into it, because what a spent record names is a run root whose session left
-nothing behind, which is one `workspace::reclaim` removes on sight. **`recoveries` is
-inside**,
+**Three boundaries are deliberately outside it, and each is owned.**
+`workspaces/<identity>/runs` is the per-run lifecycle clone root, which
+`workspace::reclaim` keeps as a bounded recovery history so a dead run's branch stays
+reachable; `workspaces/<identity>/pool` is the warm slots `pool::place` hands the next
+session; and the unpublished branches sessions left behind — in the identity's
+registered checkout after a hand-back, or still only in a run clone — are what hold a
+run root from reclamation at all. This verb reports each as a family it does not reach
+into, with the verb that does (`onevcs recoverable`, `onevcs pool status` and `pool
+prune`, the identity's next `session open`), rather than reaping any of them — and
+forgetting a record is not reaching into one, because what a spent record names is a
+run root whose session left nothing behind, which is one `workspace::reclaim` removes
+on sight. **`recoveries` is inside**,
 and that was a decision rather than an oversight: it is the same directory shape
 cut by the same function under the same two proofs, and leaving it out would mean
 one of two families filling a disk that the other no longer does.
@@ -583,7 +593,7 @@ That reconciliation belongs to the caller that composes the two, and is why neit
 side may amend the surface alone.
 
 The verb adds no public library item: `sweep` is a private module, and what the
-CLI gains is the verb and its two options.
+CLI gains is the verb and its three options.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] the shared-surface
 record ends here. -->
 

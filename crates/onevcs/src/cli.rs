@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use url::Url;
 
 use crate::releases::TargetName;
@@ -510,8 +510,24 @@ pub struct SweepArgs {
         value_parser = sweep::hours,
     )]
     pub min_age_hours: Duration,
+    /// How to write the report: prose, or one JSON object a consumer reads by field
+    /// name.
+    // `--format` rather than this crate's usual `--json`, because the option is
+    // forwarded to `oneagentgraph sweep` unchanged by the same composing caller as the
+    // two above and that verb spells it this way.
+    #[arg(long, value_enum, value_name = "FORMAT", default_value_t = SweepFormat::Text)]
+    pub format: SweepFormat,
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+/// How `onevcs sweep` writes its report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SweepFormat {
+    /// The human report: what it did, then what it kept and why.
+    Text,
+    /// One JSON object carrying the same report.
+    Json,
+}
 
 /// Arguments for `onevcs events`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]

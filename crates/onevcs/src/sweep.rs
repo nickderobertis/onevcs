@@ -41,28 +41,51 @@
 //! for the same reason — a session opened a minute ago is one a dispatch is about to
 //! work in.
 //!
-//! One boundary is deliberately outside it. `<identity>/runs` is the per-run
-//! lifecycle clone root, which [`crate::workspace`] keeps as a bounded recovery
-//! history so a dead run's branch stays reachable; this verb reports it as a
-//! family it does not reach into rather than reaping it. Forgetting a record is not
-//! reaching into it: what a spent record names is a run root whose session left
-//! nothing behind, which is one [`crate::workspace`]'s own reclamation removes on
-//! sight.
+//! Three boundaries are deliberately outside it, and **every family the report
+//! names is either examined here or carries an owner** — the verb or the operator
+//! action that reaches it — so a caller composing this with another tool's sweep
+//! reads who answers for what rather than composing that list itself.
+//! `<identity>/runs` is the per-run lifecycle clone root, which [`crate::workspace`]
+//! keeps as a bounded recovery history so a dead run's branch stays reachable;
+//! `<identity>/pool` holds the warm slots [`crate::pool`] places a session on next;
+//! and the unpublished branches sessions left behind — handed back into the
+//! identity's checkout, or still only in a run clone — are what hold a run root
+//! from reclamation at all, and `onevcs recoverable` is the verb that names each
+//! one. Forgetting a record is not reaching into any of them: what a spent record
+//! names is a run root whose session left nothing behind, which is one
+//! [`crate::workspace`]'s own reclamation removes on sight.
+//!
+//! The report is one value rendered two ways — `--format text` is [`Report`]'s
+//! `Display`, `--format json` is its `Serialize` — so the two cannot disagree, and
+//! a consumer that reads the JSON reads the field names [`SCHEMA_VERSION`] fixes.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use filetime::FileTime;
+use serde::ser::{SerializeStruct, Serializer};
+use serde::Serialize;
 
 use crate::branch::Verb;
 use crate::error::{self, Result};
 use crate::landed;
 use crate::processes::{self, Holder};
 use crate::provenance;
-use crate::store;
+use crate::store::{self, Resolution};
 use crate::{git, guidance, home, ids, lock, merge_path, workspace};
+
+/// The version of the JSON report `--format json` writes.
+///
+/// A consumer reads the report by field name, and this is what tells it which set of
+/// names it is reading: a field renamed or removed bumps it, a field added does not.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// The verb the JSON report names itself as, so a consumer composing this report
+/// with another tool's can tell which is which without reading the file name.
+const VERB: &str = "onevcs sweep";
 
 /// How many dead run roots holding work no origin has are kept past the age floor.
 ///
@@ -112,15 +135,23 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
         dry_run,
         min_age,
         examined: Vec::new(),
-        skipped: Vec::new(),
+        not_examined: Vec::new(),
         reclaimed: Vec::new(),
         retained: Vec::new(),
         records: Vec::new(),
     };
 
+    // Read once, before the first family, so every workspace this pass judges is
+    // judged against the one view of what this host recorded — and before the root
+    // is listed, because which of its directories belong to a registered identity is
+    // read out of the same registry.
+    let landings = landings()?;
+    let identities = identities(&landings.registry)?;
+
     // A state root nothing has cut a workspace under yet is a sweep with nothing to
     // do rather than a sweep that could not run; one that is there and unreadable is
     // the second, because every family below it is then unanswerable.
+    let mut outside: Vec<PathBuf> = Vec::new();
     match std::fs::read_dir(&root) {
         Ok(entries) => {
             for entry in entries {
@@ -136,9 +167,15 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
                 let entry = match entry {
                     Ok(entry) => entry,
                     Err(e) => {
-                        report.skipped.push(Skipped {
+                        report.not_examined.push(NotExamined {
+                            family: ROOT,
                             path: root.clone(),
                             reason: format!("an entry under it could not be read: {e}"),
+                            owner: format!(
+                                "an operator who can list {}: this verb names every family \
+                                 under it once the listing answers",
+                                root.display()
+                            ),
                         });
                         continue;
                     }
@@ -148,22 +185,19 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
                 if Verb::ALL.iter().any(|verb| verb.runs() == name) {
                     continue;
                 }
-                report.skipped.push(Skipped {
-                    path: entry.path(),
-                    reason: outside_this_verb(&entry.path()),
-                });
+                outside.push(entry.path());
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(error::at("read the workspaces under", &root)(e)),
     }
-    report
-        .skipped
-        .sort_by(|a, b| a.path.cmp(&b.path).then(a.reason.cmp(&b.reason)));
+    // By path, so the report reads the same however the kernel lists the root; the
+    // families of one identity then follow each other in one fixed order.
+    outside.sort();
+    for path in outside {
+        outside_this_verb(&mut report, path, &identities);
+    }
 
-    // Read once, before the first family, so every workspace this pass judges is
-    // judged against the one view of what this host recorded.
-    let landings = landings()?;
     let mut families: Vec<Verb> = Verb::ALL.to_vec();
     // By the directory's own name rather than by the enum's order, so the report
     // reads the same however the verbs come to be declared.
@@ -236,7 +270,7 @@ pub fn enforce(verb: Verb) -> Result<()> {
         dry_run: false,
         min_age,
         examined: Vec::new(),
-        skipped: Vec::new(),
+        not_examined: Vec::new(),
         reclaimed: Vec::new(),
         retained: Vec::new(),
         // Empty and left so. A landing is housekeeping for the directory it is about
@@ -249,11 +283,11 @@ pub fn enforce(verb: Verb) -> Result<()> {
     // A family this pass could not read is a pass that did not happen, and the caller
     // is told so: the verb has a report to say it in and this has only its answer, so
     // silence here would be a landing leaving the disk to fill with nothing said.
-    match report.skipped.first() {
-        Some(skipped) => Err(error::invalid(format!(
+    match report.not_examined.first() {
+        Some(unread) => Err(error::invalid(format!(
             "{}: {}",
-            skipped.path.display(),
-            skipped.reason
+            unread.path.display(),
+            unread.reason
         ))),
         None => Ok(()),
     }
@@ -273,7 +307,13 @@ fn family(report: &mut Report, verb: Verb, min_age: Duration, landings: &Landing
             return Ok(());
         }
         Err(e) => {
-            report.skipped.push(Skipped {
+            report.not_examined.push(NotExamined {
+                family: verb.runs(),
+                owner: format!(
+                    "an operator who can list {}: this verb examines the family once its \
+                     listing answers",
+                    directory.display()
+                ),
                 path: directory,
                 reason: format!("cannot read this family of run roots: {e}"),
             });
@@ -490,25 +530,111 @@ fn probe(directory: &Path) -> std::io::Result<()> {
     filetime::set_file_times(directory, accessed, modified)
 }
 
-/// Why a directory under the workspaces root is none of this verb's business.
-fn outside_this_verb(path: &Path) -> String {
-    if path.join("runs").is_dir() || path.join("pool").is_dir() {
-        let mut reason = "the per-run lifecycle clone root, which `onevcs session open` keeps \
-                          as a bounded recovery history so a dead run's branch stays \
-                          reachable; this verb does not reach into it"
-            .to_owned();
-        // The pool is named where there is one: its slots are `pool status`'s to
-        // report and `pool prune`'s to remove, and a sweep that said nothing about
-        // them would read as having examined them.
-        if path.join("pool").is_dir() {
-            reason.push_str(
-                ", nor into the pool of warm slots beside it, which `onevcs pool status` \
-                 reports and `onevcs pool prune` removes",
-            );
+/// The `not_examined` family of the per-run lifecycle clone root.
+const LIFECYCLE_RUNS: &str = "lifecycle-runs";
+/// The `not_examined` family of an identity's warm slots.
+const POOL: &str = "pool";
+/// The `not_examined` family of the unpublished branches an identity's sessions left.
+const PRESERVED_BRANCHES: &str = "preserved-branches";
+/// The `not_examined` family of an entry under the root nothing of this crate's cut.
+const STRAY: &str = "stray";
+/// The `not_examined` family of the root itself, where an entry of it could not be
+/// read.
+const ROOT: &str = "root";
+
+/// Every registered identity whose directory could be under the root, by that
+/// directory, with the checkout its verbs are asked through.
+///
+/// An identity with no registered checkout has no `Resolution` and is left out: the
+/// directory is still named by shape below, but nothing can say which repository to
+/// ask `onevcs recoverable` about, and a guess would name a verb that refuses.
+fn identities(registry: &crate::registry::Registry) -> Result<BTreeMap<PathBuf, Resolution>> {
+    let mut known = BTreeMap::new();
+    for key in registry.identities.keys() {
+        if let Ok(resolution) = store::resolve(registry, key) {
+            known.insert(workspace::identity_dir(key)?, resolution);
         }
-        return reason;
     }
-    "not a family this verb cuts run roots under".to_owned()
+    Ok(known)
+}
+
+/// Name every family under a directory of the workspaces root that is none of this
+/// verb's business, each with the verb or the operator action that reaches it.
+///
+/// An identity's directory holds up to three: the per-run lifecycle clone root and
+/// the pool, named where each is there, and the preserved branches its sessions
+/// left, named for every identity the registry knows — a family that is empty today
+/// is still one this verb never examines, and a section that named it only when it
+/// was full would read as examined the rest of the time. The verbs that reach them
+/// are spelled with the identity's alias where the registry has one, so an operator
+/// can paste the line; a directory of an identity nobody registered any more is
+/// still named by its shape, with the verb spelled generically.
+fn outside_this_verb(
+    report: &mut Report,
+    path: PathBuf,
+    identities: &BTreeMap<PathBuf, Resolution>,
+) {
+    let known = identities.get(&path);
+    let repo = known.map_or("REPO".to_owned(), |known| known.alias.clone());
+    let runs = path.join("runs");
+    let pool = path.join("pool");
+    if !runs.is_dir() && !pool.is_dir() && known.is_none() {
+        report.not_examined.push(NotExamined {
+            family: STRAY,
+            path,
+            reason: "not a family this verb cuts run roots under".to_owned(),
+            owner: "whoever put it there: it is not onevcs state, no onevcs verb touches it, \
+                    and removing it by hand is theirs"
+                .to_owned(),
+        });
+        return;
+    }
+    if runs.is_dir() {
+        report.not_examined.push(NotExamined {
+            family: LIFECYCLE_RUNS,
+            path: runs,
+            reason: "the per-run lifecycle clone root, which `onevcs session open` keeps as a \
+                     bounded recovery history so a dead run's branch stays reachable; this \
+                     verb does not reach into it"
+                .to_owned(),
+            owner: format!(
+                "`onevcs recoverable --repo {repo}` names the branch each retained run left \
+                 and the verb that lands or discards it; the next `onevcs session open` of \
+                 this repository reclaims a run root once nothing holds it"
+            ),
+        });
+    }
+    // The pool is named where there is one: its slots are `pool status`'s to report
+    // and `pool prune`'s to remove, and a sweep that said nothing about them would
+    // read as having examined them.
+    if pool.is_dir() {
+        report.not_examined.push(NotExamined {
+            family: POOL,
+            path: pool,
+            reason: "the pool of warm slots a session of this repository may be placed on \
+                     next; this verb does not reach into it"
+                .to_owned(),
+            owner: format!(
+                "`onevcs pool status {repo}` reads the slots; `onevcs pool prune {repo}` \
+                 empties the idle ones"
+            ),
+        });
+    }
+    if let Some(known) = known {
+        report.not_examined.push(NotExamined {
+            family: PRESERVED_BRANCHES,
+            path: known.publication.clone(),
+            reason: "the unpublished branches sessions of this repository left behind — \
+                     handed back into this checkout, or still only in a run clone under \
+                     runs/ — each of which holds its run root from reclamation; this verb \
+                     lands and discards none of them"
+                .to_owned(),
+            owner: format!(
+                "`onevcs recoverable --repo {repo}` names each one and the verb that lands \
+                 or discards it"
+            ),
+        });
+    }
 }
 
 /// What a run root is, and — where it is not reclaimable — why it was kept.
@@ -868,7 +994,9 @@ fn size_of(path: &Path) -> u64 {
 }
 // llmlint: ignore-end[changed_behavior_has_e2e]
 
+#[derive(Serialize)]
 struct Examined {
+    #[serde(rename = "family")]
     name: &'static str,
     path: PathBuf,
     /// How many run roots it holds, or `None` for a family nothing has cut one under.
@@ -878,9 +1006,18 @@ struct Examined {
     unreadable: Vec<String>,
 }
 
-struct Skipped {
+/// One family this sweep did not examine, and who reaches it.
+///
+/// `owner` is never empty: the invariant this report states is that every family it
+/// names is examined or owned, and an entry here with nobody named would be a family
+/// the disk is not accounted for under. `family` is a stable lowercase-hyphenated word
+/// a consumer switches on; `reason` and `owner` are prose it prints.
+#[derive(Serialize)]
+struct NotExamined {
+    family: &'static str,
     path: PathBuf,
     reason: String,
+    owner: String,
 }
 
 /// One spent session record this sweep considered, and what became of it.
@@ -923,6 +1060,7 @@ impl Forgetting {
     }
 }
 
+#[derive(Serialize)]
 struct Reclaimed {
     path: PathBuf,
     bytes: u64,
@@ -957,6 +1095,22 @@ impl Signalled {
             false => said.replace("{}", &describe_processes(pids)),
         }
     }
+
+    /// The processes either way, which is what the JSON carries: the report's own
+    /// `dry_run` says whether they were signalled or would have been, so the list is
+    /// one shape there and the distinction is read off the field that already states
+    /// it.
+    fn pids(&self) -> &[processes::Pid] {
+        match self {
+            Signalled::WouldReach(pids) | Signalled::Released(pids) => pids,
+        }
+    }
+}
+
+impl Serialize for Signalled {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.pids().serialize(serializer)
+    }
 }
 
 /// What a rehearsal says about the processes it would have reached for, with `{}`
@@ -967,9 +1121,20 @@ const WOULD_SIGNAL: &str = ", and would signal {} working inside it";
 /// them.
 const SIGNALLED: &str = ", after signalling {} that then let it go";
 
+#[derive(Serialize)]
 struct Retained {
     path: PathBuf,
+    /// Why, as the report states it: the prose is the contract a consumer reads, and
+    /// the typed reason behind it stays this module's.
+    #[serde(serialize_with = "describe_kept")]
     why: Kept,
+}
+
+fn describe_kept<S: Serializer>(
+    kept: &Kept,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    kept.describe().serialize(serializer)
 }
 
 /// The sentence a run root somebody is inside is reported with.
@@ -1073,7 +1238,7 @@ pub struct Report {
     dry_run: bool,
     min_age: Duration,
     examined: Vec<Examined>,
-    skipped: Vec<Skipped>,
+    not_examined: Vec<NotExamined>,
     reclaimed: Vec<Reclaimed>,
     retained: Vec<Retained>,
     records: Vec<SessionRecord>,
@@ -1083,6 +1248,71 @@ impl Report {
     /// How much this sweep reclaimed, or would have.
     fn bytes(&self) -> u64 {
         self.reclaimed.iter().map(|entry| entry.bytes).sum()
+    }
+
+    /// How many run roots the examined families hold between them.
+    fn examined_roots(&self) -> usize {
+        self.examined
+            .iter()
+            .map(|family| family.roots.unwrap_or(0))
+            .sum()
+    }
+}
+
+/// One spent session record as the JSON carries it: the record's own names, and the
+/// outcome as the text form states it under the same `dry_run`.
+#[derive(Serialize)]
+struct SessionRecordLine<'a> {
+    path: &'a Path,
+    session: &'a workspace::Token,
+    branch: &'a workspace::Ref,
+    why: String,
+}
+
+/// The figures a consumer counts from the report without walking its sections.
+#[derive(Serialize)]
+struct Totals {
+    examined_roots: usize,
+    reclaimed: usize,
+    reclaimed_bytes: u64,
+    retained: usize,
+}
+
+/// The JSON form: every section the text form renders, from the same value, under
+/// the field names [`SCHEMA_VERSION`] fixes.
+impl Serialize for Report {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut report = serializer.serialize_struct("Report", 11)?;
+        report.serialize_field("schema_version", &SCHEMA_VERSION)?;
+        report.serialize_field("verb", VERB)?;
+        report.serialize_field("dry_run", &self.dry_run)?;
+        report.serialize_field("min_age_hours", &(self.min_age.as_secs_f64() / 3600.0))?;
+        report.serialize_field("root", &self.root)?;
+        report.serialize_field("examined", &self.examined)?;
+        report.serialize_field("not_examined", &self.not_examined)?;
+        report.serialize_field("reclaimed", &self.reclaimed)?;
+        report.serialize_field("retained", &self.retained)?;
+        let records: Vec<SessionRecordLine<'_>> = self
+            .records
+            .iter()
+            .map(|record| SessionRecordLine {
+                path: &record.path,
+                session: &record.token,
+                branch: &record.branch,
+                why: record.outcome.describe(self.dry_run),
+            })
+            .collect();
+        report.serialize_field("session_records", &records)?;
+        report.serialize_field(
+            "totals",
+            &Totals {
+                examined_roots: self.examined_roots(),
+                reclaimed: self.reclaimed.len(),
+                reclaimed_bytes: self.bytes(),
+                retained: self.retained.len(),
+            },
+        )?;
+        report.end()
     }
 }
 
@@ -1127,12 +1357,16 @@ impl fmt::Display for Report {
             }
         }
 
+        // Each with who reaches it, on the line below: the invariant this section
+        // states is that a family not examined here is somebody's, and a family named
+        // with nobody would read as one the disk is not accounted for under.
         writeln!(f, "Families not examined:")?;
-        if self.skipped.is_empty() {
+        if self.not_examined.is_empty() {
             writeln!(f, "  none")?;
         }
-        for skipped in &self.skipped {
-            writeln!(f, "  {} — {}", skipped.path.display(), skipped.reason)?;
+        for family in &self.not_examined {
+            writeln!(f, "  {} — {}", family.path.display(), family.reason)?;
+            writeln!(f, "    {}, reached by {}", family.family, family.owner)?;
         }
 
         writeln!(f, "Reclaimed:")?;

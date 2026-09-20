@@ -46,7 +46,10 @@ use crate::guidance;
 /// `0` and every negative value are how `kill` spells a whole process *group*, and
 /// `1` is the host's own init. Neither is representable here, so the guard is the
 /// type rather than a check at each of the two places a signal is sent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Serialized as the bare number, which is how `onevcs sweep --format json` names the
+// processes a reclaimed workspace left running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
 pub struct Pid(i32);
 
 impl Pid {

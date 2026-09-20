@@ -28,6 +28,7 @@ use std::time::{Duration, SystemTime};
 use predicates::prelude::*;
 
 use crate::lifecycle::{local_direct, Fixture};
+use crate::pool::{configure_workspaces, sized, slot_of, status};
 use crate::registry::configure_rules;
 use crate::world::World;
 
@@ -1169,10 +1170,9 @@ fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
         lifecycle_root.join("gate-logs").is_dir() && lifecycle_root.join("clone").is_dir(),
         "the premise: this run root carries everything a reclaimable one carries"
     );
-    let identity_root = lifecycle_root
+    let runs = lifecycle_root
         .parent()
-        .and_then(Path::parent)
-        .expect("the identity's own directory")
+        .expect("the identity's runs/ directory")
         .to_path_buf();
     backdate(&lifecycle_root, 72);
 
@@ -1185,10 +1185,10 @@ fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
         report.contains(&format!(
             "  {} — the per-run lifecycle clone root, which `onevcs session open` keeps as a \
              bounded recovery history so a dead run's branch stays reachable; this verb does \
-             not reach into it",
-            identity_root.display()
+             not reach into it\n    lifecycle-runs, reached by `onevcs recoverable --repo project`",
+            runs.display()
         )),
-        "the report names the family it did not examine, and why:\n{report}"
+        "the report names the family it did not examine, why, and who reaches it:\n{report}"
     );
     // And the branch that root exists to keep reachable is still reachable.
     assert!(
@@ -2639,4 +2639,406 @@ fn a_workspace_left_by_a_failed_publication_goes_once_the_branch_lands_by_anothe
         report.starts_with("onevcs sweep: reclaimed 2 workspace(s), "),
         "both workspaces of the finished branch went:\n{report}"
     );
+}
+
+/// The key set of one JSON object, which is the shape a consumer reads it by.
+fn keys(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_object()
+        .unwrap_or_else(|| panic!("an object, found {value}"))
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// Every entry of a section has the fields the documented example's entries do —
+/// exactly, so a field that vanished and a field nobody documented both fail here.
+fn holds_the_documented_shape(
+    section: &str,
+    real: &serde_json::Value,
+    documented: &serde_json::Value,
+) {
+    let expected = keys(&documented[0]);
+    let entries = real
+        .as_array()
+        .unwrap_or_else(|| panic!("{section} is a list, found {real}"));
+    assert!(
+        !entries.is_empty(),
+        "the premise: {section} has an entry to hold"
+    );
+    for entry in entries {
+        assert_eq!(
+            keys(entry),
+            expected,
+            "an entry of {section} carries fields other than the documented ones: {entry}"
+        );
+    }
+}
+
+/// A state root holding a run root under each examined family, a warm pool slot,
+/// and a preserved unpublished branch — one of everything the report has to name.
+///
+/// The run roots and the preserved branch are cut before the pool is configured, so
+/// each is where a host without a pool leaves it: the publication and the recovery
+/// under their families, the preserved branch in a run clone under the identity's
+/// `runs/` and, handed back, in the registered checkout. The slot is cut after, by a
+/// session that opens and closes once the workspaces file names a pool.
+fn one_of_everything() -> Fixture {
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 0");
+    finished_branch(&fixture, "feature/landed");
+    publish_branch(&fixture, "feature/landed");
+    interrupted_branch(&fixture, "feature/interrupted");
+    recover_branch(&fixture, "feature/interrupted");
+    finished_branch(&fixture, "feature/preserved");
+    // And something under a family that is not a run root, which is retained with
+    // its reason — so the retained section has an entry to hold to the shape too.
+    std::fs::write(
+        publications(&fixture.world).join("leftover.log"),
+        "output\n",
+    )
+    .expect("a stray file in the family");
+    configure_workspaces(&fixture.world, sized(1, "unlimited"));
+    let (token, worktree) = fixture.open(&[]);
+    assert_eq!(
+        slot_of(&worktree),
+        Some(1),
+        "the premise: the session was placed on a warm slot"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert_eq!(
+        offered_for_recovery(&fixture)
+            .into_iter()
+            .map(|(branch, _)| branch)
+            .collect::<Vec<_>>(),
+        vec!["feature/preserved".to_owned()],
+        "the premise: one preserved branch is offered for recovery"
+    );
+    fixture
+}
+
+/// The directory the identity's run roots and pool live under: the parent of
+/// `runs/`, read off a session's worktree rather than composed.
+fn identity_root(fixture: &Fixture) -> PathBuf {
+    let (token, worktree) = fixture.open(&["--pool", "0"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    worktree
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("a run root sits under the identity's runs/")
+        .to_path_buf()
+}
+
+#[test]
+fn the_json_report_is_the_text_report_and_every_family_it_names_is_swept_or_owned() {
+    let fixture = one_of_everything();
+    let identity = identity_root(&fixture);
+    // A rehearsal past the floor, so the report has something in every section and
+    // the two renderings below are of one unchanged state root.
+    let rehearsal = ["--dry-run", "--min-age-hours", "0"];
+    let assert = fixture
+        .world
+        .onevcs()
+        .arg("sweep")
+        .args(rehearsal)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let stdout = &assert.get_output().stdout;
+    let report: serde_json::Value =
+        serde_json::from_slice(stdout).expect("`--format json` writes one JSON object");
+    assert_eq!(
+        String::from_utf8_lossy(stdout)
+            .trim_end()
+            .matches('\n')
+            .count(),
+        0,
+        "one object on one line, and nothing else on stdout"
+    );
+
+    // The shape is the amendment's, field for field.
+    let documented = crate::support::documented_sweep_report();
+    assert_eq!(keys(&report), keys(&documented), "the top-level fields");
+    for section in [
+        "examined",
+        "not_examined",
+        "reclaimed",
+        "retained",
+        "session_records",
+    ] {
+        holds_the_documented_shape(section, &report[section], &documented[section]);
+    }
+    assert_eq!(keys(&report["totals"]), keys(&documented["totals"]));
+    assert_eq!(report["schema_version"], documented["schema_version"]);
+    assert_eq!(report["verb"], "onevcs sweep");
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["min_age_hours"], 0.0);
+    assert_eq!(
+        report["root"],
+        fixture
+            .world
+            .home()
+            .join("workspaces")
+            .to_string_lossy()
+            .as_ref()
+    );
+
+    // Both families this verb examines, each with the one run root cut under it.
+    let examined: Vec<(String, u64)> = report["examined"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|family| {
+            (
+                family["family"].as_str().expect("a word").to_owned(),
+                family["roots"]
+                    .as_u64()
+                    .expect("a count, nothing being unread"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        examined,
+        vec![("publications".to_owned(), 2), ("recoveries".to_owned(), 1)],
+        "the run root under each, and the stray file beside one of them"
+    );
+
+    // Every family it did not examine is owned: the three it owes, each at the path
+    // the code knows for it, and nothing with nobody named.
+    let not_examined = report["not_examined"].as_array().expect("a list");
+    for entry in not_examined {
+        let family = entry["family"].as_str().expect("a word");
+        assert!(
+            !family.is_empty() && family.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+            "a family is a stable lowercase-hyphenated word: {entry}"
+        );
+        assert!(
+            entry["owner"]
+                .as_str()
+                .is_some_and(|owner| !owner.trim().is_empty()),
+            "a family not examined names who reaches it: {entry}"
+        );
+        assert!(
+            entry["reason"]
+                .as_str()
+                .is_some_and(|why| !why.trim().is_empty()),
+            "and why this verb does not: {entry}"
+        );
+    }
+    let at = |family: &str| -> &serde_json::Value {
+        not_examined
+            .iter()
+            .find(|entry| entry["family"] == family)
+            .unwrap_or_else(|| panic!("the report names {family}:\n{report:#}"))
+    };
+    assert_eq!(
+        at("lifecycle-runs")["path"],
+        identity.join("runs").to_string_lossy().as_ref()
+    );
+    assert!(
+        at("lifecycle-runs")["owner"]
+            .as_str()
+            .is_some_and(|owner| owner.contains("onevcs recoverable")),
+        "the lifecycle clones are reached through the verb that lands or discards a branch"
+    );
+    assert_eq!(
+        at("pool")["path"],
+        identity.join("pool").to_string_lossy().as_ref()
+    );
+    assert!(
+        at("pool")["owner"]
+            .as_str()
+            .is_some_and(|owner| owner.contains("onevcs pool prune")),
+        "the pool is reached through the verb that empties it"
+    );
+    assert_eq!(
+        at("preserved-branches")["path"],
+        fixture
+            .checkout
+            .canonicalize()
+            .expect("the checkout is there")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert!(
+        at("preserved-branches")["owner"]
+            .as_str()
+            .is_some_and(|owner| owner.contains("onevcs recoverable")),
+        "a preserved branch is reached through the verb that names it"
+    );
+    let documented_families: Vec<&str> = documented["not_examined"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|entry| entry["family"].as_str().expect("a word"))
+        .collect();
+    let mut families: Vec<&str> = not_examined
+        .iter()
+        .map(|entry| entry["family"].as_str().expect("a word"))
+        .collect();
+    families.sort_unstable();
+    assert_eq!(
+        families, documented_families,
+        "over a root holding one of everything, the families named are the ones the \
+         amendment spells, and no more"
+    );
+
+    // The totals are the sections counted.
+    let reclaimed = report["reclaimed"].as_array().expect("a list");
+    assert_eq!(report["totals"]["reclaimed"], reclaimed.len());
+    assert_eq!(
+        report["totals"]["reclaimed_bytes"],
+        reclaimed
+            .iter()
+            .map(|entry| entry["bytes"].as_u64().expect("a count"))
+            .sum::<u64>()
+    );
+    assert_eq!(
+        report["totals"]["retained"],
+        report["retained"].as_array().expect("a list").len()
+    );
+    assert_eq!(report["totals"]["examined_roots"], 3);
+
+    // The text form over the same root says exactly what the JSON says — every
+    // entry, in the sentences the JSON carries — and it is what a caller who says
+    // nothing about the format gets.
+    let text = swept(&fixture, &rehearsal);
+    assert_eq!(
+        text,
+        swept(
+            &fixture,
+            &["--format", "text", "--dry-run", "--min-age-hours", "0"]
+        ),
+        "`--format text` is the rendering a caller gets by default"
+    );
+    assert!(
+        text.starts_with(&format!(
+            "onevcs sweep: would reclaim {} workspace(s), ",
+            reclaimed.len()
+        )),
+        "{text}"
+    );
+    for family in report["examined"].as_array().expect("a list") {
+        let line = format!(
+            "  {} — {} run root(s) in {}\n",
+            family["family"].as_str().expect("a word"),
+            family["roots"],
+            family["path"].as_str().expect("a path")
+        );
+        assert!(
+            text.contains(&line),
+            "the text form drifted from the JSON on {line:?}:\n{text}"
+        );
+    }
+    for entry in not_examined {
+        let lines = format!(
+            "  {} — {}\n    {}, reached by {}\n",
+            entry["path"].as_str().expect("a path"),
+            entry["reason"].as_str().expect("prose"),
+            entry["family"].as_str().expect("a word"),
+            entry["owner"].as_str().expect("prose"),
+        );
+        assert!(
+            text.contains(&lines),
+            "the text form drifted from the JSON on {lines:?}:\n{text}"
+        );
+    }
+    for entry in reclaimed {
+        let opens = format!("  {} — ", entry["path"].as_str().expect("a path"));
+        assert!(
+            text.contains(&opens),
+            "the text form drifted from the JSON on {opens:?}:\n{text}"
+        );
+    }
+    for entry in report["retained"].as_array().expect("a list") {
+        let line = format!(
+            "  {} — {}\n",
+            entry["path"].as_str().expect("a path"),
+            entry["why"].as_str().expect("prose")
+        );
+        assert!(
+            text.contains(&line),
+            "the text form drifted from the JSON on {line:?}:\n{text}"
+        );
+    }
+    for entry in report["session_records"].as_array().expect("a list") {
+        let line = format!(
+            "  {} — the session {} on {:?}, {}\n",
+            entry["path"].as_str().expect("a path"),
+            entry["session"].as_str().expect("a token"),
+            entry["branch"].as_str().expect("a branch"),
+            entry["why"].as_str().expect("prose"),
+        );
+        assert!(
+            text.contains(&line),
+            "the text form drifted from the JSON on {line:?}:\n{text}"
+        );
+    }
+    // And nothing else in the text form moved: the sections are the ones there
+    // were, in the order there was, and the owners are said under the one section
+    // that gained them.
+    let sections: Vec<&str> = text.lines().filter(|line| !line.starts_with(' ')).collect();
+    assert_eq!(
+        sections[1..],
+        [
+            "Nothing was removed: this was a rehearsal.",
+            "Families examined:",
+            "Families not examined:",
+            "Reclaimed:",
+            "Retained:",
+            "Session records with nothing left behind them:",
+            sections[sections.len() - 1],
+        ],
+        "{text}"
+    );
+    assert!(
+        sections[sections.len() - 1].starts_with(
+            "This answers for the publication and recovery workspaces onevcs owns under "
+        ),
+        "{text}"
+    );
+    let owned: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains(", reached by "))
+        .collect();
+    assert_eq!(
+        owned.len(),
+        not_examined.len(),
+        "one owner line per family not examined:\n{text}"
+    );
+    assert!(
+        owned.iter().all(|line| line.starts_with("    ")),
+        "owners are said under the entry they own, and nowhere else:\n{text}"
+    );
+
+    // A rehearsal, so the root still holds one of everything.
+    assert!(
+        identity.join("pool").join("1").is_dir(),
+        "the slot is untouched"
+    );
+    assert_eq!(status(&fixture)["capacity"]["slots"], 1);
+}
+
+#[test]
+fn a_format_the_verb_does_not_write_is_refused_at_the_boundary() {
+    let fixture = Fixture::local(&local_direct());
+    fixture
+        .world
+        .onevcs()
+        .args(["sweep", "--format", "yaml"])
+        .assert()
+        .code(USAGE_ERROR)
+        .stderr(predicate::str::contains("--format"))
+        .stderr(predicate::str::contains("json"));
 }

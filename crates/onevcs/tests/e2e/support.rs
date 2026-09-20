@@ -177,6 +177,35 @@ pub fn documented_actor_limit() -> usize {
         .expect("the documented length is a number")
 }
 
+/// The JSON report `onevcs sweep --format json` is documented to write, read out of
+/// the amendment that spells it.
+///
+/// The field names are the contract a consumer host reads the report by, and they
+/// are decided by a `Serialize` impl this crate keeps private — so the document is a
+/// second statement of them, and reading it here is what stops the two from moving
+/// apart: the journey beside this drives a real sweep and holds every field the
+/// binary writes to the shape the amendment spells.
+#[cfg(unix)]
+pub fn documented_sweep_report() -> serde_json::Value {
+    const MARKER: &str = "\"verb\": \"onevcs sweep\"";
+    let contract = contract();
+    let mut fixtures = Vec::new();
+    for block in contract.split("\n```json\n").skip(1) {
+        let (body, _) = block
+            .split_once("\n```")
+            .expect("a json fence in the contract is closed");
+        if body.contains(MARKER) {
+            fixtures.push(body);
+        }
+    }
+    assert_eq!(
+        fixtures.len(),
+        1,
+        "exactly one json block in the contract spells the sweep report"
+    );
+    serde_json::from_str(fixtures[0]).expect("the documented sweep report is JSON")
+}
+
 /// The variables a probe is given, read out of the record that documents them.
 ///
 /// Same reason: the list is stated for an operator wondering what their probe can
