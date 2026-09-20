@@ -31,12 +31,12 @@ use crate::releases::{
     Acknowledgement, Baseline, DeclarationSource, Probe, ReleaseAnswer, ReleaseMethod,
     ReleaseStatus, ReleaseTarget, RepositoryReleases, TargetName, TargetSource,
 };
-use crate::session::{Lifecycle, Provenance, Scope, SessionRequest, SessionToken};
+use crate::session::{Lifecycle, Provenance, Scope, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::{
-    git, guidance, import, integrate, lock, policy, provenance, publish, publish_branch, recover,
-    status, stream, sweep, workspace,
+    git, guidance, import, integrate, label, lock, policy, provenance, publish, publish_branch,
+    recover, status, stream, sweep, workspace,
 };
 
 /// The exit code `onevcs session open` answers a pool that admits nothing with.
@@ -498,6 +498,9 @@ fn session_open(args: &SessionOpenArgs, providers: &Providers<'_>) -> Result<u8>
         execution_checkout: args.execution_checkout.clone(),
         pool: args.pool,
         overflow: args.overflow,
+        // Refused here, where the command line handed them over, so a pair that is
+        // not a label is answered before a session is cut for it.
+        labels: label::parse_all(&args.label)?,
     };
     let _ = &registry;
     let session = providers.vcs.open_session(request)?;
@@ -539,7 +542,15 @@ fn session_close(args: &SessionTokenArgs, providers: &Providers<'_>) -> Result<u
 /// crate and a caller reading this command's output are told the same thing by the
 /// same code rather than by two readers of one store.
 fn session_holders(args: &SessionHoldersArgs) -> Result<u8> {
-    let holders = crate::session_holders(&args.repo)?;
+    let wanted = label::parse_all(&args.label)?;
+    // Filtered over the answer rather than inside the enumeration: every holder
+    // carries its labels, so what a reader can check against the rows is exactly
+    // what decided them, and a pair nothing carries is an empty answer rather than a
+    // refusal — "nobody of that run is here" is an answer to act on.
+    let holders: Vec<SessionHolder> = crate::session_holders(&args.repo)?
+        .into_iter()
+        .filter(|holder| label::matches(&holder.labels, &wanted))
+        .collect();
     if args.json {
         println!(
             "{}",
@@ -548,7 +559,7 @@ fn session_holders(args: &SessionHoldersArgs) -> Result<u8> {
     } else {
         for holder in holders {
             println!(
-                "{}\t{}\t{}\tpid={}\t{}\t{}",
+                "{}\t{}\t{}\tpid={}\t{}\t{}{}",
                 holder.token.0,
                 match holder.state {
                     Lifecycle::Open => "open",
@@ -557,11 +568,22 @@ fn session_holders(args: &SessionHoldersArgs) -> Result<u8> {
                 holder.liveness.as_str(),
                 holder.owner_pid,
                 holder.branch,
-                holder.worktree.display()
+                holder.worktree.display(),
+                spell_labels(&holder.labels),
             );
         }
     }
     Ok(0)
+}
+
+/// A session's labels as a human line carries them: `\tkey=value` per label, in key
+/// order, and nothing at all for none — so a line for a session without labels is
+/// the line it always was.
+fn spell_labels(labels: &std::collections::BTreeMap<String, String>) -> String {
+    labels
+        .iter()
+        .map(|(key, value)| format!("\t{key}={value}"))
+        .collect()
 }
 
 /// Render one publication the way `onevcs publish` reports it.

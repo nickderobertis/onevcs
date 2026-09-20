@@ -73,6 +73,8 @@ mod landing;
 // compares is a supplied implementation by construction, and the other half is the
 // real `Git` and the substituted `gh`. Its own header carries the reason in full.
 #[cfg(unix)]
+mod labels;
+#[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod library;
 #[cfg(unix)]

@@ -6787,6 +6787,7 @@ fn opening_a_session_leaves_a_live_session_of_the_same_identity_alone() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("the embedding process opens a real session");
     let run_root = live.worktree.parent().expect("a run root").to_owned();

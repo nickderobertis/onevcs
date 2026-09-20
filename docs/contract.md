@@ -2274,6 +2274,44 @@ report, so nothing new is written to a stream.
 
 Event kinds added: none.
 
+### A session record carries the labels its opener stamped, and the listings filter on them
+
+**The join between a run and the session its node opened belongs on the session
+record.** The engine that opens a session stamps what it knows onto that dispatch's
+*events* — run, node, launching session — and no listing here reads an event stream, so
+a consumer asking "which of these preserved branches are mine" had to join records it
+does not own. Now `session open` takes `--label KEY=VALUE`, repeatable, and stores the
+pairs on the session record as a string-to-string map. A key is `[A-Za-z0-9_-]+`; a
+value is any string without a newline; a key given twice is refused, as is a pair that
+is not one, with a non-zero status and before any session is cut. What a key *means* is
+the caller's to declare — `run`, `node` and `launcher` are what one engine stamps, and
+this crate stores and filters any key. A pin that resumes an open session takes each
+key the request names over the one the record had and keeps the rest.
+
+**The stored shape** is one optional key on the version 3 record, `"labels":
+{"<key>": "<value>", …}`, omitted when there are none — so a record written before this
+amendment, and one written without labels, is byte for byte what it was, and either
+reads as an empty map.
+
+**`session holders` reports and filters by them.** Every holder carries `labels` — an
+empty object for a session opened without any — and `--label KEY=VALUE`, repeatable,
+answers only the holders whose labels carry every pair given. A pair nothing carries is
+an empty answer with status `0`, not a refusal: "nobody of that run is here" is an
+answer to act on.
+
+```rust
+// Two declared types each gain one field, and nothing else about them moves:
+//   SessionRequest  pub labels: BTreeMap<String, String>   // stored on the record; empty asks nothing
+//   SessionHolder   pub labels: BTreeMap<String, String>   // always written, `{}` for none
+```
+
+```
+onevcs session open REPO [--branch B] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]...
+onevcs session holders REPO [--label KEY=VALUE]... [--json]
+```
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

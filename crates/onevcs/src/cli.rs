@@ -206,6 +206,11 @@ pub struct SessionOpenArgs {
     /// configuration: an integer, or `unlimited` to opt this open out of the cap.
     #[arg(long, value_name = "N|unlimited")]
     pub overflow: Option<Bound>,
+    /// A label to stamp on the session record, as KEY=VALUE; repeatable, one value
+    /// per key. What a key means is the caller's — a run, a node, a launcher — and
+    /// `session holders` and `recoverable` report and filter by it.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
 }
 
 /// A session token, for the commands that take nothing else.
@@ -220,6 +225,10 @@ pub struct SessionTokenArgs {
 pub struct SessionHoldersArgs {
     /// An identity key, a registered alias, an origin URL, or a path.
     pub repo: String,
+    /// Only the sessions whose labels carry this KEY=VALUE; repeatable, and every
+    /// pair given must match.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
     /// Report the holders as a JSON array.
     #[arg(long)]
     pub json: bool,

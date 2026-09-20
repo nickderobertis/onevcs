@@ -75,6 +75,7 @@ fn provider_accepts(vcs: &MemoryVcs, name: &str) -> bool {
         execution_checkout: None,
         pool: None,
         overflow: None,
+        labels: Default::default(),
     })
     .is_ok()
 }

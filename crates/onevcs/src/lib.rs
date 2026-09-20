@@ -55,6 +55,7 @@ mod host;
 mod ids;
 mod import;
 mod integrate;
+mod label;
 mod landed;
 mod lock;
 mod merge_path;
@@ -116,7 +117,8 @@ pub use releases::{
 pub use rules::MergePolicy;
 pub use session::{
     HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
-    Recoverable, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken,
+    Recoverable, Scope, Selection, Session, SessionHolder, SessionRecord, SessionRequest,
+    SessionToken,
 };
 pub use stream::EventStream;
 pub use vcs::{Git, Vcs};

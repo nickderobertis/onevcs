@@ -145,6 +145,7 @@ fn open(vcs: &dyn Vcs, branch: &str) -> Session {
         execution_checkout: None,
         pool: None,
         overflow: None,
+        labels: Default::default(),
     })
     .expect("a session over the registered repository")
 }
@@ -252,6 +253,7 @@ fn a_publication_through_the_providers_reports_a_failure_as_an_outcome() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session");
 
@@ -299,6 +301,7 @@ fn the_command_says_nothing_about_a_branch_the_repository_side_never_held() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session");
 
@@ -1999,6 +2002,7 @@ fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_throug
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session opens");
     world.commit_file(&session.worktree, "thing.txt", "work\n", "feat: work");

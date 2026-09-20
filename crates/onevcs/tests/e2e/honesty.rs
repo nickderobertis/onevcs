@@ -125,6 +125,7 @@ fn ready_to_publish(world: &World, vcs: &dyn Vcs) -> (PathBuf, String) {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session over the registered repository");
     world.commit_file(
@@ -255,6 +256,7 @@ fn the_real_commands_read_what_a_provider_wrote() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session");
 
@@ -438,6 +440,7 @@ fn preserved_journey(
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session");
     // The in-memory provider names a tree it does not create, which is the one

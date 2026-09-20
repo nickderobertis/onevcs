@@ -30,21 +30,21 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v10-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v10-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v11-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v11-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v10.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v10.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v11.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v11.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v9.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v9.json");
-/// The same, as the build before that wrote them: the documents whose draft reasons
-/// name no kind, which version 9 is the carrying forward of.
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v10.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v10.json");
+/// The documents whose draft reasons name no kind, which version 9 was the carrying
+/// forward of — kept as the oldest shape a scenario in the field still has.
 const VCS_V8: &str = include_str!("../golden/vcs-state-v8.json");
 const HOST_V8: &str = include_str!("../golden/host-state-v8.json");
 
@@ -53,6 +53,7 @@ const VCS_OPTIONAL: &[&str] = &[
     "identities",
     "sessions",
     "session_identities",
+    "session_labels",
     "preserved",
     "closed_sessions",
     "policy",
@@ -192,45 +193,39 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 #[test]
-fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_this_one() {
+fn a_document_at_the_previous_version_reads_its_rows_as_unlabelled_and_is_written_back_at_this_one()
+{
     // A consumer's checked-in scenario, written by the build before this one: the
-    // version went up because a publication's failure may now be `host-prerequisite`,
-    // and nothing a version 9 document can hold changed spelling or meaning with it.
-    // So it reads, a failure it recorded reads back as the same kind, and the next
-    // write declares this version and spells that failure exactly as it was spelled.
+    // version went up because a session may now be opened with labels, and a
+    // preserved row names the session that answers for it and carries that session's
+    // labels. A version 10 document recorded neither, so its rows read as rows that
+    // name no session and carry no labels — which is what they were — and the next
+    // write declares this version, spells every failure exactly as it was spelled,
+    // and adds the labels of the session it opened.
     let home = Home::new();
     let vcs_path = home.path("vcs.json");
     let host_path = home.path("host.json");
-    let mut scenario: serde_json::Value =
+    let scenario: serde_json::Value =
         serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
-    assert_eq!(scenario["version"], 9);
-    assert!(!VCS_PREVIOUS.contains("host-prerequisite"));
-    // The failure a version 9 build wrote for a push its merge path refused, added by
-    // hand the way a consumer's scenario seeds one.
-    scenario["publications"]
-        .as_array_mut()
-        .expect("the previous document holds publications")
-        .push(serde_json::json!({
-            "session": "s-testing-1",
-            "branch": "feature/seeded",
-            "policy": "local-direct",
-            "outcome": {"failed": {
-                "kind": "push-rejected",
-                "reason": "push rejected: the hook found a secret in the diff",
-            }},
-        }));
-    std::fs::write(
-        &vcs_path,
-        serde_json::to_string_pretty(&scenario).expect("a document"),
-    )
-    .expect("a document a previous build wrote");
+    assert_eq!(scenario["version"], 10);
+    assert!(
+        !VCS_PREVIOUS.contains("session_labels")
+            && scenario["preserved"][0].get("session").is_none()
+            && scenario["preserved"][0].get("labels").is_none(),
+        "the previous document is the one whose rows name no session and carry no \
+         labels, or it proves nothing"
+    );
+    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
     std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
 
     let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
     FileHost::create(&host_path).expect("the previous version reads");
     let state = vcs.state().expect("readable");
     assert_eq!(state.version, STATE_VERSION);
-    assert_eq!(state.publications.len(), 2);
+    assert!(state.session_labels.is_empty());
+    assert_eq!(state.preserved.len(), 1);
+    assert_eq!(state.preserved[0].session, None);
+    assert!(state.preserved[0].labels.is_empty());
     assert!(
         matches!(
             state.publications[1].outcome,
@@ -243,7 +238,8 @@ fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_
         state.publications[1]
     );
 
-    // The next write carries it forward at this version, spelled as it was.
+    // The next write carries it forward at this version, spelled as it was, and
+    // records what this version added for the session it opened.
     vcs.open_session(SessionRequest {
         repo: "widgets".to_owned(),
         branch: Some("feature/after-the-bump".to_owned()),
@@ -251,6 +247,7 @@ fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_
         execution_checkout: None,
         pool: None,
         overflow: None,
+        labels: std::collections::BTreeMap::from([("run".to_owned(), "r-7".to_owned())]),
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -261,14 +258,23 @@ fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_
         written["publications"][1]["outcome"]["failed"]["kind"],
         "push-rejected"
     );
-
-    // …and the kind this version added is what the writer spells beside it, as the
-    // golden this build writes holds both.
+    assert_eq!(written["session_labels"]["s-testing-2"]["run"], "r-7");
     assert!(
-        VCS_FULL.contains(r#""kind": "push-rejected""#)
-            && VCS_FULL.contains(r#""kind": "host-prerequisite""#)
+        written["preserved"][0]
+            .get("session")
+            .is_some_and(|s| s.is_null())
+            && written["preserved"][0]["labels"] == serde_json::json!({}),
+        "a row this build writes says it names no session, rather than saying nothing: \
+         {written}"
+    );
+
+    // …and the fields this version added are what the writer spells, as the golden
+    // this build writes holds them.
+    assert!(
+        VCS_FULL.contains(r#""session_labels""#)
+            && VCS_FULL.contains(r#""session": "s-testing-1""#)
             && VCS_FULL.contains(&format!(r#""version": {STATE_VERSION}"#)),
-        "the golden holds a failure of each vocabulary at this version: {VCS_FULL}"
+        "the golden holds a labelled session and a row naming it at this version: {VCS_FULL}"
     );
 }
 
@@ -371,6 +377,7 @@ fn a_version_8_document_is_read_and_written_back_at_this_one() {
         execution_checkout: None,
         pool: None,
         overflow: None,
+        labels: Default::default(),
     })
     .expect("a session over the seeded repository");
 

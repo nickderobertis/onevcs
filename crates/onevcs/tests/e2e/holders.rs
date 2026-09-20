@@ -123,6 +123,7 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("the embedding process opens a real session")
         .token;
@@ -229,6 +230,7 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("the embedding process opens a real session")
         .token;
@@ -242,6 +244,7 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("the embedding process opens a real session")
         .token
@@ -279,6 +282,7 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
         [
             "branch",
             "identity",
+            "labels",
             "liveness",
             "owner_pid",
             "state",
@@ -287,6 +291,9 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
         ]
     );
     assert_eq!(live_row["branch"], "feature/live");
+    // Opened with none, and the key is still there: a reader routing on it meets it
+    // on every row.
+    assert_eq!(live_row["labels"], serde_json::json!({}));
     assert_eq!(live_row["state"], "open");
     assert_eq!(live_row["liveness"], "live");
     assert_eq!(live_row["owner_pid"], std::process::id());
@@ -957,6 +964,7 @@ fn launch(repo: &str, branch: &str, acknowledged: &[&str]) -> std::result::Resul
         execution_checkout: None,
         pool: None,
         overflow: None,
+        labels: Default::default(),
     })
     .map_err(|refused| format!("{refused}"))
 }

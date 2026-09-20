@@ -600,6 +600,7 @@ fn preserved_row(
             publication.display().to_string(),
         ],
     };
+    let answering = latest_session(sessions, identity, branch);
     Ok((
         git::committed_at(repo.path(), branch),
         Recoverable {
@@ -619,8 +620,41 @@ fn preserved_row(
             recover_command,
             held_by,
             net_negative: net_negative(repo, compared, branch)?,
+            session: answering.map(|record| SessionToken(record.token.to_string())),
+            labels: answering
+                .map(|record| record.labels.clone())
+                .unwrap_or_default(),
         },
     ))
+}
+
+/// The session that answers for a branch: the newest record naming it.
+///
+/// The end of its chain of retries — a record nothing superseded — and an open one
+/// over a closed one where two chains end apart, which is the preference `status`
+/// makes when it picks whose evidence is the branch's. Where every record of the
+/// branch has been superseded, which is a chain this host cannot follow, the same
+/// preference is applied to all of them rather than answering nobody: the row still
+/// names a session somebody can look up, and its landing is already `unknown`.
+/// Ties are broken by token, so two reads answer the same record.
+pub(crate) fn latest_session<'a>(
+    sessions: &'a [workspace::Record],
+    identity: &str,
+    branch: &str,
+) -> Option<&'a workspace::Record> {
+    let named: Vec<&workspace::Record> = sessions
+        .iter()
+        .filter(|record| record.identity == identity && *record.branch == *branch)
+        .collect();
+    let ends: Vec<&workspace::Record> = named
+        .iter()
+        .copied()
+        .filter(|record| record.retried_by.is_none())
+        .collect();
+    let candidates = if ends.is_empty() { named } else { ends };
+    candidates
+        .into_iter()
+        .max_by_key(|record| (record.state == Lifecycle::Open, record.token.to_string()))
 }
 
 /// Whether this copy of a branch belongs to a session something superseded.

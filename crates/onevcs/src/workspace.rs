@@ -28,6 +28,7 @@
 //! pushed branch, a recovery attestation — is copied back into the execution
 //! checkout, which stays the durable record every later session reads.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
@@ -41,7 +42,7 @@ use crate::remainder::Remainder;
 use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::{git, guidance, home, ids, lock, pool, processes, workspaces};
+use crate::{git, guidance, home, ids, label, lock, pool, processes, workspaces};
 
 /// How many dead run roots still holding unpublished work are retained.
 ///
@@ -242,6 +243,13 @@ pub struct Record {
     /// written onto the *older* record when the newer one opens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retried_by: Option<Token>,
+    /// What the caller that opened this session said about who opened it — the
+    /// run, the node, the launching process — as `--label KEY=VALUE` pairs, checked
+    /// by `label::validate` where they arrive. Omitted when there are none, so a
+    /// record written before there was a field to write reads as an empty map and
+    /// one written without labels is byte for byte what it was.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
     /// Whatever the document on disk carried beyond this shape, kept so a write
     /// from this build does not destroy what a newer one recorded.
     #[serde(skip)]
@@ -324,6 +332,7 @@ impl From<Record> for SessionHolder {
             owner_pid: record.owner_pid,
             state: record.state,
             liveness,
+            labels: record.labels,
         }
     }
 }
@@ -900,6 +909,9 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
             reason: format!("{} is not a git checkout", execution.display()),
         });
     }
+    // Before anything is resumed or cut, for the reason the branch names are: a label
+    // a command line could not spell back is the request being wrong, not the host.
+    label::validate(&request.labels)?;
 
     // Both names go through the one conversion git's own parser decides, so an
     // unusable one is refused here rather than by whichever git command met it first.
@@ -937,7 +949,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     // cut. Never for a generated name: that one is this token's own. Declining only
     // falls through to the ordinary open below, which continues the branch instead.
     if let Some((held, lease)) = resumable(&resolution, pinned.as_ref(), &base, &execution)? {
-        return resume(&held, lease, &execution);
+        return resume(&held, lease, &execution, &request.labels);
     }
 
     let token = ids::session_token();
@@ -1085,6 +1097,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         owner_pid: std::process::id(),
         owner_started: process_started(std::process::id()),
         retried_by: None,
+        labels: request.labels.clone(),
         carried: Remainder::default(),
     };
     save(&record)?;
@@ -1373,10 +1386,24 @@ fn resumable(
 /// The re-attachment is [`adopt`] and deliberately nothing beside it: a second path
 /// that preserved an interrupted worktree would be a second shape of marker for a
 /// recovery to read.
-fn resume(held: &Record, lease: lock::Guard, execution: &Path) -> Result<(Record, Stream)> {
-    let (record, mut stream, _preserved) = adopt(&held.token)?;
+fn resume(
+    held: &Record,
+    lease: lock::Guard,
+    execution: &Path,
+    labels: &BTreeMap<String, String>,
+) -> Result<(Record, Stream)> {
+    let (mut record, mut stream, _preserved) = adopt(&held.token)?;
     // Held until the adoption has taken a lease of its own, and no longer.
     drop(lease);
+    // The request that resumed this session is the newest thing said about who is
+    // running it, so each key it names replaces that key; a key it does not name is
+    // kept, because a caller that says nothing has not said "forget it".
+    if !labels.is_empty() {
+        record
+            .labels
+            .extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
+        save(&record)?;
+    }
     // The same label the session's first opening carried, so a reader filtering one
     // identity's events does not lose the run it resumed.
     stream.label("identity", &record.identity);
@@ -2467,6 +2494,7 @@ mod process_tests {
             owner_pid: std::process::id(),
             owner_started,
             retried_by: None,
+            labels: Default::default(),
             carried: crate::remainder::Remainder::default(),
         })
     }
