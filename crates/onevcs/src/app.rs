@@ -844,14 +844,17 @@ fn preserve_branch(args: &PreserveArgs) -> Result<u8> {
     let branch = &preserved.branch;
     match preserved.outcome {
         Preservation::Pushed => println!(
-            "preserved: branch {branch:?} of {identity} is on {remote} at {commit}, pushed from              {from}. Nothing was published — no change request, no merge path, no base touched —              so it still needs the verb `onevcs recoverable` names to land it",
+            "preserved: branch {branch:?} of {identity} is on {remote} at {commit}, pushed \
+             from {from}. Nothing was published — no change request, no merge path, no base \
+             touched — so it still needs the verb `onevcs recoverable` names to land it",
             identity = preserved.identity,
             remote = spelled(preserved.remote.as_deref()),
             commit = spelled(preserved.commit.as_deref()),
             from = preserved.from.display(),
         ),
         Preservation::AlreadyOnOrigin => println!(
-            "already on origin: {remote} carries branch {branch:?} of {identity} at {commit}, so              nothing was pushed",
+            "already on origin: {remote} carries branch {branch:?} of {identity} at \
+             {commit}, so nothing was pushed",
             identity = preserved.identity,
             remote = spelled(preserved.remote.as_deref()),
             commit = spelled(preserved.commit.as_deref()),
@@ -859,7 +862,8 @@ fn preserve_branch(args: &PreserveArgs) -> Result<u8> {
         // Said as plainly as the other two, because a caller shutting a host down has
         // to know that this branch is one nothing outside the machine carries.
         Preservation::NoRemote => println!(
-            "no remote: {from} holds branch {branch:?} of {identity} and has no `origin` to push              it to, so nothing was attempted and nothing outside this host carries it",
+            "no remote: {from} holds branch {branch:?} of {identity} and has no `origin` to \
+             push it to, so nothing was attempted and nothing outside this host carries it",
             identity = preserved.identity,
             from = preserved.from.display(),
         ),
@@ -1081,7 +1085,9 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         println!("    Found in: {}", row.checkout.display());
         if let Some(on_origin) = &row.on_origin {
             println!(
-                "    On origin: {remote} carries it at {commit}, put there by `onevcs preserve`                  and published by nothing. The work survives this host going away; landing it is                  still the command below",
+                "    On origin: {remote} carries it at {commit}, put there by `onevcs \
+                 preserve` and published by nothing. The work survives this host going \
+                 away; landing it is still the command below",
                 remote = on_origin.remote,
                 commit = on_origin.commit,
             );
