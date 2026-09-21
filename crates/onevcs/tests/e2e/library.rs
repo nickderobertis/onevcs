@@ -5211,3 +5211,394 @@ fn preserving_a_branch_no_checkout_of_the_identity_holds_is_refused_by_name() {
          are: {refused}"
     );
 }
+
+/// A publication that closed `checks-unsettled`, and the merge the host performed
+/// after it had stopped watching.
+///
+/// `onevcs` issue 162, as its reporter met it: a `change-auto` publication's fixed
+/// watch ran out, the host merged the change five seconds later, and every read
+/// afterwards went on saying `closed without landing` — so a second attempt
+/// republished work the base already carried.
+///
+/// Nothing about the merge is visible to the reads that follow. It is performed out
+/// of a clone of its own, so no repository this host reads has seen it; its subject
+/// names no change request, so the base's history cannot decide it; and no landing
+/// was recorded, because the publication that would have recorded one had already
+/// ended. The only thing that knows is the host.
+struct LateMerge {
+    world: World,
+    session: Session,
+    /// The host as it stood at the close: the change request open and unmerged.
+    before: MemoryHost,
+    /// The same host once it has merged the change on its own clock.
+    after: MemoryHost,
+    /// The commit it merged at, which is a real commit on the real base.
+    merged: String,
+}
+
+/// The policy that hands the merge to the host, which is the one this can happen
+/// under: the host lands the change on its own clock and the publication watches.
+const HOST_LANDS: &str = "{publication: change-auto, approvals: required}";
+
+fn late_merge(branch: &str) -> LateMerge {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, HOST_LANDS);
+    world.install_pre_push(&world.path("hosted"), "exit 0");
+    let host = MemoryHost::new();
+
+    // The host declares no required check on the change, so it never lands it: the
+    // watch runs out, and the publication closes `checks-unsettled`.
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1");
+    let session = open(&Git, branch);
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the thing the host merges late",
+    );
+    let published = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &host,
+        },
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a bound that elapsed is an outcome");
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");
+    let PublishOutcome::Failed { kind, .. } = &published.outcome else {
+        panic!("the watch must run out: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksUnsettled);
+
+    // …and then the host merges, out of a clone of its own.
+    let merger = world.clone_of(&origin, "merger");
+    world.git(&merger, &["fetch", "-q", "origin", branch]);
+    world.git(&merger, &["merge", "--squash", "FETCH_HEAD"]);
+    world.git(
+        &merger,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "feat: add the thing the host merges late",
+        ],
+    );
+    world.git(&merger, &["push", "-q", "origin", "main"]);
+    let merged = world.git(&merger, &["rev-parse", "HEAD"]).trim().to_owned();
+
+    let state = host.state();
+    let change = state.changes[0].id.clone();
+    let mut merged_state = state.clone();
+    merged_state
+        .merges
+        .insert(change, MergeOutcome::Merged(onevcs::Sha(merged.clone())));
+    LateMerge {
+        world,
+        session,
+        before: MemoryHost::seeded(state),
+        after: MemoryHost::seeded(merged_state),
+        merged,
+    }
+}
+
+/// A host that counts what it is asked about a merge, and answers everything else
+/// exactly as the host behind it does.
+///
+/// Nothing is stood in for: every answer is the in-memory host's own. What is added
+/// is a tally, because "the host is asked **once** per read" is a property of the
+/// caller that no answer can show — a second ask returns the same thing as the first.
+#[derive(Debug)]
+struct Counting<'a> {
+    behind: &'a MemoryHost,
+    asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl<'a> Counting<'a> {
+    fn over(behind: &'a MemoryHost) -> Self {
+        Counting {
+            behind,
+            asked: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// How many times the host has been asked where the change request merged,
+    /// resetting the tally for the next read.
+    fn asks(&self) -> usize {
+        self.asked.swap(0, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+impl Hosting for Counting<'_> {
+    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+        Ok(Box::new(CountingHost {
+            behind: self.behind.for_repo(slug)?,
+            asked: std::sync::Arc::clone(&self.asked),
+        }))
+    }
+}
+
+struct CountingHost {
+    behind: Box<dyn RemoteHost>,
+    asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl RemoteHost for CountingHost {
+    fn authenticated_user(&self) -> onevcs::Result<String> {
+        self.behind.authenticated_user()
+    }
+
+    fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<ChangeRequest> {
+        self.behind.open_change(req)
+    }
+
+    fn find_changes(&self, head: &str, base: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+        self.behind.find_changes(head, base)
+    }
+
+    fn change_checks(&self, cr: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+        self.behind.change_checks(cr)
+    }
+
+    fn check_log(&self, cr: &ChangeRequest, check: &Check) -> onevcs::Result<onevcs::ArtifactId> {
+        self.behind.check_log(cr, check)
+    }
+
+    fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> onevcs::Result<MergeOutcome> {
+        self.behind.merge(cr, policy)
+    }
+
+    fn merged_at(&self, cr: &ChangeRequest) -> onevcs::Result<Option<onevcs::Sha>> {
+        self.asked
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.behind.merged_at(cr)
+    }
+
+    fn ready_for_review(&self, cr: &ChangeRequest) -> onevcs::Result<()> {
+        self.behind.ready_for_review(cr)
+    }
+
+    fn is_draft(&self, cr: &ChangeRequest) -> onevcs::Result<bool> {
+        self.behind.is_draft(cr)
+    }
+
+    fn required_checks_on(&self, base: &str) -> onevcs::Result<onevcs::RequiredChecks> {
+        self.behind.required_checks_on(base)
+    }
+
+    fn describe_change(
+        &self,
+        cr: &ChangeRequest,
+        title: Option<&str>,
+        body: &str,
+    ) -> onevcs::Result<()> {
+        self.behind.describe_change(cr, title, body)
+    }
+
+    fn change_description(&self, cr: &ChangeRequest) -> onevcs::Result<onevcs::Description> {
+        self.behind.change_description(cr)
+    }
+}
+
+#[test]
+fn a_change_request_merged_after_the_checks_bound_is_landed_by_the_next_status() {
+    let scenario = late_merge("feature/late-merge");
+    let world = &scenario.world;
+
+    // A read taken while the change request is still open and unmerged: the host is
+    // asked its one question, answers "not yet", and the record is left exactly as
+    // it stands — which is what an open or closed-unmerged change request gets.
+    let open = Counting::over(&scenario.before);
+    let before = report(world, "feature/late-merge", &open);
+    assert_ne!(
+        before["publication"]["landed"]["state"], "yes",
+        "an unmerged change request must not be reported as landed: {before}"
+    );
+    assert_eq!(
+        open.asks(),
+        1,
+        "the read asks the host where the change merged exactly once"
+    );
+
+    // The next read meets the same recorded change request on a host that has since
+    // merged it: it asks once, and takes the answer into *this* report — landed, at
+    // the host's own merge commit, decided by the tier a recorded landing decides.
+    let merged = Counting::over(&scenario.after);
+    let after = report(world, "feature/late-merge", &merged);
+    assert_eq!(
+        merged.asks(),
+        1,
+        "the read asks the host where the change merged exactly once"
+    );
+    assert_eq!(after["publication"]["state"], "landed", "{after}");
+    assert_eq!(after["publication"]["landed"]["state"], "yes", "{after}");
+    assert_eq!(
+        after["publication"]["landed"]["evidence"]["commit"], scenario.merged,
+        "the landing is the host's own merge commit: {after}"
+    );
+    // The guidance a planner acts on is recomputed from that state rather than left
+    // saying there is something to publish — which is what sent a second worker at
+    // work the base already carried.
+    assert!(
+        after["next"]["because"]
+            .as_str()
+            .expect("a next step says why")
+            .contains("the work landed"),
+        "{after}"
+    );
+    assert_eq!(after["next"]["command"], serde_json::Value::Null, "{after}");
+
+    // The publication checkout was fast-forwarded onto the landing, which is what
+    // makes the commit readable at all for every later read.
+    assert_eq!(
+        world
+            .git(&world.path("hosted"), &["rev-parse", "HEAD"])
+            .trim(),
+        scenario.merged,
+        "the publication checkout is fast-forwarded onto the landing"
+    );
+
+    // …and it was *recorded*, not re-derived: a host that has forgotten the merge
+    // entirely answers the same, because the next read reads the landing this one
+    // wrote and asks the host nothing at all.
+    let forgetful = MemoryHost::new();
+    let nothing_to_ask = Counting::over(&forgetful);
+    let again = report(world, "feature/late-merge", &nothing_to_ask);
+    assert_eq!(again["publication"]["landed"]["state"], "yes", "{again}");
+    assert_eq!(
+        again["publication"]["landed"]["evidence"]["commit"], scenario.merged,
+        "{again}"
+    );
+    assert_eq!(
+        nothing_to_ask.asks(),
+        0,
+        "a landing already on the record asks the host nothing"
+    );
+}
+
+#[test]
+fn a_change_request_merged_after_the_checks_bound_is_landed_by_the_next_release_status() {
+    // The read a consumer is waiting on, and the one that cost the report its hour:
+    // a release is sequenced against the landing commit, so a change reported
+    // unlanded holds every consumer of that release indefinitely.
+    let scenario = late_merge("feature/late-release");
+    let world = &scenario.world;
+    std::fs::write(
+        world.home().join("releases.yml"),
+        format!(
+            r#"version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {{path: "{checkout}"}}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/crate"'
+          timeout_seconds: 20
+"#,
+            checkout = world.path("hosted").to_string_lossy(),
+        ),
+    )
+    .expect("a release-targets file");
+    let answers = world.path("answers");
+    std::fs::create_dir_all(&answers).expect("an answers directory");
+    std::fs::write(answers.join("crate"), "1.0.0\n").expect("what the probe answers");
+
+    let merged = Counting::over(&scenario.after);
+    let said = stdout_of(|| {
+        assert_eq!(
+            run(
+                &["onevcs", "release", "status", "feature/late-release"],
+                Providers {
+                    vcs: &Git,
+                    hosting: &merged,
+                },
+            ),
+            0,
+            "the release status is reported"
+        );
+    });
+    assert_eq!(
+        merged.asks(),
+        1,
+        "the read asks the host where the change merged exactly once"
+    );
+    assert!(
+        !said.contains("not landed"),
+        "a release read must not report a merged change as unlanded: {said}"
+    );
+    assert!(said.contains("not released"), "{said}");
+
+    // …and it recorded the landing where it found it, so the read after it answers
+    // from the record rather than asking again.
+    let forgetful = MemoryHost::new();
+    let nothing_to_ask = Counting::over(&forgetful);
+    let after = report(world, "feature/late-release", &nothing_to_ask);
+    assert_eq!(after["publication"]["landed"]["state"], "yes", "{after}");
+    assert_eq!(
+        after["publication"]["landed"]["evidence"]["commit"], scenario.merged,
+        "{after}"
+    );
+    assert_eq!(nothing_to_ask.asks(), 0);
+}
+
+#[test]
+fn a_change_request_merged_after_the_checks_bound_is_not_republished_by_the_next_publish() {
+    // What the unreconciled record actually cost: the retry opened a second change
+    // request for work the base already carried, and a worker spent an attempt on it.
+    let scenario = late_merge("feature/late-publish");
+    let merged = Counting::over(&scenario.after);
+
+    let again = onevcs::publish(
+        &Providers {
+            vcs: &Git,
+            hosting: &merged,
+        },
+        &scenario.session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a second publication runs");
+    assert_eq!(
+        again.outcome,
+        PublishOutcome::NothingToPublish,
+        "the base already carries this work: {again:?}"
+    );
+    assert_eq!(
+        scenario.after.state().changes.len(),
+        1,
+        "no second change request was opened for work already on the base"
+    );
+
+    // …and the landing it met is on the record, so every later read answers from it.
+    let forgetful = MemoryHost::new();
+    let nothing_to_ask = Counting::over(&forgetful);
+    let after = report(&scenario.world, "feature/late-publish", &nothing_to_ask);
+    assert_eq!(after["publication"]["landed"]["state"], "yes", "{after}");
+    assert_eq!(
+        after["publication"]["landed"]["evidence"]["commit"], scenario.merged,
+        "{after}"
+    );
+    assert_eq!(nothing_to_ask.asks(), 0);
+}
+
+/// `onevcs status --json` about one branch, run against these implementations and
+/// read back as the object a consumer reads.
+fn report(world: &World, branch: &str, hosting: &dyn Hosting) -> serde_json::Value {
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(
+                &["onevcs", "status", branch, "--json"],
+                Providers { vcs: &Git, hosting },
+            ),
+            0,
+            "the status of {branch} in {} is reported",
+            world.home().display(),
+        );
+    });
+    serde_json::from_str(&printed).unwrap_or_else(|e| panic!("status wrote JSON: {e}\n{printed}"))
+}
