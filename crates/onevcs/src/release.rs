@@ -30,6 +30,7 @@ use url::Url;
 use crate::declaration::{self, Declaration, DeclaredTarget};
 use crate::error::{self, Result};
 use crate::event::EventKind;
+use crate::host::Hosting;
 use crate::landed::{Landed, LandingEvidence};
 use crate::registry::Registry;
 use crate::releases::{
@@ -558,8 +559,20 @@ pub fn status(
     registry: &Registry,
     reference: &str,
     named: Option<&TargetName>,
+    hosting: &dyn Hosting,
 ) -> Result<ReleaseStatus> {
-    let landing = status::landing_of(registry, reference)?;
+    // The host is handed on for one question, asked once and before the landing
+    // tiers: whether a change request a `checks-unsettled` close stopped watching
+    // has merged since. A release read is exactly where that matters — the consumer
+    // on the other side of it is waiting on a release of work the base already
+    // carries.
+    let landing = status::landing_of(registry, reference, Some(hosting))?;
+    // A torn copy of the identity's work is a finding beside the answer, never the
+    // end of it: the release answer below is decided from the copies that did read,
+    // and the one that did not is named where a person reading this will see it.
+    for said in &landing.unreadable {
+        eprintln!("onevcs: warning: {said}");
+    }
     let located = for_repository(registry, &landing.identity)?;
     let target = located.releases.select(named)?;
     let commit = match &landing.landed {
@@ -568,6 +581,23 @@ pub fn status(
         // has gone on since landed what it landed at exactly this commit, so a
         // consumer waiting on its release is answered rather than held for ever.
         Landed::Yes { evidence } | Landed::InPart { evidence, .. } => evidence.commit().to_owned(),
+        // Neither of the two the comparison gives is safe to hand over while a copy
+        // of this identity's work could not be read: each is the *absence* of
+        // evidence, and a clone git refused is exactly where the evidence would have
+        // been. So a torn clone turns them into "not answered" naming it, which a
+        // consumer holds on — and leaves an answer a record decided untouched, which
+        // is what keeps an unrelated landing's release answer unaffected by it.
+        Landed::No | Landed::Unknown if !landing.unreadable.is_empty() => {
+            return Ok(ReleaseStatus::NotAnswered {
+                reason: format!(
+                    "whether {branch} reached its base could not be decided, and {count} of this \
+                     identity's copies of its work could not be read: {said}",
+                    branch = landing.branch,
+                    count = landing.unreadable.len(),
+                    said = landing.unreadable.join("; "),
+                ),
+            })
+        }
         Landed::No => return Ok(ReleaseStatus::NotLanded),
         // Undecidable is not "not landed", and it is not a landing either: there is
         // no landing commit to have captured a baseline against, so there is nothing
@@ -588,10 +618,11 @@ pub fn status(
     let mut stream = Stream::releases(&located.releases.identity)?;
     if let Landed::Yes { evidence } | Landed::InPart { evidence, .. } = &landing.landed {
         if let LandingEvidence::ChangeRequest { change_url, .. } = evidence {
-            reconcile_discovered(
+            reconcile_landing(
                 registry,
                 &located,
-                &landing,
+                &landing.branch,
+                landing.change_stream.as_deref(),
                 &commit,
                 change_url,
                 &mut stream,
@@ -902,17 +933,20 @@ fn capture_in(
     Ok(())
 }
 
-/// Give a landing found in the base's history what the publication that made it
-/// would have given it, had it lived to see the merge.
+/// Give a landing this host learned of after the fact what the publication that
+/// made it would have given it, had it lived to see the merge.
 ///
 /// A `change-auto` publication records the landing, captures the baselines and
 /// fast-forwards the publication checkout in the same call that watches for the
 /// merge — so when a merge waits hours on the host and that process does not
 /// survive to see it, none of the three happens, and a `published` hold reads
 /// "not answered" for ever. The same is true of every change a person merges on the
-/// host after `change-open`. Reached only for a landing the change request's number
-/// in the base decided: a landing this crate saw is a recorded one and is answered
-/// by the tier above it, which is also what makes this run once.
+/// host after `change-open`. Two reads reach it and both have already established
+/// the landing: the history scan that finds the change request's number in the
+/// base, and the once-per-read question a status asks its host about a change
+/// request a `checks-unsettled` close stopped watching. Neither reaches it twice —
+/// recording the landing is what answers the question from the tier above
+/// afterwards.
 ///
 /// **The baseline is still taken at the landing, or not at all.** A reading taken
 /// now stands for the moment of the landing only if nothing has been released from a
@@ -927,10 +961,11 @@ fn capture_in(
 /// a footnote could not be written would be the worse answer. The landing is recorded
 /// last, and only once the rest is done, because recording it is what stops this
 /// being tried again — a read that could not fetch leaves it for the next one.
-fn reconcile_discovered(
+pub(crate) fn reconcile_landing(
     registry: &Registry,
     located: &Located,
-    landing: &status::LandingOf,
+    branch: &str,
+    change_stream: Option<&str>,
     commit: &str,
     change: &Url,
     stream: &mut Stream,
@@ -940,7 +975,6 @@ fn reconcile_discovered(
         eprintln!(
             "onevcs: warning: {identity} landed {branch} at {commit}, discovered after the \
              publication that made it ended, and {what}: {failure}",
-            branch = landing.branch,
         );
     };
     let publication = match store::resolve(registry, identity) {
@@ -960,7 +994,7 @@ fn reconcile_discovered(
     if let Err(failure) = capture_in(located, commit, withheld.as_deref(), stream) {
         return warn("its release baselines were not captured", &failure);
     }
-    let Some(token) = &landing.change_stream else {
+    let Some(token) = change_stream else {
         return;
     };
     match Stream::open(token) {
@@ -999,7 +1033,9 @@ pub fn acknowledge(
     version: &str,
     supersede: bool,
 ) -> Result<Acknowledgement> {
-    let landing = status::landing_of(registry, reference)?;
+    // No host: an acknowledgement records what a *person* says carries a landing,
+    // and the landing it records against is the one already on the record.
+    let landing = status::landing_of(registry, reference, None)?;
     let located = for_repository(registry, &landing.identity)?;
     let target = located.releases.select(Some(named))?;
     let commit = match &landing.landed {

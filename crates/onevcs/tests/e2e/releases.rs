@@ -2040,12 +2040,21 @@ fn a_change_auto_landing_discovered_after_its_publication_ended_is_reconciled_at
             .success();
         serde_json::from_slice(&assert.get_output().stdout).expect("one document")
     };
+    // The publication that would have recorded the landing is gone, and it recorded
+    // none: what it watched for had not happened by the time its watch ran out.
+    assert!(
+        hosted.world.events_of(&token, "change-merged").is_empty(),
+        "nothing recorded the landing while the publication was alive to"
+    );
     assert_eq!(
         asking(&["status", &token, "--target", "crate"])["state"],
         "not-landed"
     );
 
-    // The host lands it on its own clock, the next time anybody asks it anything.
+    // The host lands it on its own clock, the next time anybody asks it anything —
+    // and the read that asks is the read that takes it up, because a change request
+    // a `checks-unsettled` close stopped watching is asked about exactly once per
+    // read from there on.
     hosted.world.host_checks(&[Check {
         name: "gate",
         status: "completed",
@@ -2063,25 +2072,10 @@ fn a_change_auto_landing_discovered_after_its_publication_ended_is_reconciled_at
         hosted.origin_log()[0],
         "feat: land after the watcher exits (#1)"
     );
-    assert!(
-        hosted.world.events_of(&token, "change-merged").is_empty(),
-        "nothing recorded the landing while the publication was alive to"
-    );
-    // Something else fetches the checkout's remote — another publication of this
-    // identity does — which is what puts the landing into the history it is read from.
-    // Only the remote-tracking ref moves: the checkout itself is left behind.
-    hosted.world.git(
-        &hosted.checkout,
-        &["fetch", "-q", "origin", "main:refs/remotes/origin/main"],
-    );
-    assert_ne!(
-        hosted.world.git(&hosted.checkout, &["rev-parse", "HEAD"]),
-        landed
-    );
 
-    // The read that finds the landing in history gives it what the publication would
-    // have: a baseline at the landing, which is what the probe answers while nothing
-    // has been released since.
+    // The read that found the landing gives it what the publication would have: a
+    // baseline at the landing, which is what the probe answers while nothing has
+    // been released since.
     let waiting = asking(&["status", &token, "--target", "crate"]);
     assert_eq!(waiting["state"], "not-released", "{waiting}");
     assert_eq!(

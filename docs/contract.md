@@ -2497,6 +2497,90 @@ close, the run-root reclaim, and the sweep's retention rule — are untouched, b
 they ask whether letting a clone go would lose work, and a branch the origin carries
 loses none.
 
+### A push the merge path refused with nothing captured is diagnosed by how it ended
+
+A publishing push is verified by the repository's own merge path, and what that path
+wrote is the whole of the account a refusal can give. A push that wrote **nothing** —
+which is what a `git push` a signal terminated leaves behind — therefore used to be
+reported as `rejected by the merge path: .`, indistinguishable from a tree the merge
+path turned down and diagnosable only by running the whole gate again.
+
+Such a refusal now says that the merge path wrote nothing, and says how the push
+itself ended: `exited with status N`, or `was terminated by signal N (NAME)` for the
+signals a bounded command here meets, and `was terminated by signal N` for any other.
+Where a read of the push's own pipes stopped short, that failure is reported beside
+it, so an answer this process could not read whole is never reported as one the
+command never wrote.
+
+A refusal that **did** capture output is reported exactly as before: git's own per-ref
+summary, the pointers at the preserved evidence, and an excerpt of what it wrote. The
+failure kind is unchanged in both cases — `push-rejected`, exit code `1` — and no
+`FailureKind` is added.
+
+Event kinds added: none.
+
+### A change request a `checks-unsettled` close stopped watching is reconciled once
+
+A `change-auto` publication watches the host for a fixed span and closes
+`checks-unsettled` when that span runs out. The merge often happens after it, and nothing
+afterwards asked: the landing tiers read stored records and the base's history, a status
+read deliberately never fetches, and the host is asked only which change requests are
+*open* — where a merged one is simply absent. A change merged five seconds after its last
+required check completed therefore went on being reported `closed without landing`, and
+the next attempt republished work the base already carried.
+
+**A `status`, a `release status` or a `publish` that meets a recorded change request after
+such a close asks the host once.** The question is asked in exactly one state — this host
+recorded a change request for the branch, it asked the host to land it, and no landing is
+recorded for it — and at most once per read, so a read that establishes the landing is the
+last one to ask. Where the host reports it merged, that merge commit is recorded as the
+landing the way a witnessed landing is recorded: the publication checkout is
+fast-forwarded onto it, each automated release target's baseline is captured at it, and
+the merge is written to the stream that opened the change. The read that found it then
+answers from that record — its landing tier, its publication state, and its planner
+guidance all recomputed in the same pass.
+
+A change request the host reports open or closed-unmerged, and one the host cannot be
+asked about at all, each leave the record exactly as it stands.
+
+`landing_status` asks nobody. The contract fixes its signature with no `Providers`, so it
+is the one landing read that consults no host and decides from history alone.
+
+Event kinds added: none — a landing found this way is recorded as the existing
+`change-merged`.
+
+### One torn run clone is a finding, never the failure of its identity
+
+An identity keeps a clone per run, and the reads that answer for a piece of work search
+every one of them: a commit is looked for across every copy of every identity, and a
+branch is judged in each copy holding it. A git failure in any one clone used to end the
+whole read, so six zero-byte loose objects in one dead clone made the release answers for
+two unrelated landed changes refusals until a person found and repaired it by hand.
+
+**An identity-wide `status`, `release status` or session-close read isolates a clone git
+will not read, and goes on across the rest.** The clone answers for nothing in that read,
+and is reported as a per-session finding naming the clone, the session whose run clone it
+is where a record says so, and what git said about it. `status` carries it among the
+report's `notes`; `release status` writes it to stderr as a warning beside an answer that
+is otherwise exactly what an intact identity gives. Where the copies that did read cannot
+decide the landing — `no` or `unknown` — `release status` answers *not answered*, naming
+the torn clone, rather than `not-landed`: that answer is the absence of evidence, and the
+torn clone is where the evidence would have been. An answer a record decided is unaffected.
+
+**A landed session whose disposable clone git will not read closes from its landing
+record.** The clone is asked directly — every ref's objects listed — only once the ordinary
+close has failed, so a refusal this crate makes on purpose goes on refusing. Where it is
+unreadable and the session's work is recorded as landed, the close succeeds, leaves the
+clone exactly as it is for whoever repairs or removes it, and says so on stderr. A session
+with no landing record still refuses, with git's own words, because its clone may hold work
+nothing else carries.
+
+Event kinds added: none.
+
+One existing kind gains fields: `session-closed` gains, on a close taken from the landing
+record, `landed` (the landing commit), `unreadable_clone` (what git said) and the existing
+`retained` naming the clone left in place.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

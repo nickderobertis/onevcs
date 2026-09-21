@@ -207,8 +207,11 @@ fn read(mut command: Command, bound: Duration, label: &str) -> ReleaseAnswer {
             bound = bound.as_secs()
         ));
     };
-    let stdout = out_reader.finish();
-    let stderr = err_reader.finish();
+    // The bytes alone: a probe's answer is what it printed, and a read that stopped
+    // short is reported by this module as an answer it could not parse rather than
+    // as a pipe diagnostic of its own.
+    let stdout = out_reader.finish().bytes;
+    let stderr = err_reader.finish().bytes;
     let status = match status {
         Ok(status) => status,
         Err(failure) => return not_answered(format!("{label} could not be collected: {failure}")),

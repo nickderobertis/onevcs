@@ -1905,30 +1905,26 @@ pub fn close(token: &str) -> Result<Record> {
     let mut stream = Stream::open(token)?;
     let mut closed = json!({"token": record.token, "branch": record.branch});
     if ours && record.clone.is_dir() {
-        let handed = preserve_and_hand_back(&record, &mut stream)?;
-        if let Some(preserved) = &handed.preserved {
-            closed["preserved"] = json!(preserved);
-        }
-        if !handed.copied {
+        // The tree is released the ordinary way, and a failure of that is where the
+        // close stops — except for the one state where stopping loses nothing and
+        // costs an operator a repair by hand. See [`released_from_the_record`].
+        if let Err(failure) = release_the_tree(&record, &mut stream, &mut closed) {
+            let Some(landing) = released_from_the_record(&record) else {
+                return Err(failure);
+            };
+            closed["landed"] = json!(landing.commit);
             closed["retained"] = json!(record.clone.to_string_lossy());
-        }
-        let stray = stray_work(&record)?;
-        if !stray.is_empty() {
-            return Err(stranding(&record, &stray));
-        }
-        match record.slot {
-            // The slot outlives the session: its tree is put back on the base, clean
-            // of everything but what the repository itself calls build output, for the
-            // next session to take warm.
-            Some(number) => {
-                return_tree(&record, &delete_paths_for(&record)?, handed.copied)?;
-                closed["returned"] = json!({"slot": number});
-            }
-            None => {
-                if record.worktree.is_dir() {
-                    git::worktree_remove(&record.clone, &record.worktree)?;
-                }
-            }
+            closed["unreadable_clone"] = json!(landing.said);
+            eprintln!(
+                "onevcs: warning: the run clone of session {token} at {clone} could not be read \
+                 by git ({said}), and this session's work is recorded as landed at {commit} — so \
+                 the session is closed from that record and the clone is left exactly as it is \
+                 for whoever repairs or removes it",
+                token = record.token,
+                clone = record.clone.display(),
+                said = landing.said,
+                commit = landing.commit,
+            );
         }
     }
     // Publish the terminator before making `Closed` observable. An event follower
@@ -1939,6 +1935,99 @@ pub fn close(token: &str) -> Result<Record> {
     save(&record)?;
     drop(lease);
     Ok(record)
+}
+
+/// Hand the session's branch back and release its tree, which is the ordinary close.
+///
+/// One function so that the whole of it has one failure, which is what
+/// [`released_from_the_record`] beside it answers.
+fn release_the_tree(record: &Record, stream: &mut Stream, closed: &mut Value) -> Result<()> {
+    let handed = preserve_and_hand_back(record, stream)?;
+    if let Some(preserved) = &handed.preserved {
+        closed["preserved"] = json!(preserved);
+    }
+    if !handed.copied {
+        closed["retained"] = json!(record.clone.to_string_lossy());
+    }
+    let stray = stray_work(record)?;
+    if !stray.is_empty() {
+        return Err(stranding(record, &stray));
+    }
+    match record.slot {
+        // The slot outlives the session: its tree is put back on the base, clean
+        // of everything but what the repository itself calls build output, for the
+        // next session to take warm.
+        Some(number) => {
+            return_tree(record, &delete_paths_for(record)?, handed.copied)?;
+            closed["returned"] = json!({"slot": number});
+        }
+        None => {
+            if record.worktree.is_dir() {
+                git::worktree_remove(&record.clone, &record.worktree)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A landing the record already holds, for a session whose clone git will not read.
+struct FromTheRecord {
+    /// The commit this session's work reached its base at.
+    commit: String,
+    /// What git said when asked to read the clone.
+    said: String,
+}
+
+/// Whether this session may be closed from its landing record rather than from its
+/// tree, and the record that says so.
+///
+/// **Two conditions, and both are needed.** The clone has to be one git will not
+/// read — asked here rather than inferred from the failure that got us here, because
+/// a refusal this crate makes on purpose (work in the tree that nothing outside it
+/// carries) is not a torn clone and must go on refusing. And the session's work has to be
+/// *recorded as landed*, because that is what says there is nothing in the tree the
+/// base does not already carry: the clone is a run's disposable copy, and a close
+/// that leaves it is leaving a copy of work that is on the base.
+///
+/// A session with no such record still refuses, with git's own words. What this
+/// removes is the state that cost a person an hour: a landed session whose torn
+/// clone blocked its own close, and therefore blocked every automated adoption and
+/// cleanup behind it, until somebody found the clone and repaired it by hand.
+fn released_from_the_record(record: &Record) -> Option<FromTheRecord> {
+    let said = unreadable_objects(&record.clone)?;
+    let mut notes = Vec::new();
+    let streams = crate::status::recorded_streams(&mut notes).ok()?;
+    let commit = crate::status::recorded_for(
+        &streams,
+        &record.identity,
+        &record.branch,
+        Some(&record.token),
+    )
+    .landing?;
+    Some(FromTheRecord {
+        commit: commit.as_str().to_owned(),
+        said,
+    })
+}
+
+/// What git says when it cannot read this clone's own objects, or `None` where it
+/// reads them.
+///
+/// One question, asked only once a close has already failed, so nothing is added to
+/// the cost of an ordinary one. It is asked of **every ref** rather than of `HEAD`,
+/// and it lists objects rather than resolving names: a run clone borrows everything
+/// older than itself through its alternates, so the objects a run tore are the ones
+/// its own branch tip names — which a question about `HEAD` alone, sitting on a base
+/// commit the alternate still holds, answers without ever reading.
+fn unreadable_objects(clone: &Path) -> Option<String> {
+    match git::run(
+        &["rev-list", "--objects", "--no-walk", "--all"],
+        Some(clone),
+    ) {
+        Ok(output) if output.ok() => None,
+        Ok(output) => Some(output.diagnostic()),
+        Err(failure) => Some(failure.to_string()),
+    }
 }
 
 /// Every live process this host can show is working inside the session.
