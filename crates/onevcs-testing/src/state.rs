@@ -46,7 +46,10 @@ use crate::store::Checked;
 /// host was handed for a change request after it was opened. `10` is the failure
 /// vocabulary a publication's outcome inside [`VcsState::publications`] may name
 /// widening by one kind, `host-prerequisite` — no field moved, but a document naming
-/// it is one a version 9 build cannot read, and the version is how it says so.
+/// it is one a version 9 build cannot read, and the version is how it says so. `11` is
+/// one more field a `Recoverable` gained inside [`VcsState::preserved`], the same way
+/// `4` and `5` were: where `onevcs preserve` put that branch on its identity's origin,
+/// and the commit the origin carries it at.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -56,7 +59,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 10;
+pub const STATE_VERSION: u32 = 11;
 
 /// The oldest document version this build reads.
 ///
@@ -86,7 +89,10 @@ pub const STATE_VERSION: u32 = 10;
 /// document written before them, which is the answer, since that build could describe
 /// nothing. `9` to `10` changed no field and no meaning: every failure kind a version 9
 /// document can hold is spelled here as it was there and means what it meant, so it
-/// reads unchanged and needs no carrying forward beyond its version.
+/// reads unchanged and needs no carrying forward beyond its version. `10` to `11` added
+/// one that appears only when it holds something, so a version 10 document's preserved
+/// rows read as rows saying nothing about an origin — which is what they said, since
+/// that build had no verb that could put a branch on one.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a

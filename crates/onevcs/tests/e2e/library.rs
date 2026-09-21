@@ -5038,3 +5038,176 @@ fn a_release_record_its_writer_has_not_finished_still_hands_back_the_releases_be
         "the releases recorded before the torn line are still this session's"
     );
 }
+
+#[test]
+fn preserving_a_branch_answers_what_it_did_and_the_enumeration_beside_it_names_it() {
+    // The two seams `onepipeline shutdown` is written against, driven the way it
+    // drives them: the shutdown asks each live dispatch to commit, preserves the
+    // branch it committed to, and then reads the enumeration to report what it kept.
+    // Both answer values, because a shutdown routing on *what happened* to each of
+    // fifty branches cannot parse fifty sentences.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, identity) = hosted(&world, LOCAL);
+    // Installed so that reaching a host would be possible, which is what makes the
+    // assertion below that none was reached mean something.
+    world.install_fake_host(&origin);
+
+    let session = open(&Git, "feature/preserved-by-the-library");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: what a shutdown must keep",
+    );
+    let clone = session
+        .worktree
+        .parent()
+        .expect("a worktree lives under its run root")
+        .join("clone");
+    let tip = world
+        .git(
+            &clone,
+            &["rev-parse", &format!("refs/heads/{}", session.branch)],
+        )
+        .trim()
+        .to_owned();
+
+    let request = onevcs::PreserveRequest {
+        repo: "hosted".to_owned(),
+        branch: session.branch.clone(),
+    };
+    let preserved = onevcs::preserve(&request).expect("the branch is preserved");
+    assert_eq!(preserved.outcome, onevcs::Preservation::Pushed);
+    assert_eq!(preserved.identity, identity.origin);
+    assert_eq!(preserved.branch, session.branch);
+    assert_eq!(preserved.commit.as_deref(), Some(tip.as_str()));
+    assert_eq!(
+        preserved.remote.as_deref(),
+        Some(origin.to_string_lossy().as_ref()),
+        "a run clone's `origin` is the identity's own origin rather than the checkout \
+         that lent it objects"
+    );
+    assert_eq!(
+        preserved.from, clone,
+        "the branch is pushed from the run clone that holds it: {preserved:?}"
+    );
+    assert!(
+        world.host_calls().is_empty(),
+        "a preservation reaches git and nothing else: {:?}",
+        world.host_calls()
+    );
+
+    // The same request again finds the work already kept and pushes nothing, which is
+    // what lets a shutdown re-run over a list it has already worked through.
+    let again = onevcs::preserve(&request).expect("preserving it again is an answer");
+    assert_eq!(again.outcome, onevcs::Preservation::AlreadyOnOrigin);
+    assert_eq!(again.commit, preserved.commit);
+    assert_eq!(again.remote, preserved.remote);
+
+    // …and the enumeration this is read beside, which had no library form at all: the
+    // row says the work is somewhere that outlives the host, and still names the verb
+    // that lands it.
+    for scope in [Scope::Repo("hosted".to_owned()), Scope::All] {
+        let rows = onevcs::recoverable(&scope).expect("the enumeration answers");
+        let row = rows
+            .iter()
+            .find(|row| row.branch.branch == session.branch)
+            .unwrap_or_else(|| panic!("{scope:?} names the preserved branch: {rows:?}"));
+        let on_origin = row
+            .on_origin
+            .as_ref()
+            .unwrap_or_else(|| panic!("the row says where the work is: {row:?}"));
+        assert_eq!(on_origin.commit, tip);
+        assert_eq!(Some(on_origin.remote.clone()), preserved.remote);
+        assert_eq!(row.identity, identity.origin);
+        assert!(
+            !row.recover_command.is_empty(),
+            "being on the origin is not being published: {row:?}"
+        );
+        assert_eq!(row.landed, Landed::No);
+    }
+}
+
+#[test]
+fn preserving_a_branch_with_nowhere_to_go_still_names_the_commit_at_risk() {
+    // The answer a shutdown acts on hardest: this host holds work and there is nowhere
+    // for it to go, so the machine going away takes it. The engine reports each branch
+    // it kept and each it could not, and it reads both off this value — so a `NoRemote`
+    // answer that named no commit would leave it re-reading git for what the verb had
+    // already had in hand, and would name a branch at risk without naming which work.
+    let world = World::new();
+    inhabit(&world);
+    let checkout = world.path("stranded");
+    std::fs::create_dir_all(&checkout).expect("a scratch checkout");
+    world.git(&checkout, &["init", "-q", "."]);
+    world.commit_file(&checkout, "base.txt", "base\n", "chore: the first commit");
+    world.git(&checkout, &["checkout", "-q", "-b", "feature/stranded"]);
+    world.commit_file(
+        &checkout,
+        "one.txt",
+        "one\n",
+        "feat: work with nowhere to go",
+    );
+    world.git(&checkout, &["checkout", "-q", "main"]);
+    // Registered under an origin an operator named, which the repository itself does not
+    // have: what decides this outcome is whether the *location holding the branch* has an
+    // `origin` to push to, and never what the registry or the policy says.
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/stranded.git",
+            ],
+            Providers::real(),
+        ),
+        0,
+        "the repository registers"
+    );
+    let stranded = world
+        .git(&checkout, &["rev-parse", "refs/heads/feature/stranded"])
+        .trim()
+        .to_owned();
+
+    let preserved = onevcs::preserve(&onevcs::PreserveRequest {
+        repo: "stranded".to_owned(),
+        branch: "feature/stranded".to_owned(),
+    })
+    .expect("a branch with nowhere to go is an answer rather than a failure");
+    assert_eq!(preserved.outcome, onevcs::Preservation::NoRemote);
+    assert_eq!(
+        preserved.commit.as_deref(),
+        Some(stranded.as_str()),
+        "the commit nothing outside this host carries is the one this names: {preserved:?}"
+    );
+    assert_eq!(
+        preserved.remote, None,
+        "and there is no remote it went to, which is the one field an outcome drops: \
+         {preserved:?}"
+    );
+    assert_eq!(preserved.from, checkout);
+}
+
+#[test]
+fn preserving_a_branch_no_checkout_of_the_identity_holds_is_refused_by_name() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, LOCAL);
+
+    let refused = onevcs::preserve(&onevcs::PreserveRequest {
+        repo: "hosted".to_owned(),
+        branch: "feature/nobody-has-this".to_owned(),
+    })
+    .expect_err("a branch nothing holds is nothing to preserve")
+    .to_string();
+    assert!(
+        refused.contains("feature/nobody-has-this")
+            && refused.contains(&identity.origin)
+            && refused.contains("onevcs recoverable"),
+        "the refusal names the branch, the identity, and what lists the branches there \
+         are: {refused}"
+    );
+}

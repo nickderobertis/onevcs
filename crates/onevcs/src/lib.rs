@@ -32,8 +32,10 @@
 //! of prose. A caller embedding this crate wants the decision itself, so the same
 //! operations answer values — [`publish`] hands back a [`Publication`],
 //! [`close_session`] the session it released, [`session`] what the repository side
-//! recorded, and [`EventStream`] the envelopes one session wrote. The command line
-//! is a rendering of those rather than a second path through them.
+//! recorded, [`preserve`] what putting a branch on its origin did, [`recoverable`] the
+//! branches that still hold unpublished work, and [`EventStream`] the envelopes one
+//! session wrote. The command line is a rendering of those rather than a second path
+//! through them.
 
 #![warn(missing_docs)]
 
@@ -60,6 +62,7 @@ mod lock;
 mod merge_path;
 mod policy;
 mod pool;
+mod preserve;
 mod probe;
 mod processes;
 pub mod provenance;
@@ -101,6 +104,7 @@ pub use pool::{
     IdentityOutcome, MaintainReport, MaintenanceOutcome, PoolStatus, PruneReport, SlotMaintenance,
     SlotOutcome, SlotState, SlotStatus, WorkspaceCapacity,
 };
+pub use preserve::{Preservation, PreserveRequest, Preserved};
 pub use providers::Providers;
 pub use publish::{
     DraftReason, FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject,
@@ -115,8 +119,9 @@ pub use releases::{
 };
 pub use rules::MergePolicy;
 pub use session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
-    Recoverable, Scope, Session, SessionHolder, SessionRecord, SessionRequest, SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, PreservedBranch,
+    Provenance, Recoverable, Scope, Session, SessionHolder, SessionRecord, SessionRequest,
+    SessionToken,
 };
 pub use stream::EventStream;
 pub use vcs::{Git, Vcs};
@@ -231,6 +236,53 @@ pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<S
 /// ago the command that opened it exited.
 pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>> {
     workspace::holders(repo)
+}
+
+/// Put an unpublished branch on its identity's origin, under its own name, without
+/// publishing it.
+///
+/// The library form of `onevcs preserve`, and the half of a soft shutdown that makes
+/// the commits a host was about to lose survive it. **Nothing about it is a
+/// publication**: no change request is opened, no merge path is run, no base branch is
+/// touched, nothing is force-pushed, and no provenance marker or attestation is
+/// written — so a branch carrying an unattested incomplete-step marker is preserved
+/// exactly as it stands and still needs [`recoverable`]'s command afterwards.
+///
+/// The branch is looked for everywhere the landing verbs look, run clones included,
+/// so work a live dispatch committed a moment ago is found. A branch the origin
+/// already carries at that commit is [`Preservation::AlreadyOnOrigin`] and nothing is
+/// pushed; a location with no origin is [`Preservation::NoRemote`] and nothing is
+/// attempted. A refusal — non-fast-forward, credentials, a local-path origin that
+/// declines the ref — is an `Err` naming the identity, the branch, and git's own
+/// per-ref summary, so a caller preserving many branches reports that one and carries
+/// on.
+///
+/// It takes no [`Providers`] deliberately. Adding a method to the public [`Vcs`] trait
+/// would break every outside implementor of it, and this reaches git and nothing else
+/// — no host, no change request — so it sits beside [`workspace_capacity`] and
+/// [`pool_maintain`], which are free functions for the same reason.
+pub fn preserve(request: &PreserveRequest) -> Result<Preserved> {
+    preserve::run(&store::load()?, request)
+}
+
+/// Every preserved-but-unpublished branch in scope, and what would land each.
+///
+/// The library form of `onevcs recoverable`, which had none: the enumeration was a
+/// private function over types this surface already exports, so the one consumer that
+/// wanted it had to spawn the binary and parse what it printed.
+///
+/// It answers exactly what the command answers without `--all`: a branch whose work
+/// reached the base is not one of these, because the row is read to be pasted and
+/// pasting one for finished work re-opens a change request for what the base already
+/// carries. [`Vcs::preserved`] is the wider question — every preserved branch,
+/// whatever became of its work — and it is on the seam because a supplied
+/// implementation answers it.
+///
+/// It takes no [`Providers`] for the reason [`session_holders`] does not: the branches
+/// are the ones under this host's own state root and in the checkouts its registry
+/// records, which is where `Git` keeps them and where the command reads them.
+pub fn recoverable(scope: &Scope) -> Result<Vec<Recoverable>> {
+    vcs::collect(scope, vcs::Reporting::UnpublishedOnly)
 }
 
 /// What the repository side recorded about a session.

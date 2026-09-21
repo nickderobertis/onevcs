@@ -96,6 +96,19 @@ mod packaging;
 // fixes: a second Nx project would run the same `--workspace` commands twice, and the
 // affected selection already fails closed to everything on a base it cannot derive.
 mod pool;
+// Unix only: it drives real bare origins, real clones, real `git push`es and real
+// `pre-push` hooks, and one of its journeys uses the same substituted `gh` as `host.rs`
+// to assert that a preserving push reaches no host at all. Its own header carries the
+// reason in full.
+#[cfg(unix)]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice, and the
+// affected selection already fails closed to everything on a base it cannot derive. Real
+// git is this whole binary's premise rather than this module's expense — the twenty-two
+// journeys here run offline, credential-free and in about two seconds.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod preserve;
 // Unix only: its hosted journeys publish through the same substituted `gh` as
 // `host.rs`. Its own header carries the reason in full.
 #[cfg(unix)]

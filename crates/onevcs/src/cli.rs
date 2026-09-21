@@ -49,6 +49,8 @@ pub enum Command {
         #[command(subcommand)]
         command: ChangeCommand,
     },
+    /// Put an unpublished branch on its identity's origin, without publishing it.
+    Preserve(PreserveArgs),
     /// Verify and publish a preserved branch that was left behind.
     Recover(RecoverArgs),
     /// List preserved work that has not been published.
@@ -370,6 +372,28 @@ pub struct PublishBranchArgs {
     #[arg(long, value_name = "PATH")]
     pub body_file: Option<PathBuf>,
     // llmlint: ignore-end[invalid_states_unrepresentable]
+}
+
+/// Arguments for `onevcs preserve`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct PreserveArgs {
+    /// The unpublished branch to put on its identity's origin under its own name.
+    // llmlint: ignore[invalid_states_unrepresentable] this module is the parser only,
+    // and what makes a branch name valid is `git check-ref-format` — a subprocess,
+    // which argument parsing must not run. `preserve::run` is the boundary that decides
+    // it, and its refusal names `onevcs recoverable`, exactly as
+    // `PublishBranchArgs::branch`'s does.
+    pub branch: String,
+    /// The repository the branch belongs to: an identity key, a registered alias, an
+    /// origin URL, or a path — read exactly as `publish-branch --repo` reads one.
+    // llmlint: ignore[invalid_states_unrepresentable] the four forms cannot be told
+    // apart by a parser — an alias and a key are registry lookups and a path is
+    // `canonicalize` — so `store::resolve` is the one boundary that decides, refusing a
+    // value that names nothing by name. Typed as the text `PreserveRequest::repo` is,
+    // because the library form takes the same four spellings and the command is a
+    // rendering of it.
+    #[arg(long, value_name = "REPO")]
+    pub repo: String,
 }
 
 /// Arguments for `onevcs recover`.

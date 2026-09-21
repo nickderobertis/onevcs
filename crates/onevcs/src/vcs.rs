@@ -1,5 +1,6 @@
 //! The repository side of the seam.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -9,8 +10,8 @@ use crate::landed::{self, Landed};
 use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
-    Recoverable, Scope, Session, SessionRecord, SessionRequest, SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, PreservedBranch,
+    Provenance, Recoverable, Scope, Session, SessionRecord, SessionRequest, SessionToken,
 };
 use crate::stream::Stream;
 use crate::workspace::{self, object};
@@ -357,6 +358,10 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
         // evidence is — and lending its objects is what lets a checkout that has not
         // fetched since read the commit that carries them.
         let lent = git::objects_dir(&publication).ok();
+        // The branches this host itself put on the origin with `onevcs preserve`, read
+        // once per identity: see `reported_branches` for why the listing below needs
+        // them.
+        let preserved_here = crate::status::preserved_branches(&streams, identity);
         for repo in workspace::checkouts_of(&registry, &resolution)? {
             if !git::is_repo(&repo) {
                 continue;
@@ -367,7 +372,7 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
             };
             let asked = git::Asked::borrowing(&repo, lent.as_deref());
             let compared = judged_against(asked, &base, current.as_ref());
-            for branch in git::unpublished_branches(&repo)? {
+            for branch in reported_branches(&repo, &preserved_here)? {
                 let key = (identity.to_owned(), branch.clone());
                 if seen.contains(&key) {
                     continue;
@@ -441,6 +446,15 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
                         branch: &branch,
                         change_url,
                         verdict,
+                        // Read through the same reader `onevcs status` reads it
+                        // through, so the two reports cannot come to disagree about
+                        // where one branch is.
+                        on_origin: crate::status::preserved_for(
+                            &streams,
+                            identity,
+                            &branch,
+                            session_holding(&sessions, identity, &branch),
+                        ),
                     },
                     &sessions,
                     &trailers,
@@ -489,6 +503,7 @@ struct Preserved<'a> {
     branch: &'a str,
     change_url: Option<Url>,
     verdict: Landed,
+    on_origin: Option<OnOrigin>,
 }
 
 /// The row one preserved branch answers with.
@@ -506,6 +521,7 @@ fn preserved_row(
         branch,
         ref change_url,
         ref verdict,
+        ref on_origin,
     } = *preserved;
     // A marker under a prefix this host does not read is still a marker:
     // reporting the branch as complete is what would let somebody hand
@@ -619,8 +635,38 @@ fn preserved_row(
             recover_command,
             held_by,
             net_negative: net_negative(repo, compared, branch)?,
+            on_origin: on_origin.clone(),
         },
     ))
+}
+
+/// The branches of one repository this report answers about.
+///
+/// [`git::unpublished_branches`] is the question it has always asked — which local
+/// branches hold commits no `origin` remote-tracking ref has — and the preserved names
+/// are a union with it rather than a change to it. They have to be, because a
+/// preserving push updates the pushing repository's own `origin/<branch>`: measured
+/// against that, a branch `onevcs preserve` had just put somewhere safe would read as
+/// published and vanish from this report, which is the opposite of what preserving it
+/// promised. Being on the origin under its own name is not being published — the work
+/// has not reached the base — so the row stays, with the same `recover_command` it
+/// carried before and the origin named beside it.
+///
+/// Nothing else about which branches this report covers moves: a name no
+/// `branch-preserved` record of this identity carries is listed exactly as it was, and
+/// the other readers of `unpublished_branches` — the close, the reclaim, and the
+/// sweep's retention rule — go on asking whether letting a clone go would lose work,
+/// where a branch the origin carries genuinely loses none.
+fn reported_branches(repo: &Path, preserved: &BTreeSet<String>) -> Result<Vec<String>> {
+    let mut branches = git::unpublished_branches(repo)?;
+    for branch in preserved {
+        if !branches.contains(branch) && git::branch_exists(repo, branch) {
+            branches.push(branch.clone());
+        }
+    }
+    branches.sort();
+    branches.dedup();
+    Ok(branches)
 }
 
 /// Whether this copy of a branch belongs to a session something superseded.

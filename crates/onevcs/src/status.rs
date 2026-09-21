@@ -38,11 +38,12 @@ use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
+use crate::preserve::{ALREADY_ON_ORIGIN, PUSHED};
 use crate::publish::{self, DraftReason};
 use crate::registry::Registry;
 use crate::releases::TargetName;
 use crate::rules::{Approvals, MergePolicy};
-use crate::session::{Lifecycle, Liveness, Provenance, SessionHolder};
+use crate::session::{Lifecycle, Liveness, OnOrigin, Provenance, SessionHolder};
 use crate::store::{self, Resolution};
 use crate::workspace::{Ref, Token};
 use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace};
@@ -98,10 +99,18 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// through `change describe`, which is the one write to a change request's prose
 /// after it exists and was recorded nowhere a person could read it.
 ///
+/// `8` is `branch.on_origin`: where `onevcs preserve` put this branch on its
+/// identity's origin, and the commit the origin carries it at. It is the readback of
+/// the `branch-preserved` record, and this report is where it is rendered for the same
+/// reason `publication.draft` is — nothing else in this crate reads a stream back for a
+/// person. A branch nothing has preserved omits the field, and being on the origin
+/// changes nothing about what `next` says lands the work: a preserved branch is kept,
+/// not published.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 7;
+pub const REPORT_VERSION: u32 = 8;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -250,6 +259,14 @@ pub struct BranchReport {
     /// What its provenance says. Absent for the same reason `ahead` is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<BranchProvenance>,
+    /// Where `onevcs preserve` put the branch on its identity's origin, when it has,
+    /// read back from this host's own record of that preservation.
+    ///
+    /// On the branch section rather than the publication's, because it is a fact about
+    /// where the branch *is* and not about what was proposed for it: a preserved branch
+    /// is unpublished, and `publication.state` says so beside this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_origin: Option<OnOrigin>,
 }
 
 /// One repository holding the branch, and what that repository is.
@@ -367,6 +384,21 @@ pub struct DescribedReport {
     /// The title the description replaced the change request's with, where it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+}
+
+/// One preservation of one branch, as the stream recorded it.
+///
+/// The branch travels with it because a record is matched to the branch a reader asked
+/// about, and the two halves of the answer travel together because either alone is
+/// useless: a remote with no commit does not say whether *this* work is there, and a
+/// commit with no remote does not say where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreservedRecord {
+    /// The branch it put on the origin, held to being a name git would accept where the
+    /// stream was read.
+    branch: Ref,
+    /// Where it went, and the commit the origin carries it at.
+    on_origin: OnOrigin,
 }
 
 /// A publication section as a document spells it, before the two answers in it have
@@ -594,6 +626,8 @@ struct Told {
     draft: Option<DraftReason>,
     /// The newest `change-described` across every stream of this branch.
     described: Option<DescribedReport>,
+    /// Where the newest `branch-preserved` of *this* branch put it on its origin.
+    on_origin: Option<OnOrigin>,
     asked_the_host_to_land: bool,
     merge_path: Option<MergePathReport>,
     recorded: landed::Recorded,
@@ -613,6 +647,7 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
                 .iter()
                 .filter_map(|record| record.described.clone()),
         ),
+        on_origin: preserved_in(&relevant, &work.branch),
         asked_the_host_to_land: relevant.iter().any(|record| record.asked_the_host_to_land),
         merge_path: latest(
             relevant
@@ -930,6 +965,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let change_url = told.change_url.clone();
     let draft = told.draft.clone();
     let described = told.described.clone();
+    let on_origin = told.on_origin.clone();
     let asked_the_host_to_land = told.asked_the_host_to_land;
     let merge_path = told.merge_path.clone();
 
@@ -1053,6 +1089,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
             holders,
             ahead,
             provenance: branch_provenance,
+            on_origin,
         },
         publication: PublicationReport {
             state,
@@ -1504,6 +1541,16 @@ pub(crate) struct Recorded {
     /// The newest `change-described` on this stream: the one write to the change
     /// request's prose after it was opened, which nothing but the stream records.
     described: Option<Stamped<DescribedReport>>,
+    /// The newest `branch-preserved` on this stream that put a branch on its origin:
+    /// which branch, where it went, and the commit the origin carries it at.
+    ///
+    /// Carrying the branch rather than relying on
+    /// [`branch`](Recorded::branch) — the *first* branch any event of the stream named
+    /// — because a session's stream records its own branch and nothing else, and a
+    /// reader that assumed the two were one would answer for a name this record never
+    /// preserved. The preservation that found no origin records no value here: there is
+    /// nowhere the branch is, which is the same answer as never having preserved it.
+    on_origin: Option<Stamped<PreservedRecord>>,
     asked_the_host_to_land: bool,
     merge_path: Option<Stamped<MergePathReport>>,
 }
@@ -1695,6 +1742,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         draft: None,
         lifted: None,
         described: None,
+        on_origin: None,
         asked_the_host_to_land: false,
         merge_path: None,
     };
@@ -1818,6 +1866,50 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     },
                 });
             }
+            // A branch put on its identity's origin without being published.
+            //
+            // **Which of the three outcomes this was is read from `outcome` alone**,
+            // never from which fields arrived: every payload carries all five, and the
+            // one that reached no origin carries `remote` as `null` beside the commit
+            // nothing outside this host holds. A reader inferring the outcome from a
+            // missing key would report a payload it merely failed to understand as a
+            // branch that is nowhere — so only the two words that mean the origin has
+            // it produce a record here, and a word this build does not know produces
+            // none.
+            //
+            // **Each of the three values it then takes goes through the check its own
+            // kind meets**, because a stream is a file whichever process wrote it and
+            // each of these goes somewhere a value that is not one would do harm: the
+            // branch reaches a git argument vector through [`preserved_branches`]'s
+            // caller, and the remote and the commit are both printed onto a line an
+            // operator reads. The branch's check runs `check-ref-format`, which is a
+            // subprocess — paid once per recorded preservation that reached an origin
+            // rather than once per line of every stream, since no other kind reaches
+            // it.
+            EventKind::BranchPreserved => {
+                let reached_the_origin = matches!(
+                    field("outcome").as_deref(),
+                    Some(PUSHED | ALREADY_ON_ORIGIN)
+                );
+                if reached_the_origin {
+                    if let (Some(branch), Some(remote), Some(commit)) = (
+                        field("branch").and_then(|name| Ref::try_from(name).ok()),
+                        field("remote").filter(|remote| git::is_usable_remote(remote)),
+                        field("commit").as_deref().and_then(ObjectId::parse),
+                    ) {
+                        record.on_origin = Some(Stamped {
+                            at,
+                            value: PreservedRecord {
+                                branch,
+                                on_origin: OnOrigin {
+                                    remote,
+                                    commit: commit.as_str().to_owned(),
+                                },
+                            },
+                        });
+                    }
+                }
+            }
             // Emitted with the change request's URL only where this crate went on to
             // ask the host to land it; the local merge train emits one without.
             EventKind::MergeQueued => {
@@ -1879,6 +1971,10 @@ fn relevant_streams<'a>(
         session.map(str::to_owned),
         Some(format!("publish-branch-{slug}")),
         Some(format!("recover-{slug}")),
+        // Named as well as matched by label and payload, so a preservation is found by
+        // the one spelling `preserve` writes it under rather than only by what its
+        // event happens to carry.
+        Some(crate::preserve::preserve_token(branch)),
     ]
     .into_iter()
     .flatten()
@@ -1915,6 +2011,58 @@ pub(crate) fn recorded_for(
         )
         .and_then(|url| Url::parse(&url).ok()),
     }
+}
+
+/// Where the newest preservation of one branch put it on its origin, across the
+/// streams that recorded that branch.
+///
+/// Held to the branch asked about rather than taken from whichever record is newest: a
+/// session's stream is matched by identity and branch, and a session that preserved its
+/// own branch and a later verb that preserved another are two records a reader must not
+/// confuse.
+fn preserved_in(relevant: &[&Recorded], branch: &str) -> Option<OnOrigin> {
+    latest(
+        relevant
+            .iter()
+            .filter_map(|record| record.on_origin.clone())
+            .filter(|stamped| *stamped.value.branch == *branch),
+    )
+    .map(|record| record.on_origin)
+}
+
+/// Where this host's own streams say one branch was put on its origin, when they do.
+///
+/// One reader, two callers, for the reason [`recorded_for`] is one: `recoverable`
+/// reports the same fact per row, and a branch that was on its origin in one report and
+/// nowhere in the other would be exactly the disagreement these readers exist to end.
+pub(crate) fn preserved_for(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> Option<OnOrigin> {
+    preserved_in(
+        &relevant_streams(streams, identity, branch, session),
+        branch,
+    )
+}
+
+/// Every branch of one identity this host's streams record a preservation of.
+///
+/// `recoverable` needs the names before it has a row, because a preserving push updates
+/// the pushing repository's own `origin/<branch>` — which is what
+/// [`crate::git::unpublished_branches`] measures a branch against — so a branch would
+/// drop out of that listing the moment it was preserved. Answering with the names this
+/// host itself preserved is what keeps the report saying what it said before, and adds
+/// nothing else to it: a branch no `branch-preserved` names is listed exactly as it
+/// always was.
+pub(crate) fn preserved_branches(streams: &[Recorded], identity: &str) -> BTreeSet<String> {
+    streams
+        .iter()
+        .filter(|record| record.identity.as_deref() == Some(identity))
+        .filter_map(|record| record.on_origin.as_ref())
+        .map(|stamped| stamped.value.branch.to_string())
+        .collect()
 }
 
 /// Read one reference as the work it names.
@@ -2231,6 +2379,16 @@ impl Report {
                 None => "unknown — nothing on this host holds the branch",
             }
         ));
+        // Said whether or not it is there, because the question a reader of a
+        // shutting-down host asks is whether the work would survive the machine going
+        // away, and silence reads as "yes" exactly as readily as "no".
+        match &self.branch.on_origin {
+            Some(on_origin) => out.push_str(&format!(
+                "  on origin: {} at {} — preserved, not published\n",
+                on_origin.remote, on_origin.commit,
+            )),
+            None => out.push_str("  on origin: not preserved\n"),
+        }
         if self.branch.holders.is_empty() {
             out.push_str("  held by: nothing this identity keeps work in\n");
         } else {
@@ -2435,8 +2593,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v7.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v7-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v8.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v8-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -2469,6 +2627,15 @@ mod round_trip {
             &*full.session.expect("the full golden names a session").token,
             "s-000000000000"
         );
+        // A preserved branch reads back as both halves of the answer at once: where it
+        // is, and the commit the origin carries it at. Either alone says nothing about
+        // whether *this* work would survive the host going away.
+        let on_origin = full
+            .branch
+            .on_origin
+            .expect("the full golden names a preserved branch");
+        assert!(on_origin.remote.ends_with("hosted.git"));
+        assert_eq!(on_origin.commit.len(), 40);
 
         // …and a field the minimal golden omits reads back as absent rather than as
         // a value, which is the other half of writing it out only when it is held.
@@ -2487,6 +2654,11 @@ mod round_trip {
         assert!(minimal.session.is_none());
         assert!(minimal.merge_path.is_none());
         assert!(minimal.branch.change_base.is_none());
+        assert!(
+            minimal.branch.on_origin.is_none(),
+            "a report about a branch nothing preserved holds no origin, and the golden must \
+             not name the key even as null"
+        );
         assert!(minimal.publication.change_url.is_none());
         assert!(minimal.notes.is_empty());
         assert!(

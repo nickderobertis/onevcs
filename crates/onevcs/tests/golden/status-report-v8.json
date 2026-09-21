@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "ref": {
     "given": "feature/full",
     "kind": "branch"
@@ -33,7 +33,11 @@
       }
     ],
     "ahead": 3,
-    "provenance": "incomplete-unattested"
+    "provenance": "incomplete-unattested",
+    "on_origin": {
+      "remote": "<root>/hosted.git",
+      "commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
+    }
   },
   "publication": {
     "state": "open",
