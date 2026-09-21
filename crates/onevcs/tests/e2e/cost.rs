@@ -779,3 +779,212 @@ fn a_filtered_read_opens_no_checkout_its_sessions_cannot_hold_a_branch_in() {
         directories(&calls)
     );
 }
+
+/// The measured host, by the numbers that made this read forty seconds long: nine
+/// identities, about forty closed session records accumulated per busy one, and
+/// twenty-two preserved branches spread across them.
+const IDENTITIES: usize = 9;
+const SESSIONS_PER_IDENTITY: usize = 40;
+const PRESERVED: usize = 22;
+/// The launching session three of those twenty-two were opened under, which is the
+/// join the `Stop` hook this exists for makes.
+const LAUNCHER: &str = "s-manager-7";
+
+/// How many of one identity's sessions leave a preserved branch behind, so that the
+/// twenty-two are spread across the nine.
+fn preserved_in(identity: usize) -> usize {
+    let each = PRESERVED / IDENTITIES;
+    each + usize::from(identity < PRESERVED % IDENTITIES)
+}
+
+/// One `recoverable --json` read with nothing in the way of it, timed.
+///
+/// The bounds below are about the binary a hook runs, so they are read off a run of
+/// exactly that — the counting `git` doubles the cost of every spawn, and a bound
+/// measured through it would be a bound on the fixture.
+fn timed(world: &World, extra: &[&str]) -> (Vec<Value>, f64) {
+    let started = Instant::now();
+    let assert = world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .args(extra)
+        .assert()
+        .success();
+    let elapsed = started.elapsed().as_secs_f64();
+    (
+        serde_json::from_slice(&assert.get_output().stdout).expect("rows"),
+        elapsed,
+    )
+}
+
+/// Open and close one identity's share of the sessions, leaving its preserved
+/// branches behind, and answer with the labelled ones and the run roots they worked
+/// in.
+fn sessions_of(world: &World, identity: usize) -> Vec<(String, PathBuf)> {
+    let leaves_work = preserved_in(identity);
+    let mut selected = Vec::new();
+    for session in 0..SESSIONS_PER_IDENTITY {
+        let branch = format!("work/{identity}-{session}");
+        // One branch of each of the first three identities is this launcher's, which
+        // is the join the hook makes and the six identities it never has to open.
+        let labelled = session == 0 && identity < 3;
+        let mut open: Vec<String> = [
+            "session".to_owned(),
+            "open".to_owned(),
+            format!("repo-{identity}"),
+            "--branch".to_owned(),
+            branch.clone(),
+            "--label".to_owned(),
+            format!("run=r-{identity}-{session}"),
+        ]
+        .into();
+        if labelled {
+            open.push("--label".to_owned());
+            open.push(format!("launcher={LAUNCHER}"));
+        }
+        let assert = world.onevcs().args(&open).assert().success();
+        let stdout = assert.get_output().stdout.clone();
+        let token = crate::world::token_of(&stdout);
+        if session < leaves_work {
+            let worktree = crate::world::worktree_of(&stdout);
+            world.commit_file(&worktree, "work.txt", &branch, &format!("feat: {branch}"));
+            if labelled {
+                selected.push((branch, crate::lifecycle::run_root_of(world, &token)));
+            }
+        }
+        world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+    }
+    selected
+}
+
+#[test]
+fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
+    // The whole point, at the size it has to work at. On the installed 0.27.0 this
+    // shape of registry answered the host-wide read in about forty seconds and could
+    // not answer the filtered question at all, because there was no filter — and the
+    // consuming host's `Stop` hook has ten seconds to ask it at the end of every
+    // manager turn.
+    //
+    // The two budgets are stated per *place the read has to look* rather than as flat
+    // numbers, so they stay meaningful as the fixture grows: ten processes for each
+    // checkout an answer must consider, and thirty for each preserved branch it
+    // actually decides. The clocks are generous multiples of what this measures, so a
+    // busy machine does not fail them and a regression does.
+    let world = World::new();
+    crate::registry::configure_rules(
+        &world,
+        format!("version: 1\nrules: []\ndefault: {}\n", local_direct()),
+    );
+    let mut checkouts = Vec::new();
+    for identity in 0..IDENTITIES {
+        let origin = world.bare_origin(&format!("repo-{identity}"));
+        let checkout = world.clone_of(&origin, &format!("repo-{identity}"));
+        world
+            .onevcs()
+            .args(["register", &checkout.to_string_lossy()])
+            .assert()
+            .success();
+        checkouts.push(checkout);
+    }
+
+    // The three the hook asks about: one in each of the first three identities, so a
+    // read narrowed to them has six other identities to decline to open.
+    //
+    // Built one thread per identity, because nine of these take about a quarter of an
+    // hour in a row and the thing under test is a *read* over the registry they leave
+    // behind rather than the making of it. It is also the truer fixture: sessions of
+    // different identities are opened concurrently on the host this is the size of,
+    // and each identity's locks, run roots and pool are its own.
+    let shared = &world;
+    let built: Vec<Vec<(String, PathBuf)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..IDENTITIES)
+            .map(|identity| scope.spawn(move || sessions_of(shared, identity)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("an identity's sessions are opened"))
+            .collect()
+    });
+    let preserved: usize = (0..IDENTITIES).map(preserved_in).sum();
+    let selected: Vec<(String, PathBuf)> = built.into_iter().flatten().collect();
+
+    assert_eq!(preserved, PRESERVED, "the fixture is the measured host's size");
+    assert_eq!(selected.len(), 3, "three of them carry the launcher label");
+
+    let counting = Counting::installed(&world);
+
+    // The host-wide read: every checkout of every identity — its publication and the
+    // clone each of its session records names — and every preserved branch in them.
+    let (rows, calls, _) = counting.recoverable(&world, &[]);
+    assert_eq!(rows.len(), PRESERVED, "every preserved branch is answered");
+    let scanned = IDENTITIES * (1 + SESSIONS_PER_IDENTITY);
+    assert!(
+        calls.len() <= 10 * scanned + 30 * PRESERVED,
+        "the host-wide read spawned {} processes for {scanned} checkouts and {PRESERVED} \
+         branches",
+        calls.len()
+    );
+    let (timed_rows, whole) = timed(&world, &[]);
+    assert_eq!(timed_rows.len(), PRESERVED);
+    assert!(
+        whole <= 15.0,
+        "the host-wide read took {whole:.1}s, and the bound is 15s"
+    );
+
+    // …and the read the hook actually makes. The places its three sessions can be
+    // holding a branch are their own clones and the checkouts they hand a branch back
+    // to, and nothing else on this host may be opened.
+    let can_hold: BTreeSet<PathBuf> = selected
+        .iter()
+        .map(|(_, run_root)| run_root.join("clone"))
+        .chain(checkouts.iter().take(3).cloned())
+        .collect();
+    let filter = format!("launcher={LAUNCHER}");
+    let (rows, calls, _) = counting.recoverable(&world, &["--label", &filter]);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["branch"]["branch"].as_str().expect("a branch").to_owned())
+            .collect::<BTreeSet<String>>(),
+        selected
+            .iter()
+            .map(|(branch, _)| branch.clone())
+            .collect::<BTreeSet<String>>(),
+        "the filter answers exactly the three branches of that launcher"
+    );
+    let workspaces = world.home().join("workspaces");
+    for cwd in directories(&calls) {
+        for (identity, checkout) in checkouts.iter().enumerate().skip(3) {
+            assert!(
+                !cwd.starts_with(checkout),
+                "the filtered read opened {} — identity {identity}, which holds none of the \
+                 sessions it selects",
+                cwd.display()
+            );
+        }
+        if cwd.starts_with(&workspaces) {
+            assert!(
+                selected
+                    .iter()
+                    .any(|(_, run_root)| cwd.starts_with(run_root)),
+                "the filtered read opened {}, the workspace of a session it did not select",
+                cwd.display()
+            );
+        }
+    }
+    assert!(
+        calls.len() <= 10 * can_hold.len() + 30 * selected.len(),
+        "the filtered read spawned {} processes for {} checkouts and 3 branches",
+        calls.len(),
+        can_hold.len()
+    );
+    let (timed_rows, narrow) = timed(&world, &["--label", &filter]);
+    assert_eq!(timed_rows.len(), 3);
+    assert!(
+        narrow <= 3.0,
+        "the filtered read took {narrow:.1}s, and the bound is 3s"
+    );
+}

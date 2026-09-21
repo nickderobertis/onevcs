@@ -1619,16 +1619,51 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     })
 }
 
+/// Whether a name is one git accepts that this crate can recognise without asking.
+///
+/// Deliberately **narrower** than git's own grammar, and that asymmetry is the whole
+/// safety of it: it accepts only names made of ASCII letters, digits, `_`, `-`, `.`
+/// and `/`, with none of the component shapes git refuses — no empty component, none
+/// beginning with `.`, none ending in `.` or `.lock`, and no `..` anywhere. Every
+/// name it accepts is therefore one `git check-ref-format refs/heads/<name>` accepts,
+/// and a name it does not recognise is not refused here: it falls through to git,
+/// which remains the thing that decides. So a git whose grammar moves can only make
+/// this *slower*, never wrong — and `the_fast_path_accepts_only_names_git_accepts`
+/// beside it holds the subset against the git this suite runs on.
+///
+/// It exists because a listing reads the session records, every record validates the
+/// two names it carries, and a host with a few hundred records has a few hundred
+/// distinct ones — so "once per distinct name" is still a few hundred processes per
+/// read, and a filtered read that opens two checkouts would spend them all before
+/// looking at either.
+fn plainly_a_ref_name(branch: &str) -> bool {
+    if branch.is_empty() || branch.starts_with('/') || branch.ends_with('/') {
+        return false;
+    }
+    branch.split('/').all(|component| {
+        !component.is_empty()
+            && !component.starts_with('.')
+            && !component.ends_with('.')
+            && !component.ends_with(".lock")
+            && !component.contains("..")
+            && component
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    })
+}
+
 /// Whether a branch name is one git will accept.
 ///
-/// Asked of git once per distinct name for the life of the process: whether a name
-/// is a ref name is a fact about the name, so the answer cannot go stale — and every
-/// session record read validates two of them, which made a listing over a few
-/// hundred records spawn a process per record per read for a question with a dozen
-/// distinct answers.
+/// Decided in process for the ordinary shapes ([`plainly_a_ref_name`]) and asked of
+/// git for everything else, once per distinct name for the life of the process:
+/// whether a name is a ref name is a fact about the name, so that answer cannot go
+/// stale.
 pub fn is_valid_branch_name(branch: &str) -> bool {
     if branch.is_empty() || branch.starts_with('-') {
         return false;
+    }
+    if plainly_a_ref_name(branch) {
+        return true;
     }
     static ACCEPTED: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
     let mut accepted = ACCEPTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2591,6 +2626,97 @@ pub fn import_branch(cwd: &Path, source: &Path, branch: &str) -> Result<bool> {
         Some(cwd),
     )?;
     Ok(output.ok())
+}
+
+#[cfg(test)]
+mod ref_name_tests {
+    use super::*;
+
+    /// Names of every shape this crate meets, and several it must not accept.
+    ///
+    /// Each is put to both answers below, so the corpus is the one place a shape is
+    /// listed rather than two lists that could come to disagree.
+    const NAMES: &[&str] = &[
+        "main",
+        "HEAD",
+        "feature/x",
+        "onevcs/s-9fa99cfb80da",
+        "worktree-agent-7",
+        "preserved/by-trailer",
+        "release/v1.2.3",
+        "a_b-c.d/e",
+        "a.lock",
+        "locked/a.lock",
+        ".hidden",
+        "hidden/.x",
+        "a..b",
+        "ends.",
+        "with space",
+        "with~tilde",
+        "with^caret",
+        "with:colon",
+        "question?",
+        "star*",
+        "brack[et",
+        "at@{brace",
+        "@",
+        "back\\slash",
+        "double//slash",
+        "trailing/",
+        "/leading",
+        "unicode/ünïcøde",
+        "control\u{1}char",
+    ];
+
+    /// Whether git itself accepts a name as a branch ref.
+    fn git_accepts(branch: &str) -> bool {
+        run(&["check-ref-format", &format!("refs/heads/{branch}")], None)
+            .map(|out| out.ok())
+            .unwrap_or(false)
+    }
+
+    /// The in-process fast path may only ever be *narrower* than git.
+    ///
+    /// This is the one assertion that makes deciding a ref name without a subprocess
+    /// safe at all: the fast path answers `true` only where git would, so the worst a
+    /// git whose grammar has moved can do is make a name fall through to it. It is a
+    /// unit test rather than a journey because there is no verb that asks whether a
+    /// name is a name — the question is a private function's, and the oracle it is
+    /// held against is the real `git` on this host, which is why it is not a mock.
+    #[test]
+    fn the_fast_path_accepts_only_names_git_accepts() {
+        for name in NAMES {
+            if plainly_a_ref_name(name) {
+                assert!(
+                    git_accepts(name),
+                    "{name:?} is accepted without asking git, and git refuses it"
+                );
+            }
+        }
+        // …and it is not vacuously narrow: the names this crate actually cuts are the
+        // ones that must never cost a process.
+        for ordinary in ["main", "feature/x", "onevcs/s-9fa99cfb80da", "worktree-agent-7"] {
+            assert!(
+                plainly_a_ref_name(ordinary),
+                "{ordinary:?} is the ordinary shape and must be decided in process"
+            );
+        }
+    }
+
+    /// And the answer as a whole is still git's, whichever route it took.
+    #[test]
+    fn a_name_is_valid_here_exactly_when_git_says_so() {
+        for name in NAMES {
+            // A leading `-` is refused before either route, because such a name goes
+            // on to be an argument and git's own parser would read it as an option.
+            let expected = git_accepts(name) && !name.starts_with('-');
+            assert_eq!(
+                is_valid_branch_name(name),
+                expected,
+                "{name:?}: this build and git disagree about whether it is a ref name"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, windows))]
