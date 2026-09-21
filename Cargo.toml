@@ -97,8 +97,11 @@ libc = "0.2"
 # and the emitter and reader over a stream: one copy shared by every producer in
 # the stack, where each used to keep its own. The core is generic over a
 # vocabulary; the agent profile is the vocabulary `onevcs` writes (`source: vcs`).
-onemessagebus = "0.7.0"
-onemessagebus-agent = "0.7.0"
+# The pair tracks the bus release that carries only generic contracts, with the
+# planner channel moved out (onemessagebus#126): `onepipeline` links one copy of
+# the bus, so every sibling it composes has to require the same release.
+onemessagebus = "0.8.0"
+onemessagebus-agent = "0.8.0"
 
 assert_cmd = "2"
 predicates = "3"
