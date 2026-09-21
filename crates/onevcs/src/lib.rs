@@ -32,8 +32,10 @@
 //! of prose. A caller embedding this crate wants the decision itself, so the same
 //! operations answer values — [`publish`] hands back a [`Publication`],
 //! [`close_session`] the session it released, [`session`] what the repository side
-//! recorded, and [`EventStream`] the envelopes one session wrote. The command line
-//! is a rendering of those rather than a second path through them.
+//! recorded, [`preserve`] what putting a branch on its origin did, [`recoverable`] the
+//! branches that still hold unpublished work, and [`EventStream`] the envelopes one
+//! session wrote. The command line is a rendering of those rather than a second path
+//! through them.
 
 #![warn(missing_docs)]
 

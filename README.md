@@ -51,6 +51,17 @@ that same rules-resolved policy: `onevcs publish-branch feature/thing --repo
 stopped half way, which publishes it with the attestation that verification
 cleared it. Whichever of the three refuses a branch names the one that takes it.
 
+A branch that is not ready to land and must not be lost is **preserved** instead:
+`onevcs preserve feature/thing --repo ~/projects/widgets` puts it on that
+identity's origin under its own name and publishes nothing — no change request, no
+merge path, no base touched, nothing forced, and no provenance marker cleared. It
+is what a host with running work reaches for before it shuts down, so the commits
+its dispatches just made survive the machine going away; the branch is exactly as
+recoverable afterwards as it was before, and `onevcs recoverable` still names the
+verb that lands it, with the origin beside it. The library form is `preserve`,
+answering `Pushed`, `AlreadyOnOrigin`, or `NoRemote`, and `recoverable` is the
+enumeration beside it.
+
 `onevcs status REF` answers what became of a piece of work, asked by whichever
 name you hold — a change request's URL, a session token, a branch, or a commit. It
 reports the identity's resolved policy, the session, every checkout and per-run

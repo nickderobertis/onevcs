@@ -270,6 +270,37 @@ guess that a rewrite supersedes what it rewrote. The workflow that reaches this 
 replay from where `sync_change_base` sends an operator — is recorded as a journey rather
 than described here.
 
+## …and one verb lands nothing, which is the whole of what it is
+
+`preserve.rs` is `onevcs preserve`, and it is the only verb here that reaches a remote
+without publishing anything. It puts an unpublished branch on its identity's origin
+under its own name so that the work outlives the host, and a shutdown is what reaches
+for it. Four things are easy to undo.
+
+- **Every absence in it is load-bearing.** No change request, no merge path, no base
+  touched, nothing forced, no provenance marker cleared and no attestation written — a
+  branch carrying an unattested incomplete marker is preserved exactly as it stands and
+  still needs `recover`. `tests/e2e/preserve.rs` proves each absence by first proving
+  the thing it claims did not happen would have: the substituted host records every
+  call it is asked for, and the `pre-push` hook is shown refusing an ordinary push of
+  the same branch.
+- **`git::push_preserving` is the one push in this crate that passes `--no-verify`**,
+  and the reason is written where the flag is: the hook is a gate, and the branch a
+  shutdown exists to save is the one a worker was interrupted in the middle of, whose
+  tree does not pass it. Running it would refuse the very branch and block for the
+  length of that repository's whole gate on a host that is going away.
+- **`branch-preserved` is not `push`.** The one producer of `push` is a publication, so
+  a reader counting pushes to find publications must never meet a preservation. Its
+  stream is the branch's own session's where a record names one and `preserve-<slug>`
+  otherwise, which `status::relevant_streams` reads under the same spelling.
+- **A preserving push updates the pushing repository's own `origin/<branch>`**, which
+  is what `git::unpublished_branches` measures a branch against — so `vcs::collect`
+  lists the union of that answer with the branches this host's own records say it
+  preserved, or a branch would vanish from `recoverable` the moment it was preserved.
+  The other readers of that question — `close`, `reclaim`, and the sweep's retention
+  rule — are deliberately untouched: they ask whether letting a clone go would lose
+  work, and a branch the origin carries loses none.
+
 `recoverable` is the report `recover` and `publish-branch` are reached from, so
 the command it prints per row is one of them, by path (`--repo`) rather than by
 cwd. The train is deliberately not what it names, even for finished work:
