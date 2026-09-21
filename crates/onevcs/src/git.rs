@@ -499,6 +499,14 @@ pub enum Ended {
     /// It exited of its own accord, with this code.
     Code(i32),
     /// This signal terminated it, and it never reached an exit code.
+    #[cfg_attr(
+        not(unix),
+        expect(
+            dead_code,
+            reason = "only Unix reports a terminating signal, so a build for any other \
+                      target has no status to construct this from"
+        )
+    )]
     Signal(i32),
 }
 
