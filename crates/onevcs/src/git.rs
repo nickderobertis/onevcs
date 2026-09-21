@@ -2230,7 +2230,48 @@ pub fn push_replacing(
     if let Some(lease) = lease.as_deref() {
         args.insert(1, lease);
     }
-    let output = run_with_env(&args, Some(cwd), env)?;
+    pushed(&args, cwd, env)
+}
+
+/// Push a branch **without running the repository's own `pre-push` hook**, and
+/// without replacing anything the remote has.
+///
+/// The one push in this crate that passes `--no-verify`, and the reason is that this
+/// is the one push that is not a publication. The `pre-push` hook is what verifies a
+/// *publishing* push for a local identity — it is the merge path — and a preservation
+/// is explicitly not one: it opens no change request, touches no base, and lands
+/// nothing. A preserving push that ran the hook would block for as long as that
+/// repository's whole gate takes, on a host that is shutting down, and would then
+/// refuse the very branch it is there to save — because the branch a shutdown exists
+/// to preserve is the one a worker was interrupted in the middle of, whose tree does
+/// not pass the gate yet. Preserving only the work that was already fine would drop
+/// the work that most needed keeping. **Do not remove this flag**: the next reader's
+/// instinct is to, and doing so turns this verb into one that saves nothing under
+/// exactly the conditions it exists for.
+///
+/// Never forced, in either spelling: a non-fast-forward push is a refusal for the
+/// caller to report, never a history to replace.
+pub fn push_preserving(cwd: &Path, branch: &str, remote: &str) -> Result<Pushed> {
+    pushed(
+        &[
+            "push",
+            "--porcelain",
+            "--no-verify",
+            remote,
+            &format!("refs/heads/{branch}:refs/heads/{branch}"),
+        ],
+        cwd,
+        &[],
+    )
+}
+
+/// One `git push`, read as what git reported rather than as the prose beside it.
+///
+/// Shared by every push above so that the two answers — every ref taken, or some ref
+/// declined with its per-ref lines — are read out of one invocation's output in one
+/// place, whatever flags the caller added.
+fn pushed(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Result<Pushed> {
+    let output = run_with_env(args, Some(cwd), env)?;
     Ok(if output.ok() {
         Pushed::Accepted {
             output: output.combined(),

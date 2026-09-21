@@ -42,12 +42,12 @@ use onevcs::{
     ChangeSpec, Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter,
     EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, IdentityMaintenance,
     IdentityOutcome, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
-    MaintainReport, MaintenanceOutcome, MergeOutcome, MergePolicy, NetNegative, Phase, PhaseOf,
-    PoolStatus, PreservedBranch, ProtectionSource, Provenance, Providers, PruneReport, Publication,
-    PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope,
-    Session, SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
-    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, Url, Vcs,
-    WorkspaceCapacity,
+    MaintainReport, MaintenanceOutcome, MergeOutcome, MergePolicy, NetNegative, OnOrigin, Phase,
+    PhaseOf, PoolStatus, PreservedBranch, ProtectionSource, Provenance, Providers, PruneReport,
+    Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks,
+    Retention, Scope, Session, SessionChange, SessionHolder, SessionRecord, SessionRequest,
+    SessionToken, Sha, SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject,
+    Url, Vcs, WorkspaceCapacity,
 };
 use serde_json::{json, Value};
 
@@ -317,6 +317,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::LockWait,
         EventKind::LockAcquired,
         EventKind::CommitPreserved,
+        EventKind::BranchPreserved,
         EventKind::Push,
         EventKind::ChangeOpened,
         EventKind::ChangeDrafted,
@@ -341,6 +342,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::LockWait
             | EventKind::LockAcquired
             | EventKind::CommitPreserved
+            | EventKind::BranchPreserved
             | EventKind::Push
             | EventKind::ChangeOpened
             | EventKind::ChangeDrafted
@@ -2233,6 +2235,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         ],
         held_by: None,
         net_negative: None,
+        on_origin: None,
     };
     let value = serde_json::to_value(&recoverable).expect("a recoverable serializes");
     assert_eq!(value["branch"]["provenance"], json!("complete"));
@@ -2242,8 +2245,10 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     // marks already reads: absent rather than written as null, the way every other
     // optional field in this crate's reported shapes is.
     assert!(
-        value.get("held_by").is_none() && value.get("net_negative").is_none(),
-        "an unmarked row carries neither mark: {value}"
+        value.get("held_by").is_none()
+            && value.get("net_negative").is_none()
+            && value.get("on_origin").is_none(),
+        "an unmarked row carries none of the three marks: {value}"
     );
     // …and a marked one reads back as what it said, so a caller that parses `--json`
     // into the type keeps both marks rather than dropping them into a lossy read.
@@ -2257,6 +2262,13 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             added: 3,
             removed: 481,
         }),
+        // Additive and absent for every row nothing preserved, so a marked row is where
+        // a consumer that parses `--json` into the type has to keep it rather than drop
+        // it into a lossy read.
+        on_origin: Some(OnOrigin {
+            remote: "https://github.com/nickderobertis/onevcs.git".to_owned(),
+            commit: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c".to_owned(),
+        }),
         ..recoverable
     };
     // The one answer every row carries, and the reason the row is a row: `no` is
@@ -2267,6 +2279,13 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     assert_eq!(value["held_by"]["holding"], json!("owner-running"));
     assert_eq!(value["held_by"]["token"], json!("s-0123456789ab"));
     assert_eq!(value["net_negative"], json!({"added": 3, "removed": 481}));
+    assert_eq!(
+        value["on_origin"],
+        json!({
+            "remote": "https://github.com/nickderobertis/onevcs.git",
+            "commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+        })
+    );
     assert_eq!(
         serde_json::from_value::<Recoverable>(value.clone()).expect("a marked row reads back"),
         marked

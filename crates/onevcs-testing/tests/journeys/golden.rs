@@ -30,19 +30,23 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v10-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v10-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v11-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v11-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v10.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v10.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v11.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v11.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v9.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v9.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v10.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v10.json");
+/// The same, as the build before that wrote them: the documents whose preserved rows
+/// name no `host-prerequisite` failure, which version 10 is the widening of.
+const VCS_V9: &str = include_str!("../golden/vcs-state-v9.json");
+const HOST_V9: &str = include_str!("../golden/host-state-v9.json");
 /// The same, as the build before that wrote them: the documents whose draft reasons
 /// name no kind, which version 9 is the carrying forward of.
 const VCS_V8: &str = include_str!("../golden/vcs-state-v8.json");
@@ -192,19 +196,74 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 #[test]
-fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_this_one() {
+fn a_document_at_the_previous_version_reads_and_is_written_back_at_this_one() {
     // A consumer's checked-in scenario, written by the build before this one: the
-    // version went up because a publication's failure may now be `host-prerequisite`,
-    // and nothing a version 9 document can hold changed spelling or meaning with it.
-    // So it reads, a failure it recorded reads back as the same kind, and the next
-    // write declares this version and spells that failure exactly as it was spelled.
+    // version went up because a preserved row may now say where `onevcs preserve` put
+    // its branch on the origin, and a version 10 document's rows say nothing about one
+    // — which is what they said, since that build had no verb that could put a branch
+    // there. So it reads, its rows read back with no origin rather than with a guessed
+    // one, and the next write declares this version.
+    let home = Home::new();
+    let vcs_path = home.path("vcs.json");
+    let host_path = home.path("host.json");
+    assert!(
+        VCS_PREVIOUS.contains(r#""version": 10"#) && !VCS_PREVIOUS.contains("on_origin"),
+        "the previous document is the one written before a row could name an origin"
+    );
+    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+
+    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
+    FileHost::create(&host_path).expect("the previous version reads");
+    let state = vcs.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert_eq!(
+        state.preserved[0].on_origin, None,
+        "a row a build with no preserving verb wrote names no origin: {:?}",
+        state.preserved[0]
+    );
+
+    // The next write declares this version, and still names no origin for that row:
+    // reading a document forward must not invent an answer it never gave.
+    vcs.open_session(SessionRequest {
+        repo: "widgets".to_owned(),
+        branch: Some("feature/after-the-bump".to_owned()),
+        base: None,
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+    })
+    .expect("a session over the seeded repository");
+    let written = std::fs::read_to_string(&vcs_path).expect("a document");
+    assert!(
+        written.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && !written.contains("on_origin"),
+        "the carried-forward document declares this version and invents no origin: {written}"
+    );
+
+    // …and the field this version added is what the writer spells when a row holds one,
+    // as the golden this build writes holds it.
+    assert!(
+        VCS_FULL.contains(r#""on_origin""#)
+            && VCS_FULL.contains(&format!(r#""version": {STATE_VERSION}"#)),
+        "the golden holds a preserved row on its origin at this version: {VCS_FULL}"
+    );
+}
+
+#[test]
+fn a_version_9_document_keeps_its_failures_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written two builds back: the version went up
+    // there because a publication's failure may name `host-prerequisite`, and nothing a
+    // version 9 document can hold changed spelling or meaning with it. So it reads, a
+    // failure it recorded reads back as the same kind, and the next write declares this
+    // version and spells that failure exactly as it was spelled.
     let home = Home::new();
     let vcs_path = home.path("vcs.json");
     let host_path = home.path("host.json");
     let mut scenario: serde_json::Value =
-        serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
+        serde_json::from_str(VCS_V9).expect("the version 9 document is JSON");
     assert_eq!(scenario["version"], 9);
-    assert!(!VCS_PREVIOUS.contains("host-prerequisite"));
+    assert!(!VCS_V9.contains("host-prerequisite"));
     // The failure a version 9 build wrote for a push its merge path refused, added by
     // hand the way a consumer's scenario seeds one.
     scenario["publications"]
@@ -224,10 +283,10 @@ fn a_document_at_the_previous_version_keeps_its_failures_and_is_written_back_at_
         serde_json::to_string_pretty(&scenario).expect("a document"),
     )
     .expect("a document a previous build wrote");
-    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V9).expect("a document a previous build wrote");
 
-    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
-    FileHost::create(&host_path).expect("the previous version reads");
+    let vcs = FileVcs::create(&vcs_path).expect("the version 9 document reads");
+    FileHost::create(&host_path).expect("the version 9 document reads");
     let state = vcs.state().expect("readable");
     assert_eq!(state.version, STATE_VERSION);
     assert_eq!(state.publications.len(), 2);

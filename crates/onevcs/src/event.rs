@@ -54,6 +54,16 @@ pub enum EventKind {
     LockAcquired,
     /// Work was committed onto a preserved branch; carries the provenance kind.
     CommitPreserved,
+    /// A branch was put on its identity's origin under its own name, without being
+    /// published; carries the branch, the identity, the origin URL, the commit, and
+    /// which of the three things `onevcs preserve` found to do.
+    ///
+    /// Deliberately **not** [`Push`](EventKind::Push), and that is the whole reason it
+    /// is its own kind. The one producer of `push` is a publication, so a reader
+    /// counting pushes to find publications must never meet a preservation — and a
+    /// preservation is the opposite of one: no change request is opened, no base is
+    /// touched, and the branch is exactly as recoverable afterwards as it was before.
+    BranchPreserved,
     /// A branch was pushed.
     Push,
     /// A change request was opened; carries its URL and the host kind.
@@ -132,6 +142,7 @@ impl EventKind {
             EventKind::LockWait => "lock-wait",
             EventKind::LockAcquired => "lock-acquired",
             EventKind::CommitPreserved => "commit-preserved",
+            EventKind::BranchPreserved => "branch-preserved",
             EventKind::Push => "push",
             EventKind::ChangeOpened => "change-opened",
             EventKind::ChangeDrafted => "change-drafted",
@@ -198,6 +209,10 @@ impl PhaseOf for Phase {
             | EventKind::LockWait
             | EventKind::LockAcquired
             | EventKind::CommitPreserved
+            // The work being made, kept: putting a branch on its origin under its own
+            // name proposes nothing and integrates nothing, and a `local-direct`
+            // identity has no Review phase for it to be in.
+            | EventKind::BranchPreserved
             // The repair of a preserved branch, and therefore the work being made:
             // it puts the branch back into a state its merge path can rule on, and
             // it happens before that branch may enter one at all.

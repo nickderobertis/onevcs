@@ -13,10 +13,10 @@ use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
     EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
-    PoolStatusArgs, PublishArgs, PublishBranchArgs, RecoverArgs, RecoverableArgs, RegisterArgs,
-    ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs,
-    ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs,
-    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
+    PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, RecoverArgs, RecoverableArgs,
+    RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
+    ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
+    ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
     SessionTokenArgs, StatusArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
@@ -24,6 +24,7 @@ use crate::error::{self, Error, Result};
 use crate::event::EventFilter;
 use crate::host::ProtectionSource;
 use crate::landed::Landed;
+use crate::preserve::Preservation;
 use crate::providers::Providers;
 use crate::publish::{DraftReason, PublishOutcome, PublishRequest, Retention, Subject};
 use crate::registry::Registry;
@@ -87,6 +88,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ChangeCommand::Describe(args) => change_describe(args, providers),
             ChangeCommand::Ready(args) => change_ready(args, providers),
         },
+        Command::Preserve(args) => preserve_branch(args),
         Command::Recover(args) => recover_branch(args, providers),
         Command::Recoverable(args) => recoverable(args, providers),
         Command::Status(args) => report_status(args, providers),
@@ -828,6 +830,53 @@ fn explicit_body(
     }
 }
 
+/// Report what `onevcs preserve` did, the way this crate's other verbs report.
+///
+/// Exit `0` for all three outcomes and non-zero only on the refusal: "the identity has
+/// no origin" is an answer a caller acts on, not a failure of the command — and a
+/// shutdown preserving many branches must be able to tell a branch it could not push
+/// from one there was nowhere to push.
+fn preserve_branch(args: &PreserveArgs) -> Result<u8> {
+    let preserved = crate::preserve(&crate::PreserveRequest {
+        repo: args.repo.clone(),
+        branch: args.branch.clone(),
+    })?;
+    let branch = &preserved.branch;
+    match preserved.outcome {
+        Preservation::Pushed => println!(
+            "preserved: branch {branch:?} of {identity} is on {remote} at {commit}, pushed from              {from}. Nothing was published — no change request, no merge path, no base touched —              so it still needs the verb `onevcs recoverable` names to land it",
+            identity = preserved.identity,
+            remote = spelled(preserved.remote.as_deref()),
+            commit = spelled(preserved.commit.as_deref()),
+            from = preserved.from.display(),
+        ),
+        Preservation::AlreadyOnOrigin => println!(
+            "already on origin: {remote} carries branch {branch:?} of {identity} at {commit}, so              nothing was pushed",
+            identity = preserved.identity,
+            remote = spelled(preserved.remote.as_deref()),
+            commit = spelled(preserved.commit.as_deref()),
+        ),
+        // Said as plainly as the other two, because a caller shutting a host down has
+        // to know that this branch is one nothing outside the machine carries.
+        Preservation::NoRemote => println!(
+            "no remote: {from} holds branch {branch:?} of {identity} and has no `origin` to push              it to, so nothing was attempted and nothing outside this host carries it",
+            identity = preserved.identity,
+            from = preserved.from.display(),
+        ),
+    }
+    Ok(0)
+}
+
+/// A field a `no-remote` preservation does not carry, where the two outcomes that do
+/// are being rendered.
+///
+/// Unreachable for those two — [`crate::Preserved`] carries the remote and the commit
+/// together for both — and spelled rather than unwrapped so that a rendering can never
+/// be the thing that turns a successful preservation into a panic.
+fn spelled(value: Option<&str>) -> &str {
+    value.unwrap_or("unrecorded")
+}
+
 fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
     let registry = store::load()?;
     let title = explicit_title(args.title.as_ref())?;
@@ -1017,12 +1066,26 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
                 removed = net.removed(),
             ));
         }
+        // A word rather than a qualifier on the command: being on the origin changes
+        // nothing about what lands the work, and the row's `Resume:` line stays exactly
+        // what it was. What it tells a reader is that this row's work would survive the
+        // host going away.
+        if row.on_origin.is_some() {
+            marks.push("on origin".to_owned());
+        }
         let marked = match marks.is_empty() {
             true => String::new(),
             false => format!("  — {}", marks.join("; ")),
         };
         println!("{}  [{}]  {kind}{marked}", row.branch.branch, row.identity);
         println!("    Found in: {}", row.checkout.display());
+        if let Some(on_origin) = &row.on_origin {
+            println!(
+                "    On origin: {remote} carries it at {commit}, put there by `onevcs preserve`                  and published by nothing. The work survives this host going away; landing it is                  still the command below",
+                remote = on_origin.remote,
+                commit = on_origin.commit,
+            );
+        }
         println!("    Stopped because: {}", row.stopped_because);
         if let Some(net) = row.net_negative {
             println!(
