@@ -393,8 +393,9 @@ pub struct DescribedReport {
 /// commit with no remote does not say where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PreservedRecord {
-    /// The branch it put on the origin.
-    branch: String,
+    /// The branch it put on the origin, held to being a name git would accept where the
+    /// stream was read.
+    branch: Ref,
     /// Where it went, and the commit the origin carries it at.
     on_origin: OnOrigin,
 }
@@ -1868,14 +1869,21 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // its three fields together: a payload missing any of them recorded a
             // preservation that reached no origin — the `no-remote` outcome writes
             // neither the remote nor the commit — and there is then nothing to report
-            // about where the branch is. The commit goes through the conversion that
-            // decides what an object id is, for the reason the landing commit below
-            // does: a stream is a file whichever process wrote it, and this value is
-            // printed at an operator as the commit the origin carries.
+            // about where the branch is.
+            //
+            // **Every one of the three goes through the check its own kind of value
+            // meets**, because a stream is a file whichever process wrote it and each
+            // of these goes somewhere a value that is not one would do harm: the branch
+            // reaches a git argument vector through
+            // [`preserved_branches`]'s caller, and the remote and the commit are both
+            // printed onto a line an operator reads. The branch's check runs
+            // `check-ref-format`, which is a subprocess — paid once per recorded
+            // preservation rather than once per line of every stream, since no other
+            // kind reaches it.
             EventKind::BranchPreserved => {
                 if let (Some(branch), Some(remote), Some(commit)) = (
-                    field("branch"),
-                    field("remote"),
+                    field("branch").and_then(|name| Ref::try_from(name).ok()),
+                    field("remote").filter(|remote| git::is_usable_remote(remote)),
                     field("commit").as_deref().and_then(ObjectId::parse),
                 ) {
                     record.on_origin = Some(Stamped {
@@ -2005,7 +2013,7 @@ fn preserved_in(relevant: &[&Recorded], branch: &str) -> Option<OnOrigin> {
         relevant
             .iter()
             .filter_map(|record| record.on_origin.clone())
-            .filter(|stamped| stamped.value.branch == branch),
+            .filter(|stamped| *stamped.value.branch == *branch),
     )
     .map(|record| record.on_origin)
 }
@@ -2041,7 +2049,7 @@ pub(crate) fn preserved_branches(streams: &[Recorded], identity: &str) -> BTreeS
         .iter()
         .filter(|record| record.identity.as_deref() == Some(identity))
         .filter_map(|record| record.on_origin.as_ref())
-        .map(|stamped| stamped.value.branch.clone())
+        .map(|stamped| stamped.value.branch.to_string())
         .collect()
 }
 

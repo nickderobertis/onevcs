@@ -94,6 +94,29 @@ fn row_for(world: &World, repo: &Path, branch: &str) -> serde_json::Value {
         .clone()
 }
 
+/// Every `branch-preserved` payload one branch's synthetic stream carries, in order.
+///
+/// Read through `onevcs events`, which is what `World::events_of` spawns: the record a
+/// consumer acts on is the one the command prints, so a journey that read the file would
+/// be asserting about bytes nobody is handed.
+fn preservations_of(world: &World, branch: &str) -> Vec<serde_json::Value> {
+    world
+        .events_of(
+            &format!("preserve-{}", branch.replace('/', "-")),
+            "branch-preserved",
+        )
+        .into_iter()
+        .map(|event| {
+            assert_eq!(
+                event["phase"], "development",
+                "a preservation is the work being made, kept: {event}"
+            );
+            assert_eq!(event["payload"]["branch"], branch);
+            event["payload"].clone()
+        })
+        .collect()
+}
+
 /// The identity key one registered repository resolves to.
 fn identity_of(world: &World, repo: &str) -> String {
     let assert = world.onevcs().args(["resolve", repo]).assert().success();
@@ -156,9 +179,29 @@ fn a_branch_in_a_checkout_reaches_its_origin_and_preserving_it_again_pushes_noth
         .stdout(predicate::str::contains(&tip));
     assert_eq!(
         on_origin(world, &fixture.origin, branch),
-        Some(tip),
+        Some(tip.clone()),
         "the origin is where it was"
     );
+
+    // Both outcomes are recorded, and the second says which of the three it was: a
+    // reader of the stream can tell "this host pushed it" from "the origin already had
+    // it" without either reading as a publication.
+    let recorded = preservations_of(world, branch);
+    let [pushed, already] = recorded.as_slice() else {
+        panic!("two preservations of one branch are two records: {recorded:#?}");
+    };
+    assert_eq!(pushed["outcome"], "pushed");
+    assert_eq!(already["outcome"], "already-on-origin");
+    for payload in [pushed, already] {
+        assert_eq!(payload["commit"], serde_json::json!(tip));
+        assert!(
+            payload["remote"]
+                .as_str()
+                .expect("a preservation that found an origin names it")
+                .contains("project.git"),
+            "the payload names the origin the branch is on: {payload}"
+        );
+    }
 }
 
 #[test]
@@ -200,6 +243,23 @@ fn a_branch_whose_location_has_no_origin_is_answered_rather_than_pushed() {
     assert!(
         !world.git(&checkout, &["remote"]).contains("origin"),
         "the verb added no remote of its own"
+    );
+
+    // The absence is recorded as plainly as a push is: "there is nowhere this work
+    // outlives the host" is exactly as much of an answer as "it is on the origin", and a
+    // reader of the stream has to be able to tell the two apart from a verb that ran.
+    let recorded = preservations_of(&world, "feature/stranded");
+    let [payload] = recorded.as_slice() else {
+        panic!("one preservation is one record: {recorded:#?}");
+    };
+    assert_eq!(payload["outcome"], "no-remote");
+    // Omitted rather than written as null, the way every optional field in this crate's
+    // reported shapes is: a consumer meeting `remote: null` would have to decide what a
+    // remote of nothing means, and absent already says it.
+    assert!(
+        payload.get("remote").is_none() && payload.get("commit").is_none(),
+        "nothing was pushed, so the payload names neither a remote nor a commit — not \
+         even as null: {payload}"
     );
 }
 
@@ -718,16 +778,87 @@ fn a_branch_no_session_recorded_is_preserved_onto_a_stream_of_its_own() {
         .assert()
         .success();
 
-    let events = world.events_of("preserve-feature-no-session", "branch-preserved");
-    let [event] = events.as_slice() else {
-        panic!("the synthetic stream carries exactly one `branch-preserved`: {events:?}");
+    let recorded = preservations_of(world, branch);
+    let [payload] = recorded.as_slice() else {
+        panic!("the synthetic stream carries exactly one `branch-preserved`: {recorded:#?}");
     };
-    assert_eq!(event["phase"], "development");
-    assert_eq!(event["payload"]["branch"], branch);
-    assert_eq!(event["payload"]["outcome"], "pushed");
+    assert_eq!(payload["outcome"], "pushed");
     // …and the report finds it there, which is what the synthetic token is for.
     assert_eq!(
         report(world, branch)["branch"]["on_origin"]["commit"],
         serde_json::json!(tip_in(world, &fixture.checkout, branch))
     );
+}
+
+/// The file one branch's synthetic preservation stream is written to.
+fn preservation_stream(world: &World, branch: &str) -> PathBuf {
+    world
+        .home()
+        .join("streams")
+        .join(format!("preserve-{}.ndjson", branch.replace('/', "-")))
+}
+
+#[test]
+fn a_recorded_preservation_whose_payload_is_not_one_this_build_reads_is_not_reported() {
+    // A stream is a file whichever process wrote it, and the two values a preservation
+    // records travel somewhere a value that is not one would do harm: the branch reaches
+    // a git argument vector when the report looks for the copies of it, and the remote is
+    // printed onto a line an operator reads — where one carrying a newline would forge a
+    // second line of that report. So each is held to what its own kind of value is, and
+    // this is the journey that meets a record that is not.
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/forged";
+    a_branch_in_the_checkout(&fixture, branch, "feat: work somebody else recorded badly");
+    preserve(world, &fixture.checkout, branch, &[])
+        .assert()
+        .success();
+    let path = preservation_stream(world, branch);
+    let written = std::fs::read_to_string(&path).expect("the preservation's own record");
+    assert_eq!(
+        report(world, branch)["branch"]["on_origin"]["commit"],
+        serde_json::json!(tip_in(world, &fixture.checkout, branch)),
+        "the record this build wrote is one it reads"
+    );
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the *file* is the input under test.
+    // No verb writes a payload like this — that is the point — so the record has to be
+    // written here; what is changed is the payload alone, on an envelope this build's own
+    // writer produced, and it stands as the only record of that preservation. Everything
+    // read back below goes through the real `onevcs status`.
+    for (field, forged) in [
+        // A name git would refuse, which is the one that reaches an argument vector.
+        ("branch", serde_json::json!("..not-a-branch")),
+        // A remote carrying a second line, which is the one that reaches a report.
+        ("remote", serde_json::json!("https://example.invalid/a\nb")),
+    ] {
+        let mut envelope: serde_json::Value = serde_json::from_str(written.trim())
+            .expect("the preservation's record is one JSON object per line");
+        envelope["payload"][field] = forged;
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&envelope).expect("a line")),
+        )
+        .expect("a record some other writer left");
+
+        let reported = report(world, branch);
+        assert!(
+            reported["branch"].get("on_origin").is_none(),
+            "a record whose {field:?} is not one this build reads answers nothing about \
+             where the branch is: {reported}"
+        );
+        assert!(
+            reported["notes"].is_null(),
+            "the line is a well-formed envelope this build simply has no value in, which \
+             is not a gap in the read: {reported}"
+        );
+        assert!(
+            !recoverable(world, &fixture.checkout)
+                .iter()
+                .any(|row| row["branch"]["branch"] == branch && row.get("on_origin").is_some()),
+            "and the enumeration beside it answers the same way, through the same reader"
+        );
+        std::fs::write(&path, &written).expect("the record as its writer left it");
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
 }

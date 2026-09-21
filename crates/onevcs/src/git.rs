@@ -860,12 +860,27 @@ pub fn common_dir(cwd: &Path) -> Result<PathBuf> {
 /// The URL configured for a remote.
 pub fn remote_url(cwd: &Path, remote: &str) -> Result<String> {
     let value = checked(&["remote", "get-url", remote], Some(cwd))?.trimmed();
-    if value.is_empty() || value.contains(['\n', '\r']) {
+    if !is_usable_remote(&value) {
         return Err(Error::Invalid {
             reason: format!("git remote {remote:?} returned an unusable URL"),
         });
     }
     Ok(value)
+}
+
+/// Whether a value is one a remote's address could be: one line, and not blank.
+///
+/// The rule [`remote_url`] holds git's own answer to, in one place so that it can be
+/// asked from the other end as well — a remote read back out of an event stream is a
+/// file whichever process wrote it, and the value is printed onto a line an operator
+/// reads, where one carrying a newline would forge a second line of that report.
+///
+/// Deliberately no narrower than that. A remote is a URL *or* a path, in any spelling
+/// git accepts, and a build that decided which shapes were allowed would refuse
+/// repositories git is perfectly happy with — this crate's own local-path origins
+/// among them.
+pub fn is_usable_remote(value: &str) -> bool {
+    !value.trim().is_empty() && !value.contains(['\n', '\r'])
 }
 
 /// Whether a remote is configured at all.
