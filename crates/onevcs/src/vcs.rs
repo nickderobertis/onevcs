@@ -446,8 +446,9 @@ pub fn collect(scope: &Scope, reporting: Reporting) -> Result<Vec<Recoverable>> 
 /// Every git read inside one invocation is answered once ([`git::memoized`]), because
 /// this asks the same questions of the same repositories over and over — one base tip
 /// per checkout read by every branch in it, one branch log read by four provenance
-/// readers — and each asking used to be a process. The memo is this call's and ends
-/// with it: the repositories a library caller holds move between invocations, and a
+/// readers — and each asking used to be a process. Each identity is scanned under a
+/// memo of its own, on its own thread, since no two identities share a repository to
+/// ask about. The memo is this call's and ends with it: the repositories a library caller holds move between invocations, and a
 /// fact remembered across one would be this report answering from a tree that has
 /// changed.
 pub fn collect_matching(
@@ -482,23 +483,6 @@ fn collected(
         Scope::Repo(repo) => Some(store::resolve(&registry, repo)?.key),
     };
 
-    let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
-    // The branches whose work reached the base, kept aside rather than dropped: they
-    // are what `preserved` adds, and a copy of a name whose work the base already
-    // carries must not answer for a copy of it elsewhere that still holds work, so
-    // they join the answer only where no such copy did.
-    let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
-    let mut seen: Vec<(String, String)> = Vec::new();
-    // Every copy of a name this report has already put the question to, with the
-    // commit that copy stands at. A branch of one identity lives in as many clones as
-    // ever held it — a busy host keeps dozens — and deciding it is the expensive part
-    // of this report: the landing tiers, the provenance reads and, at the bottom, a
-    // content comparison, all of which answer the same for two copies standing at the
-    // same commit. So the second copy of one is not asked. The tip is in the key
-    // rather than assumed away, because two clones of a name that has been retried do
-    // *not* hold the same work, and a verdict borrowed across that difference would be
-    // this report answering about commits it never looked at.
-    let mut decided: BTreeSet<(String, String, String)> = BTreeSet::new();
     // Once per identity rather than once per checkout of one, because the places a
     // branch of it can be are a property of the identity — and they are read from
     // the one list the verbs that go on to *land* a branch read, so this report
@@ -510,9 +494,9 @@ fn collected(
         .collect();
     identities.sort_unstable();
     identities.dedup();
-    for identity in identities {
+    identities.retain(|&identity| {
         if wanted.as_ref().is_some_and(|key| key != identity) {
-            continue;
+            return false;
         }
         // An identity none of the selected sessions belongs to holds none of the
         // branches asked about, so nothing of it is opened at all — not its
@@ -521,153 +505,39 @@ fn collected(
             .as_ref()
             .is_some_and(|only| !only.identities.contains(identity))
         {
-            continue;
+            return false;
         }
-        let resolution = store::resolve(&registry, identity)?;
-        let publication = resolution.publication.clone();
-        let current = git::default_branch(&publication, "origin")
-            .ok()
-            .and_then(|base| base_commit(&publication, &base));
-        // Every publication fast-forwards this checkout, so it is where a landing's
-        // evidence is — and lending its objects is what lets a checkout that has not
-        // fetched since read the commit that carries them.
-        let lent = git::objects_dir(&publication).ok();
-        // The branches this host itself put on the origin with `onevcs preserve`, read
-        // once per identity: see `reported_branches` for why the listing below needs
-        // them.
-        let preserved_here = crate::status::preserved_branches(&streams, identity);
-        for repo in workspace::checkouts_of(&registry, &resolution)? {
-            // A checkout none of the selected sessions can be holding a branch in is
-            // not opened: that is the difference between a filter that narrows the
-            // answer and one that narrows the work, and on a host with forty retained
-            // clones per identity it is the whole difference.
-            if narrowed
-                .as_ref()
-                .is_some_and(|only| !only.checkouts.contains(&repo))
-            {
-                continue;
-            }
-            if !git::is_repo(&repo) {
-                continue;
-            }
-            let base = match git::default_branch(&repo, "origin") {
-                Ok(base) => base,
-                Err(_) => continue,
-            };
-            let asked = git::Asked::borrowing(&repo, lent.as_deref());
-            let compared = judged_against(asked, &base, current.as_ref());
-            // Only the names asked about are counted against their remote-tracking
-            // refs, which is a process per branch per checkout that a filtered read
-            // has no reason to spend — and the ones `onevcs preserve` put on the
-            // origin are listed whatever those refs say: see `reported_branches`.
-            let listed = reported_branches(&repo, &preserved_here, |branch| {
-                narrowed
-                    .as_ref()
-                    .is_none_or(|only| only.wants(identity, branch))
-            })?;
-            for (branch, tip) in listed {
-                let key = (identity.to_owned(), branch.clone());
-                if seen.contains(&key) {
-                    continue;
-                }
-                // The clone of a session something superseded holds the work that was
-                // taken over rather than the work that went on, so it answers for this
-                // name no more here than it does in `onevcs status` — and a row from it
-                // is a paste-ready publication of commits a later session already
-                // replaced.
-                if superseded_copy(&sessions, &repo, identity, &branch) {
-                    continue;
-                }
-                // A copy of this name standing at this commit has already been
-                // decided, in another checkout of the same identity — and the answer
-                // is a property of the two, so asking again would spend the whole
-                // decision to be told what is already known. Which copy answers is
-                // unchanged: the first one reached is the one whose row survives the
-                // deduplication below, and it is now also the only one asked.
-                if !decided.insert((identity.to_owned(), branch.clone(), tip.clone())) {
-                    continue;
-                }
-                // Unpublished by ref is not the same as unfinished: publication
-                // squashes, so a branch that landed is never an ancestor of the base
-                // afterwards. What answers the question is what the base's own history
-                // records about this branch — and, only where it records nothing, what
-                // the base carries of what the branch changed.
-                let recorded = crate::status::recorded_for(
-                    &streams,
-                    identity,
-                    &branch,
-                    session_holding(&sessions, identity, &branch),
-                );
-                let recorded = landed::Recorded {
-                    change: recorded
-                        .change
-                        .or_else(|| change_url_of(asked, &compared, &branch, &trailers)),
-                    ..recorded
-                };
-                let change_url = recorded.change.clone();
-                let mut verdict = landed::decide(
-                    asked,
-                    &compared,
-                    current.as_ref(),
-                    &branch,
-                    &recorded,
-                    &trailers,
-                )?;
-                // A chain of retries this host cannot follow leaves nothing decided
-                // about the branch — the same answer `onevcs status` gives, through
-                // the same reading of the same records, because a row that said `no`
-                // here and `unknown` there would be the disagreement this report
-                // exists to end.
-                if unfollowable_chain(&sessions, identity, &branch) {
-                    verdict = Landed::Unknown;
-                }
-                // Withheld unless every branch was asked for, and only where the
-                // work *reached the base*: that is the row whose command must not be
-                // pasted. A row nothing can decide about is the opposite case — it
-                // may be work nobody published, so withholding it is how preserved
-                // work goes missing — and it is listed, saying so, with no line that
-                // reads as "paste this".
-                let withheld = verdict.is_landed();
-                if withheld && reporting == Reporting::UnpublishedOnly {
-                    continue;
-                }
-                // Marked seen only once it is a row this report is answering with, so
-                // that one repository's spent copy of a name cannot answer for
-                // another's: a branch published out of the checkout and re-cut in a
-                // later run has both, and the first has nothing left in it.
-                if !withheld {
-                    seen.push(key);
-                }
-                let row = preserved_row(
-                    &Preserved {
-                        identity,
-                        repo: asked,
-                        publication: &publication,
-                        base: &base,
-                        compared: &compared,
-                        branch: &branch,
-                        change_url,
-                        verdict,
-                        // Read through the same reader `onevcs status` reads it
-                        // through, so the two reports cannot come to disagree about
-                        // where one branch is.
-                        on_origin: crate::status::preserved_for(
-                            &streams,
-                            identity,
-                            &branch,
-                            session_holding(&sessions, identity, &branch),
-                        ),
-                    },
-                    &sessions,
-                    &trailers,
-                )?;
-                if withheld {
-                    withheld_rows.push(row);
-                } else {
-                    rows.push(row);
-                }
-            }
-        }
+        true
+    });
+    let scan = Scan {
+        registry: &registry,
+        streams: &streams,
+        sessions: &sessions,
+        trailers: &trailers,
+        narrowed: &narrowed,
+        reporting,
+    };
+    // Each identity is scanned on its own thread, and the answers are joined in the
+    // order the identities are named. That changes no verdict and no row: every
+    // question below is asked of one identity's own checkouts, and every key the scan
+    // deduplicates on names the identity, so no identity's answer reads another's.
+    // What it changes is the clock — the report is a long series of git reads against
+    // repositories that share nothing, and a host with a dozen identities used to wait
+    // for each of them in turn.
+    let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
+    // The branches whose work reached the base, kept aside rather than dropped: they
+    // are what `preserved` adds, and a copy of a name whose work the base already
+    // carries must not answer for a copy of it elsewhere that still holds work, so
+    // they join the answer only where no such copy did.
+    let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for scanned in concurrently(&identities, |identity| {
+        git::memoized(|| scanned(identity, &scan))
+    }) {
+        let scanned = scanned?;
+        rows.extend(scanned.rows);
+        withheld_rows.extend(scanned.withheld_rows);
+        seen.extend(scanned.seen);
     }
     // A landed copy answers only where nothing holding work under that name did.
     let mut kept: Vec<(String, String)> = Vec::new();
@@ -686,6 +556,242 @@ fn collected(
         )
     });
     Ok(rows.into_iter().map(|(_, row)| row).collect())
+}
+
+/// What one `recoverable` read holds for the whole of its scan, lent to each
+/// identity's.
+struct Scan<'a> {
+    registry: &'a crate::registry::Registry,
+    streams: &'a [crate::status::Recorded],
+    sessions: &'a [workspace::Record],
+    trailers: &'a provenance::Trailers,
+    narrowed: &'a Option<Narrowed>,
+    reporting: Reporting,
+}
+
+/// One identity's share of the report: the rows it answers with, the rows it
+/// withheld because their work landed, and the names it answered for.
+struct Scanned {
+    rows: Vec<(Option<u64>, Recoverable)>,
+    withheld_rows: Vec<(Option<u64>, Recoverable)>,
+    seen: Vec<(String, String)>,
+}
+
+/// Scan every checkout of one identity for its preserved branches.
+fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
+    let Scan {
+        registry,
+        streams,
+        sessions,
+        trailers,
+        narrowed,
+        reporting,
+    } = *scan;
+    let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
+    let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    // Every copy of a name this report has already put the question to, with the
+    // commit that copy stands at. A branch of one identity lives in as many clones as
+    // ever held it — a busy host keeps dozens — and deciding it is the expensive part
+    // of this report: the landing tiers, the provenance reads and, at the bottom, a
+    // content comparison, all of which answer the same for two copies standing at the
+    // same commit. So the second copy of one is not asked. The tip is in the key
+    // rather than assumed away, because two clones of a name that has been retried do
+    // *not* hold the same work, and a verdict borrowed across that difference would be
+    // this report answering about commits it never looked at.
+    let mut decided: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let resolution = store::resolve(registry, identity)?;
+    let publication = resolution.publication.clone();
+    let current = git::default_branch(&publication, "origin")
+        .ok()
+        .and_then(|base| base_commit(&publication, &base));
+    // Every publication fast-forwards this checkout, so it is where a landing's
+    // evidence is — and lending its objects is what lets a checkout that has not
+    // fetched since read the commit that carries them.
+    let lent = git::objects_dir(&publication).ok();
+    // The branches this host itself put on the origin with `onevcs preserve`, read
+    // once per identity: see `reported_branches` for why the listing below needs
+    // them.
+    let preserved_here = crate::status::preserved_branches(streams, identity);
+    for repo in workspace::checkouts_of(registry, &resolution)? {
+        // A checkout none of the selected sessions can be holding a branch in is
+        // not opened: that is the difference between a filter that narrows the
+        // answer and one that narrows the work, and on a host with forty retained
+        // clones per identity it is the whole difference.
+        if narrowed
+            .as_ref()
+            .is_some_and(|only| !only.checkouts.contains(&repo))
+        {
+            continue;
+        }
+        if !git::is_repo(&repo) {
+            continue;
+        }
+        let base = match git::default_branch(&repo, "origin") {
+            Ok(base) => base,
+            Err(_) => continue,
+        };
+        let asked = git::Asked::borrowing(&repo, lent.as_deref());
+        let compared = judged_against(asked, &base, current.as_ref());
+        // Only the names asked about are counted against their remote-tracking
+        // refs, which is a process per branch per checkout that a filtered read
+        // has no reason to spend — and the ones `onevcs preserve` put on the
+        // origin are listed whatever those refs say: see `reported_branches`.
+        let listed = reported_branches(&repo, &preserved_here, |branch| {
+            narrowed
+                .as_ref()
+                .is_none_or(|only| only.wants(identity, branch))
+        })?;
+        for (branch, tip) in listed {
+            let key = (identity.to_owned(), branch.clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            // The clone of a session something superseded holds the work that was
+            // taken over rather than the work that went on, so it answers for this
+            // name no more here than it does in `onevcs status` — and a row from it
+            // is a paste-ready publication of commits a later session already
+            // replaced.
+            if superseded_copy(sessions, &repo, identity, &branch) {
+                continue;
+            }
+            // A copy of this name standing at this commit has already been
+            // decided, in another checkout of the same identity — and the answer
+            // is a property of the two, so asking again would spend the whole
+            // decision to be told what is already known. Which copy answers is
+            // unchanged: the first one reached is the one whose row survives the
+            // deduplication below, and it is now also the only one asked.
+            if !decided.insert((identity.to_owned(), branch.clone(), tip.clone())) {
+                continue;
+            }
+            // Unpublished by ref is not the same as unfinished: publication
+            // squashes, so a branch that landed is never an ancestor of the base
+            // afterwards. What answers the question is what the base's own history
+            // records about this branch — and, only where it records nothing, what
+            // the base carries of what the branch changed.
+            let recorded = crate::status::recorded_for(
+                streams,
+                identity,
+                &branch,
+                session_holding(sessions, identity, &branch),
+            );
+            let recorded = landed::Recorded {
+                change: recorded
+                    .change
+                    .or_else(|| change_url_of(asked, &compared, &branch, trailers)),
+                ..recorded
+            };
+            let change_url = recorded.change.clone();
+            let mut verdict = landed::decide(
+                asked,
+                &compared,
+                current.as_ref(),
+                &branch,
+                &recorded,
+                trailers,
+            )?;
+            // A chain of retries this host cannot follow leaves nothing decided
+            // about the branch — the same answer `onevcs status` gives, through
+            // the same reading of the same records, because a row that said `no`
+            // here and `unknown` there would be the disagreement this report
+            // exists to end.
+            if unfollowable_chain(sessions, identity, &branch) {
+                verdict = Landed::Unknown;
+            }
+            // Withheld unless every branch was asked for, and only where the
+            // work *reached the base*: that is the row whose command must not be
+            // pasted. A row nothing can decide about is the opposite case — it
+            // may be work nobody published, so withholding it is how preserved
+            // work goes missing — and it is listed, saying so, with no line that
+            // reads as "paste this".
+            let withheld = verdict.is_landed();
+            if withheld && reporting == Reporting::UnpublishedOnly {
+                continue;
+            }
+            // Marked seen only once it is a row this report is answering with, so
+            // that one repository's spent copy of a name cannot answer for
+            // another's: a branch published out of the checkout and re-cut in a
+            // later run has both, and the first has nothing left in it.
+            if !withheld {
+                seen.push(key);
+            }
+            let row = preserved_row(
+                &Preserved {
+                    identity,
+                    repo: asked,
+                    publication: &publication,
+                    base: &base,
+                    compared: &compared,
+                    branch: &branch,
+                    change_url,
+                    verdict,
+                    // Read through the same reader `onevcs status` reads it
+                    // through, so the two reports cannot come to disagree about
+                    // where one branch is.
+                    on_origin: crate::status::preserved_for(
+                        streams,
+                        identity,
+                        &branch,
+                        session_holding(sessions, identity, &branch),
+                    ),
+                },
+                sessions,
+                trailers,
+            )?;
+            if withheld {
+                withheld_rows.push(row);
+            } else {
+                rows.push(row);
+            }
+        }
+    }
+    Ok(Scanned {
+        rows,
+        withheld_rows,
+        seen,
+    })
+}
+
+/// `work` asked of every item, on at most as many threads as this host runs at
+/// once, and answered in the items' own order.
+///
+/// Scoped threads, so each borrows what the caller holds and none outlives the
+/// call; a bounded number of them, because an item here is a stream of git
+/// processes and a host with more identities than cores gains nothing from
+/// starting them all at once.
+fn concurrently<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(items.len());
+    if workers <= 1 {
+        return items.iter().map(&work).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut answered: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(at) else {
+                            return mine;
+                        };
+                        mine.push((at, work(item)));
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| match handle.join() {
+                Ok(mine) => mine,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    });
+    answered.sort_by_key(|(at, _)| *at);
+    answered.into_iter().map(|(_, answer)| answer).collect()
 }
 
 /// One preserved branch, and everything a row about it is read out of.
