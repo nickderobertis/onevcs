@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.11...onevcs-testing-v0.7.0) - 2026-09-21
+
+### Added
+
+- *(session)* label session records and filter listings by label or token, and make recoverable cheap ([#190](https://github.com/nickderobertis/onevcs/pull/190))
+
 ## [0.6.10](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.9...onevcs-testing-v0.6.10) - 2026-09-21
 
 ### Added
