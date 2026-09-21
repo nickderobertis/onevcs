@@ -247,7 +247,9 @@ mod reads {
                 | "diff" | "check-ref-format",
             ) => true,
             // Reads with one ref and no second one: `symbolic-ref NAME REF` writes.
-            Some("symbolic-ref") => args.iter().skip(1).filter(|a| !a.starts_with('-')).count() == 1,
+            Some("symbolic-ref") => {
+                args.iter().skip(1).filter(|a| !a.starts_with('-')).count() == 1
+            }
             _ => false,
         }
     }
@@ -259,7 +261,11 @@ mod reads {
         matches!(args.first().copied(), Some("ls-remote" | "merge-tree"))
     }
 
-    pub(super) fn recall(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Option<Output> {
+    pub(super) fn recall(
+        args: &[&str],
+        cwd: Option<&Path>,
+        env: &[(String, String)],
+    ) -> Option<Output> {
         if !active() {
             return None;
         }
@@ -272,10 +278,16 @@ mod reads {
         None
     }
 
-    pub(super) fn remember(args: &[&str], cwd: Option<&Path>, env: &[(String, String)], output: &Output) {
+    pub(super) fn remember(
+        args: &[&str],
+        cwd: Option<&Path>,
+        env: &[(String, String)],
+        output: &Output,
+    ) {
         if active() && remembered(args) {
             MEMO.with(|memo| {
-                memo.borrow_mut().insert(key(args, cwd, env), output.clone());
+                memo.borrow_mut()
+                    .insert(key(args, cwd, env), output.clone());
             });
         }
     }
@@ -967,12 +979,27 @@ pub fn common_dir(cwd: &Path) -> Result<PathBuf> {
 /// The URL configured for a remote.
 pub fn remote_url(cwd: &Path, remote: &str) -> Result<String> {
     let value = checked(&["remote", "get-url", remote], Some(cwd))?.trimmed();
-    if value.is_empty() || value.contains(['\n', '\r']) {
+    if !is_usable_remote(&value) {
         return Err(Error::Invalid {
             reason: format!("git remote {remote:?} returned an unusable URL"),
         });
     }
     Ok(value)
+}
+
+/// Whether a value is one a remote's address could be: one line, and not blank.
+///
+/// The rule [`remote_url`] holds git's own answer to, in one place so that it can be
+/// asked from the other end as well — a remote read back out of an event stream is a
+/// file whichever process wrote it, and the value is printed onto a line an operator
+/// reads, where one carrying a newline would forge a second line of that report.
+///
+/// Deliberately no narrower than that. A remote is a URL *or* a path, in any spelling
+/// git accepts, and a build that decided which shapes were allowed would refuse
+/// repositories git is perfectly happy with — this crate's own local-path origins
+/// among them.
+pub fn is_usable_remote(value: &str) -> bool {
+    !value.trim().is_empty() && !value.contains(['\n', '\r'])
 }
 
 /// Whether a remote is configured at all.
@@ -1494,7 +1521,7 @@ pub fn branches(cwd: &Path) -> Result<Vec<String>> {
 
 /// Local branches holding commits no `origin` remote-tracking ref has.
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
-    Ok(unpublished_branches_among(cwd, |_| true)?
+    Ok(unpublished_branches_among(cwd, |_| true, &BTreeSet::new())?
         .into_iter()
         .map(|(branch, _)| branch)
         .collect())
@@ -1509,9 +1536,15 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// git to count zero is a process per branch per checkout. A branch `keep` declines
 /// is not counted either, which is what lets a report asked about a few sessions
 /// read only their branches out of a checkout holding many.
+///
+/// A name in `listed_anyway` that `keep` admits is answered whenever the checkout
+/// has it, without being counted: `recoverable`'s branches `onevcs preserve` put on
+/// the origin, whose own remote-tracking ref would otherwise make them read as
+/// published. Taken from the same listing, so they cost no process of their own.
 pub fn unpublished_branches_among(
     cwd: &Path,
     keep: impl Fn(&str) -> bool,
+    listed_anyway: &BTreeSet<String>,
 ) -> Result<Vec<(String, String)>> {
     let listing = checked(
         &[
@@ -1538,7 +1571,14 @@ pub fn unpublished_branches_among(
     }
     let mut unpublished = Vec::new();
     for (branch, tip) in heads {
-        if !keep(&branch) || origin_tips.contains(&tip) {
+        if !keep(&branch) {
+            continue;
+        }
+        if listed_anyway.contains(&branch) {
+            unpublished.push((branch, tip));
+            continue;
+        }
+        if origin_tips.contains(&tip) {
             continue;
         }
         if unpublished_ahead(cwd, &branch, &[])? > 0 {
@@ -1666,7 +1706,9 @@ pub fn is_valid_branch_name(branch: &str) -> bool {
         return true;
     }
     static ACCEPTED: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
-    let mut accepted = ACCEPTED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut accepted = ACCEPTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let accepted = accepted.get_or_insert_with(HashMap::new);
     if let Some(known) = accepted.get(branch) {
         return *known;
@@ -2431,7 +2473,48 @@ pub fn push_replacing(
     if let Some(lease) = lease.as_deref() {
         args.insert(1, lease);
     }
-    let output = run_with_env(&args, Some(cwd), env)?;
+    pushed(&args, cwd, env)
+}
+
+/// Push a branch **without running the repository's own `pre-push` hook**, and
+/// without replacing anything the remote has.
+///
+/// The one push in this crate that passes `--no-verify`, and the reason is that this
+/// is the one push that is not a publication. The `pre-push` hook is what verifies a
+/// *publishing* push for a local identity — it is the merge path — and a preservation
+/// is explicitly not one: it opens no change request, touches no base, and lands
+/// nothing. A preserving push that ran the hook would block for as long as that
+/// repository's whole gate takes, on a host that is shutting down, and would then
+/// refuse the very branch it is there to save — because the branch a shutdown exists
+/// to preserve is the one a worker was interrupted in the middle of, whose tree does
+/// not pass the gate yet. Preserving only the work that was already fine would drop
+/// the work that most needed keeping. **Do not remove this flag**: the next reader's
+/// instinct is to, and doing so turns this verb into one that saves nothing under
+/// exactly the conditions it exists for.
+///
+/// Never forced, in either spelling: a non-fast-forward push is a refusal for the
+/// caller to report, never a history to replace.
+pub fn push_preserving(cwd: &Path, branch: &str, remote: &str) -> Result<Pushed> {
+    pushed(
+        &[
+            "push",
+            "--porcelain",
+            "--no-verify",
+            remote,
+            &format!("refs/heads/{branch}:refs/heads/{branch}"),
+        ],
+        cwd,
+        &[],
+    )
+}
+
+/// One `git push`, read as what git reported rather than as the prose beside it.
+///
+/// Shared by every push above so that the two answers — every ref taken, or some ref
+/// declined with its per-ref lines — are read out of one invocation's output in one
+/// place, whatever flags the caller added.
+fn pushed(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Result<Pushed> {
+    let output = run_with_env(args, Some(cwd), env)?;
     Ok(if output.ok() {
         Pushed::Accepted {
             output: output.combined(),
@@ -2695,7 +2778,12 @@ mod ref_name_tests {
         }
         // …and it is not vacuously narrow: the names this crate actually cuts are the
         // ones that must never cost a process.
-        for ordinary in ["main", "feature/x", "onevcs/s-9fa99cfb80da", "worktree-agent-7"] {
+        for ordinary in [
+            "main",
+            "feature/x",
+            "onevcs/s-9fa99cfb80da",
+            "worktree-agent-7",
+        ] {
             assert!(
                 plainly_a_ref_name(ordinary),
                 "{ordinary:?} is the ordinary shape and must be decided in process"

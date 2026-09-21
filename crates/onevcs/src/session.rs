@@ -334,6 +334,15 @@ pub struct Recoverable {
     /// [`session`](Self::session) is `None`.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Where `onevcs preserve` put this branch on its identity's origin, when it has.
+    ///
+    /// Additive, and absent for a branch nothing has preserved — which is every row
+    /// of a report a consumer that predates the field reads. It changes nothing about
+    /// [`recover_command`](Self::recover_command): being on the origin under its own
+    /// name is not being published, and the verb that lands the work is the verb that
+    /// landed it before. That is the whole point of the verb being called *preserve*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_origin: Option<OnOrigin>,
 }
 
 /// A row as a document spells it, before the answer on it and the command beside it
@@ -359,6 +368,7 @@ struct AnyRecoverable {
     session: Option<SessionToken>,
     #[serde(default)]
     labels: BTreeMap<String, String>,
+    on_origin: Option<OnOrigin>,
 }
 
 impl TryFrom<AnyRecoverable> for Recoverable {
@@ -385,8 +395,35 @@ impl TryFrom<AnyRecoverable> for Recoverable {
             net_negative: value.net_negative,
             session: value.session,
             labels: value.labels,
+            on_origin: value.on_origin,
         })
     }
+}
+
+/// Where a branch was last put on its identity's origin without being published.
+///
+/// The readback of what `onevcs preserve` recorded, and the answer to one question:
+/// if this host went away now, is the work somewhere that outlives it? Both halves
+/// are needed to answer it — the origin says *where*, and the commit says *how much*,
+/// since a branch preserved and then committed to again is on its origin at a commit
+/// that is no longer its tip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnOrigin {
+    /// The origin URL the branch went to.
+    // llmlint: ignore[invalid_states_unrepresentable] a remote is a `String` everywhere
+    // this crate's public surface spells one, and this is the URL a repository's own
+    // `origin` was configured with rather than a form this crate composes — what makes it
+    // usable is checked where the record is read (`git::is_usable_remote`, before it can
+    // reach a line an operator reads), and the field itself is spelled by
+    // `docs/contract.md`.
+    pub remote: String,
+    /// The commit the origin carries it at.
+    // llmlint: ignore[invalid_states_unrepresentable] a commit is a `String` everywhere
+    // this crate's public surface spells one that came out of git — `Sha` wraps an
+    // unvalidated `String` and would make no state here unrepresentable — and this value
+    // is one `git push` reported or `git ls-remote` advertised, checked as an object id
+    // where it was read.
+    pub commit: String,
 }
 
 /// The live session that still holds a preserved branch.

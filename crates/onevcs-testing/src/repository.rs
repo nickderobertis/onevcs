@@ -273,6 +273,11 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                     .get(&s.token)
                     .cloned()
                     .unwrap_or_default(),
+                // A preservation onto an origin is a thing only a real repository can
+                // do — there is no git here and no remote to push to — so this provider
+                // answers what a scenario wrote down and nothing else. A hand-written
+                // state may still seed one, exactly as it seeds a hold.
+                on_origin: None,
             };
             // Preserving the same branch twice replaces its row rather than listing
             // it twice, which is what `recoverable` does across the checkouts a

@@ -10,9 +10,9 @@ use std::path::PathBuf;
 
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, FailureKind, HeldBy, Holding,
-    Identity, Landed, LineChange, MergeOutcome, MergePolicy, NetNegative, PreservedBranch,
-    Provenance, Publication, PublishOutcome, Recoverable, Session, SessionToken, Sha, TargetName,
-    Url,
+    Identity, Landed, LineChange, MergeOutcome, MergePolicy, NetNegative, OnOrigin,
+    PreservedBranch, Provenance, Publication, PublishOutcome, Recoverable, Session, SessionToken,
+    Sha, TargetName, Url,
 };
 use onevcs_testing::{Described, HostState, VcsState};
 
@@ -178,6 +178,13 @@ pub fn full_vcs_state() -> VcsState {
             }),
             session: Some(token),
             labels,
+            // Version 11's field, named here for the same reason the two marks above
+            // are: this state is the one the goldens prove every field of. A document
+            // says where a branch was preserved to; no provider here pushes anything.
+            on_origin: Some(OnOrigin {
+                remote: "https://github.com/acme-corp/widgets.git".to_owned(),
+                commit: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c".to_owned(),
+            }),
         }],
     }
 }

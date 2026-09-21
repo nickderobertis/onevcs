@@ -229,7 +229,12 @@ fn recoverable(fixture: &Fixture, extra: &[&str]) -> Vec<Value> {
 fn branches(rows: &[Value]) -> Vec<String> {
     let mut named: Vec<String> = rows
         .iter()
-        .map(|row| row["branch"]["branch"].as_str().expect("a branch").to_owned())
+        .map(|row| {
+            row["branch"]["branch"]
+                .as_str()
+                .expect("a branch")
+                .to_owned()
+        })
         .collect();
     named.sort();
     named
@@ -268,9 +273,10 @@ fn every_recoverable_row_names_the_session_that_answers_for_it_and_the_labels_it
     // Work no session of this crate ever opened, which is what a `worktree-agent-*`
     // branch left behind by something else is. Made with real git in the registered
     // checkout, because that is how one gets there.
-    fixture
-        .world
-        .git(&fixture.checkout, &["checkout", "-q", "-b", "worktree-agent-7"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "worktree-agent-7"],
+    );
     fixture
         .world
         .commit_file(&fixture.checkout, "b.txt", "b\n", "feat: agent work");
@@ -286,10 +292,7 @@ fn every_recoverable_row_names_the_session_that_answers_for_it_and_the_labels_it
     );
     // A session opened without labels answers for its branch and carries none.
     assert_eq!(row(&rows, "feature/plain")["session"], plain);
-    assert_eq!(
-        row(&rows, "feature/plain")["labels"],
-        serde_json::json!({})
-    );
+    assert_eq!(row(&rows, "feature/plain")["labels"], serde_json::json!({}));
     // And a branch no record names says so, rather than borrowing somebody's.
     assert_eq!(row(&rows, "worktree-agent-7")["session"], Value::Null);
     assert_eq!(
@@ -334,7 +337,10 @@ fn the_two_filters_narrow_recoverable_and_a_token_no_record_names_is_refused() {
     for carried in &run {
         assert_eq!(
             carried,
-            row(&whole, carried["branch"]["branch"].as_str().expect("a branch name")),
+            row(
+                &whole,
+                carried["branch"]["branch"].as_str().expect("a branch name")
+            ),
             "a filtered row is the unfiltered row"
         );
     }

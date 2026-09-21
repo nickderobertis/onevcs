@@ -221,7 +221,12 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
 
     // `no`: preserved work nothing has landed, which is the ordinary row.
     let (token, worktree) = fixture.open(&["--branch", "feature/unpublished"]);
-    world.commit_file(&worktree, "unpublished.txt", "u\n", "feat: work nobody landed");
+    world.commit_file(
+        &worktree,
+        "unpublished.txt",
+        "u\n",
+        "feat: work nobody landed",
+    );
     world
         .onevcs()
         .args(["session", "close", &token])
@@ -243,11 +248,7 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
     // Tier 1: a landing this host performed and recorded.
     let (token, worktree) = fixture.open(&["--branch", "feature/recorded"]);
     world.commit_file(&worktree, "recorded.txt", "r\n", "feat: land this locally");
-    world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success();
+    world.onevcs().args(["publish", &token]).assert().success();
     world
         .onevcs()
         .args(["session", "close", &token])
@@ -258,12 +259,13 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
     // host has no record for at all. `import --as` is how a spent name is moved
     // aside, and the copy under the new name is what only the trailer can answer for.
     let (token, worktree) = fixture.open(&["--branch", "feature/spent"]);
-    world.commit_file(&worktree, "spent.txt", "s\n", "feat: land this under a name");
-    world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success();
+    world.commit_file(
+        &worktree,
+        "spent.txt",
+        "s\n",
+        "feat: land this under a name",
+    );
+    world.onevcs().args(["publish", &token]).assert().success();
     world
         .onevcs()
         .args(["session", "close", &token])
@@ -316,12 +318,13 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
     // which on a host that retries is the ordinary shape of a continued name.
     let (token, worktree) = fixture.open(&["--branch", "feature/continued"]);
     world.commit_file(&worktree, "continued.txt", "c\n", "feat: the first half");
-    world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success();
-    world.commit_file(&worktree, "continued.txt", "c\nand more\n", "feat: the second half");
+    world.onevcs().args(["publish", &token]).assert().success();
+    world.commit_file(
+        &worktree,
+        "continued.txt",
+        "c\nand more\n",
+        "feat: the second half",
+    );
     world
         .onevcs()
         .args(["session", "close", &token])
@@ -331,7 +334,12 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
     // `unknown`: the base carries what the branch changed and nothing records why,
     // which is what somebody making the same change elsewhere leaves behind.
     let (token, worktree) = fixture.open(&["--branch", "feature/undecidable"]);
-    world.commit_file(&worktree, "shared.txt", "shared\n", "feat: make the change here");
+    world.commit_file(
+        &worktree,
+        "shared.txt",
+        "shared\n",
+        "feat: make the change here",
+    );
     world
         .onevcs()
         .args(["session", "close", &token])
@@ -341,12 +349,20 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
     // above landed on it — so it takes what is there before it adds to it.
     world.git(&host, &["fetch", "-q", "origin", "main"]);
     world.git(&host, &["reset", "-q", "--hard", "FETCH_HEAD"]);
-    world.commit_file(&host, "shared.txt", "shared\n", "feat: somebody made it there");
+    world.commit_file(
+        &host,
+        "shared.txt",
+        "shared\n",
+        "feat: somebody made it there",
+    );
     world.git(&host, &["push", "-q", "origin", "main"]);
 
     // Work no session of this crate ever opened, which is what the orphans on the
     // measured host are.
-    world.git(&fixture.checkout, &["checkout", "-q", "-b", "worktree-agent-9"]);
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "worktree-agent-9"],
+    );
     world.commit_file(&fixture.checkout, "agent.txt", "a\n", "feat: agent work");
     world.git(&fixture.checkout, &["checkout", "-q", "main"]);
 
@@ -494,8 +510,7 @@ fn the_verdict_of_every_tier_survives_the_reads_being_made_once() {
         .args(["recoverable", "--all", "--json"])
         .assert()
         .success();
-    let rows: Vec<Value> =
-        serde_json::from_slice(&assert.get_output().stdout).expect("rows");
+    let rows: Vec<Value> = serde_json::from_slice(&assert.get_output().stdout).expect("rows");
 
     for (branch, want) in &expected {
         let found = row(&rows, branch);
@@ -568,7 +583,12 @@ fn the_verdict_of_every_tier_survives_the_reads_being_made_once() {
         serde_json::from_slice(&assert.get_output().stdout).expect("rows");
     let left: BTreeSet<String> = unpublished
         .iter()
-        .map(|row| row["branch"]["branch"].as_str().expect("a branch").to_owned())
+        .map(|row| {
+            row["branch"]["branch"]
+                .as_str()
+                .expect("a branch")
+                .to_owned()
+        })
         .collect();
     assert_eq!(
         left,
@@ -664,7 +684,11 @@ fn a_branch_a_record_decides_is_never_content_compared() {
     }
     // …and the tier is still reached for the branches nothing records, which is what
     // makes the assertion above about the tiers rather than about the tier being gone.
-    for undecided in ["feature/unpublished", "feature/undecidable", "worktree-agent-9"] {
+    for undecided in [
+        "feature/unpublished",
+        "feature/undecidable",
+        "worktree-agent-9",
+    ] {
         assert!(
             compared.iter().any(|branch| branch == undecided),
             "{undecided} has no record, so the comparison is the only tier left: {compared:?}"
@@ -912,7 +936,10 @@ fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
     let preserved: usize = (0..IDENTITIES).map(preserved_in).sum();
     let selected: Vec<(String, PathBuf)> = built.into_iter().flatten().collect();
 
-    assert_eq!(preserved, PRESERVED, "the fixture is the measured host's size");
+    assert_eq!(
+        preserved, PRESERVED,
+        "the fixture is the measured host's size"
+    );
     assert_eq!(selected.len(), 3, "three of them carry the launcher label");
 
     let counting = Counting::installed(&world);
@@ -947,7 +974,10 @@ fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
     let (rows, calls, _) = counting.recoverable(&world, &["--label", &filter]);
     assert_eq!(
         rows.iter()
-            .map(|row| row["branch"]["branch"].as_str().expect("a branch").to_owned())
+            .map(|row| row["branch"]["branch"]
+                .as_str()
+                .expect("a branch")
+                .to_owned())
             .collect::<BTreeSet<String>>(),
         selected
             .iter()

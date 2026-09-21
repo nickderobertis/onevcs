@@ -10,8 +10,9 @@ use crate::landed::{self, Landed};
 use crate::publish::{Publication, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, PreservedBranch, Provenance,
-    Recoverable, Scope, Selection, Session, SessionRecord, SessionRequest, SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, PreservedBranch,
+    Provenance, Recoverable, Scope, Selection, Session, SessionRecord, SessionRequest,
+    SessionToken,
 };
 use crate::stream::Stream;
 use crate::workspace::{self, object};
@@ -531,6 +532,10 @@ fn collected(
         // evidence is — and lending its objects is what lets a checkout that has not
         // fetched since read the commit that carries them.
         let lent = git::objects_dir(&publication).ok();
+        // The branches this host itself put on the origin with `onevcs preserve`, read
+        // once per identity: see `reported_branches` for why the listing below needs
+        // them.
+        let preserved_here = crate::status::preserved_branches(&streams, identity);
         for repo in workspace::checkouts_of(&registry, &resolution)? {
             // A checkout none of the selected sessions can be holding a branch in is
             // not opened: that is the difference between a filter that narrows the
@@ -553,8 +558,9 @@ fn collected(
             let compared = judged_against(asked, &base, current.as_ref());
             // Only the names asked about are counted against their remote-tracking
             // refs, which is a process per branch per checkout that a filtered read
-            // has no reason to spend.
-            let listed = git::unpublished_branches_among(&repo, |branch| {
+            // has no reason to spend — and the ones `onevcs preserve` put on the
+            // origin are listed whatever those refs say: see `reported_branches`.
+            let listed = reported_branches(&repo, &preserved_here, |branch| {
                 narrowed
                     .as_ref()
                     .is_none_or(|only| only.wants(identity, branch))
@@ -642,6 +648,15 @@ fn collected(
                         branch: &branch,
                         change_url,
                         verdict,
+                        // Read through the same reader `onevcs status` reads it
+                        // through, so the two reports cannot come to disagree about
+                        // where one branch is.
+                        on_origin: crate::status::preserved_for(
+                            &streams,
+                            identity,
+                            &branch,
+                            session_holding(&sessions, identity, &branch),
+                        ),
                     },
                     &sessions,
                     &trailers,
@@ -690,6 +705,7 @@ struct Preserved<'a> {
     branch: &'a str,
     change_url: Option<Url>,
     verdict: Landed,
+    on_origin: Option<OnOrigin>,
 }
 
 /// The row one preserved branch answers with.
@@ -707,6 +723,7 @@ fn preserved_row(
         branch,
         ref change_url,
         ref verdict,
+        ref on_origin,
     } = *preserved;
     // A marker under a prefix this host does not read is still a marker:
     // reporting the branch as complete is what would let somebody hand
@@ -825,6 +842,7 @@ fn preserved_row(
             labels: answering
                 .map(|record| record.labels.clone())
                 .unwrap_or_default(),
+            on_origin: on_origin.clone(),
         },
     ))
 }
@@ -856,6 +874,35 @@ pub(crate) fn latest_session<'a>(
     candidates
         .into_iter()
         .max_by_key(|record| (record.state == Lifecycle::Open, record.token.to_string()))
+}
+
+/// The branches of one repository this report answers about.
+///
+/// [`git::unpublished_branches_among`] is the question it has always asked — which local
+/// branches hold commits no `origin` remote-tracking ref has — and the preserved names
+/// are a union with it rather than a change to it. They have to be, because a
+/// preserving push updates the pushing repository's own `origin/<branch>`: measured
+/// against that, a branch `onevcs preserve` had just put somewhere safe would read as
+/// published and vanish from this report, which is the opposite of what preserving it
+/// promised. Being on the origin under its own name is not being published — the work
+/// has not reached the base — so the row stays, with the same `recover_command` it
+/// carried before and the origin named beside it.
+///
+/// Nothing else about which branches this report covers moves: a name no
+/// `branch-preserved` record of this identity carries is listed exactly as it was, and
+/// the other readers of `unpublished_branches` — the close, the reclaim, and the
+/// sweep's retention rule — go on asking whether letting a clone go would lose work,
+/// where a branch the origin carries genuinely loses none.
+///
+/// Each name comes with the commit it stands at, and the union costs no process of
+/// its own: both halves are answered by the one listing of this checkout's refs, and
+/// a name `keep` declines is in neither.
+fn reported_branches(
+    repo: &Path,
+    preserved: &BTreeSet<String>,
+    keep: impl Fn(&str) -> bool,
+) -> Result<Vec<(String, String)>> {
+    git::unpublished_branches_among(repo, keep, preserved)
 }
 
 /// Whether this copy of a branch belongs to a session something superseded.

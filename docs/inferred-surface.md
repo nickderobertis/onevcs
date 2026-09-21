@@ -22,7 +22,7 @@ quietly in passing.
 | `Provenance` | `complete` / `incomplete-step` | The contract's ported invariant, "dirty adoption -> incomplete-step commit", gives the two cases, and `commit-preserved` carries "provenance kind". |
 | `PreservedBranch` | `branch`, `base`, `provenance`, `change_url`, `change_base` | The last two are named explicitly as the host-neutral stack metadata; the first three are what `preserve` must return to be usable. |
 | `Scope` | `all` / `repo(String)` | `recoverable` is documented both across every registered identity and for one repository (`onevcs recover BRANCH --repo PATH`). |
-| `Recoverable` | `identity`, `branch`, `checkout`, `landed`, `stopped_because`, `recover_command`, `held_by`, `net_negative` | What a "recoverable" view has to answer: where the work is, whether the work reached its base, why its workstream stopped, and the exact command that lands it. `landed`, `held_by`, and `net_negative` are what make "the exact command" true of the branch as well as of the argv, and each is recorded below. |
+| `Recoverable` | `identity`, `branch`, `checkout`, `landed`, `stopped_because`, `recover_command`, `held_by`, `net_negative`, `on_origin` | What a "recoverable" view has to answer: where the work is, whether the work reached its base, why its workstream stopped, and the exact command that lands it. `landed`, `held_by`, and `net_negative` are what make "the exact command" true of the branch as well as of the argv, and each is recorded below. `on_origin` is the one field that changes nothing about the command: it says the work would survive this host going away, which is what `onevcs preserve` puts there. |
 | `ChangeSpec` | `head`, `base`, `title`, `body`, `draft` | `open_change` must say what to open from, into what, and under what title — `--title` is a `publish` option. `body` is optional so the host's own template applies when nothing is supplied. `draft` came with the draft amendment and asks the host for one thing: open it as a draft. The whole reason travels rather than a flag, because a host that could not be handed one would have to be trusted to have been told separately — but nothing of it is written *at* the host beyond `--draft`, which is the ruling recorded on `PublishRequest` above. |
 | `MergeOutcome` | `merged(Sha)` / `queued` / `open` | The three ways `publish` exits 0, plus the `merge-queued` / `merge-completed` events. |
 | `Check.status` / `Check.conclusion` | `String` / `Option<String>` | See the open question below. |
@@ -208,6 +208,8 @@ say nothing — a consumer that predates them reads the document it always read.
 | `Recoverable.net_negative` | `Option<NetNegative>` | Marked, never excluded: a branch that deletes far more than it adds may be exactly right, and this report is not the thing that decides. Present only when it is net-negative, so absence is the other answer rather than a number a consumer has to compare. |
 | `NetNegative` | a `LineChange` that removes more than it adds | The mark and its evidence are one value, so a row cannot carry a count saying the opposite of the field it is in, and the rule lives in one place rather than at the site that measures a branch and at every consumer reading one back. It serializes as the `LineChange` it holds, so `--json` carries the two counts either way, and a document naming a count that is not net-negative is refused where it is read. |
 | `LineChange` | `added`, `removed` | Counted from the commit the branch forked from, because that is what the branch did; against a base that has moved on, every line the base gained would read as a line the branch removed and never touched. |
+| `Recoverable.on_origin` | `Option<OnOrigin>` | The third mark, and the one that is not a warning: `onevcs preserve` put this branch on its identity's origin, so the work outlives the host. Marked rather than acted on — the row keeps the `recover_command` it always had, because being on the origin under its own name is not being published — and absent for every branch nothing preserved, which is every row a consumer that predates the field reads. |
+| `OnOrigin` | `remote`, `commit` | Both halves or neither: a remote with no commit does not say whether *this* work is there, and a commit with no remote does not say where. Non-optional inside the value for that reason, so a row saying the branch is on its origin cannot say where without saying at what. |
 
 **Reading a session's events takes a filter, and the grammar was approved rather
 than inferred.** The matcher fields, what conjoins, and which of `include` and
@@ -335,7 +337,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `7`, and it is deliberately not a migration boundary
+The report's schema version is `8`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -361,6 +363,14 @@ stands, where it could be asked, beside what this host's record says holds it; a
 artifact the body is readable under, and the title where the description replaced
 it — because that write is the one write to a change request's prose after it
 exists, and nothing else records it for a person.
+Version 8 is `branch.on_origin`: where `onevcs preserve` put this branch on its
+identity's origin, and the commit the origin carries it at, read back from the
+`branch-preserved` record. It is on the *branch* section rather than the publication's
+because it is a fact about where the branch is and not about what was proposed for it —
+a preserved branch is unpublished, and `publication.state` says so beside it — and the
+human rendering names it either way, because the question a reader of a shutting-down
+host asks is whether the work would survive the machine going away, and silence reads as
+"yes" as readily as "no".
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -376,8 +386,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v7.json` and
-`status-report-v7-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v8.json` and
+`status-report-v8-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in

@@ -1187,23 +1187,25 @@ base it is going onto, it is proposed and ruled on, and what carries it is relea
 
 ```text
 development  session-opened fetch lock-wait lock-acquired commit-preserved
-             recovery-attested session-closed push:own-branch
+             branch-preserved recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged
 release      release-probed release-acknowledged release-observed
 ```
 
-Two entries there are judgement rather than bookkeeping. `recovery-attested` is
+Three entries there are judgement rather than bookkeeping. `recovery-attested` is
 `development` because it repairs the preserved branch *before* that branch may enter
-a merge path at all. And `push` is the one kind that appears twice: a push of the
+a merge path at all. `branch-preserved` is `development` for the mirror of that reason:
+putting a branch on its origin under its own name proposes nothing and integrates
+nothing, and a `local-direct` identity has no Review phase for it to be in. And `push` is the one kind that appears twice: a push of the
 session's own branch is the work being made, and a push of anything else — the base
 a `local-direct` squash lands on, the base a merge train advanced — is that work
 being integrated.
 
 **The producer stamps it, and `push` is why.** Every other kind's phase is a fact
 about the kind; a push's is a fact about the branch it updated, which is known where
-the push is made and nowhere else. So `Phase::of` answers for sixteen kinds and
+the push is made and nowhere else. So `Phase::of` answers for every kind but one and
 answers `None` for `push`, and the producer supplies that one. The field is
 **additive inside `v: 1`**: a build that predates it reads an envelope carrying it
 exactly as it read one without — the envelope types declare no
@@ -2345,6 +2347,155 @@ section prints the same entries — each one's path and reason on one line, and
 form moved.
 
 Event kinds added: none.
+
+### A branch is put on its origin without being published, so a host can be shut down
+
+A host with running work has to be able to stop. `onepipeline shutdown` interrupts
+every live dispatch and asks it to commit what it has — and the commits it just asked
+for then sit on branches in run clones on a machine that is about to go away. Asking a
+worker to commit is half an answer; the commit has to reach somewhere that outlives the
+host. This is the other half, and it is deliberately **weaker than publishing**: the
+work is to be *kept*, not merged, and a branch that quietly acquired a change request
+or a merge-path verdict nobody asked for would be a worse outcome than losing it.
+
+```rust
+pub struct PreserveRequest { pub repo: String, pub branch: String }
+
+pub enum Preservation {
+    /// The branch was pushed; the remote now carries `commit` under that name.
+    Pushed,
+    /// The origin already had the branch at this commit. Nothing was pushed.
+    AlreadyOnOrigin,
+    /// The identity has no origin to push to. Nothing was attempted.
+    NoRemote,
+}
+
+pub struct Preserved {
+    pub identity: String,
+    pub branch: String,
+    /// The checkout, run clone or session worktree the branch was pushed from.
+    pub from: PathBuf,
+    /// The origin URL it went to, and `None` only for `NoRemote`.
+    pub remote: Option<String>,
+    /// The commit the branch stands at, for every outcome: the one that was
+    /// pushed, the one the origin already carried, or — for `NoRemote` — the one
+    /// nothing outside this host carries.
+    pub commit: Option<String>,
+    pub outcome: Preservation,
+}
+
+/// The library form of `onevcs preserve`.
+pub fn preserve(request: &PreserveRequest) -> Result<Preserved>;
+
+/// The library form of `onevcs recoverable`, which today has no library form at
+/// all: `vcs::collect` is private and `Recoverable` and `Scope` are already
+/// exported, so this publishes the enumeration beside the row type it answers in.
+pub fn recoverable(scope: &Scope) -> Result<Vec<Recoverable>>;
+```
+
+`preserve` takes **no `Providers`**, deliberately. Adding a method to the public `Vcs`
+trait would break every outside implementor of it, and this reaches git and nothing
+else — no host, no change request — so it sits beside `workspace_capacity` and
+`pool_maintain`, which are free functions for the same reason.
+
+**What it does, exactly.** It locates the branch through the one search `recover`,
+`publish-branch` and `status` locate a branch through, **run clones included**, so a
+branch a live dispatch committed to a moment ago is found. It resolves the identity
+from `--repo` exactly as `publish-branch --repo` reads it: an identity key, a
+registered alias, an origin URL, or a path. It pushes `refs/heads/<branch>` to
+`origin` from the location that holds it — a run clone's `origin` is the identity's own
+origin URL, so `origin` there is the real origin and not the lender — and a location
+with no `origin` remote is `NoRemote`. Never `--force`, never `--force-with-lease`: a
+non-fast-forward push is a refusal to report, never a history to replace.
+
+**The commit is read before the origin is looked for, so every outcome names it** —
+`NoRemote` most of all, since that is the one commit nothing outside this host carries
+and a shutdown report that did not name it would say a branch is at risk without saying
+which work is. Which outcome an answer is, a caller reads from `outcome` and never from
+which fields are filled.
+
+It passes **`--no-verify`**. The repository's own `pre-push` hook is what verifies a
+*publication* for a local identity — it is the merge path — and a preservation is
+explicitly not one. A preserving push that ran it would block for as long as that
+repository's whole gate takes, on a host that is shutting down, and would refuse the
+very branch it is there to save: the branch a shutdown exists to preserve is the one a
+worker was interrupted in the middle of, whose tree does not pass the gate yet.
+Preserving only the work that was already fine would drop the work that most needed
+keeping. This is the one push in this crate that skips the hook, and the code says so
+where the flag is passed.
+
+It touches no base branch, opens no change request, writes no provenance marker and
+no attestation, and clears nothing: a branch carrying an unattested incomplete-step
+marker is preserved exactly as it is and still needs `recover` afterwards. A branch the
+origin already carries at the same commit is `AlreadyOnOrigin` and nothing is pushed. A
+refusal — non-fast-forward, credentials, a local-path origin that declines the ref — is
+`Err`, naming the identity, the branch and git's own per-ref summary, so a caller
+pushing many branches reports that one and carries on.
+
+**An identity whose origin is a local path** is pushed to exactly as any other is: git
+pushes to a path remote, and a non-bare target that declines the branch it has checked
+out answers a refusal this reports. `local-direct` is a *publication policy* and says
+nothing about whether an identity has an origin — a `local-direct` identity over a
+`github.com` origin is ordinary — so the policy is never consulted here. What decides is
+whether there is an origin at all.
+
+**The verb.** `onevcs preserve <BRANCH> --repo <REPO>`, the command-line form of the
+seam, reporting what it did as this crate's other verbs report and exiting non-zero
+only on the refusal — all three outcomes are exit `0`, because "this identity has no
+origin" is an answer a shutdown acts on rather than a failure of the command.
+
+```
+onevcs preserve BRANCH --repo REPO
+```
+
+Event kinds added: `branch-preserved`.
+
+- `branch-preserved` — `{branch, identity, remote, commit, outcome}`, where `outcome`
+  is `pushed`, `already-on-origin`, or `no-remote`. **All five fields are carried for
+  every outcome**: `commit` is the branch's tip as the verb read it — pushed, already
+  there, or carried by nothing outside this host — and `remote` is the origin's URL for
+  `pushed` and `already-on-origin` and JSON `null` for `no-remote`, present as `null`
+  rather than omitted. This is deliberately the opposite of the house rule for a
+  reported *document*, where a field holding nothing is left out: this payload is one
+  kind with one shape, and a reader classifies it by `outcome` **alone** and never by
+  which fields are present — so a `no-remote` record says both "there is nowhere this
+  went" and "this is the commit at risk", and a payload a reader merely failed to
+  understand can never be mistaken for a branch that is nowhere.
+
+  At `development`: this is the work being made,
+  kept — a `local-direct` identity has no Review phase and would never see it there.
+  It is written to the branch's own session stream where the branch belongs to a
+  recorded session, and otherwise to a synthetic stream token, `preserve-<slug>`, which
+  is what `publish-branch-<slug>` and `recover-<slug>` already are.
+
+  **It is deliberately not `push`.** The one producer of that kind is the publication,
+  and a reader counting pushes to find publications must not meet a preservation.
+
+**Two reads show it, and neither says the branch is published.** `onevcs status
+<branch|session|commit>` reports the branch as on its origin at that commit while
+still unpublished, read back from the recorded stream: the `--json` report's `version`
+moves to `8` with `branch.on_origin`, and the reason is in the version's own doc
+comment beside the seven already there. `onevcs recoverable` says so per row — a word
+in the human table, and an additive optional field on `Recoverable`,
+`on_origin: Option<OnOrigin>`, carrying the remote and the commit, absent when the
+branch was never preserved. The row still carries the `recover_command` it carried
+before: being on the origin changes nothing about what lands it, which is the whole
+point of the verb being called *preserve*.
+
+```rust
+pub struct OnOrigin { pub remote: String, pub commit: String }
+```
+
+**And the report goes on listing the branch, which takes one narrow change.** A
+preserving push updates the pushing repository's own `origin/<branch>`, and that is
+what `recoverable`'s branch listing measures a branch against — so without this a
+branch would vanish from that report the moment it was preserved, which is the opposite
+of what preserving it promised. So the listing is the union of what it always was with
+the branches this host's own `branch-preserved` records name. Nothing else about which
+branches the report covers moves, and the other readers of that question — the session
+close, the run-root reclaim, and the sweep's retention rule — are untouched, because
+they ask whether letting a clone go would lose work, and a branch the origin carries
+loses none.
 
 ### A session record carries the labels its opener stamped, and the listings filter on them
 

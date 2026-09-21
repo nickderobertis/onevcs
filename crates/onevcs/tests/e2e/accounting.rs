@@ -40,8 +40,8 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v7.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v7-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v8.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v8-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
@@ -56,6 +56,7 @@ const MINIMAL: &str = include_str!("../golden/status-report-v7-minimal.json");
 const OPTIONAL: &[&[&str]] = &[
     &["session"],
     &["branch", "change_base"],
+    &["branch", "on_origin"],
     &["publication", "change_url"],
     &["publication", "draft"],
     &["publication", "held_as_draft"],
@@ -1570,6 +1571,13 @@ const TOKEN: &str = "s-000000000000";
 const STAMP: &str = "2026-01-01T00:00:00.000Z";
 const ARTIFACT: &str = "a-000000000000";
 
+/// The stand-in a golden names the commit a preserved branch is on its origin at.
+///
+/// A commit id of the length git's SHA-1 object format uses, for the reason [`TOKEN`]
+/// is a token: the report is read back *as a report*, and the value goes through the
+/// conversion that decides what an object id is.
+const COMMIT: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c";
+
 /// One report with everything a run cannot repeat replaced by what it is.
 ///
 /// A scratch root, a session token, and the moment and artifact of a description
@@ -1594,6 +1602,16 @@ fn readable(report: &Value, world: &World, token: Option<&str>) -> String {
         if described.contains_key("artifact") {
             described.insert("artifact".to_owned(), Value::from(ARTIFACT));
         }
+    }
+    // The commit a preserving push put on the origin is this run's own, so the golden
+    // names one no run mints — and the origin URL beside it is a path under the scratch
+    // root, which the substitution below already answers for.
+    if let Some(on_origin) = report
+        .get_mut("branch")
+        .and_then(|branch| branch.get_mut("on_origin"))
+        .and_then(Value::as_object_mut)
+    {
+        on_origin.insert("commit".to_owned(), Value::from(COMMIT));
     }
     let rendered = serde_json::to_string_pretty(&report).expect("a report");
     let rendered = rendered.replace(&root, "<root>");
@@ -1920,6 +1938,25 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
     hosted
         .world
         .git(&hosted.checkout, &["checkout", "-q", "main"]);
+    // …and preserved, which is the last optional field of this report: the branch is
+    // put on its origin under its own name without being published, so a shutdown could
+    // take this host away without taking the work. It publishes nothing — the change
+    // request below is still the one the draft opened, and `publication.state` still
+    // says `open` — which is exactly what the golden holds it to.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "preserve",
+            "feature/full",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "preserved: branch \"feature/full\"",
+        ));
 
     let full = report(&hosted.world, "feature/full");
     assert_eq!(
@@ -1930,7 +1967,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&full, &hosted.world, Some(&token)),
         FULL,
         "the object `onevcs status --json` writes is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/status-report-v7.json from the run above, and bump \
+         crates/onevcs/tests/golden/status-report-v8.json from the run above, and bump \
          the version in docs/inferred-surface.md and src/status.rs if the shape moved"
     );
     for path in OPTIONAL {
@@ -1973,7 +2010,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&minimal, &plain.world, None),
         MINIMAL,
         "the object a report with nothing optional in it writes is its checked-in \
-         golden; re-make crates/onevcs/tests/golden/status-report-v7-minimal.json"
+         golden; re-make crates/onevcs/tests/golden/status-report-v8-minimal.json"
     );
     // Omitted rather than null: a consumer that has never heard of a field is not
     // handed one, and "no session" and "a session that is null" are different
