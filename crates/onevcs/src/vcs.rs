@@ -682,22 +682,26 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                 ..recorded
             };
             let change_url = recorded.change.clone();
-            let mut verdict = landed::decide(
-                asked,
-                &compared,
-                current.as_ref(),
-                &branch,
-                &recorded,
-                trailers,
-            )?;
             // A chain of retries this host cannot follow leaves nothing decided
             // about the branch — the same answer `onevcs status` gives, through
             // the same reading of the same records, because a row that said `no`
             // here and `unknown` there would be the disagreement this report
-            // exists to end.
-            if unfollowable_chain(sessions, identity, &branch) {
-                verdict = Landed::Unknown;
-            }
+            // exists to end. Asked before the tiers rather than after them, because
+            // whatever they found would be replaced by it: one such branch on the
+            // consuming host spent seventy-five content merges on a verdict that
+            // was then discarded.
+            let verdict = if unfollowable_chain(sessions, identity, &branch) {
+                Landed::Unknown
+            } else {
+                landed::decide(
+                    asked,
+                    &compared,
+                    current.as_ref(),
+                    &branch,
+                    &recorded,
+                    trailers,
+                )?
+            };
             // Withheld unless every branch was asked for, and only where the
             // work *reached the base*: that is the row whose command must not be
             // pasted. A row nothing can decide about is the opposite case — it

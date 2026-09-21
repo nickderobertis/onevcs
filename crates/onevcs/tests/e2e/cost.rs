@@ -697,6 +697,65 @@ fn a_branch_a_record_decides_is_never_content_compared() {
 }
 
 #[test]
+fn a_branch_whose_chain_of_retries_cannot_be_followed_is_not_put_to_the_tiers() {
+    // A chain of retries this host cannot follow answers `unknown` whatever the
+    // landing tiers find, so asking them is work whose answer is thrown away. On the
+    // consuming host one such branch — found in part by its change request, then
+    // walked commit by commit above that landing — spent seventy-five content merges,
+    // a third of that identity's whole read, on a verdict that was then replaced.
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let (token, worktree) = fixture.open(&["--branch", "feature/orphaned-retry"]);
+    world.commit_file(&worktree, "retry.txt", "r\n", "feat: a retried run's work");
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    // The one link nothing can follow: a retry this host has no record of. Every
+    // link this crate writes goes through the boundary that refuses one, so the
+    // record is edited the way `tests/e2e/retries.rs` edits it — a record is
+    // hand-editable, and a newer `onevcs` sharing this state root writes it too.
+    let record = world.home().join("sessions").join(format!("{token}.json"));
+    let mut edited: Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("a session record"))
+            .expect("a session record is JSON");
+    edited["retried_by"] = Value::String("s-nobody".to_owned());
+    std::fs::write(
+        &record,
+        serde_json::to_string_pretty(&edited).expect("a session record"),
+    )
+    .expect("the record is rewritten");
+    let counting = Counting::installed(world);
+
+    let (rows, calls, _) = counting.recoverable(world, &[]);
+    let answered = row(&rows, "feature/orphaned-retry");
+    assert_eq!(
+        answered["landed"]["state"], "unknown",
+        "an unfollowable chain answers unknown: {answered}"
+    );
+    assert_eq!(answered["session"], Value::String(token.clone()));
+    // The two questions only the tiers ask: the content comparison at the bottom, and
+    // the merge a landing's guard puts to every commit above the landing it found.
+    let compared = content_comparisons(&calls);
+    assert!(
+        !compared
+            .iter()
+            .any(|branch| branch == "feature/orphaned-retry"),
+        "a branch whose verdict the chain already decided was content-compared: {compared:?}"
+    );
+    let merged: Vec<&Call> = calls
+        .iter()
+        .filter(|call| call.args.starts_with("merge-tree "))
+        .collect();
+    assert!(
+        merged.is_empty(),
+        "a branch whose verdict the chain already decided was merged against a landing: \
+         {merged:?}"
+    );
+}
+
+#[test]
 fn a_copy_of_a_branch_already_decided_in_another_checkout_is_not_decided_again() {
     // A branch of one identity lives in as many clones as ever held it, and the
     // measured host keeps about forty per busy identity. Every copy used to be put
