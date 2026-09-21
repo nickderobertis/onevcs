@@ -347,6 +347,12 @@ impl TryFrom<AnyRecoverable> for Recoverable {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OnOrigin {
     /// The origin URL the branch went to.
+    // llmlint: ignore[invalid_states_unrepresentable] a remote is a `String` everywhere
+    // this crate's public surface spells one, and this is the URL a repository's own
+    // `origin` was configured with rather than a form this crate composes — what makes it
+    // usable is checked where the record is read (`git::is_usable_remote`, before it can
+    // reach a line an operator reads), and the field itself is spelled by
+    // `docs/contract.md`.
     pub remote: String,
     /// The commit the origin carries it at.
     // llmlint: ignore[invalid_states_unrepresentable] a commit is a `String` everywhere

@@ -38,11 +38,20 @@ use crate::{branch, guidance, policy};
 /// What to preserve, and where to look for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreserveRequest {
+    // llmlint: ignore-block[invalid_states_unrepresentable] both fields are what a caller
+    // *typed*, before this crate has decided what either names, and `docs/contract.md`
+    // spells them as they are — a request `onepipeline` builds from a shutdown's own
+    // arguments. `repo` is deliberately the widest of the four forms `publish-branch
+    // --repo` takes, which no type in this crate is the closed set of, and narrowing
+    // `branch` to `Ref` would move the refusal for an unusable name out of `run` — where
+    // it is a message naming the branch and the report that lists the branches there are
+    // — and into a conversion a caller would have to perform to ask the question.
     /// The repository: an identity key, a registered alias, an origin URL, or a
     /// path, read exactly as `publish-branch --repo` reads one.
     pub repo: String,
     /// The branch to put on that identity's origin under its own name.
     pub branch: String,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
 }
 
 /// What preserving one branch found to do.
@@ -89,9 +98,20 @@ impl Preservation {
 /// What preserving one branch did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preserved {
+    // llmlint: ignore-block[invalid_states_unrepresentable] every field of this value is
+    // spelled by `docs/contract.md`, which two later consumers are written against, so
+    // none of them is this module's to tighten — and each is already held to what it is
+    // where that matters: the branch by `run`'s own `check-ref-format` refusal, the
+    // remote by `git::is_usable_remote` where a recorded preservation is read back, and
+    // the commit by `ObjectId::parse` there. What the `Option`s could otherwise represent
+    // is closed off where this value is produced: `run` reads the tip before it looks for
+    // an origin, so every one of its three answers carries the commit, and only the
+    // outcome with nowhere to have gone carries no remote.
     /// The identity the branch belongs to.
     pub identity: String,
-    /// The branch.
+    /// The branch, under the name it already had: a preservation puts it on the origin
+    /// as it stands and never renames, prefixes or namespaces it, because the verbs
+    /// that land it afterwards look for it by this name.
     pub branch: String,
     /// The checkout, run clone or session worktree the branch was pushed from.
     ///
@@ -112,17 +132,10 @@ pub struct Preserved {
     /// field so, and a caller reads which outcome this was from
     /// [`outcome`](Preserved::outcome) alone rather than from whether a field is
     /// there.
-    // llmlint: ignore[invalid_states_unrepresentable] the shape of this value is fixed
-    // by `docs/contract.md`, which two later consumers are written against, so the
-    // `Option` is not this module's to tighten. What it could otherwise represent is
-    // closed off where it is produced — `run` reads the tip before it looks for an
-    // origin, and every one of its three answers carries it — and where it is read: the
-    // recorded payload carries the commit for all three outcomes, and `OnOrigin`, the
-    // readback a report carries, holds the remote and the commit non-optionally so a row
-    // saying the branch is on its origin cannot say where without saying at what.
     pub commit: Option<String>,
     /// Which of the three things this found to do.
     pub outcome: Preservation,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
 }
 
 /// Put one branch on its identity's origin under its own name.
