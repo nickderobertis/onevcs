@@ -440,7 +440,7 @@ fn run(worktree: &Path, maintenance: &Maintenance) -> Ran {
         let _ = child.kill();
         let _ = child.wait();
         let duration = started.elapsed();
-        let mut output = combined(out_reader.finish(), err_reader.finish());
+        let mut output = combined(out_reader.finish().bytes, err_reader.finish().bytes);
         output.push_str(&format!(
             "\n[onevcs: timed out after {:.3}s, bound {}]\n",
             duration.as_secs_f64(),
@@ -453,7 +453,7 @@ fn run(worktree: &Path, maintenance: &Maintenance) -> Ran {
         };
     };
     let duration = started.elapsed();
-    let output = combined(out_reader.finish(), err_reader.finish());
+    let output = combined(out_reader.finish().bytes, err_reader.finish().bytes);
     let outcome = match status {
         Ok(status) if status.success() => MaintenanceOutcome::Succeeded,
         Ok(status) => MaintenanceOutcome::Failed {

@@ -109,7 +109,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ReleaseCommand::Targets(args) => release_targets(args),
             ReleaseCommand::Discover(args) => release_discover(args),
             ReleaseCommand::Latest(args) => release_latest(args),
-            ReleaseCommand::Status(args) => release_status(args),
+            ReleaseCommand::Status(args) => release_status(args, providers),
             ReleaseCommand::Acknowledge(args) => release_acknowledge(args),
             ReleaseCommand::Declaration(args) => release_declaration(args),
         },
@@ -1737,8 +1737,8 @@ fn release_latest(args: &ReleaseLatestArgs) -> Result<u8> {
 }
 
 /// Render whether the release carrying one landed change is out yet.
-fn release_status(args: &ReleaseStatusArgs) -> Result<u8> {
-    let status = crate::release_status(&args.reference, args.target.as_ref())?;
+fn release_status(args: &ReleaseStatusArgs, providers: &Providers<'_>) -> Result<u8> {
+    let status = crate::release_status_with(providers, &args.reference, args.target.as_ref())?;
     if args.json {
         return print_json(&status);
     }

@@ -3627,3 +3627,315 @@ fn a_git_binary_nothing_can_find_still_names_the_binary() {
         .code(2)
         .stderr(predicate::str::contains("is git installed and on PATH?"));
 }
+
+/// Zero every loose object one clone owns, which is the shape a torn run clone was
+/// found in: six zero-byte files under `objects/??/`.
+///
+/// Nothing is stood in for. These are the clone's own objects, written by real git
+/// moments earlier, and what reads them afterwards is real git — which answers
+/// `object file … is empty` for exactly this, and is the failure the whole of these
+/// two journeys is about. A `--shared` clone borrows everything older through its
+/// alternates, so what is emptied here is precisely the commits that run made.
+fn empty_the_loose_objects(clone: &std::path::Path) -> Vec<PathBuf> {
+    let objects = clone.join(".git/objects");
+    let mut emptied = Vec::new();
+    for fan_out in std::fs::read_dir(&objects)
+        .expect("a clone has an object store")
+        .flatten()
+    {
+        let name = fan_out.file_name().to_string_lossy().into_owned();
+        if name.len() != 2 || !name.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        for object in std::fs::read_dir(fan_out.path())
+            .expect("an object fan-out is readable")
+            .flatten()
+        {
+            // git writes a loose object read-only, which is what stops it being
+            // rewritten in place — and is why a torn one has to be made writable
+            // before it can be emptied.
+            std::fs::set_permissions(object.path(), std::fs::Permissions::from_mode(0o644))
+                .expect("a writable loose object");
+            std::fs::write(object.path(), b"").expect("a zero-byte loose object");
+            emptied.push(object.path());
+        }
+    }
+    assert!(
+        !emptied.is_empty(),
+        "the clone at {} had loose objects of its own to empty",
+        clone.display()
+    );
+    emptied
+}
+
+/// The clone one session works in, read back out of the report that names it.
+fn clone_of(fixture: &Fixture, token: &str) -> PathBuf {
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["status", token, "--json"])
+        .assert()
+        .success();
+    let report: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("a status report");
+    PathBuf::from(
+        report["session"]["clone"]
+            .as_str()
+            .expect("a session records the clone it works in"),
+    )
+}
+
+#[test]
+fn one_torn_run_clone_is_a_finding_and_every_healthy_session_of_the_identity_still_answers() {
+    // `onevcs` issue 172, as its reporter met it: six zero-byte loose objects in one
+    // dead run clone made every identity-wide read answer as a failure, so the
+    // release probes for two unrelated landed changes reported nothing at all until
+    // a person found and repaired the clone by hand.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    // A release target, declared before anything lands so the landing captures its
+    // baseline — which is what lets `release status` answer for the healthy work.
+    std::fs::write(
+        fixture.world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{path: \
+             {:?}}}\n    adoption: published\n    default_target: crate\n    targets:\n      \
+             - name: crate\n        style: automated\n        probe:\n          shell: 'echo \
+             1.0.0'\n          timeout_seconds: 20\n",
+            fixture.checkout.to_string_lossy()
+        ),
+    )
+    .expect("a release-targets file");
+    let (landed, landed_worktree) = fixture.open(&["--branch", "feature/healthy"]);
+    fixture
+        .world
+        .commit_file(&landed_worktree, "a.txt", "a\n", "feat: the healthy one");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &landed])
+        .assert()
+        .success();
+    // A commit of the *branch*, which is what a reference like this names: the base's
+    // own history is every branch that ever landed, so the landing commit would name
+    // the repository rather than the work.
+    let at = fixture
+        .world
+        .git(&landed_worktree, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+
+    // …and a second session of the same identity, whose clone is then torn.
+    let (torn, torn_worktree) = fixture.open(&["--branch", "feature/torn"]);
+    fixture
+        .world
+        .commit_file(&torn_worktree, "b.txt", "b\n", "feat: the torn one");
+    let clone = clone_of(&fixture, &torn);
+    // A clone on a hosted identity fetches every branch its origin has, so it holds
+    // the commits of work it has nothing to do with — which is what puts it in the
+    // path of a search for one. Fetched as a pack, the way a fetch of any size
+    // arrives, so what is torn below is this run's own loose commit and nothing else.
+    fixture.world.git(
+        &clone,
+        &[
+            "-c",
+            "fetch.unpackLimit=1",
+            "fetch",
+            "-q",
+            &landed_worktree.to_string_lossy(),
+            "feature/healthy:refs/remotes/origin/feature/healthy",
+        ],
+    );
+    empty_the_loose_objects(&clone);
+
+    // The read that used to answer only as a failure: a commit is looked for across
+    // every copy of every identity, so the torn clone is opened however unrelated it
+    // is to the work asked about. It answers about the healthy landing, and reports
+    // the clone it could not read as a finding of its own.
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["status", &at, "--json"])
+        .assert()
+        .success();
+    let report: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("a status report");
+    assert_eq!(report["branch"]["name"], "feature/healthy", "{report}");
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    let notes = report["notes"]
+        .as_array()
+        .expect("a report carries its notes");
+    let corruption = notes
+        .iter()
+        .filter_map(|note| note.as_str())
+        .find(|note| note.contains("could not be read by git"))
+        .unwrap_or_else(|| panic!("the read reports the clone it could not read: {report}"));
+    assert!(
+        corruption.contains(&clone.to_string_lossy().into_owned()),
+        "the finding names the clone: {corruption}"
+    );
+    assert!(
+        corruption.contains(&torn),
+        "the finding names the session whose clone it is: {corruption}"
+    );
+    assert!(
+        corruption.contains("is empty"),
+        "the finding carries what git said about it: {corruption}"
+    );
+
+    // The release probe for the healthy landing, by the same commit: the answer is
+    // the one an intact identity gives, and the torn clone is named beside it.
+    let released = fixture
+        .world
+        .onevcs()
+        .args(["release", "status", &at, "--json"])
+        .assert()
+        .success();
+    let answer: serde_json::Value =
+        serde_json::from_slice(&released.get_output().stdout).expect("a release answer");
+    assert_eq!(answer["state"], "not-released", "{answer}");
+    assert_eq!(answer["now"], "1.0.0", "{answer}");
+    let warned = String::from_utf8_lossy(&released.get_output().stderr).into_owned();
+    assert!(
+        warned.contains("could not be read by git")
+            && warned.contains(&clone.to_string_lossy().into_owned())
+            && warned.contains("is empty"),
+        "the release read names the torn clone and what git said: {warned}"
+    );
+
+    // …and the healthy session closes, whatever state its neighbour's clone is in.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &landed])
+        .assert()
+        .success();
+
+    // …and the torn session is answered for too, rather than refused: what can be
+    // said about it is said, and the clone that said nothing is the finding.
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["status", "feature/torn", "--json"])
+        .assert()
+        .success();
+    let torn_report: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("a status report");
+    assert!(
+        torn_report["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .filter_map(|note| note.as_str())
+            .any(|note| note.contains("could not be read by git")),
+        "{torn_report}"
+    );
+
+    // Its release, though, is not a question the copies that read can settle: the
+    // only copy of its branch is the one git refused, so "not landed" would be the
+    // absence of evidence read as evidence. It is not answered, naming the clone.
+    let unsettled = fixture
+        .world
+        .onevcs()
+        .args(["release", "status", "feature/torn", "--json"])
+        .assert()
+        .success();
+    let answer: serde_json::Value =
+        serde_json::from_slice(&unsettled.get_output().stdout).expect("a release answer");
+    assert_eq!(answer["state"], "not-answered", "{answer}");
+    let reason = answer["reason"].as_str().expect("it says why");
+    assert!(
+        reason.contains("could not be read by git")
+            && reason.contains(&clone.to_string_lossy().into_owned()),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_landed_session_whose_clone_is_torn_closes_from_its_landing_record() {
+    // The other half of the same hour: the session's own close refused, so every
+    // automated adoption and cleanup behind it stopped until somebody repaired the
+    // clone by hand — for a session whose work was already on the base.
+    let fixture = Fixture::local(&crate::lifecycle::local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/landed-then-torn"]);
+    fixture
+        .world
+        .commit_file(&worktree, "a.txt", "a\n", "feat: land it");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let clone = clone_of(&fixture, &token);
+    empty_the_loose_objects(&clone);
+
+    let closed = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let said = String::from_utf8_lossy(&closed.get_output().stderr).into_owned();
+    assert!(
+        said.contains("could not be read by git"),
+        "the close says the clone was unreadable: {said}"
+    );
+    assert!(
+        said.contains("recorded as landed"),
+        "…and that it closed from the landing record instead: {said}"
+    );
+    assert!(
+        said.contains(&clone.to_string_lossy().into_owned()),
+        "…naming the clone it left behind: {said}"
+    );
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .world
+                .home()
+                .join("sessions")
+                .join(format!("{token}.json")),
+        )
+        .expect("a session record"),
+    )
+    .expect("the record is JSON");
+    assert_eq!(record["state"], "closed", "{record}");
+    // …and the terminator says the same thing a consumer of the stream reads: which
+    // landing the close relied on, what git said, and where the clone was left.
+    let landing = fixture
+        .world
+        .git(&fixture.checkout, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    let terminator = fixture.world.events_of(&token, "session-closed");
+    let payload = &terminator
+        .last()
+        .expect("the close published its terminator")["payload"];
+    assert_eq!(payload["landed"], landing.as_str(), "{payload}");
+    assert_eq!(
+        payload["retained"],
+        clone.to_string_lossy().into_owned().as_str(),
+        "{payload}"
+    );
+    assert!(
+        payload["unreadable_clone"]
+            .as_str()
+            .is_some_and(|said| said.contains("is empty")),
+        "{payload}"
+    );
+
+    // A session whose work is *not* on the base still refuses, which is the half of
+    // this that must not move: there is work in that clone nothing else carries.
+    let (unlanded, unlanded_worktree) = fixture.open(&["--branch", "feature/torn-and-unlanded"]);
+    fixture
+        .world
+        .commit_file(&unlanded_worktree, "b.txt", "b\n", "feat: never landed");
+    empty_the_loose_objects(&clone_of(&fixture, &unlanded));
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &unlanded])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is empty"));
+}

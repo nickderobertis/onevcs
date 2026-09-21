@@ -676,7 +676,7 @@ fn supported(session: &SessionToken) -> (BTreeSet<Phase>, Option<String>) {
 /// a commit id is no landing to correlate against rather than one to compare.
 fn landed_at(session: &SessionToken) -> Option<ObjectId> {
     let registry = store::load().ok()?;
-    match status::landing_of(&registry, &session.0).ok()?.landed {
+    match status::landing_of(&registry, &session.0, None).ok()?.landed {
         // A branch that has gone on since its landing reached the base at that
         // landing all the same, and the releases carrying it are the ones this
         // session's reader is waiting for.

@@ -5988,3 +5988,150 @@ fn the_readme_spells_the_pool_verbs_and_the_refusal_as_the_amendment_does() {
     }
     assert_eq!(names, 5, "the README names the five library reads");
 }
+
+#[test]
+fn the_amendment_states_how_a_refusal_that_captured_nothing_diagnoses_itself() {
+    // The amendment is what an operator reads to know what a refusal owes them, and
+    // the words it quotes are the words the code writes — so the two are reconciled
+    // here rather than left to agree by memory. `tests/e2e/lifecycle.rs` drives the
+    // behaviour through the compiled binary, over a push a signal terminates; this
+    // holds the document to the statements that behaviour rests on.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "Such a refusal now says that the merge path wrote nothing, and says how the push \
+         itself ended",
+        "Where a read of the push's own pipes stopped short, that failure is reported beside \
+         it, so an answer this process could not read whole is never reported as one the \
+         command never wrote",
+        "A refusal that **did** capture output is reported exactly as before",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the empty-output refusal amendment no longer says: {sentence}"
+        );
+    }
+    // …and the phrases it quotes are the ones the code composes. Read out of the
+    // sources because both are private — the renderings are this build's answer and
+    // not part of the surface, and widening the surface to reconcile them would be
+    // the wrong repair.
+    for (relative, quoted) in [
+        (
+            "crates/onevcs/src/publish.rs",
+            "the merge path wrote nothing",
+        ),
+        ("crates/onevcs/src/git.rs", "exited with status {code}"),
+        (
+            "crates/onevcs/src/git.rs",
+            "was terminated by signal {signal} ({name})",
+        ),
+        (
+            "crates/onevcs/src/git.rs",
+            "was terminated by signal {signal}",
+        ),
+    ] {
+        assert!(
+            repo_file(relative).contains(quoted),
+            "{relative} no longer composes {quoted:?}, which the amendment quotes"
+        );
+    }
+    // The kind and the code the amendment says are unchanged, asked of the type that
+    // fixes them.
+    assert_eq!(
+        FailureKind::of(&Error::PushRejected {
+            reason: String::new()
+        }),
+        FailureKind::PushRejected
+    );
+    assert_eq!(FailureKind::PushRejected.exit_code(), 1);
+}
+
+#[test]
+fn the_amendment_states_the_once_per_read_reconciliation_of_a_late_merge() {
+    // `tests/e2e/library.rs` drives all three reads over the in-memory host — a
+    // publication that closes `checks-unsettled`, a merge the host performs
+    // afterwards, and the `status`, `release status` and `publish` that meet it.
+    // This holds the document to the rule those journeys prove.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "**A `status`, a `release status` or a `publish` that meets a recorded change request \
+         after such a close asks the host once.**",
+        "this host recorded a change request for the branch, it asked the host to land it, and \
+         no landing is recorded for it",
+        "the publication checkout is fast-forwarded onto it, each automated release target's \
+         baseline is captured at it, and the merge is written to the stream that opened the \
+         change",
+        "A change request the host reports open or closed-unmerged, and one the host cannot be \
+         asked about at all, each leave the record exactly as it stands.",
+        "`landing_status` asks nobody.",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the late-merge amendment no longer says: {sentence}"
+        );
+    }
+    // The landing is recorded as a kind the contract already names, and the two
+    // reads named above keep the signatures the contract fixes — which is what says
+    // the host reaches `release status` without widening the surface.
+    assert_eq!(
+        serde_json::to_value(EventKind::ChangeMerged).expect("a kind serializes"),
+        "change-merged"
+    );
+    let declared = amendment_declaring("pub fn release_status");
+    for line in [
+        "pub fn release_status(reference: &str, target: Option<&TargetName>) \
+         -> Result<ReleaseStatus>;",
+        "pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed>;",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the release amendment no longer declares: {line}"
+        );
+    }
+}
+
+#[test]
+fn the_amendment_states_that_one_torn_run_clone_is_a_finding_of_its_own() {
+    // `tests/e2e/edges.rs` tears one run clone beside a healthy session and drives
+    // `status`, `release status` and `session close` through the compiled binary.
+    // This holds the document to the rule those journeys prove.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "**An identity-wide `status`, `release status` or session-close read isolates a clone \
+         git will not read, and goes on across the rest.**",
+        "is reported as a per-session finding naming the clone, the session whose run clone \
+         it is where a record says so, and what git said about it",
+        "`release status` answers *not answered*, naming the torn clone, rather than \
+         `not-landed`",
+        "**A landed session whose disposable clone git will not read closes from its landing \
+         record.**",
+        "A session with no landing record still refuses, with git's own words",
+        "`session-closed` gains, on a close taken from the landing record, `landed` (the \
+         landing commit), `unreadable_clone` (what git said) and the existing `retained` \
+         naming the clone left in place.",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the torn-clone amendment no longer says: {sentence}"
+        );
+    }
+    // …and the words it quotes are the ones the code writes. Read out of the sources
+    // because every one of them is private: the finding, the warning it is carried
+    // by, and the two payload keys.
+    for (relative, quoted) in [
+        ("crates/onevcs/src/status.rs", "could not be read by git"),
+        (
+            "crates/onevcs/src/release.rs",
+            "eprintln!(\"onevcs: warning: {said}\")",
+        ),
+        ("crates/onevcs/src/workspace.rs", "closed[\"landed\"]"),
+        (
+            "crates/onevcs/src/workspace.rs",
+            "closed[\"unreadable_clone\"]",
+        ),
+    ] {
+        assert!(
+            repo_file(relative).contains(quoted),
+            "{relative} no longer writes {quoted:?}, which the amendment states"
+        );
+    }
+}
