@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs-testing"
-version = "0.6.9"
+version = "0.6.10"
 dependencies = [
  "clap",
  "onemessagebus-agent",

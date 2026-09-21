@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.10](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.9...onevcs-testing-v0.6.10) - 2026-09-21
+
+### Added
+
+- *(preserve)* push an unpublished branch to its origin without publishing it ([#186](https://github.com/nickderobertis/onevcs/pull/186))
+
 ## [0.6.7](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.6.6...onevcs-testing-v0.6.7) - 2026-09-19
 
 ### Added
