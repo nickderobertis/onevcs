@@ -2375,9 +2375,11 @@ pub struct Preserved {
     pub branch: String,
     /// The checkout, run clone or session worktree the branch was pushed from.
     pub from: PathBuf,
-    /// The origin URL it went to, or `None` for `NoRemote`.
+    /// The origin URL it went to, and `None` only for `NoRemote`.
     pub remote: Option<String>,
-    /// The commit the branch stands at, or `None` for `NoRemote`.
+    /// The commit the branch stands at, for every outcome: the one that was
+    /// pushed, the one the origin already carried, or — for `NoRemote` — the one
+    /// nothing outside this host carries.
     pub commit: Option<String>,
     pub outcome: Preservation,
 }
@@ -2405,6 +2407,12 @@ registered alias, an origin URL, or a path. It pushes `refs/heads/<branch>` to
 origin URL, so `origin` there is the real origin and not the lender — and a location
 with no `origin` remote is `NoRemote`. Never `--force`, never `--force-with-lease`: a
 non-fast-forward push is a refusal to report, never a history to replace.
+
+**The commit is read before the origin is looked for, so every outcome names it** —
+`NoRemote` most of all, since that is the one commit nothing outside this host carries
+and a shutdown report that did not name it would say a branch is at risk without saying
+which work is. Which outcome an answer is, a caller reads from `outcome` and never from
+which fields are filled.
 
 It passes **`--no-verify`**. The repository's own `pre-push` hook is what verifies a
 *publication* for a local identity — it is the merge path — and a preservation is
@@ -2443,9 +2451,18 @@ onevcs preserve BRANCH --repo REPO
 Event kinds added: `branch-preserved`.
 
 - `branch-preserved` — `{branch, identity, remote, commit, outcome}`, where `outcome`
-  is `pushed`, `already-on-origin`, or `no-remote`; `remote` and `commit` are present
-  only for the two outcomes that have them, so a `no-remote` payload carries neither
-  rather than carrying them as null. At `development`: this is the work being made,
+  is `pushed`, `already-on-origin`, or `no-remote`. **All five fields are carried for
+  every outcome**: `commit` is the branch's tip as the verb read it — pushed, already
+  there, or carried by nothing outside this host — and `remote` is the origin's URL for
+  `pushed` and `already-on-origin` and JSON `null` for `no-remote`, present as `null`
+  rather than omitted. This is deliberately the opposite of the house rule for a
+  reported *document*, where a field holding nothing is left out: this payload is one
+  kind with one shape, and a reader classifies it by `outcome` **alone** and never by
+  which fields are present — so a `no-remote` record says both "there is nowhere this
+  went" and "this is the commit at risk", and a payload a reader merely failed to
+  understand can never be mistaken for a branch that is nowhere.
+
+  At `development`: this is the work being made,
   kept — a `local-direct` identity has no Review phase and would never see it there.
   It is written to the branch's own session stream where the branch belongs to a
   recorded session, and otherwise to a synthetic stream token, `preserve-<slug>`, which

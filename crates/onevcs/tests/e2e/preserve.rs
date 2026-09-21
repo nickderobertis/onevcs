@@ -233,13 +233,19 @@ fn a_branch_whose_location_has_no_origin_is_answered_rather_than_pushed() {
         .assert()
         .success();
 
+    // The commit nothing outside this host carries, which is the whole of what is at
+    // risk here — read before the verb runs, out of the repository that holds it.
+    let stranded = tip_in(&world, &checkout, "feature/stranded");
     preserve(&world, &checkout, "feature/stranded", &[])
         .assert()
         .success()
         .stdout(predicate::str::contains("no remote"))
         .stdout(predicate::str::contains(
             "has no `origin` to push it to, so nothing was attempted",
-        ));
+        ))
+        // …and the line names it, because an operator reading the branches a shutdown
+        // kept has to know which work this one is rather than only that it is nowhere.
+        .stdout(predicate::str::contains(&stranded));
     assert!(
         !world.git(&checkout, &["remote"]).contains("origin"),
         "the verb added no remote of its own"
@@ -253,13 +259,32 @@ fn a_branch_whose_location_has_no_origin_is_answered_rather_than_pushed() {
         panic!("one preservation is one record: {recorded:#?}");
     };
     assert_eq!(payload["outcome"], "no-remote");
-    // Omitted rather than written as null, the way every optional field in this crate's
-    // reported shapes is: a consumer meeting `remote: null` would have to decide what a
-    // remote of nothing means, and absent already says it.
-    assert!(
-        payload.get("remote").is_none() && payload.get("commit").is_none(),
-        "nothing was pushed, so the payload names neither a remote nor a commit — not \
-         even as null: {payload}"
+    // The same five fields a push records, and `remote` written as `null` rather than
+    // left out: which outcome this was is `outcome`'s answer alone, so the keys beside
+    // it do not move with it and a reader can never mistake a payload it failed to
+    // understand for a branch that is nowhere.
+    assert_eq!(
+        payload["remote"],
+        serde_json::Value::Null,
+        "there was nowhere to push, and the payload says so as null rather than by \
+         omitting the field: {payload}"
+    );
+    assert_eq!(
+        payload["commit"],
+        serde_json::json!(stranded),
+        "and it names the commit nothing outside this host carries: {payload}"
+    );
+    let mut carried = payload
+        .as_object()
+        .expect("a payload is an object")
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    carried.sort_unstable();
+    assert_eq!(
+        carried,
+        vec!["branch", "commit", "identity", "outcome", "remote"],
+        "every outcome carries the same five fields: {payload}"
     );
 }
 
@@ -806,6 +831,11 @@ fn a_recorded_preservation_whose_payload_is_not_one_this_build_reads_is_not_repo
     // printed onto a line an operator reads — where one carrying a newline would forge a
     // second line of that report. So each is held to what its own kind of value is, and
     // this is the journey that meets a record that is not.
+    //
+    // It is also where the *other* half of the read is proved: which outcome a record
+    // carries is `outcome`'s answer alone, so a record naming an outcome that reached no
+    // origin says nothing about where the branch is however complete the fields beside
+    // it are, and one naming a word this build has never heard of says nothing either.
     let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
     let branch = "feature/forged";
@@ -831,6 +861,13 @@ fn a_recorded_preservation_whose_payload_is_not_one_this_build_reads_is_not_repo
         ("branch", serde_json::json!("..not-a-branch")),
         // A remote carrying a second line, which is the one that reaches a report.
         ("remote", serde_json::json!("https://example.invalid/a\nb")),
+        // An outcome that reached no origin, on a record whose remote and commit are
+        // the real ones this host wrote: read by `outcome` alone, so the branch is
+        // reported as nowhere rather than as on the origin those fields name.
+        ("outcome", serde_json::json!("no-remote")),
+        // …and a word this build does not know, which is the case a reader inferring
+        // the outcome from which fields arrived would answer confidently and wrongly.
+        ("outcome", serde_json::json!("mirrored-by-something-newer")),
     ] {
         let mut envelope: serde_json::Value = serde_json::from_str(written.trim())
             .expect("the preservation's record is one JSON object per line");

@@ -58,6 +58,19 @@ pub enum Preservation {
     NoRemote,
 }
 
+/// The word [`Preservation::Pushed`] travels as in a `branch-preserved` payload.
+///
+/// The three words are spelled here rather than at the two ends, because `status` reads
+/// a recorded preservation's outcome from this field **alone** — the payload carries the
+/// same five keys whichever word it is — so a writer and a reader that spelled one
+/// differently would answer "this branch is nowhere" about a branch on its origin, and
+/// nothing about the payload's shape would show it.
+pub(crate) const PUSHED: &str = "pushed";
+/// The word [`Preservation::AlreadyOnOrigin`] travels as. See [`PUSHED`].
+pub(crate) const ALREADY_ON_ORIGIN: &str = "already-on-origin";
+/// The word [`Preservation::NoRemote`] travels as. See [`PUSHED`].
+pub(crate) const NO_REMOTE: &str = "no-remote";
+
 impl Preservation {
     /// The word this outcome travels as in a `branch-preserved` payload.
     ///
@@ -66,9 +79,9 @@ impl Preservation {
     /// here cannot reach a stream unnamed.
     fn wire(self) -> &'static str {
         match self {
-            Preservation::Pushed => "pushed",
-            Preservation::AlreadyOnOrigin => "already-on-origin",
-            Preservation::NoRemote => "no-remote",
+            Preservation::Pushed => PUSHED,
+            Preservation::AlreadyOnOrigin => ALREADY_ON_ORIGIN,
+            Preservation::NoRemote => NO_REMOTE,
         }
     }
 }
@@ -86,18 +99,27 @@ pub struct Preserved {
     /// the landing verbs use: a registered checkout, or the run clone a live
     /// session's worktree commits into.
     pub from: PathBuf,
-    /// The origin URL it went to, or `None` for
-    /// [`NoRemote`](Preservation::NoRemote).
+    /// The origin URL it went to, and `None` only for
+    /// [`NoRemote`](Preservation::NoRemote) — the one outcome with nowhere to have
+    /// gone.
     pub remote: Option<String>,
-    /// The commit the branch stands at, or `None` for
-    /// [`NoRemote`](Preservation::NoRemote).
-    // llmlint: ignore[invalid_states_unrepresentable] the pair is `None` together and
-    // `Some` together, and folding them into the outcome would make `Preservation` — the
-    // value a caller routes on and the word the event payload carries — a shape that
-    // differs per variant. The two states are answered where they are read: a `NoRemote`
-    // row writes neither field, and `OnOrigin`, the readback a report carries, holds both
-    // non-optionally so a row saying the branch is on its origin cannot say where without
-    // saying when.
+    /// The commit the branch stands at, as this verb read it: the one that was
+    /// pushed, the one the origin already carried, or — for
+    /// [`NoRemote`](Preservation::NoRemote) — the one **nothing outside this host
+    /// carries**, which is the commit a shutdown most needs named.
+    ///
+    /// Filled for every outcome. It is an `Option` because the contract names the
+    /// field so, and a caller reads which outcome this was from
+    /// [`outcome`](Preserved::outcome) alone rather than from whether a field is
+    /// there.
+    // llmlint: ignore[invalid_states_unrepresentable] the shape of this value is fixed
+    // by `docs/contract.md`, which two later consumers are written against, so the
+    // `Option` is not this module's to tighten. What it could otherwise represent is
+    // closed off where it is produced — `run` reads the tip before it looks for an
+    // origin, and every one of its three answers carries it — and where it is read: the
+    // recorded payload carries the commit for all three outcomes, and `OnOrigin`, the
+    // readback a report carries, holds the remote and the commit non-optionally so a row
+    // saying the branch is on its origin cannot say where without saying at what.
     pub commit: Option<String>,
     /// Which of the three things this found to do.
     pub outcome: Preservation,
@@ -134,6 +156,19 @@ pub fn run(registry: &Registry, request: &PreserveRequest) -> Result<Preserved> 
     )?;
 
     let mut stream = open_stream(&resolution, branch)?;
+    // Read before the origin is looked for, because every outcome names it — the commit
+    // an identity with nowhere to push it most of all: that is the one nothing outside
+    // this host carries, and a shutdown report that did not name it would say a branch
+    // is at risk without saying which work is.
+    let reference = format!("refs/heads/{branch}");
+    let commit = git::tip(&from, &reference).ok_or_else(|| Error::Invalid {
+        reason: format!(
+            "branch {branch:?} resolves to no commit in {}, so there is nothing to \
+             preserve; `onevcs recoverable` lists every preserved branch and the checkout \
+             it is in",
+            from.display()
+        ),
+    })?;
     // A location with no `origin` is the whole of what decides this. The identity's
     // *policy* is never consulted: `local-direct` says how a change is published and
     // says nothing about whether the repository has an origin — this host's own
@@ -147,24 +182,15 @@ pub fn run(registry: &Registry, request: &PreserveRequest) -> Result<Preserved> 
                 branch: branch.clone(),
                 from,
                 remote: None,
-                commit: None,
+                commit: Some(commit),
                 outcome: Preservation::NoRemote,
             },
         ));
     }
-    let remote = git::remote_url(&from, ORIGIN)?;
     // A run clone's `origin` is the identity's own origin URL — `git::clone_sharing`
     // sets it — so this is the real origin rather than the checkout that lent the
     // objects.
-    let reference = format!("refs/heads/{branch}");
-    let commit = git::tip(&from, &reference).ok_or_else(|| Error::Invalid {
-        reason: format!(
-            "branch {branch:?} resolves to no commit in {}, so there is nothing to \
-             preserve; `onevcs recoverable` lists every preserved branch and the checkout \
-             it is in",
-            from.display()
-        ),
-    })?;
+    let remote = git::remote_url(&from, ORIGIN)?;
     // Asked of the remote itself rather than of this repository's view of it: a
     // remote-tracking ref is frozen at the last fetch, and a stale one would report a
     // branch as already kept when the origin has never had it. A remote that could not
@@ -213,20 +239,22 @@ const ORIGIN: &str = "origin";
 /// pushed" is, and a reader of the stream must be able to tell the two apart from a
 /// verb that ran.
 fn report(stream: &mut Stream, preserved: Preserved) -> Preserved {
-    let mut payload = object(json!({
+    // All five fields, for every outcome, and `remote` written as `null` where there was
+    // none rather than left out. The usual house rule is the opposite — an optional field
+    // of a *reported document* is omitted, so a consumer that never heard of it is never
+    // handed one — and this payload is deliberately the other thing: it is one kind with
+    // one shape, read by this crate's own two readers, and what those readers must never
+    // do is infer the outcome from which keys arrived. `outcome` is the whole of that
+    // answer, so the keys beside it stay the same three whichever word it carries, and a
+    // `no-remote` record says both "there is nowhere this went" and "this is the commit
+    // that is at risk".
+    let payload = object(json!({
         "branch": preserved.branch,
         "identity": preserved.identity,
+        "remote": preserved.remote,
+        "commit": preserved.commit,
         "outcome": preserved.outcome.wire(),
     }));
-    // Omitted rather than written as `null`, the way every optional field in this
-    // crate's reported shapes is: a consumer meeting `remote: null` would have to
-    // decide what a remote of nothing means, and absent already says it.
-    if let Some(remote) = &preserved.remote {
-        payload.insert("remote".to_owned(), json!(remote));
-    }
-    if let Some(commit) = &preserved.commit {
-        payload.insert("commit".to_owned(), json!(commit));
-    }
     // Deliberately not `EventKind::Push`: the one producer of that kind is a
     // publication, and a reader counting pushes to find publications must not meet a
     // preservation.

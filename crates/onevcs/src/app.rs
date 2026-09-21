@@ -859,24 +859,27 @@ fn preserve_branch(args: &PreserveArgs) -> Result<u8> {
             remote = spelled(preserved.remote.as_deref()),
             commit = spelled(preserved.commit.as_deref()),
         ),
-        // Said as plainly as the other two, because a caller shutting a host down has
-        // to know that this branch is one nothing outside the machine carries.
+        // Said as plainly as the other two, and **naming the commit**, because a caller
+        // shutting a host down has to know not only that this branch is one nothing
+        // outside the machine carries but which work that is: this is the line an
+        // operator reads beside the branches that were kept.
         Preservation::NoRemote => println!(
-            "no remote: {from} holds branch {branch:?} of {identity} and has no `origin` to \
-             push it to, so nothing was attempted and nothing outside this host carries it",
+            "no remote: {from} holds branch {branch:?} of {identity} at {commit} and has no \
+             `origin` to push it to, so nothing was attempted and nothing outside this host \
+             carries that commit",
             identity = preserved.identity,
+            commit = spelled(preserved.commit.as_deref()),
             from = preserved.from.display(),
         ),
     }
     Ok(0)
 }
 
-/// A field a `no-remote` preservation does not carry, where the two outcomes that do
-/// are being rendered.
+/// An optional field of [`crate::Preserved`], where a rendering needs the value in it.
 ///
-/// Unreachable for those two — [`crate::Preserved`] carries the remote and the commit
-/// together for both — and spelled rather than unwrapped so that a rendering can never
-/// be the thing that turns a successful preservation into a panic.
+/// Unreachable for the commit, which every outcome carries, and for the remote of the
+/// two outcomes that reached one — and spelled rather than unwrapped so that a
+/// rendering can never be the thing that turns a successful preservation into a panic.
 fn spelled(value: Option<&str>) -> &str {
     value.unwrap_or("unrecorded")
 }

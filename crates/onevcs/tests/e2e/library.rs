@@ -5130,6 +5130,68 @@ fn preserving_a_branch_answers_what_it_did_and_the_enumeration_beside_it_names_i
 }
 
 #[test]
+fn preserving_a_branch_with_nowhere_to_go_still_names_the_commit_at_risk() {
+    // The answer a shutdown acts on hardest: this host holds work and there is nowhere
+    // for it to go, so the machine going away takes it. The engine reports each branch
+    // it kept and each it could not, and it reads both off this value — so a `NoRemote`
+    // answer that named no commit would leave it re-reading git for what the verb had
+    // already had in hand, and would name a branch at risk without naming which work.
+    let world = World::new();
+    inhabit(&world);
+    let checkout = world.path("stranded");
+    std::fs::create_dir_all(&checkout).expect("a scratch checkout");
+    world.git(&checkout, &["init", "-q", "."]);
+    world.commit_file(&checkout, "base.txt", "base\n", "chore: the first commit");
+    world.git(&checkout, &["checkout", "-q", "-b", "feature/stranded"]);
+    world.commit_file(
+        &checkout,
+        "one.txt",
+        "one\n",
+        "feat: work with nowhere to go",
+    );
+    world.git(&checkout, &["checkout", "-q", "main"]);
+    // Registered under an origin an operator named, which the repository itself does not
+    // have: what decides this outcome is whether the *location holding the branch* has an
+    // `origin` to push to, and never what the registry or the policy says.
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/stranded.git",
+            ],
+            Providers::real(),
+        ),
+        0,
+        "the repository registers"
+    );
+    let stranded = world
+        .git(&checkout, &["rev-parse", "refs/heads/feature/stranded"])
+        .trim()
+        .to_owned();
+
+    let preserved = onevcs::preserve(&onevcs::PreserveRequest {
+        repo: "stranded".to_owned(),
+        branch: "feature/stranded".to_owned(),
+    })
+    .expect("a branch with nowhere to go is an answer rather than a failure");
+    assert_eq!(preserved.outcome, onevcs::Preservation::NoRemote);
+    assert_eq!(
+        preserved.commit.as_deref(),
+        Some(stranded.as_str()),
+        "the commit nothing outside this host carries is the one this names: {preserved:?}"
+    );
+    assert_eq!(
+        preserved.remote, None,
+        "and there is no remote it went to, which is the one field an outcome drops: \
+         {preserved:?}"
+    );
+    assert_eq!(preserved.from, checkout);
+}
+
+#[test]
 fn preserving_a_branch_no_checkout_of_the_identity_holds_is_refused_by_name() {
     let world = World::new();
     inhabit(&world);

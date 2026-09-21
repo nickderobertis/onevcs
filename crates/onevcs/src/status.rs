@@ -38,6 +38,7 @@ use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
 use crate::host::{CheckSource, Hosting};
 use crate::landed::{self, Landed};
+use crate::preserve::{ALREADY_ON_ORIGIN, PUSHED};
 use crate::publish::{self, DraftReason};
 use crate::registry::Registry;
 use crate::releases::TargetName;
@@ -1865,37 +1866,48 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     },
                 });
             }
-            // A branch put on its identity's origin without being published. Read for
-            // its three fields together: a payload missing any of them recorded a
-            // preservation that reached no origin — the `no-remote` outcome writes
-            // neither the remote nor the commit — and there is then nothing to report
-            // about where the branch is.
+            // A branch put on its identity's origin without being published.
             //
-            // **Every one of the three goes through the check its own kind of value
-            // meets**, because a stream is a file whichever process wrote it and each
-            // of these goes somewhere a value that is not one would do harm: the branch
-            // reaches a git argument vector through
-            // [`preserved_branches`]'s caller, and the remote and the commit are both
-            // printed onto a line an operator reads. The branch's check runs
-            // `check-ref-format`, which is a subprocess — paid once per recorded
-            // preservation rather than once per line of every stream, since no other
-            // kind reaches it.
+            // **Which of the three outcomes this was is read from `outcome` alone**,
+            // never from which fields arrived: every payload carries all five, and the
+            // one that reached no origin carries `remote` as `null` beside the commit
+            // nothing outside this host holds. A reader inferring the outcome from a
+            // missing key would report a payload it merely failed to understand as a
+            // branch that is nowhere — so only the two words that mean the origin has
+            // it produce a record here, and a word this build does not know produces
+            // none.
+            //
+            // **Each of the three values it then takes goes through the check its own
+            // kind meets**, because a stream is a file whichever process wrote it and
+            // each of these goes somewhere a value that is not one would do harm: the
+            // branch reaches a git argument vector through [`preserved_branches`]'s
+            // caller, and the remote and the commit are both printed onto a line an
+            // operator reads. The branch's check runs `check-ref-format`, which is a
+            // subprocess — paid once per recorded preservation that reached an origin
+            // rather than once per line of every stream, since no other kind reaches
+            // it.
             EventKind::BranchPreserved => {
-                if let (Some(branch), Some(remote), Some(commit)) = (
-                    field("branch").and_then(|name| Ref::try_from(name).ok()),
-                    field("remote").filter(|remote| git::is_usable_remote(remote)),
-                    field("commit").as_deref().and_then(ObjectId::parse),
-                ) {
-                    record.on_origin = Some(Stamped {
-                        at,
-                        value: PreservedRecord {
-                            branch,
-                            on_origin: OnOrigin {
-                                remote,
-                                commit: commit.as_str().to_owned(),
+                let reached_the_origin = matches!(
+                    field("outcome").as_deref(),
+                    Some(PUSHED | ALREADY_ON_ORIGIN)
+                );
+                if reached_the_origin {
+                    if let (Some(branch), Some(remote), Some(commit)) = (
+                        field("branch").and_then(|name| Ref::try_from(name).ok()),
+                        field("remote").filter(|remote| git::is_usable_remote(remote)),
+                        field("commit").as_deref().and_then(ObjectId::parse),
+                    ) {
+                        record.on_origin = Some(Stamped {
+                            at,
+                            value: PreservedRecord {
+                                branch,
+                                on_origin: OnOrigin {
+                                    remote,
+                                    commit: commit.as_str().to_owned(),
+                                },
                             },
-                        },
-                    });
+                        });
+                    }
                 }
             }
             // Emitted with the change request's URL only where this crate went on to

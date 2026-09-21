@@ -275,7 +275,7 @@ than described here.
 `preserve.rs` is `onevcs preserve`, and it is the only verb here that reaches a remote
 without publishing anything. It puts an unpublished branch on its identity's origin
 under its own name so that the work outlives the host, and a shutdown is what reaches
-for it. Four things are easy to undo.
+for it. Five things are easy to undo.
 
 - **Every absence in it is load-bearing.** No change request, no merge path, no base
   touched, nothing forced, no provenance marker cleared and no attestation written — a
@@ -293,6 +293,15 @@ for it. Four things are easy to undo.
   a reader counting pushes to find publications must never meet a preservation. Its
   stream is the branch's own session's where a record names one and `preserve-<slug>`
   otherwise, which `status::relevant_streams` reads under the same spelling.
+- **Its payload is five fields whichever outcome it carries, and `outcome` is the whole
+  of what a reader routes on.** Deliberately against the house rule for a reported
+  document, where a field holding nothing is omitted: `remote` is written as `null` for
+  `no-remote` and the commit is read *before* the origin is looked for, so a record of
+  a branch nothing outside this host carries still names the commit that is at risk. A
+  reader inferring the outcome from a missing key would report a payload it merely
+  failed to understand as a branch that is nowhere, so `status` matches the three words
+  `preserve.rs` spells once (`PUSHED`, `ALREADY_ON_ORIGIN`, `NO_REMOTE`) and records an
+  origin for exactly the two that reached one.
 - **A preserving push updates the pushing repository's own `origin/<branch>`**, which
   is what `git::unpublished_branches` measures a branch against — so `vcs::collect`
   lists the union of that answer with the branches this host's own records say it
