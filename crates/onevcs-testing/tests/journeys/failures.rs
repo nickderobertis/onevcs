@@ -68,6 +68,7 @@ fn a_state_root_that_cannot_hold_a_stream_does_not_fail_the_operation() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("the session opens even though its event cannot be written");
     vcs.preserve(&session, Provenance::Complete)
@@ -152,6 +153,7 @@ fn an_unusable_state_root_is_refused_by_name() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session");
     assert!(fallback
@@ -307,6 +309,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
                 execution_checkout: None,
                 pool: None,
                 overflow: None,
+                labels: Default::default(),
             })
             .err()
             .unwrap_or_else(|| panic!("{name:?} is a name git would not accept"));
@@ -324,6 +327,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .is_err());
     assert!(
@@ -341,6 +345,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .unwrap_or_else(|e| panic!("{name:?} is a name git accepts: {e}"));
     }
@@ -392,6 +397,7 @@ fn a_file_backed_session_needs_somewhere_to_put_its_worktree() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect_err("nowhere to put the worktree");
 

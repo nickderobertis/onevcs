@@ -485,8 +485,9 @@ could reach is a path to *delete*, not one to unit-test — which is also how th
 The `#[cfg(test)]` modules in `src/` are the exceptions to that, and each one is
 there because what it holds is reachable no other way: a process's creation
 identity (`workspace.rs`), a reader overlapping an atomic replace (`home.rs`),
-Windows' verbatim paths crossing every git boundary and a captured command's
-collector meeting its pipe empty at the instant the command exits (`git.rs`),
+Windows' verbatim paths crossing every git boundary, a captured command's
+collector meeting its pipe empty at the instant the command exits, and whether a
+name is a ref name decided in process rather than by a subprocess (`git.rs`),
 the *type* side of the status report's serialized contract (`status.rs`), and a
 credential nested in an object reaching `Stream`'s own record call (`stream.rs`) —
 `Stream` is private and no kind nests an object in its payload, so no verb can be
@@ -503,6 +504,16 @@ outside: the report's types are deliberately private, so proving the checked-in
 goldens read back as reports from `tests/` would mean making a dozen types public
 for a test's benefit. Both halves read the same two files — the CLI's bytes there,
 the type's round trip here — so neither can drift from the other.
+
+The ref-name one is there for the opposite reason to the status one: there is no
+verb that asks whether a name is a name, so nothing a journey can drive reaches
+`git::is_valid_branch_name` on its own. What it holds is that the in-process fast
+path is **narrower** than git — every name it accepts without asking, git accepts —
+and the oracle it is held against is the real `git` on this host, which is why
+substituting nothing is the point. A git whose grammar moves can then only make
+this crate slower, never wrong. The fast path exists because reading a few hundred
+session records used to validate a few hundred distinct names, and a filtered
+`recoverable` would spend a process on each before opening a single checkout.
 
 `tests/e2e/honesty.rs`, `tests/e2e/seam.rs`, and `tests/e2e/library.rs` are the
 modules that do not spawn the binary, and the reason is the thing they test: the

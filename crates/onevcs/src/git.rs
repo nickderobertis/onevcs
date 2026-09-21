@@ -17,12 +17,14 @@
 //! bounding it at what an ordinary fetch needs would abort every publication.
 
 use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
@@ -160,6 +162,9 @@ pub fn run(args: &[&str], cwd: Option<&Path>) -> Result<Output> {
 /// `pre-push` hook: the gate a publishing push runs must judge the same base the
 /// worker's gate already cleared.
 pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Result<Output> {
+    if let Some(recalled) = reads::recall(args, cwd, env) {
+        return Ok(recalled);
+    }
     let mut command = Command::new("git");
     command.args(args);
     let ran = bounded(
@@ -174,13 +179,127 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         &format!("git {}", args.join(" ")),
         |e| unstarted(&e, args, cwd),
     )?;
-    Ok(Output {
+    let output = Output {
         status: ran.status,
         ended: ran.ended,
         stdout: text(ran.stdout),
         stderr: text(ran.stderr),
         read_failures: ran.read_failures,
-    })
+    };
+    reads::remember(args, cwd, env, &output);
+    Ok(output)
+}
+
+/// Run `read` with every repeated git read inside it answered once.
+///
+/// A report asks the same question of the same repository many times over — the
+/// branch's own log is read by four provenance readers, the base's tip by every
+/// copy of every branch, a commit's presence by every tier that names it — and each
+/// asking was a process. Inside this scope a read whose arguments, directory and
+/// environment match one already made is answered from that one, and a command that
+/// is not a read empties the memo, so nothing inside the scope reads a fact a write
+/// inside it has moved. The scope is this thread's and ends when `read` returns:
+/// nothing is remembered across invocations, because the repositories a library
+/// caller holds move between them.
+pub(crate) fn memoized<T>(read: impl FnOnce() -> T) -> T {
+    reads::enter();
+    let answered = read();
+    reads::leave();
+    answered
+}
+
+/// The per-invocation memo of git reads, and what may go in it.
+mod reads {
+    use super::*;
+
+    type Key = (Option<PathBuf>, Vec<String>, Vec<(String, String)>);
+
+    thread_local! {
+        static DEPTH: Cell<usize> = const { Cell::new(0) };
+        static MEMO: RefCell<HashMap<Key, Output>> = RefCell::new(HashMap::new());
+    }
+
+    pub(super) fn enter() {
+        DEPTH.with(|depth| depth.set(depth.get() + 1));
+    }
+
+    pub(super) fn leave() {
+        DEPTH.with(|depth| {
+            depth.set(depth.get() - 1);
+            if depth.get() == 0 {
+                MEMO.with(|memo| memo.borrow_mut().clear());
+            }
+        });
+    }
+
+    fn active() -> bool {
+        DEPTH.with(|depth| depth.get() > 0)
+    }
+
+    fn key(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Key {
+        (
+            cwd.map(Path::to_path_buf),
+            args.iter().map(|arg| (*arg).to_owned()).collect(),
+            env.to_vec(),
+        )
+    }
+
+    /// Which commands are answered from the memo: the reads a report makes, each of
+    /// which answers the same for the same arguments as long as nothing writes. The
+    /// list is closed on purpose — a command not on it is either a read that is not
+    /// worth remembering, or a write, and the second empties the memo.
+    fn remembered(args: &[&str]) -> bool {
+        match args.first().copied() {
+            Some("cat-file") => args.get(1) == Some(&"-e"),
+            Some(
+                "rev-parse" | "show-ref" | "for-each-ref" | "rev-list" | "merge-base" | "log"
+                | "diff" | "check-ref-format",
+            ) => true,
+            // Reads with one ref and no second one: `symbolic-ref NAME REF` writes.
+            Some("symbolic-ref") => {
+                args.iter().skip(1).filter(|a| !a.starts_with('-')).count() == 1
+            }
+            _ => false,
+        }
+    }
+
+    /// Commands that move nothing a remembered read answers about: the remote's own
+    /// listing, and the merge that writes only into the scratch store its caller
+    /// redirected it to.
+    fn harmless(args: &[&str]) -> bool {
+        matches!(args.first().copied(), Some("ls-remote" | "merge-tree"))
+    }
+
+    pub(super) fn recall(
+        args: &[&str],
+        cwd: Option<&Path>,
+        env: &[(String, String)],
+    ) -> Option<Output> {
+        if !active() {
+            return None;
+        }
+        if remembered(args) {
+            return MEMO.with(|memo| memo.borrow().get(&key(args, cwd, env)).cloned());
+        }
+        if !harmless(args) {
+            MEMO.with(|memo| memo.borrow_mut().clear());
+        }
+        None
+    }
+
+    pub(super) fn remember(
+        args: &[&str],
+        cwd: Option<&Path>,
+        env: &[(String, String)],
+        output: &Output,
+    ) {
+        if active() && remembered(args) {
+            MEMO.with(|memo| {
+                memo.borrow_mut()
+                    .insert(key(args, cwd, env), output.clone());
+            });
+        }
+    }
 }
 
 /// Run one external program under this module's bound, and return what it wrote
@@ -1556,10 +1675,68 @@ pub fn branches(cwd: &Path) -> Result<Vec<String>> {
 
 /// Local branches holding commits no `origin` remote-tracking ref has.
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
+    Ok(unpublished_branches_among(cwd, |_| true, &BTreeSet::new())?
+        .into_iter()
+        .map(|(branch, _)| branch)
+        .collect())
+}
+
+/// The local branches `keep` names that hold commits no `origin` remote-tracking
+/// ref has, each with its tip.
+///
+/// One listing of both namespaces, and then a count only where one is needed: a
+/// branch standing exactly at an `origin` tip is ahead of it by nothing, which is
+/// most branches in most checkouts — every clone's own copy of the base — and asking
+/// git to count zero is a process per branch per checkout. A branch `keep` declines
+/// is not counted either, which is what lets a report asked about a few sessions
+/// read only their branches out of a checkout holding many.
+///
+/// A name in `listed_anyway` that `keep` admits is answered whenever the checkout
+/// has it, without being counted: `recoverable`'s branches `onevcs preserve` put on
+/// the origin, whose own remote-tracking ref would otherwise make them read as
+/// published. Taken from the same listing, so they cost no process of their own.
+pub fn unpublished_branches_among(
+    cwd: &Path,
+    keep: impl Fn(&str) -> bool,
+    listed_anyway: &BTreeSet<String>,
+) -> Result<Vec<(String, String)>> {
+    let listing = checked(
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(refname:short)%00%(objectname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+        Some(cwd),
+    )?;
+    let mut heads: Vec<(String, String)> = Vec::new();
+    let mut origin_tips: BTreeSet<String> = BTreeSet::new();
+    for line in listing.stdout.lines() {
+        let mut fields = line.split('\0');
+        let (Some(full), Some(short), Some(tip)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if full.starts_with("refs/heads/") {
+            heads.push((short.to_owned(), tip.to_owned()));
+        } else if full.starts_with("refs/remotes/origin/") {
+            origin_tips.insert(tip.to_owned());
+        }
+    }
     let mut unpublished = Vec::new();
-    for branch in branches(cwd)? {
+    for (branch, tip) in heads {
+        if !keep(&branch) {
+            continue;
+        }
+        if listed_anyway.contains(&branch) {
+            unpublished.push((branch, tip));
+            continue;
+        }
+        if origin_tips.contains(&tip) {
+            continue;
+        }
         if unpublished_ahead(cwd, &branch, &[])? > 0 {
-            unpublished.push(branch);
+            unpublished.push((branch, tip));
         }
     }
     Ok(unpublished)
@@ -1636,14 +1813,65 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     })
 }
 
+/// Whether a name is one git accepts that this crate can recognise without asking.
+///
+/// Deliberately **narrower** than git's own grammar, and that asymmetry is the whole
+/// safety of it: it accepts only names made of ASCII letters, digits, `_`, `-`, `.`
+/// and `/`, with none of the component shapes git refuses — no empty component, none
+/// beginning with `.`, none ending in `.` or `.lock`, and no `..` anywhere. Every
+/// name it accepts is therefore one `git check-ref-format refs/heads/<name>` accepts,
+/// and a name it does not recognise is not refused here: it falls through to git,
+/// which remains the thing that decides. So a git whose grammar moves can only make
+/// this *slower*, never wrong — and `the_fast_path_accepts_only_names_git_accepts`
+/// beside it holds the subset against the git this suite runs on.
+///
+/// It exists because a listing reads the session records, every record validates the
+/// two names it carries, and a host with a few hundred records has a few hundred
+/// distinct ones — so "once per distinct name" is still a few hundred processes per
+/// read, and a filtered read that opens two checkouts would spend them all before
+/// looking at either.
+fn plainly_a_ref_name(branch: &str) -> bool {
+    if branch.is_empty() || branch.starts_with('/') || branch.ends_with('/') {
+        return false;
+    }
+    branch.split('/').all(|component| {
+        !component.is_empty()
+            && !component.starts_with('.')
+            && !component.ends_with('.')
+            && !component.ends_with(".lock")
+            && !component.contains("..")
+            && component
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    })
+}
+
 /// Whether a branch name is one git will accept.
+///
+/// Decided in process for the ordinary shapes ([`plainly_a_ref_name`]) and asked of
+/// git for everything else, once per distinct name for the life of the process:
+/// whether a name is a ref name is a fact about the name, so that answer cannot go
+/// stale.
 pub fn is_valid_branch_name(branch: &str) -> bool {
     if branch.is_empty() || branch.starts_with('-') {
         return false;
     }
-    run(&["check-ref-format", &format!("refs/heads/{branch}")], None)
+    if plainly_a_ref_name(branch) {
+        return true;
+    }
+    static ACCEPTED: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+    let mut accepted = ACCEPTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let accepted = accepted.get_or_insert_with(HashMap::new);
+    if let Some(known) = accepted.get(branch) {
+        return *known;
+    }
+    let valid = run(&["check-ref-format", &format!("refs/heads/{branch}")], None)
         .map(|out| out.ok())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    accepted.insert(branch.to_owned(), valid);
+    valid
 }
 
 /// Whether the worktree has staged or unstaged changes.
@@ -2668,6 +2896,102 @@ pub fn import_branch(cwd: &Path, source: &Path, branch: &str) -> Result<bool> {
         Some(cwd),
     )?;
     Ok(output.ok())
+}
+
+#[cfg(test)]
+mod ref_name_tests {
+    use super::*;
+
+    /// Names of every shape this crate meets, and several it must not accept.
+    ///
+    /// Each is put to both answers below, so the corpus is the one place a shape is
+    /// listed rather than two lists that could come to disagree.
+    const NAMES: &[&str] = &[
+        "main",
+        "HEAD",
+        "feature/x",
+        "onevcs/s-9fa99cfb80da",
+        "worktree-agent-7",
+        "preserved/by-trailer",
+        "release/v1.2.3",
+        "a_b-c.d/e",
+        "a.lock",
+        "locked/a.lock",
+        ".hidden",
+        "hidden/.x",
+        "a..b",
+        "ends.",
+        "with space",
+        "with~tilde",
+        "with^caret",
+        "with:colon",
+        "question?",
+        "star*",
+        "brack[et",
+        "at@{brace",
+        "@",
+        "back\\slash",
+        "double//slash",
+        "trailing/",
+        "/leading",
+        "unicode/ünïcøde",
+        "control\u{1}char",
+    ];
+
+    /// Whether git itself accepts a name as a branch ref.
+    fn git_accepts(branch: &str) -> bool {
+        run(&["check-ref-format", &format!("refs/heads/{branch}")], None)
+            .map(|out| out.ok())
+            .unwrap_or(false)
+    }
+
+    /// The in-process fast path may only ever be *narrower* than git.
+    ///
+    /// This is the one assertion that makes deciding a ref name without a subprocess
+    /// safe at all: the fast path answers `true` only where git would, so the worst a
+    /// git whose grammar has moved can do is make a name fall through to it. It is a
+    /// unit test rather than a journey because there is no verb that asks whether a
+    /// name is a name — the question is a private function's, and the oracle it is
+    /// held against is the real `git` on this host, which is why it is not a mock.
+    #[test]
+    fn the_fast_path_accepts_only_names_git_accepts() {
+        for name in NAMES {
+            if plainly_a_ref_name(name) {
+                assert!(
+                    git_accepts(name),
+                    "{name:?} is accepted without asking git, and git refuses it"
+                );
+            }
+        }
+        // …and it is not vacuously narrow: the names this crate actually cuts are the
+        // ones that must never cost a process.
+        for ordinary in [
+            "main",
+            "feature/x",
+            "onevcs/s-9fa99cfb80da",
+            "worktree-agent-7",
+        ] {
+            assert!(
+                plainly_a_ref_name(ordinary),
+                "{ordinary:?} is the ordinary shape and must be decided in process"
+            );
+        }
+    }
+
+    /// And the answer as a whole is still git's, whichever route it took.
+    #[test]
+    fn a_name_is_valid_here_exactly_when_git_says_so() {
+        for name in NAMES {
+            // A leading `-` is refused before either route, because such a name goes
+            // on to be an argument and git's own parser would read it as an option.
+            let expected = git_accepts(name) && !name.starts_with('-');
+            assert_eq!(
+                is_valid_branch_name(name),
+                expected,
+                "{name:?}: this build and git disagree about whether it is a ref name"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, windows))]

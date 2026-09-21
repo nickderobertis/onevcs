@@ -50,11 +50,16 @@ impl World {
             _directory: directory,
             root,
         };
+        // `maintenance.auto` is off because git 2.47 and later follow every commit
+        // with a detached `git maintenance run --auto`, which outlives the commit as an
+        // orphan working in the checkout — and a `session close` that follows sees a
+        // process inside its run root and rightly refuses. Whether it is still there
+        // is a race the journey did not set out to run.
         std::fs::write(
             world.path(".gitconfig"),
             "[user]\n\tname = Journey\n\temail = journey@example.invalid\n\
              [init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n\
-             [advice]\n\tdetachedHead = false\n",
+             [advice]\n\tdetachedHead = false\n[maintenance]\n\tauto = false\n",
         )
         .expect("a git configuration");
         world

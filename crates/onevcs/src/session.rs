@@ -2,6 +2,7 @@
 //! keeps warm, or one cut for this run — and what is left behind when one does not
 //! finish.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,15 @@ pub struct SessionRequest {
     /// Absent means the host's resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<Bound>,
+    /// What the caller wants the session record to say about who opened it: the
+    /// run, the node, the launching process — whatever it takes to find this
+    /// session again without joining anything else. A key is `[A-Za-z0-9_-]+` and a
+    /// value is one line; what a key *means* is the caller's to declare. Stored on
+    /// the record, reported by `session holders` and on every `recoverable` row,
+    /// and what `--label` filters both by. A resumed session takes each key the
+    /// request names over the one it had and keeps the rest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 /// The handle a session is adopted, published, and closed by.
@@ -147,6 +157,11 @@ pub struct SessionHolder {
     pub state: Lifecycle,
     /// Whether the process that opened it is still there.
     pub liveness: Liveness,
+    /// The labels the session was opened with. Always written — an empty object for
+    /// a session opened without any, and for every record written before there was
+    /// a field to write.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Whether a session's owner is still running, which is what makes its lease real.
@@ -214,6 +229,35 @@ pub enum Scope {
     Repo(String),
 }
 
+/// Which of the preserved work in scope a report is asked to answer with.
+///
+/// Both halves are `and`ed with each other and with the [`Scope`]: a row is answered
+/// with when its branch is one the named sessions hold or held *and* the labels of
+/// the session that answers for it carry every pair asked for. Empty asks nothing,
+/// which is what every read before there was a selection asked — so [`Default`] is
+/// the whole report.
+///
+/// A session token no record on this host names is refused by name rather than
+/// answered with an empty report: "nothing of that session is left to publish" and
+/// "there is no such session" are different answers to act on. A label pair nothing
+/// carries is the first of those, and answers empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selection {
+    /// The sessions whose branches are asked about, by token.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<SessionToken>,
+    /// The pairs every answered row's labels must carry.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+}
+
+impl Selection {
+    /// Whether this asks anything at all.
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty() && self.labels.is_empty()
+    }
+}
+
 /// Preserved work, whether it reached its base, and what would land it.
 ///
 /// Read through the conversion below, which is where the one thing this row could
@@ -276,6 +320,20 @@ pub struct Recoverable {
     /// carries nothing here, and cannot, because [`NetNegative`] holds no such count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub net_negative: Option<NetNegative>,
+    /// The session that answers for this branch: the newest record naming it — the
+    /// end of its chain of retries, an open one preferred — or `None` where no record
+    /// on this host names the branch at all, which is what a `worktree-agent-*`
+    /// orphan left behind by nothing this crate opened reads as.
+    ///
+    /// Written always, `null` included, so a reader routing on it meets the key on
+    /// every row.
+    #[serde(default)]
+    pub session: Option<SessionToken>,
+    /// That session's labels: what the caller that opened it said about who opened
+    /// it. An empty object where the record carries none, and where
+    /// [`session`](Self::session) is `None`.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
     /// Where `onevcs preserve` put this branch on its identity's origin, when it has.
     ///
     /// Additive, and absent for a branch nothing has preserved — which is every row
@@ -307,6 +365,9 @@ struct AnyRecoverable {
     #[serde(default)]
     net_negative: Option<NetNegative>,
     #[serde(default)]
+    session: Option<SessionToken>,
+    #[serde(default)]
+    labels: BTreeMap<String, String>,
     on_origin: Option<OnOrigin>,
 }
 
@@ -332,6 +393,8 @@ impl TryFrom<AnyRecoverable> for Recoverable {
             recover_command: value.recover_command,
             held_by: value.held_by,
             net_negative: value.net_negative,
+            session: value.session,
+            labels: value.labels,
             on_origin: value.on_origin,
         })
     }

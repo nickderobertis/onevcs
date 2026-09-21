@@ -1610,6 +1610,7 @@ fn workspace_capacity_answers_every_field_and_agrees_with_what_open_then_does() 
             execution_checkout: None,
             pool,
             overflow,
+            labels: Default::default(),
         })
         .expect("the capacity is answered")
     };

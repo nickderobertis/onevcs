@@ -49,7 +49,10 @@ use crate::store::Checked;
 /// it is one a version 9 build cannot read, and the version is how it says so. `11` is
 /// one more field a `Recoverable` gained inside [`VcsState::preserved`], the same way
 /// `4` and `5` were: where `onevcs preserve` put that branch on its identity's origin,
-/// and the commit the origin carries it at.
+/// and the commit the origin carries it at. `12` is the labels a session is opened
+/// with — [`VcsState::session_labels`], keyed by token the way its identity is — and
+/// the two fields a `Recoverable` gained inside [`VcsState::preserved`] to carry them:
+/// the session that answers for the row, and that session's labels.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -59,7 +62,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 11;
+pub const STATE_VERSION: u32 = 12;
 
 /// The oldest document version this build reads.
 ///
@@ -92,7 +95,11 @@ pub const STATE_VERSION: u32 = 11;
 /// reads unchanged and needs no carrying forward beyond its version. `10` to `11` added
 /// one that appears only when it holds something, so a version 10 document's preserved
 /// rows read as rows saying nothing about an origin — which is what they said, since
-/// that build had no verb that could put a branch on one.
+/// that build had no verb that could put a branch on one. `11` to `12` added the
+/// labels, which appear only where a session was opened with some, and the two row
+/// fields that carry them, which a version 11 row reads as absent: a session nobody
+/// labelled, and a row that names no session — which is what that build's rows said,
+/// since it recorded neither.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -137,6 +144,16 @@ pub struct VcsState {
     // this map came out of `identity_of`, so it names an identity this provider holds.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub session_identities: BTreeMap<SessionToken, String>,
+    /// The labels each session was opened with, for the sessions opened with any.
+    ///
+    /// Keyed by token the way [`session_identities`](Self::session_identities) is,
+    /// and for the same reason: a [`Session`] carries no labels, and both `session
+    /// holders` and every `recoverable` row report them. `open_session` records
+    /// them; nothing else writes it.
+    // llmlint: ignore[invalid_states_unrepresentable] keyed by session token, exactly as
+    // `session_identities` above is and for the same reason it gives.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_labels: BTreeMap<SessionToken, BTreeMap<String, String>>,
     /// Preserved work, newest last, as `recoverable` reports it.
     ///
     /// [`Recoverable`] rather than `PreservedBranch` — it *contains* the preserved
@@ -192,6 +209,7 @@ impl Default for VcsState {
             identities: Vec::new(),
             sessions: Vec::new(),
             session_identities: BTreeMap::new(),
+            session_labels: BTreeMap::new(),
             preserved: Vec::new(),
             closed_sessions: BTreeSet::new(),
             policy: None,
@@ -510,6 +528,33 @@ pub(crate) fn named_branch(value: &str, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// A label, refused here where the real implementation refuses one: a key is one or
+/// more of `A-Z`, `a-z`, `0-9`, `_` and `-`, and a value is one line. The same rule
+/// spelled twice on purpose, for the reason [`named_branch`] gives — a provider with
+/// no `onevcs` state root carries the grammar, and the journeys over both providers
+/// hold the two to each other.
+pub(crate) fn label_pair(key: &str, value: &str) -> Result<()> {
+    let key_usable = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !key_usable {
+        return Err(Error::Invalid {
+            reason: format!(
+                "{key:?} is not a label key; a key is one or more of A-Z, a-z, 0-9, `_` and `-`"
+            ),
+        });
+    }
+    if value.contains('\n') {
+        return Err(Error::Invalid {
+            reason: format!(
+                "the value of label {key:?} holds a newline; a label's value is one line"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// A seeded repository side is refused if it holds a session nothing could act on.
 impl Checked for VcsState {
     fn check(&self) -> Result<()> {
@@ -544,6 +589,12 @@ impl Checked for VcsState {
         // from it would be answering from a fiction rather than refusing one.
         for token in &self.closed_sessions {
             opened(self, token, "closed")?;
+        }
+        for (token, labels) in &self.session_labels {
+            opened(self, token, "labelled")?;
+            for (key, value) in labels {
+                label_pair(key, value)?;
+            }
         }
         for (token, origin) in &self.session_identities {
             opened(self, token, "given an identity")?;

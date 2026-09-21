@@ -45,9 +45,9 @@ use onevcs::{
     MaintainReport, MaintenanceOutcome, MergeOutcome, MergePolicy, NetNegative, OnOrigin, Phase,
     PhaseOf, PoolStatus, PreservedBranch, ProtectionSource, Provenance, Providers, PruneReport,
     Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks,
-    Retention, Scope, Session, SessionChange, SessionHolder, SessionRecord, SessionRequest,
-    SessionToken, Sha, SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject,
-    Url, Vcs, WorkspaceCapacity,
+    Retention, Scope, Selection, Session, SessionChange, SessionHolder, SessionRecord,
+    SessionRequest, SessionToken, Sha, SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source,
+    Span, Subject, Url, Vcs, WorkspaceCapacity,
 };
 use serde_json::{json, Value};
 
@@ -2106,6 +2106,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         execution_checkout: None,
         pool: None,
         overflow: None,
+        labels: Default::default(),
     };
     let change = ChangeRequest {
         id: ChangeId("42".to_owned()),
@@ -2235,6 +2236,8 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         ],
         held_by: None,
         net_negative: None,
+        session: None,
+        labels: BTreeMap::new(),
         on_origin: None,
     };
     let value = serde_json::to_value(&recoverable).expect("a recoverable serializes");
@@ -2426,6 +2429,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             execution_checkout: Some("isolated".to_owned()),
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session request serializes"),
         json!({
@@ -2591,6 +2595,141 @@ fn the_recoverable_usage_block_spells_exactly_the_flags_its_parser_takes() {
         documented, implemented,
         "docs/inferred-surface.md's `recoverable` usage block and the parser disagree about \
          its flags"
+    );
+}
+
+/// The long flags one command's parser takes, by its path under `onevcs`.
+fn parser_flags(path: &[&str]) -> BTreeSet<String> {
+    let mut command = Cli::command();
+    for name in path {
+        command = command
+            .find_subcommand(name)
+            .unwrap_or_else(|| panic!("the parser has `{}`", path.join(" ")))
+            .clone();
+    }
+    command
+        .get_arguments()
+        .filter_map(|arg| arg.get_long())
+        .filter(|long| *long != "help")
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The long flags one usage line spells.
+fn spelled_flags(line: &str) -> BTreeSet<String> {
+    line.split(|c: char| c.is_whitespace() || c == '[' || c == ']')
+        .filter_map(|token| token.strip_prefix("--"))
+        .filter(|flag| !flag.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_labels_amendment_spells_exactly_the_flags_the_session_verbs_take() {
+    // The gate above asks whether a documented flag exists on *some* command, and a
+    // `--label` on one verb would answer for the other. The amendment that added
+    // labels spells both verbs' whole surface, so each line is held to its own
+    // parser in both directions — a flag added to either parser without recording
+    // it, or recorded without existing, fails here.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|body| body.starts_with("onevcs session open ") && body.contains("--label"))
+        .expect("the labels amendment spells the `session open` and `session holders` usage");
+    let mut held = 0;
+    for line in usage.lines() {
+        let Some(rest) = line.strip_prefix("onevcs session ") else {
+            continue;
+        };
+        let verb = rest.split_whitespace().next().expect("a verb");
+        assert_eq!(
+            spelled_flags(line),
+            parser_flags(&["session", verb]),
+            "the amendment's `session {verb}` usage and the parser disagree about its flags"
+        );
+        held += 1;
+    }
+    assert_eq!(
+        held, 2,
+        "the block spells `session open` and `session holders`"
+    );
+
+    let declarations = amendment_declaring("SessionRequest  pub labels");
+    for declared in [
+        "SessionRequest  pub labels: BTreeMap<String, String>",
+        "SessionHolder   pub labels: BTreeMap<String, String>",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+}
+
+#[test]
+fn the_labels_amendment_spells_exactly_the_flags_recoverable_takes_and_the_fields_it_added() {
+    // `recoverable`'s own flags are already held to `docs/inferred-surface.md` above.
+    // This holds them to the *contract*, which is where the two filters and the two
+    // row fields are stated and what six repositories read — so a flag added to the
+    // parser without amending the contract, or amended without existing, fails here.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|body| body.starts_with("onevcs recoverable "))
+        .expect("the labels amendment spells the `recoverable` usage");
+    assert_eq!(
+        spelled_flags(&usage),
+        parser_flags(&["recoverable"]),
+        "the amendment's `recoverable` usage and the parser disagree about its flags"
+    );
+
+    let declarations = amendment_declaring("Recoverable  pub session");
+    for declared in [
+        "fn recoverable_matching(&self, scope: Scope, selection: &Selection)",
+        "fn preserved_matching(&self, scope: Scope, selection: &Selection)",
+        "pub struct Selection { pub sessions: Vec<SessionToken>,",
+        "Recoverable  pub session: Option<SessionToken>",
+        "Recoverable  pub labels: BTreeMap<String, String>",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+
+    // …and the two fields are written on every row, `null` and `{}` included, which is
+    // what the amendment promises a reader routing on them.
+    let value = serde_json::to_value(Recoverable {
+        identity: "github.com/acme/project".to_owned(),
+        branch: PreservedBranch {
+            branch: "feature/x".to_owned(),
+            base: "main".to_owned(),
+            provenance: Provenance::Complete,
+            change_url: None,
+            change_base: None,
+        },
+        checkout: PathBuf::from("/tmp/project"),
+        landed: Landed::No,
+        stopped_because: "session s-1 closed without publishing".to_owned(),
+        recover_command: Vec::new(),
+        held_by: None,
+        net_negative: None,
+        session: None,
+        labels: BTreeMap::new(),
+        on_origin: None,
+    })
+    .expect("a recoverable serializes");
+    assert_eq!(value["session"], Value::Null);
+    assert_eq!(value["labels"], json!({}));
+
+    // The selection is the shape the amendment declares, and an empty one asks for
+    // everything — which is what every caller before these flags existed asked for.
+    assert!(Selection::default().is_empty());
+    assert_eq!(
+        serde_json::to_value(Selection {
+            sessions: vec![SessionToken("s-1".to_owned())],
+            labels: BTreeMap::from([("run".to_owned(), "r-1".to_owned())]),
+        })
+        .expect("a selection serializes"),
+        json!({"sessions": ["s-1"], "labels": {"run": "r-1"}})
     );
 }
 
@@ -3219,6 +3358,7 @@ fn the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers() {
         owner_pid: 4321,
         state: Lifecycle::Open,
         liveness: Liveness::Live,
+        labels: BTreeMap::new(),
     };
     let value = serde_json::to_value(&holder).expect("a holder serializes");
     assert_eq!(
@@ -3231,6 +3371,7 @@ fn the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers() {
             "owner_pid": 4321,
             "state": "open",
             "liveness": "live",
+            "labels": {},
         })
     );
     assert_eq!(
@@ -5506,6 +5647,7 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         execution_checkout: None,
         pool: Some(0),
         overflow: Some(Bound::Unlimited),
+        labels: Default::default(),
     };
     assert_eq!(
         serde_json::to_value(&request).expect("serializes")["overflow"],

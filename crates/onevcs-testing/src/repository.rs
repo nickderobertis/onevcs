@@ -176,6 +176,9 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             // run stops.
             let base = req.base.clone().unwrap_or_else(|| DEFAULT_BASE.to_owned());
             state::named_branch(&base, "the base")?;
+            for (key, value) in &req.labels {
+                state::label_pair(key, value)?;
+            }
             let session = Session {
                 worktree: run_root.join("worktree"),
                 branch: state::requested_branch(&req, &token)?,
@@ -186,6 +189,11 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             state
                 .session_identities
                 .insert(token.clone(), identity.origin.clone());
+            if !req.labels.is_empty() {
+                state
+                    .session_labels
+                    .insert(token.clone(), req.labels.clone());
+            }
             let emission = Emission {
                 stream: token.0.clone(),
                 identity: Some(identity.origin.clone()),
@@ -257,6 +265,14 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 // now, and there is no tree here to count a diff's lines against.
                 held_by: None,
                 net_negative: None,
+                // The session that preserved it is the session that answers for it,
+                // and what it was opened with is what the row carries.
+                session: Some(s.token.clone()),
+                labels: state
+                    .session_labels
+                    .get(&s.token)
+                    .cloned()
+                    .unwrap_or_default(),
                 // A preservation onto an origin is a thing only a real repository can
                 // do — there is no git here and no remote to push to — so this provider
                 // answers what a scenario wrote down and nothing else. A hand-written

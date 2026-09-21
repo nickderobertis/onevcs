@@ -2581,6 +2581,98 @@ One existing kind gains fields: `session-closed` gains, on a close taken from th
 record, `landed` (the landing commit), `unreadable_clone` (what git said) and the existing
 `retained` naming the clone left in place.
 
+### A session record carries the labels its opener stamped, and the listings filter on them
+
+**The join between a run and the session its node opened belongs on the session
+record.** The engine that opens a session stamps what it knows onto that dispatch's
+*events* — run, node, launching session — and no listing here reads an event stream, so
+a consumer asking "which of these preserved branches are mine" had to join records it
+does not own. Now `session open` takes `--label KEY=VALUE`, repeatable, and stores the
+pairs on the session record as a string-to-string map. A key is `[A-Za-z0-9_-]+`; a
+value is any string without a newline; a key given twice is refused, as is a pair that
+is not one, with a non-zero status and before any session is cut. What a key *means* is
+the caller's to declare — `run`, `node` and `launcher` are what one engine stamps, and
+this crate stores and filters any key. A pin that resumes an open session takes each
+key the request names over the one the record had and keeps the rest.
+
+**The stored shape** is one optional key on the version 3 record, `"labels":
+{"<key>": "<value>", …}`, omitted when there are none — so a record written before this
+amendment, and one written without labels, is byte for byte what it was, and either
+reads as an empty map.
+
+**`session holders` reports and filters by them.** Every holder carries `labels` — an
+empty object for a session opened without any — and `--label KEY=VALUE`, repeatable,
+answers only the holders whose labels carry every pair given. A pair nothing carries is
+an empty answer with status `0`, not a refusal: "nobody of that run is here" is an
+answer to act on.
+
+```rust
+// Two declared types each gain one field, and nothing else about them moves:
+//   SessionRequest  pub labels: BTreeMap<String, String>   // stored on the record; empty asks nothing
+//   SessionHolder   pub labels: BTreeMap<String, String>   // always written, `{}` for none
+```
+
+```
+onevcs session open REPO [--branch B] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]...
+onevcs session holders REPO [--label KEY=VALUE]... [--json]
+```
+
+**Every `recoverable` row says which session it belongs to, and the report filters on
+that.** The listing a `Stop` hook reads is `onevcs recoverable --json`, and it could
+not answer "which of these are mine" at all: a row named a branch and a checkout and
+nothing that joined it to a run. Every row now carries two more keys, beside every
+field it carried before and with the same values:
+
+- `session` — the token of the newest session record naming the row's branch, or
+  `null` where no record on this host names it, which is what a `worktree-agent-*`
+  orphan reads as. Newest is the end of that branch's chain of retries, an open
+  record preferred, which is the record `onevcs status` already answers for the
+  branch with.
+- `labels` — that session's labels, and `{}` where it has none or `session` is
+  `null`.
+
+Both are always written, `null` and `{}` included, so a reader routing on them meets
+the key on every row.
+
+**`--label KEY=VALUE` and `--session TOKEN`, both repeatable, narrow the report**, and
+each combines with the other and with `--repo`. One meaning covers both: a row is
+answered with when some session record of this host naming its branch was selected —
+by token, by carrying every label pair asked for, or by both. So a branch a retried
+session continued is still that session's, which is what *the branches a session holds
+or held* means. A session token no record on this host names is refused **by name**
+with a non-zero status, because "nothing of that session is left to publish" and
+"there is no such session" are different answers to act on; a label pair nothing
+carries is the first of those and answers an empty report with status `0`. A filtered
+row has exactly the shape an unfiltered one has.
+
+The filters narrow what is *read*, not only what is printed: an identity no selected
+session belongs to, a checkout none of them can hold a branch in, and a branch name
+none of them holds are never opened, listed or decided. That is the property the
+consuming host's hook needs — it asks this at the end of every turn under a ten-second
+bound — and it is why the flags are here rather than in a consumer's own filter over
+the whole report.
+
+```rust
+pub trait Vcs {                              // the declared methods, unchanged, plus:
+    fn recoverable_matching(&self, scope: Scope, selection: &Selection)
+        -> Result<Vec<Recoverable>>;         // defaulted: filters what `recoverable` answered
+    fn preserved_matching(&self, scope: Scope, selection: &Selection)
+        -> Result<Vec<Recoverable>>;         // defaulted the same way
+}
+pub struct Selection { pub sessions: Vec<SessionToken>,
+                       pub labels: BTreeMap<String, String> }   // empty asks for everything
+
+// One declared type gains two fields, and nothing else about it moves:
+//   Recoverable  pub session: Option<SessionToken>             // always written, `null` for none
+//   Recoverable  pub labels: BTreeMap<String, String>          // always written, `{}` for none
+```
+
+```
+onevcs recoverable [--repo PATH] [--all] [--label KEY=VALUE]... [--session TOKEN]... [--json]
+```
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

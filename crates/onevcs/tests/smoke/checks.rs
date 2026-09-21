@@ -119,6 +119,7 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
             execution_checkout: None,
             pool: None,
             overflow: None,
+            labels: Default::default(),
         })
         .expect("a session over the scratch repository");
     let token = SessionToken(session.token.0.clone());

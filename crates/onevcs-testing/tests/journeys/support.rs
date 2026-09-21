@@ -97,11 +97,18 @@ pub fn full_vcs_state() -> VcsState {
     };
     let mut session_identities = BTreeMap::new();
     session_identities.insert(token.clone(), identity().origin);
+    let labels = BTreeMap::from([
+        ("launcher".to_owned(), "s-manager".to_owned()),
+        ("run".to_owned(), "r-42".to_owned()),
+    ]);
+    let mut session_labels = BTreeMap::new();
+    session_labels.insert(token.clone(), labels.clone());
     VcsState {
         version: onevcs_testing::STATE_VERSION,
         identities: vec![identity()],
         sessions: vec![session],
         session_identities,
+        session_labels,
         closed_sessions: BTreeSet::from([token.clone()]),
         policy: Some(MergePolicy::ChangeAuto),
         publications: vec![
@@ -169,6 +176,8 @@ pub fn full_vcs_state() -> VcsState {
                 added: 3,
                 removed: 481,
             }),
+            session: Some(token),
+            labels,
             // Version 11's field, named here for the same reason the two marks above
             // are: this state is the one the goldens prove every field of. A document
             // says where a branch was preserved to; no provider here pushes anything.

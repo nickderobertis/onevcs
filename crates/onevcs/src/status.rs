@@ -1051,7 +1051,19 @@ pub(crate) fn landing_of_within(
     })
 }
 
+/// One piece of work's report.
+///
+/// Read through the same per-invocation memo `recoverable` reads through, because it
+/// asks the same questions the same way: the landing decision is
+/// [`landed::decide`] either way, and this one puts it to every copy of the branch
+/// it can find. What the memo removes is the repetition, not a question — a read
+/// whose arguments, directory and environment match one already made inside this
+/// call is answered from that one, and anything that is not a read empties it.
 pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
+    git::memoized(|| reported(registry, reference, hosting))
+}
+
+fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
     let (work, kind) = resolve(registry, reference, &streams, None, &mut notes)?;
