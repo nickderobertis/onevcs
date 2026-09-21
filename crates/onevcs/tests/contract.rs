@@ -5927,3 +5927,50 @@ fn the_amendment_states_the_once_per_read_reconciliation_of_a_late_merge() {
         );
     }
 }
+
+#[test]
+fn the_amendment_states_that_one_torn_run_clone_is_a_finding_of_its_own() {
+    // `tests/e2e/edges.rs` tears one run clone beside a healthy session and drives
+    // `status`, `release status` and `session close` through the compiled binary.
+    // This holds the document to the rule those journeys prove.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "**An identity-wide `status`, `release status` or session-close read isolates a clone \
+         git will not read, and goes on across the rest.**",
+        "is reported as a per-session finding naming the clone, the session whose run clone \
+         it is where a record says so, and what git said about it",
+        "`release status` answers *not answered*, naming the torn clone, rather than \
+         `not-landed`",
+        "**A landed session whose disposable clone git will not read closes from its landing \
+         record.**",
+        "A session with no landing record still refuses, with git's own words",
+        "`session-closed` gains, on a close taken from the landing record, `landed` (the \
+         landing commit), `unreadable_clone` (what git said) and the existing `retained` \
+         naming the clone left in place.",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the torn-clone amendment no longer says: {sentence}"
+        );
+    }
+    // …and the words it quotes are the ones the code writes. Read out of the sources
+    // because every one of them is private: the finding, the warning it is carried
+    // by, and the two payload keys.
+    for (relative, quoted) in [
+        ("crates/onevcs/src/status.rs", "could not be read by git"),
+        (
+            "crates/onevcs/src/release.rs",
+            "eprintln!(\"onevcs: warning: {said}\")",
+        ),
+        ("crates/onevcs/src/workspace.rs", "closed[\"landed\"]"),
+        (
+            "crates/onevcs/src/workspace.rs",
+            "closed[\"unreadable_clone\"]",
+        ),
+    ] {
+        assert!(
+            repo_file(relative).contains(quoted),
+            "{relative} no longer writes {quoted:?}, which the amendment states"
+        );
+    }
+}

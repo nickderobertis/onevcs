@@ -2398,6 +2398,38 @@ is the one landing read that consults no host and decides from history alone.
 Event kinds added: none — a landing found this way is recorded as the existing
 `change-merged`.
 
+### One torn run clone is a finding, never the failure of its identity
+
+An identity keeps a clone per run, and the reads that answer for a piece of work search
+every one of them: a commit is looked for across every copy of every identity, and a
+branch is judged in each copy holding it. A git failure in any one clone used to end the
+whole read, so six zero-byte loose objects in one dead clone made the release answers for
+two unrelated landed changes refusals until a person found and repaired it by hand.
+
+**An identity-wide `status`, `release status` or session-close read isolates a clone git
+will not read, and goes on across the rest.** The clone answers for nothing in that read,
+and is reported as a per-session finding naming the clone, the session whose run clone it
+is where a record says so, and what git said about it. `status` carries it among the
+report's `notes`; `release status` writes it to stderr as a warning beside an answer that
+is otherwise exactly what an intact identity gives. Where the copies that did read cannot
+decide the landing — `no` or `unknown` — `release status` answers *not answered*, naming
+the torn clone, rather than `not-landed`: that answer is the absence of evidence, and the
+torn clone is where the evidence would have been. An answer a record decided is unaffected.
+
+**A landed session whose disposable clone git will not read closes from its landing
+record.** The clone is asked directly — every ref's objects listed — only once the ordinary
+close has failed, so a refusal this crate makes on purpose goes on refusing. Where it is
+unreadable and the session's work is recorded as landed, the close succeeds, leaves the
+clone exactly as it is for whoever repairs or removes it, and says so on stderr. A session
+with no landing record still refuses, with git's own words, because its clone may hold work
+nothing else carries.
+
+Event kinds added: none.
+
+One existing kind gains fields: `session-closed` gains, on a close taken from the landing
+record, `landed` (the landing commit), `unreadable_clone` (what git said) and the existing
+`retained` naming the clone left in place.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

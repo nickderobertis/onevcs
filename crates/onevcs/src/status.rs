@@ -762,6 +762,8 @@ fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a
 /// Each is asked through `lent` — the object store of the checkout every publication
 /// fast-forwards — so a copy that has not fetched since a landing is still asked
 /// about a base that carries it, rather than about the one it last saw.
+///
+/// Answers every verdict it reached, and beside them every copy git would not read.
 fn judge(
     holders: &[&Holder],
     resolution: &Resolution,
@@ -770,23 +772,30 @@ fn judge(
     work: &Work,
     recorded: &landed::Recorded,
     trailers: &provenance::Trailers,
-) -> Result<Vec<(PathBuf, String, Landed)>> {
+) -> (Vec<(PathBuf, String, Landed)>, Vec<String>) {
     let current = vcs::base_commit(&resolution.publication, base);
     let mut judged = Vec::new();
+    let mut unread = Vec::new();
     for holder in holders {
         let asked = git::Asked::borrowing(&holder.path, lent);
         let compared = vcs::judged_against(asked, base, current.as_ref());
-        let verdict = landed::decide(
+        // A copy git will not read is one this read goes on without. It is a *copy*
+        // of the work, not the work — every other copy still holds the branch, and
+        // the records that decide a landing are not in it at all — so a torn one is
+        // a finding beside the answer rather than the end of it.
+        match landed::decide(
             asked,
             &compared,
             current.as_ref(),
             &work.branch,
             recorded,
             trailers,
-        )?;
-        judged.push((holder.path.clone(), compared, verdict));
+        ) {
+            Ok(verdict) => judged.push((holder.path.clone(), compared, verdict)),
+            Err(failure) => unread.push(unreadable(&holder.path, &failure.to_string())),
+        }
     }
-    Ok(judged)
+    (judged, unread)
 }
 
 /// Which copy of a branch answers the landing question, and what it answered.
@@ -908,6 +917,14 @@ pub(crate) struct LandingOf {
     /// newest one, where several did — which is where a landing discovered after that
     /// publication ended is recorded, so the next read finds it as a recorded landing.
     pub change_stream: Option<String>,
+    /// Every copy of this identity's work that git would not read, and what it said
+    /// about each.
+    ///
+    /// The landing beside them was decided from the copies that *did* answer, which
+    /// is the point: a caller acting on it has the answer and the gap both, and can
+    /// say which. A caller that sequences a release against this decides for itself
+    /// whether an undecided answer beside a torn clone is one to act on.
+    pub unreadable: Vec<String>,
 }
 
 pub(crate) fn landing_of(
@@ -939,7 +956,11 @@ pub(crate) fn landing_of_within(
     let within = scope.as_deref();
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
-    let (work, _) = resolve(registry, reference, &streams, within)?;
+    // Kept apart from the stream notes above: what this hands its caller is the list
+    // of *copies* git would not read, and a caller deciding whether an undecided
+    // landing is safe to act on is asking about those and nothing else.
+    let mut unreadable = Vec::new();
+    let (work, _) = resolve(registry, reference, &streams, within, &mut unreadable)?;
     let resolution = store::resolve(registry, &work.identity)?;
     let (file, _) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
@@ -963,7 +984,7 @@ pub(crate) fn landing_of_within(
     if let Some(hosting) = hosting {
         reconcile_late_merge(registry, &work, &mut told, &carrying, hosting);
     }
-    let judged = judge(
+    let (judged, unread) = judge(
         &carrying,
         &resolution,
         lent.as_deref(),
@@ -971,7 +992,8 @@ pub(crate) fn landing_of_within(
         &work,
         &told.recorded,
         &trailers,
-    )?;
+    );
+    unreadable.extend(unread);
     let carrier = carrier_of(&judged);
     Ok(LandingOf {
         reference: reference.to_owned(),
@@ -990,13 +1012,14 @@ pub(crate) fn landing_of_within(
         carrier: carrier.map(|(repo, _, _)| repo.clone()),
         lent,
         change_stream,
+        unreadable,
     })
 }
 
 pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
-    let (work, kind) = resolve(registry, reference, &streams, None)?;
+    let (work, kind) = resolve(registry, reference, &streams, None, &mut notes)?;
 
     let resolution = store::resolve(registry, &work.identity)?;
     let (file, source) = policy::load(registry)?;
@@ -1035,7 +1058,7 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
     let asked_the_host_to_land = told.asked_the_host_to_land;
     let merge_path = told.merge_path.clone();
 
-    let judged = judge(
+    let (judged, unread) = judge(
         &carrying,
         &resolution,
         lent.as_deref(),
@@ -1043,7 +1066,8 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
         &work,
         &told.recorded,
         &trailers,
-    )?;
+    );
+    notes.extend(unread);
     let carrier = carrier_of(&judged);
 
     let mut ahead = None;
@@ -2051,6 +2075,7 @@ fn resolve(
     reference: &str,
     streams: &[Recorded],
     within: Option<&str>,
+    notes: &mut Vec<String>,
 ) -> Result<(Work, RefKind)> {
     if reference.starts_with("http://") || reference.starts_with("https://") {
         return change_url(registry, reference, streams, within)
@@ -2077,7 +2102,7 @@ fn resolve(
         }
     }
     if reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit()) {
-        let found = by_commit(registry, reference, within)?;
+        let found = by_commit(registry, reference, within, notes)?;
         if !found.is_empty() {
             return one(found, reference, "commit").map(|work| (work, RefKind::Commit));
         }
@@ -2242,7 +2267,12 @@ fn by_branch(registry: &Registry, branch: &Ref, within: Option<&str>) -> Result<
 /// The identity's own root base is not one of them: every branch that ever landed
 /// is reachable from it, so answering with the base would report the repository
 /// rather than the work.
-fn by_commit(registry: &Registry, commit: &str, within: Option<&str>) -> Result<Vec<Work>> {
+fn by_commit(
+    registry: &Registry,
+    commit: &str,
+    within: Option<&str>,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Work>> {
     let mut found: Vec<Work> = Vec::new();
     for identity in identities(registry, within) {
         let resolution = store::resolve(registry, &identity)?;
@@ -2252,12 +2282,28 @@ fn by_commit(registry: &Registry, commit: &str, within: Option<&str>) -> Result<
             {
                 continue;
             }
-            for branch in git::branches(&path)? {
+            // A clone this search cannot read answers for nothing and stops nothing:
+            // the commit is being looked for across every copy of every identity, and
+            // one torn copy must not turn a question about work held somewhere else
+            // into a refusal.
+            let branches = match git::branches(&path) {
+                Ok(branches) => branches,
+                Err(failure) => {
+                    notes.push(unreadable(&path, &failure.to_string()));
+                    continue;
+                }
+            };
+            for branch in branches {
                 if root.as_deref() == Some(branch.as_str()) {
                     continue;
                 }
-                if !git::is_ancestor(&path, commit, &branch)? {
-                    continue;
+                match git::is_ancestor(&path, commit, &branch) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(failure) => {
+                        notes.push(unreadable(&path, &failure.to_string()));
+                        break;
+                    }
                 }
                 // git's own ref listing, so its parser has already accepted every
                 // name in it.
@@ -2276,6 +2322,36 @@ fn by_commit(registry: &Registry, commit: &str, within: Option<&str>) -> Result<
         }
     }
     Ok(found)
+}
+
+/// One copy of an identity's work that git would not read, said the way a reader
+/// meets it.
+///
+/// **Per session, and continuing.** An identity keeps a clone per run, and one of
+/// them torn — six zero-byte loose objects is the shape it was found in — used to be
+/// the failure of every read of that identity: the release answers for two unrelated
+/// landed changes were refusals until a person found and repaired the clone. A
+/// repository that cannot answer has not answered; it has not made the ones beside it
+/// unreadable, and it is reported rather than raised.
+///
+/// It names the session whose clone it is where a record says so, because that is
+/// what makes the finding actionable: the clone is that run's disposable copy, and
+/// which run it belonged to says whether anything is lost with it.
+fn unreadable(path: &Path, said: &str) -> String {
+    let session = workspace::all().ok().and_then(|records| {
+        records
+            .into_iter()
+            .find(|record| record.clone == path)
+            .map(|record| record.token.to_string())
+    });
+    let whose = match session {
+        Some(token) => format!("the run clone of session {token} at {}", path.display()),
+        None => format!("the copy at {}", path.display()),
+    };
+    format!(
+        "{whose} could not be read by git ({said}), so nothing it holds is in this answer; \
+         every other copy of this identity's work was still read"
+    )
 }
 
 /// Every identity with a registered checkout, in key order — or the one an explicit

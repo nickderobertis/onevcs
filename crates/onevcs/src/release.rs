@@ -567,6 +567,12 @@ pub fn status(
     // on the other side of it is waiting on a release of work the base already
     // carries.
     let landing = status::landing_of(registry, reference, Some(hosting))?;
+    // A torn copy of the identity's work is a finding beside the answer, never the
+    // end of it: the release answer below is decided from the copies that did read,
+    // and the one that did not is named where a person reading this will see it.
+    for said in &landing.unreadable {
+        eprintln!("onevcs: warning: {said}");
+    }
     let located = for_repository(registry, &landing.identity)?;
     let target = located.releases.select(named)?;
     let commit = match &landing.landed {
@@ -575,6 +581,23 @@ pub fn status(
         // has gone on since landed what it landed at exactly this commit, so a
         // consumer waiting on its release is answered rather than held for ever.
         Landed::Yes { evidence } | Landed::InPart { evidence, .. } => evidence.commit().to_owned(),
+        // Neither of the two the comparison gives is safe to hand over while a copy
+        // of this identity's work could not be read: each is the *absence* of
+        // evidence, and a clone git refused is exactly where the evidence would have
+        // been. So a torn clone turns them into "not answered" naming it, which a
+        // consumer holds on — and leaves an answer a record decided untouched, which
+        // is what keeps an unrelated landing's release answer unaffected by it.
+        Landed::No | Landed::Unknown if !landing.unreadable.is_empty() => {
+            return Ok(ReleaseStatus::NotAnswered {
+                reason: format!(
+                    "whether {branch} reached its base could not be decided, and {count} of this \
+                     identity's copies of its work could not be read: {said}",
+                    branch = landing.branch,
+                    count = landing.unreadable.len(),
+                    said = landing.unreadable.join("; "),
+                ),
+            })
+        }
         Landed::No => return Ok(ReleaseStatus::NotLanded),
         // Undecidable is not "not landed", and it is not a landing either: there is
         // no landing commit to have captured a baseline against, so there is nothing
