@@ -563,7 +563,7 @@ impl Record {
 /// records in the listing: its own open record holding its own run root says nothing
 /// about whether somebody else took the slot.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct OpenRoots(Vec<(String, PathBuf)>);
+pub(crate) struct OpenRoots(Vec<(Token, PathBuf)>);
 
 impl OpenRoots {
     /// What a listing already in hand says.
@@ -572,7 +572,7 @@ impl OpenRoots {
             records
                 .iter()
                 .filter(|record| record.state == Lifecycle::Open)
-                .map(|record| (record.token.to_string(), record.run_root.clone()))
+                .map(|record| (record.token.clone(), record.run_root.clone()))
                 .collect(),
         )
     }
@@ -584,7 +584,7 @@ impl OpenRoots {
     }
 
     /// Whether a session other than `token` holds `run_root` open.
-    fn taken_from(&self, token: &str, run_root: &Path) -> bool {
+    fn taken_from(&self, token: &Token, run_root: &Path) -> bool {
         self.0
             .iter()
             .any(|(held, root)| root == run_root && held != token)

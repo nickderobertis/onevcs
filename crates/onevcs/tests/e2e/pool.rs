@@ -1870,3 +1870,54 @@ fn a_session_directory_this_host_cannot_list_refuses_a_prune_and_removes_no_slot
     assert_eq!(report["removed"], serde_json::json!([1, 2]), "{report}");
     assert!(!a_slot.exists() && !b_slot.exists());
 }
+
+#[test]
+fn a_session_record_this_host_cannot_read_refuses_a_prune_and_removes_no_slot() {
+    // The other half of the same rule, and the destructive one: a record skipped is a
+    // session unaccounted for, and a slot decided idle without it is the tree
+    // somebody is working in.
+    let fixture = pooled(&sized(2, "unlimited"));
+    let (a, a_tree, _) = open(&fixture, &["--branch", "feature/a"]);
+    let (b, b_tree, _) = open(&fixture, &["--branch", "feature/b"]);
+    let a_slot = a_tree.parent().expect("slot 1").to_path_buf();
+    let b_slot = b_tree.parent().expect("slot 2").to_path_buf();
+    close(&fixture, &a);
+    close(&fixture, &b);
+    let torn = fixture.world.unreadable_record();
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["pool", "prune", "project", "--json"])
+        .output()
+        .expect("prune runs");
+
+    assert!(
+        !refused.status.success(),
+        "a prune that skipped a record it could not read is what this refuses:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains(&torn.display().to_string()),
+        "the refusal names the record:\n{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        a_slot.is_dir() && b_slot.is_dir(),
+        "and it removed neither slot"
+    );
+
+    std::fs::remove_file(&torn).expect("the journey takes its own staging back");
+    let pruned = fixture
+        .world
+        .onevcs()
+        .args(["pool", "prune", "project", "--json"])
+        .output()
+        .expect("prune runs");
+    assert!(
+        pruned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pruned.stderr)
+    );
+    assert!(!a_slot.exists() && !b_slot.exists(), "both slots go");
+}

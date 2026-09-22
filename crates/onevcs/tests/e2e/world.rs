@@ -80,6 +80,24 @@ impl World {
         self.home().join("sessions")
     }
 
+    /// Leave a session record on this host that this build will not read, and say
+    /// where it is.
+    ///
+    /// A record a build wrote that a later one refuses, a write a full disk cut in
+    /// half, a file an operator edited: no verb of this crate produces one, which is
+    /// why a journey writes it. What runs over it is the real binary and the real
+    /// reader, and `pool.rs` stages a broken *slot* record the same way.
+    // llmlint: ignore-block[tests_mirror_real_usage] see the paragraph above: a record
+    // on disk that will not parse is reachable through no interface of this crate, and
+    // writing one is the only way a journey can put the real reader in front of one.
+    pub fn unreadable_record(&self) -> PathBuf {
+        let path = self.sessions_dir().join("s-unreadable-record.json");
+        std::fs::create_dir_all(self.sessions_dir()).expect("a session directory");
+        std::fs::write(&path, "not a session record\n").expect("a record this build refuses");
+        path
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
     /// Run `act` with the session directory listable by nobody, and put its mode
     /// back afterwards.
     ///

@@ -3120,15 +3120,7 @@ fn a_session_directory_this_host_cannot_list_refuses_the_whole_sweep_and_removes
 fn a_session_record_this_host_cannot_read_refuses_the_sweep_and_names_the_record() {
     let fixture = Fixture::local(&local_direct());
     let (run_root, record) = litter(&fixture);
-    // A record on disk that will not parse: a build wrote it that a later one
-    // refuses, a full disk cut a write in half, an operator edited it. No verb of
-    // this crate produces one, which is why the journey writes it — and what runs
-    // over it is the real binary.
-    // llmlint: ignore-block[tests_mirror_real_usage] see above: this is the one way a
-    // journey can put the real reader in front of a record it cannot read.
-    let torn = fixture.world.sessions_dir().join("s-torn-record.json");
-    std::fs::write(&torn, "not a session record\n").expect("a record this build refuses");
-    // llmlint: ignore-end[tests_mirror_real_usage]
+    let torn = fixture.world.unreadable_record();
 
     let (report, said) = sweep_refused(&fixture, &["--min-age-hours", "0"]);
 
