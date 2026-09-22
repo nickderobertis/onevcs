@@ -518,18 +518,76 @@ impl Record {
     /// The other records are what say whether the slot was taken, so a listing that
     /// cannot be read is an answer nobody got rather than "nobody": it is refused to
     /// the caller, never read as the tree being this session's.
+    ///
+    /// **The one-record form**, which reads that listing itself and only where the
+    /// record cannot answer without one — `adopt` and `close` ask about the single
+    /// record they were handed, and a non-slot session answers from its own fields.
+    /// A scan over many records asks [`Record::tree_is_its_own_of`] instead, over one
+    /// [`OpenRoots`] read before it starts.
     pub fn tree_is_its_own(&self) -> Result<bool> {
-        if self.slot.is_none() || self.state == Lifecycle::Open {
+        if self.tree_is_always_its_own() {
             return Ok(true);
         }
-        let taken = all()?.into_iter().any(|other| {
-            other.state == Lifecycle::Open
-                && other.run_root == self.run_root
-                && *other.token != *self.token
-        });
-        Ok(!taken
+        Ok(self.tree_is_its_own_of(&OpenRoots::read()?))
+    }
+
+    /// The same question, decided from a snapshot of the open run roots.
+    ///
+    /// Pure with respect to the session records: what it asks of them is entirely in
+    /// `open`, so one listing answers it for every record on the host. That is the
+    /// whole of why the snapshot exists — the one-record form above reads the listing
+    /// per call, and a `holders` or sweep scan asking it of N records did N listings
+    /// of the session directory and N loads of every record in it, so a host whose
+    /// closed pooled sessions accumulate paid for them again on every scan.
+    pub(crate) fn tree_is_its_own_of(&self, open: &OpenRoots) -> bool {
+        if self.tree_is_always_its_own() {
+            return true;
+        }
+        !open.taken_from(&self.token, &self.run_root)
             && self.worktree.is_dir()
-            && git::current_branch(&self.worktree).is_ok_and(|current| current == *self.branch))
+            && git::current_branch(&self.worktree).is_ok_and(|current| current == *self.branch)
+    }
+
+    /// Whether this record's tree is its own whatever any other record says: nothing
+    /// else is ever placed under `runs/`, and an open record is what holds a slot.
+    fn tree_is_always_its_own(&self) -> bool {
+        self.slot.is_none() || self.state == Lifecycle::Open
+    }
+}
+
+/// Which session holds each run root that a session still open is placed on.
+///
+/// The whole of what deciding one record's ownership needs from the *other* records,
+/// read once and asked of every record in a scan. A `(token, run root)` pair rather
+/// than the run roots alone, because the record being asked about is one of the
+/// records in the listing: its own open record holding its own run root says nothing
+/// about whether somebody else took the slot.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OpenRoots(Vec<(String, PathBuf)>);
+
+impl OpenRoots {
+    /// What a listing already in hand says.
+    pub(crate) fn of(records: &[Record]) -> Self {
+        Self(
+            records
+                .iter()
+                .filter(|record| record.state == Lifecycle::Open)
+                .map(|record| (record.token.to_string(), record.run_root.clone()))
+                .collect(),
+        )
+    }
+
+    /// What this host's records say, read now — and refused rather than answered
+    /// empty where they cannot be read, for [`all`]'s reason.
+    pub(crate) fn read() -> Result<Self> {
+        Ok(Self::of(&all()?))
+    }
+
+    /// Whether a session other than `token` holds `run_root` open.
+    fn taken_from(&self, token: &str, run_root: &Path) -> bool {
+        self.0
+            .iter()
+            .any(|(held, root)| root == run_root && held != token)
     }
 }
 
@@ -553,6 +611,11 @@ pub(crate) fn record_path(token: &str) -> Result<PathBuf> {
 }
 
 /// Read one session record.
+///
+/// A record that is **not there** is no session; a record that is there and will not
+/// be read is a record naming itself and what stopped it. The two used to answer the
+/// same way, and [`all`] is why they no longer may: a listing that has just
+/// enumerated the file cannot then tell its caller no such session is open.
 pub fn load(token: &str) -> Result<Record> {
     if !ids::is_safe_name(token) {
         return Err(error::invalid(format!(
@@ -560,8 +623,11 @@ pub fn load(token: &str) -> Result<Record> {
         )));
     }
     let path = record_path(token)?;
-    let raw = std::fs::read_to_string(&path).map_err(|_| Error::Invalid {
-        reason: format!("no session {token:?} is open; `onevcs session open` prints a token"),
+    let raw = std::fs::read_to_string(&path).map_err(|failure| match failure.kind() {
+        std::io::ErrorKind::NotFound => Error::Invalid {
+            reason: format!("no session {token:?} is open; `onevcs session open` prints a token"),
+        },
+        _ => error::at("read the session record at", &path)(failure),
     })?;
     let document: Value =
         serde_json::from_str(&raw).map_err(error::at("read the session record at", &path))?;
@@ -669,13 +735,37 @@ fn followable(record: &Record) -> Result<()> {
 }
 
 /// Every session record on this host.
+///
+/// **State this host cannot read is not state this host does not have.** A
+/// directory that is there and will not list, and a record that is there and will
+/// not load, are each refused to the caller naming what could not be read — because
+/// every decision downstream of this listing is a decision about *absence*: whether
+/// a slot is free, whether a run root is anybody's, whether a record is litter. An
+/// empty list read out of a failure is what tells a sweep it may reap a workspace
+/// holding live work, and nothing anywhere says the state was unreadable.
+///
+/// A sessions directory that is **not there** is the one negative answer that is a
+/// fact rather than a failure: a host that has never opened a session has no such
+/// directory, and it holds no records. That is an empty list, as it always was.
+///
+/// The temporary file [`home::atomic_write`] writes beside a record is not one of
+/// these: it is named `.<token>.json.<unique>`, so it never wears the suffix this
+/// reads, and a record being rewritten under a reader is skipped rather than
+/// refused.
 pub fn all() -> Result<Vec<Record>> {
     let directory = home::sessions_dir()?;
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return Ok(Vec::new());
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(refused) => {
+            return Err(error::at("list the session records in", &directory)(
+                refused,
+            ))
+        }
     };
     let mut records = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(error::at("list the session records in", &directory))?;
         // By the token the file is named for, so every record collected here has
         // been through the same check one read by name gets.
         let Some(token) = entry
@@ -686,9 +776,7 @@ pub fn all() -> Result<Vec<Record>> {
         else {
             continue;
         };
-        if let Ok(record) = load(&token) {
-            records.push(record);
-        }
+        records.push(load(&token)?);
     }
     records.sort_by(|a, b| a.token.cmp(&b.token));
     Ok(records)
@@ -712,9 +800,14 @@ pub fn all() -> Result<Vec<Record>> {
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, repo)?;
+    // One listing for the whole scan, and the ownership snapshot taken from it: the
+    // records are what say whether a closed session's slot was taken, and asking that
+    // per record re-read every record on the host once per record on the host.
+    let records = all()?;
+    let open = OpenRoots::of(&records);
     let mut holders = Vec::new();
-    for record in all()? {
-        if record.identity == resolution.key && !spent(&record)? {
+    for record in records {
+        if record.identity == resolution.key && !spent(&record, &open)? {
             holders.push(SessionHolder::from(record));
         }
     }
@@ -734,9 +827,12 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// asks it is about: the sweep answers for this host's state root rather than for
 /// one repository.
 pub(crate) fn spent_records() -> Result<Vec<Record>> {
+    // One listing for the whole scan, for [`holders`]'s reason.
+    let listed = all()?;
+    let open = OpenRoots::of(&listed);
     let mut records = Vec::new();
-    for record in all()? {
-        if spent(&record)? {
+    for record in listed {
+        if spent(&record, &open)? {
             records.push(record);
         }
     }
@@ -782,10 +878,10 @@ pub(crate) fn spent_records() -> Result<Vec<Record>> {
 /// question walks every process on the host, and the branch question runs git in the
 /// clone — so the cheapest answer that retains is the one that runs on every record,
 /// and the dearest runs only on the records the other two have already given up on.
-fn spent(record: &Record) -> Result<bool> {
+fn spent(record: &Record, open: &OpenRoots) -> Result<bool> {
     Ok(!record.owner_is_running()
-        && (!record.tree_is_its_own()? || processes::holding(&record.run_root).is_empty())
-        && !holds_unpublished_work(record)?)
+        && (!record.tree_is_its_own_of(open) || processes::holding(&record.run_root).is_empty())
+        && !holds_unpublished_work(record, open)?)
 }
 
 /// Whether this session still holds work nobody has published — on its branch, or
@@ -812,7 +908,7 @@ fn spent(record: &Record) -> Result<bool> {
 /// not a count of none, and what this decides is whether to destroy the only route
 /// back to somebody's work. A repository that is not there holds nothing, which is
 /// the one negative answer that is a fact rather than a failure.
-fn holds_unpublished_work(record: &Record) -> Result<bool> {
+fn holds_unpublished_work(record: &Record, open: &OpenRoots) -> Result<bool> {
     // By its full ref name, for the reason `branch::locate` reads a copy of a branch
     // that way: a tag or a remote-tracking ref wearing the same name is not this
     // session's branch.
@@ -833,7 +929,7 @@ fn holds_unpublished_work(record: &Record) -> Result<bool> {
     // later session works in would otherwise read that session's uncommitted work as
     // its own, and retain itself over a tree it has no claim to.
     Ok(carried
-        || (record.tree_is_its_own()?
+        || (record.tree_is_its_own_of(open)
             && record.worktree.is_dir()
             && git::is_dirty(&record.worktree).unwrap_or(true)))
     // llmlint: ignore-end[changed_behavior_has_e2e]
@@ -2458,18 +2554,21 @@ fn counted(commits: u64) -> String {
 /// to the lease and the retention bound exactly as it always did. A run root **no**
 /// record names is not protected here at all — see [`reclaim`].
 ///
-/// A session directory that cannot be read answers with none rather than refusing.
-/// Reclamation is housekeeping in front of an open, and a host whose records are
-/// unreadable would otherwise be a host where nobody can open a session at all;
-/// what that costs is bounded by the occupancy lease [`reclaim`] still asks
-/// afterwards, which this is layered in front of rather than a replacement for.
-fn run_roots_of_open_sessions() -> Vec<PathBuf> {
-    all()
-        .unwrap_or_default()
+/// A session directory that cannot be read is **refused** rather than answered with
+/// none. It used to answer none, on the argument that reclamation is housekeeping in
+/// front of an open and a host whose records are unreadable would otherwise be a host
+/// where nobody can open a session at all — but what that argument traded away is the
+/// protection itself: every open record on the host disappears at once, and the very
+/// next `session open` reaps the run root a live dispatch is working in. The
+/// occupancy lease asked afterwards does not bound it, because a dispatch holds no
+/// lease between commands. An open that refuses naming the unreadable directory is
+/// the smaller loss, and it is the one thing that tells an operator what to repair.
+fn run_roots_of_open_sessions() -> Result<Vec<PathBuf>> {
+    Ok(all()?
         .into_iter()
         .filter(|record| record.state == Lifecycle::Open)
         .map(|record| record.run_root)
-        .collect()
+        .collect())
 }
 
 /// Reap abandoned run roots, keeping the newest few that still hold work.
@@ -2492,7 +2591,7 @@ fn reclaim(runs: &Path) -> Result<()> {
     // Read once, before the walk: the answer is a fact about this host's session
     // records rather than about any one directory, and asking it per entry would
     // re-read every record on the host once per run root.
-    let open = run_roots_of_open_sessions();
+    let open = run_roots_of_open_sessions()?;
     // Newest first, by when the directory was last written: a session token is a
     // digest and sorts arbitrarily, so ordering by name would retain an arbitrary
     // three rather than the three somebody is most likely to reach for.

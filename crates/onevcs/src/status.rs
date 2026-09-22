@@ -792,6 +792,13 @@ fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a
         .collect()
 }
 
+/// One copy's answer: where the copy is, what it was judged against, and what it
+/// said.
+///
+/// Named because [`judge`] hands back a pair of these lists and the pair, spelled out,
+/// is a type nobody reads twice the same way.
+type Judgement = (PathBuf, String, Landed);
+
 /// Ask every copy of the branch this host holds whether the work landed.
 ///
 /// Each is asked through `lent` — the object store of the checkout every publication
@@ -807,7 +814,7 @@ fn judge(
     work: &Work,
     recorded: &landed::Recorded,
     trailers: &provenance::Trailers,
-) -> (Vec<(PathBuf, String, Landed)>, Vec<String>) {
+) -> Result<(Vec<Judgement>, Vec<String>)> {
     let current = vcs::base_commit(&resolution.publication, base);
     let mut judged = Vec::new();
     let mut unread = Vec::new();
@@ -827,10 +834,10 @@ fn judge(
             trailers,
         ) {
             Ok(verdict) => judged.push((holder.path.clone(), compared, verdict)),
-            Err(failure) => unread.push(unreadable(&holder.path, &failure.to_string())),
+            Err(failure) => unread.push(unreadable(&holder.path, &failure.to_string())?),
         }
     }
-    (judged, unread)
+    Ok((judged, unread))
 }
 
 /// Which copy of a branch answers the landing question, and what it answered.
@@ -850,7 +857,7 @@ fn judge(
 /// then some of it, then all of it. So a copy still holding work wins over one whose
 /// landing covers everything, and a copy that at least found the landing wins over
 /// one that found nothing.
-fn carrier_of(judged: &[(PathBuf, String, Landed)]) -> Option<&(PathBuf, String, Landed)> {
+fn carrier_of(judged: &[Judgement]) -> Option<&Judgement> {
     judged.iter().min_by_key(|(_, _, verdict)| match verdict {
         Landed::No => 0,
         Landed::Unknown => 1,
@@ -1027,7 +1034,7 @@ pub(crate) fn landing_of_within(
         &work,
         &told.recorded,
         &trailers,
-    );
+    )?;
     unreadable.extend(unread);
     let carrier = carrier_of(&judged);
     Ok(LandingOf {
@@ -1114,7 +1121,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         &work,
         &told.recorded,
         &trailers,
-    );
+    )?;
     notes.extend(unread);
     let carrier = carrier_of(&judged);
 
@@ -2449,7 +2456,7 @@ fn by_commit(
             let branches = match git::branches(&path) {
                 Ok(branches) => branches,
                 Err(failure) => {
-                    notes.push(unreadable(&path, &failure.to_string()));
+                    notes.push(unreadable(&path, &failure.to_string())?);
                     continue;
                 }
             };
@@ -2461,7 +2468,7 @@ fn by_commit(
                     Ok(true) => {}
                     Ok(false) => continue,
                     Err(failure) => {
-                        notes.push(unreadable(&path, &failure.to_string()));
+                        notes.push(unreadable(&path, &failure.to_string())?);
                         break;
                     }
                 }
@@ -2497,21 +2504,25 @@ fn by_commit(
 /// It names the session whose clone it is where a record says so, because that is
 /// what makes the finding actionable: the clone is that run's disposable copy, and
 /// which run it belonged to says whether anything is lost with it.
-fn unreadable(path: &Path, said: &str) -> String {
-    let session = workspace::all().ok().and_then(|records| {
-        records
-            .into_iter()
-            .find(|record| record.clone == path)
-            .map(|record| record.token.to_string())
-    });
+///
+/// The session records are **asked**, not guessed at: a listing this host could not
+/// read is refused to the caller rather than turned into a finding that says the
+/// clone belongs to nobody. Naming the wrong owner is the one thing this string is
+/// for, and a reader that acted on *the copy at …* would look for a run that the
+/// records, had they been readable, name.
+fn unreadable(path: &Path, said: &str) -> Result<String> {
+    let session = workspace::all()?
+        .into_iter()
+        .find(|record| record.clone == path)
+        .map(|record| record.token.to_string());
     let whose = match session {
         Some(token) => format!("the run clone of session {token} at {}", path.display()),
         None => format!("the copy at {}", path.display()),
     };
-    format!(
+    Ok(format!(
         "{whose} could not be read by git ({said}), so nothing it holds is in this answer; \
          every other copy of this identity's work was still read"
-    )
+    ))
 }
 
 /// Every identity with a registered checkout, in key order — or the one an explicit

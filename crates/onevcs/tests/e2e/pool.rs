@@ -1812,3 +1812,61 @@ fn first_matching_answers_by_the_rules_file_matcher_through_the_registry() {
     );
 }
 // llmlint: ignore-end[e2e_not_mocked]
+
+#[test]
+fn a_session_directory_this_host_cannot_list_refuses_a_prune_and_removes_no_slot() {
+    // Which slots are idle is read out of the session records and nothing else, so a
+    // listing nobody got is not a pool nobody is in: pruning on it would remove the
+    // slot a live session is working in.
+    let fixture = pooled(&sized(2, "unlimited"));
+    let (a, a_tree, _) = open(&fixture, &["--branch", "feature/a"]);
+    let (b, b_tree, _) = open(&fixture, &["--branch", "feature/b"]);
+    let a_slot = a_tree.parent().expect("slot 1").to_path_buf();
+    let b_slot = b_tree.parent().expect("slot 2").to_path_buf();
+    close(&fixture, &a);
+    close(&fixture, &b);
+
+    let refused = fixture.world.with_unreadable_records(|| {
+        fixture
+            .world
+            .onevcs()
+            .args(["pool", "prune", "project", "--json"])
+            .output()
+            .expect("prune runs")
+    });
+
+    assert!(
+        !refused.status.success(),
+        "a prune decided from a listing nobody got is the removal this refuses:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains(&format!(
+            "cannot list the session records in {}",
+            fixture.world.sessions_dir().display()
+        )),
+        "the refusal names the directory:\n{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        a_slot.is_dir() && b_slot.is_dir(),
+        "and it removed neither slot"
+    );
+
+    // The same command, once the records read, removes both — so what was refused
+    // was the reading rather than the pruning.
+    let pruned = fixture
+        .world
+        .onevcs()
+        .args(["pool", "prune", "project", "--json"])
+        .output()
+        .expect("prune runs");
+    assert!(
+        pruned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pruned.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&pruned.stdout).expect("JSON");
+    assert_eq!(report["removed"], serde_json::json!([1, 2]), "{report}");
+    assert!(!a_slot.exists() && !b_slot.exists());
+}

@@ -6135,3 +6135,70 @@ fn the_amendment_states_that_one_torn_run_clone_is_a_finding_of_its_own() {
         );
     }
 }
+
+#[test]
+fn the_amendment_states_that_unreadable_session_state_is_refused_rather_than_read_as_absence() {
+    // `tests/e2e/holders.rs`, `tests/e2e/sweep.rs`, `tests/e2e/pool.rs` and
+    // `tests/e2e/maintain.rs` drive the behaviour through the compiled binary, over a
+    // session directory this host will not list and over a record it will not read.
+    // This holds the document to the rule those journeys prove.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "**A session directory that is there and will not list, and a record that is there and \
+         will not load, are each refused, naming what could not be read**",
+        "**A session directory that is not there is still an empty list**",
+        "`session_holders`, `recoverable`, `pool_maintain`, `workspace_capacity`, `preserve` \
+         and `session` each return `Err` rather than answering from, or acting on, part of a \
+         listing",
+        "`onevcs sweep` decides about the session records before it reclaims a single \
+         workspace, `pool prune` and the shed refuse before a slot is removed, and the \
+         reclamation of abandoned run roots refuses rather than reading no records as no open \
+         sessions",
+        "No signature moves, no type changes, and no new variant",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the unreadable-records amendment no longer says: {sentence}"
+        );
+    }
+    // …and the naming it promises is naming the code does. Read out of the source
+    // because both refusals are composed privately, through `error::at`, which is
+    // what puts `cannot` in front of each action.
+    for (relative, quoted) in [
+        (
+            "crates/onevcs/src/workspace.rs",
+            "error::at(\"list the session records in\", &directory)",
+        ),
+        (
+            "crates/onevcs/src/workspace.rs",
+            "error::at(\"read the session record at\", &path)",
+        ),
+    ] {
+        assert!(
+            repo_file(relative).contains(quoted),
+            "{relative} no longer composes {quoted:?}, which the amendment promises"
+        );
+    }
+    // The signatures the amendment says do not move are the ones the contract fixes,
+    // and the refusal is the code the contract already gives `Error::Invalid`.
+    let declared = contract();
+    for line in [
+        "pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>>;",
+        "pub fn workspace_capacity(request: &SessionRequest) -> Result<WorkspaceCapacity>;",
+        "pub fn pool_maintain(scope: Scope, older_than: Option<Span>) -> Result<MaintainReport>;",
+        "pub fn recoverable(scope: &Scope) -> Result<Vec<Recoverable>>;",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the contract no longer declares {line}, which the amendment says is unmoved"
+        );
+    }
+    assert_eq!(
+        FailureKind::of(&Error::Invalid {
+            reason: String::new()
+        })
+        .exit_code(),
+        2,
+        "the amendment names the code a refused listing exits with"
+    );
+}
