@@ -21,6 +21,7 @@ use onevcs::{
     RESERVED_LABELS, SOURCE_WORD,
 };
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 /// The recorded stream, compiled in so a fixture that went missing fails the build
 /// rather than emptying a loop.
@@ -275,22 +276,36 @@ fn payload() -> Map<String, Value> {
     recorded["payload"].as_object().expect("a payload").clone()
 }
 
-/// The fixture is where the README says it is, and is the file the tests above
-/// compiled in — so a copy that drifted from the checked-in bytes fails rather than
-/// passing against a stale `include_str!`.
+/// The fixture is where the README says it is, is the file the tests above compiled
+/// in, and is the bytes the README's provenance note claims it is.
+///
+/// The digest is the point. A provenance note saying "copied byte for byte from that
+/// tag" is a claim about bytes nobody here can re-fetch, so the one thing that keeps
+/// it honest is a checksum the note states and this computes — without it the note
+/// is a restatement that can drift from the file beside it in silence.
 #[test]
-fn the_recorded_fixture_is_the_checked_in_file() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recorded/onevcs-session.ndjson");
+fn the_recorded_fixture_is_the_checked_in_file_the_provenance_note_names() {
+    let recorded = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recorded");
+    let bytes = std::fs::read(recorded.join("onevcs-session.ndjson"))
+        .expect("the recorded stream is checked in");
     assert_eq!(
-        std::fs::read_to_string(&path).expect("the recorded stream is checked in"),
-        RECORDED
+        String::from_utf8(bytes.clone()).expect("the recorded stream is text"),
+        RECORDED,
+        "the compiled-in fixture and the checked-in file came apart"
     );
-    let readme = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recorded/README.md"),
-    )
-    .expect("the fixture carries its provenance");
+
+    let readme =
+        std::fs::read_to_string(recorded.join("README.md")).expect("the fixture carries its                                                                    provenance");
     assert!(
         readme.contains("onemessagebus-agent-v0.8.0"),
         "the provenance note no longer says which tag the fixture was copied from"
+    );
+    let digest = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert!(
+        readme.contains(&digest),
+        "the provenance note states a checksum the fixture does not have; it is {digest}"
     );
 }
