@@ -2267,7 +2267,12 @@ fn resolve(
             return one(found, reference, "commit").map(|work| (work, RefKind::Commit));
         }
     }
-    Err(Error::Invalid {
+    // A kind of its own, and the one place it is answered: a consumer that falls back
+    // from one spelling of a reference to another routes on the kind rather than on
+    // this prose, which is free to change. The prose itself is unchanged, because what
+    // an operator reads and the status they get back are the same as before.
+    Err(Error::UnresolvableReference {
+        reference: reference.to_owned(),
         reason: match within {
             Some(key) => format!(
                 "{reference:?} names no work this host knows in repository {key:?}: it is not a \
@@ -2342,7 +2347,11 @@ fn change_url(
                 .as_ref()
                 .is_some_and(|recorded| recorded.value.url == url)
         })
-        .ok_or_else(|| Error::Invalid {
+        // Unresolvable rather than invalid, and one of the four: a URL nothing here
+        // opened is a reference this host cannot resolve, which is what a consumer
+        // falling back from one spelling to another routes on.
+        .ok_or_else(|| Error::UnresolvableReference {
+            reference: url.to_owned(),
             reason: format!(
                 "no change request at {url} was opened through `onevcs` on this host, so nothing \
                  here records which branch it carries. Ask about the branch by name instead"
@@ -2386,7 +2395,14 @@ fn change_url(
     // the next move is to widen the question or to look for the branch, and "0 pieces
     // of work answer to it" tells a reader neither.
     if found.is_empty() {
-        return Err(Error::Invalid {
+        // The fourth, and the last: the record answered and nothing here holds what it
+        // named, which leaves the reference unresolved exactly as an unknown commit does.
+        // The two refusals above it stay `Error::Invalid`, because a stream this host
+        // holds and cannot read is a malformed record rather than a reference nobody
+        // knows — and a consumer that retried one as the other would route on a
+        // misclassification.
+        return Err(Error::UnresolvableReference {
+            reference: url.to_owned(),
             reason: match within {
                 Some(key) => format!(
                     "the change request at {url} carries branch {branch}, which no checkout or \

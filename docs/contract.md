@@ -2673,6 +2673,53 @@ onevcs recoverable [--repo PATH] [--all] [--label KEY=VALUE]... [--session TOKEN
 
 Event kinds added: none.
 
+### A reference that resolves to nothing is its own kind, so a fallback can route on it
+
+`release_status` answers a reference naming no work this host knows with
+`Error::UnresolvableReference` rather than `Error::Invalid`, and so does every other read
+that resolves one through the same four-spelling search: `onevcs status`,
+`landing_status` and `acknowledge_release`. It carries the reference as it was asked
+about, and the reason `Error::Invalid` carried word for word.
+
+**A consumer that falls back from one spelling of a reference to another has to fire on
+exactly this case, and never on an I/O failure or a host that refused.** The one that
+made this necessary is onepipeline's release asker, falling back from a squash commit to
+the change request it settled. Telling those apart by matching the reason's prose is what
+there was, and it breaks silently the day the wording changes.
+
+**Nothing an operator sees moves.** The variant renders under `Error::Invalid`'s own
+`invalid input:` prefix and carries the identical reason, and `FailureKind` — the
+vocabulary fixed across the three libraries that route a publication's outcome — gains no
+kind for it and reports one as `Invalid`. So every command's output and exit status for
+this case is what it was, exit code `2` included; the typed answer is for the router, and
+a reworded refusal would be the breaking change this exists to prevent.
+
+**It is answered at four refusals and nowhere else**, which are the four ways a reference
+can name no work here: nothing answers to it at all — no change request `onevcs` opened,
+no session token it printed, no branch a checkout or run clone of a registered identity
+holds, and no commit one of those branches carries — in both of that refusal's spellings,
+the whole-host one and the one narrowed to a named repository; a change-request URL no
+`onevcs` on this host opened; and a change-request URL whose branch no checkout or run
+clone holds, again in both spellings.
+
+**A record this host holds and cannot read is not a reference this host cannot resolve**,
+and the two are separated on purpose: a change-request URL whose recorded stream names no
+branch, or names a branch git would not accept, keeps `Error::Invalid`. So does a
+reference resolving to work in *another* repository than the one asked about — it named
+work this host knows. A consumer that retried a malformed record as though it were an
+unknown reference would be routing on a misclassification, which is the failure this
+variant exists to end rather than to move.
+
+```rust
+// `Error` gains one variant; it is `#[non_exhaustive]`, which is what makes that additive:
+Error::UnresolvableReference { reference: String, reason: String }
+    // reference: as it was asked about, so a router names it without parsing the reason
+    // reason: exactly what `Invalid` carried; the CLI prints it under the same
+    // `invalid input:` prefix and exits 2
+```
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)
