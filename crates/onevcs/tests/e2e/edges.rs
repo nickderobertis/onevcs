@@ -3939,3 +3939,98 @@ fn a_landed_session_whose_clone_is_torn_closes_from_its_landing_record() {
         .code(2)
         .stderr(predicate::str::contains("is empty"));
 }
+
+#[test]
+fn a_status_read_over_session_records_this_host_cannot_read_refuses_rather_than_answering() {
+    // Which copies hold a branch, and which run a torn clone belonged to, are both
+    // read out of the session records — so a listing nobody got would leave `status`
+    // reporting a repository this host cannot actually account for, and naming a
+    // torn clone as nobody's. Both spellings of the read are asked: a branch, which
+    // reaches the landing report, and a commit, which reaches the search across every
+    // copy of every identity.
+    let fixture = Fixture::local("{publication: local-direct, approvals: none}");
+    let (_token, worktree) = fixture.open(&["--branch", "feature/asked-about"]);
+    fixture.world.commit_file(
+        &worktree,
+        "asked.txt",
+        "one\n",
+        "feat: the work asked about",
+    );
+    let commit = fixture
+        .world
+        .git(&worktree, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    let spellings = ["feature/asked-about", commit.as_str()];
+
+    // The premise: both spellings answer while the records read. Without it a refusal
+    // below would be indistinguishable from a reference this host never resolved.
+    for spelling in spellings {
+        fixture
+            .world
+            .onevcs()
+            .args(["status", spelling, "--json"])
+            .assert()
+            .success();
+    }
+
+    let directory = fixture.world.sessions_dir();
+    fixture.world.with_unreadable_records(|| {
+        for spelling in spellings {
+            let refused = fixture
+                .world
+                .onevcs()
+                .args(["status", spelling, "--json"])
+                .output()
+                .expect("status runs");
+            assert!(
+                !refused.status.success(),
+                "status {spelling} answered from a listing nobody got:\n{}",
+                String::from_utf8_lossy(&refused.stdout)
+            );
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains(&format!(
+                    "cannot list the session records in {}",
+                    directory.display()
+                )),
+                "status {spelling} names the directory it could not read:\n{}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+        }
+    });
+
+    // And a single record that will not read is the same answer, naming that record:
+    // a report composed from the ones that did read is a report about a host whose
+    // state it does not have.
+    let torn = fixture.world.unreadable_record();
+    for spelling in spellings {
+        let refused = fixture
+            .world
+            .onevcs()
+            .args(["status", spelling, "--json"])
+            .output()
+            .expect("status runs");
+        assert!(
+            !refused.status.success(),
+            "status {spelling} answered past a record it could not read:\n{}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains(&torn.display().to_string()),
+            "status {spelling} names the record it could not read:\n{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+
+    // …and the same commands answer again once the records read, so what was refused
+    // was the reading and never the reference.
+    std::fs::remove_file(&torn).expect("the journey takes its own staging back");
+    for spelling in spellings {
+        fixture
+            .world
+            .onevcs()
+            .args(["status", spelling, "--json"])
+            .assert()
+            .success();
+    }
+}

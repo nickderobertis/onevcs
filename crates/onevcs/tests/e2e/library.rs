@@ -5606,3 +5606,61 @@ fn report(world: &World, branch: &str, hosting: &dyn Hosting) -> serde_json::Val
     });
     serde_json::from_str(&printed).unwrap_or_else(|e| panic!("status wrote JSON: {e}\n{printed}"))
 }
+
+#[test]
+fn the_landing_read_refuses_session_records_it_cannot_read_rather_than_deciding_without_them() {
+    // `landing_status` is the read a consumer sequences its own work behind, and what
+    // it answers is *did this reach the base*. Which copies of the branch this host
+    // holds is read out of the session records, and a run clone is one of them — so a
+    // listing nobody got would leave the read deciding from the copies it happened to
+    // find, and `no` from a partial search is what puts a paste-ready publication
+    // under work the base already carries.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+
+    let held = open(&Git, "feature/only-in-its-clone");
+    world.commit_file(
+        &held.worktree,
+        "held.txt",
+        "held\n",
+        "feat: the work nobody landed",
+    );
+
+    // The premise: the read answers while the records read.
+    assert_eq!(
+        onevcs::landing_status("feature/only-in-its-clone", None).expect("the landing is decided"),
+        Landed::No,
+    );
+
+    let refused = world.with_unreadable_records(|| {
+        onevcs::landing_status("feature/only-in-its-clone", None)
+            .expect_err("a landing decided from a listing nobody got is what this refuses")
+    });
+    let reason = refused.to_string();
+    assert!(
+        reason.contains(&format!(
+            "cannot list the session records in {}",
+            world.sessions_dir().display()
+        )),
+        "the refusal names the directory it could not read: {reason}"
+    );
+
+    // And a record that will not read is refused by name, for the same reason.
+    let torn = world.unreadable_record();
+    let refused = onevcs::landing_status("feature/only-in-its-clone", None)
+        .expect_err("a landing decided past a record it could not read is what this refuses");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains(&torn.display().to_string()),
+        "the refusal names the record it could not read: {reason}"
+    );
+
+    std::fs::remove_file(&torn).expect("the journey takes its own staging back");
+    assert_eq!(
+        onevcs::landing_status("feature/only-in-its-clone", None).expect("the landing is decided"),
+        Landed::No,
+        "and the same read answers again once the records read"
+    );
+    onevcs::close_session(&Providers::real(), &held.token).expect("the session closes");
+}
