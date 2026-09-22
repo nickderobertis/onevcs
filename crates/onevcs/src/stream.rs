@@ -7,9 +7,10 @@
 //! `onevcs artifact cat`.
 //!
 //! Stamping, numbering, bounding, redacting and writing an envelope are
-//! `onemessagebus`'s [`Emitter`], and splitting a stream back into its records is its
-//! [`BusReader`]. What stays here is where a stream lives, which labels it carries,
-//! and what a reader of *this* crate's streams refuses.
+//! `onemessagebus`'s [`Emitter`], over this crate's own vocabulary, and splitting a
+//! stream back into its records is its [`BusReader`]. What stays here is where a
+//! stream lives, which labels it carries, and what a reader of *this* crate's
+//! streams refuses.
 //!
 //! Redaction happens before an event or an artifact leaves the library, because the
 //! thing being redacted arrives from outside it: a rejecting `pre-push` hook echoes
@@ -19,18 +20,18 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use onemessagebus::{EmitterError, Reading, Redactor};
-use onemessagebus_agent::event::Dimensions;
-use onemessagebus_agent::{Emitter, Reader as BusReader};
 use serde_json::{Map, Value};
 
 use crate::error::{self, Result};
 use crate::event::{
-    phase_of, ArtifactRef, Envelope, EventFilter, EventKind, Known, Labels, Line, Phase, Source,
+    phase_of, ArtifactRef, Dimensions, Envelope, EventFilter, EventKind, Known, Labels, Line,
+    Phase, Source, SOURCE_WORD,
 };
 use crate::git::ObjectId;
 use crate::landed::Landed;
 use crate::rules::MergePolicy;
 use crate::session::SessionToken;
+use crate::vocabulary::{BusReader, Emitter};
 use crate::{home, ids, policy, release, status, store, workspace};
 
 /// The envelope schema version this build emits.
@@ -174,7 +175,7 @@ impl Stream {
 /// The emitter one stream writes through: this crate's source and envelope version,
 /// numbered from the file, stamping exactly `labels`.
 fn emitter(id: &str, path: &std::path::Path, labels: &Labels) -> Emitter {
-    Emitter::shared(id, Source::Vcs, path)
+    Emitter::shared(id, Source::from(SOURCE_WORD), path)
         .with_version(ENVELOPE_VERSION)
         .with_labels(labels.clone())
 }

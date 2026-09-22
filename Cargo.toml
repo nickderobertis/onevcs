@@ -93,15 +93,21 @@ icu_properties = "2.2"
 # portable spelling. Depended on for Unix only; Windows gets the bound without the
 # group teardown.
 libc = "0.2"
-# The event envelope, its filter grammar, the payload bound, the redaction tables,
-# and the emitter and reader over a stream: one copy shared by every producer in
-# the stack, where each used to keep its own. The core is generic over a
-# vocabulary; the agent profile is the vocabulary `onevcs` writes (`source: vcs`).
-# The pair tracks the bus release that carries only generic contracts, with the
-# planner channel moved out (onemessagebus#126): `onepipeline` links one copy of
-# the bus, so every sibling it composes has to require the same release.
-onemessagebus = "0.8.0"
-onemessagebus-agent = "0.8.0"
+# The event envelope's *shape*, its filter grammar, the payload bound, the
+# redaction tables, and the emitter and reader over a stream: one copy shared by
+# every producer in the stack, where each used to keep its own. The core is
+# generic over a vocabulary and names no agent; the words `onevcs` writes
+# (`source: vcs`, the four phases, the reserved labels) are this crate's own, in
+# `crates/onevcs/src/vocabulary.rs`. The floor is the release that retired
+# `onemessagebus-agent` and left the bus holding only generic contracts: a
+# consumer resolves one copy of the bus, so every sibling `onepipeline` composes
+# has to require the same release.
+onemessagebus = "0.9.0"
+# The JSON Schema derive the bus core's `Wire` bound asks of every type a
+# vocabulary puts on the wire. `preserve_order` for the same reason `serde_json`
+# has it: a generated schema lists an envelope's properties in declaration order
+# rather than in whatever order a hash map yielded.
+schemars = { version = "1", features = ["preserve_order"] }
 
 assert_cmd = "2"
 predicates = "3"

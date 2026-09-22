@@ -48,6 +48,9 @@ const HELPERS: &[(&str, &str)] = &[
     ("crates/onevcs/tests/e2e/inherited_pipes.rs", "onevcs"),
     ("crates/onevcs/tests/e2e/smoke.rs", "smoking"),
     ("crates/onevcs/tests/e2e/packaging.rs", "run_installed"),
+    // The recorded-stream tier is its own binary, and reads a stream an earlier
+    // build wrote out of a state root it makes for itself.
+    ("crates/onevcs/tests/recorded.rs", "onevcs"),
 ];
 
 /// What starting this crate's binary looks like in a test source.
