@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::{self, Error, Result};
@@ -349,20 +350,71 @@ pub struct WorkspaceRule {
 /// What maintaining an idle slot means: a command, and the bound it runs under.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Maintenance {
-    /// The argv, spawned in the slot's worktree **with no shell**: the first element is
-    /// the program and the rest are its arguments, so `&&`, pipes and globs are passed
-    /// through literally rather than composed. A host that wants composition writes a
-    /// script and names it here. Never empty.
-    // llmlint: ignore[invalid_states_unrepresentable] the contract's amendment
-    // declares this field as `pub command: Vec<String>` — the YAML list as the host
-    // wrote it — and `tests/contract.rs` holds that shape, which the next verb and
-    // `onepipeline` build against; a non-empty argv type here is a change to that
-    // shared surface, not this crate's to make alone. The empty list is refused by
-    // name in `validate`, where the document loads, before anything reads it.
-    pub command: Vec<String>,
+    /// The argv, spawned in the slot's worktree **with no shell**.
+    pub command: MaintenanceCommand,
     /// The bound the command runs under. Absent, [`DEFAULT_MAINTAIN_TIMEOUT`].
     #[serde(default = "default_timeout")]
     pub timeout: Span,
+}
+
+/// The argv of a maintenance command: the program, and the arguments it is spawned
+/// with.
+///
+/// A program *beside* its arguments rather than one list, because a list can be empty
+/// and an argv cannot — there is nothing to spawn without a program — so a caller that
+/// builds a rule in memory is refused by the type rather than at a validation it has
+/// not reached yet.
+///
+/// The document's own form is unchanged: a non-empty sequence whose first element is
+/// the program and whose rest are its arguments, spawned **with no shell**, so `&&`,
+/// pipes and globs are passed through literally rather than composed. A host that
+/// wants composition writes a script and names it here. An empty sequence is refused
+/// where the document deserializes, naming the key, and what this build writes is the
+/// sequence it read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaintenanceCommand {
+    /// The program, spawned in the slot's worktree.
+    pub program: String,
+    /// Its arguments, in the order the sequence spelled them.
+    pub args: Vec<String>,
+}
+
+/// What the refusal of an empty command says, naming the key an operator edits.
+const EMPTY_COMMAND: &str =
+    "maintain.command is an empty list: name the program to run and its arguments";
+
+impl MaintenanceCommand {
+    /// The program and its arguments as one sequence, which is what a document spells
+    /// and what a spawn takes.
+    pub fn argv(&self) -> Vec<&str> {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect()
+    }
+}
+
+/// The sequence the host wrote, so a document round-trips as it stands.
+impl Serialize for MaintenanceCommand {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.args.len() + 1))?;
+        for part in self.argv() {
+            sequence.serialize_element(part)?;
+        }
+        sequence.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MaintenanceCommand {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let argv = Vec::<String>::deserialize(deserializer)?;
+        let Some((program, args)) = argv.split_first() else {
+            return Err(serde::de::Error::custom(EMPTY_COMMAND));
+        };
+        Ok(MaintenanceCommand {
+            program: program.clone(),
+            args: args.to_vec(),
+        })
+    }
 }
 
 fn default_timeout() -> Span {
@@ -451,13 +503,14 @@ pub(crate) fn load() -> Result<(WorkspacesFile, FileSource)> {
 
 /// Reject a document whose own values cannot be honoured.
 ///
-/// Three things only a whole document gets wrong. A `delete` entry that is not a
+/// Two things only a whole document gets wrong. A `delete` entry that is not a
 /// relative path *inside* the worktree — absolute, or climbing out through `..` — would
 /// have a return deleting something outside the slot, so it is refused where the
-/// document is read rather than where the return happens. A maintenance command with no
-/// argv is nothing to spawn. And a `pool: 0` beside an `overflow: 0` admits no session
-/// at all, which is refused here naming where, and again at open where the two arrive
-/// separately.
+/// document is read rather than where the return happens. And a `pool: 0` beside an
+/// `overflow: 0` admits no session at all, which is refused here naming where, and
+/// again at open where the two arrive separately. A maintenance command with no argv
+/// is not one of them: [`MaintenanceCommand`] cannot hold one, so the empty sequence
+/// is refused where the document deserializes, before a policy resolves to it.
 fn validate(path: &Path, file: &WorkspacesFile) -> Result<()> {
     let mut checked: Vec<(String, &WorkspaceDefault)> = vec![("default".to_owned(), &file.default)];
     let resolved: Vec<(String, WorkspaceDefault)> = file
@@ -483,15 +536,6 @@ fn validate(path: &Path, file: &WorkspacesFile) -> Result<()> {
                 return Err(error::invalid(format!(
                     "the workspaces file at {} names {entry:?} under delete in {where_}, which \
                      {reason}; a delete entry is a relative path inside the worktree",
-                    path.display()
-                )));
-            }
-        }
-        if let Some(maintain) = &policy.maintain {
-            if maintain.command.is_empty() {
-                return Err(error::invalid(format!(
-                    "the workspaces file at {} has {where_} naming a maintain command with no \
-                     argv; name the program to run and its arguments",
                     path.display()
                 )));
             }

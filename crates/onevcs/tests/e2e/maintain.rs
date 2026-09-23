@@ -42,11 +42,27 @@ case "$1" in
 esac
 "#;
 
+/// A maintenance script that records the argv it was spawned with, one argument per
+/// line, so a journey reads back exactly what reached the program.
+const ARGV_SCRIPT: &str = r#"#!/usr/bin/env bash
+set -u
+mkdir -p target
+: > target/argv
+for argument in "$@"; do printf '%s\n' "$argument" >> target/argv; done
+echo run >> target/maintained
+echo "maintaining $PWD"
+"#;
+
 /// Install the maintenance script on this host and say where it is.
 fn install_script(world: &World) -> PathBuf {
-    let path = world.path("bin/maintain.sh");
+    install(world, "bin/maintain.sh", SCRIPT)
+}
+
+/// Install one executable script at `at`, and say where it is.
+fn install(world: &World, at: &str, body: &str) -> PathBuf {
+    let path = world.path(at);
     std::fs::create_dir_all(path.parent().expect("a bin directory")).expect("bin/");
-    std::fs::write(&path, SCRIPT).expect("the maintenance script");
+    std::fs::write(&path, body).expect("the maintenance script");
     let mut permissions = std::fs::metadata(&path)
         .expect("script metadata")
         .permissions();
@@ -415,6 +431,68 @@ fn a_slot_in_use_or_under_a_live_claim_is_skipped_and_a_void_claim_is_cleared_an
     );
     assert_eq!(runs_in(&slot_2), 2);
     assert_eq!(record(&slot_2)["maintaining"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_configured_command_reaches_the_slot_whole_and_one_with_no_argv_is_refused_before_it_runs() {
+    let (fixture, _) = fixture_with(1, 1, &["ok"], "30s");
+    let slot = slot_dir(&fixture, 1);
+    let script = install(&fixture.world, "bin/argv.sh", ARGV_SCRIPT);
+
+    // Arguments a shell would have eaten: `&&` composes nothing, `*.rs` expands to
+    // nothing, and an argument with a space stays one argument.
+    let arguments = ["--time", "7 days", "&&", "echo pwned", "*.rs"];
+    let argv: Vec<String> = std::iter::once(script.display().to_string())
+        .chain(arguments.iter().map(|part| (*part).to_owned()))
+        .map(|part| format!("{part:?}"))
+        .collect();
+    crate::pool::configure_workspaces(
+        &fixture.world,
+        format!(
+            "version: 1\ndefault: {{pool: 1, maintain: {{command: [{}]}}}}\n",
+            argv.join(", ")
+        ),
+    );
+
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(
+        report["identities"][0]["outcome"]["slots"][0]["outcome"]["ran"]["outcome"], "succeeded",
+        "{report}"
+    );
+    let recorded = std::fs::read_to_string(target_of(&slot).join("argv"))
+        .expect("the script recorded the argv it was spawned with");
+    assert_eq!(
+        recorded.lines().collect::<Vec<&str>>(),
+        arguments,
+        "every argument reached the program in order and unchanged, with no shell"
+    );
+    assert_eq!(runs_in(&slot), 1);
+
+    // A command with nothing to spawn is refused where the document is read, naming
+    // the file and the key, and the pass runs nothing at all.
+    crate::pool::configure_workspaces(
+        &fixture.world,
+        "version: 1\ndefault: {pool: 1, maintain: {command: []}}\n",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--json"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            fixture
+                .world
+                .home()
+                .join("workspaces.yml")
+                .display()
+                .to_string(),
+        ))
+        .stderr(predicates::str::contains(
+            "maintain.command is an empty list: name the program to run and its arguments",
+        ));
+    assert_eq!(runs_in(&slot), 1, "the refused document ran nothing");
 }
 
 #[test]

@@ -405,24 +405,15 @@ struct Ran {
 /// not outlive the run that started them. A command that cannot be started at all
 /// is a failed one whose log says why: the attempt is what is recorded, and a
 /// missing program is not retried on every tick any more than a failing one is.
+/// There is no argv to find missing — [`workspaces::MaintenanceCommand`] carries the program
+/// beside its arguments, so the empty one cannot arrive here.
 fn run(worktree: &Path, maintenance: &Maintenance) -> Ran {
     let started = Instant::now();
     let bound = maintenance.timeout.as_duration();
-    let (program, arguments) = match maintenance.command.split_first() {
-        Some(split) => split,
-        // llmlint: ignore[changed_behavior_has_e2e] unreachable: the empty argv is
-        // refused where the workspaces file loads, before any policy resolves to it.
-        None => {
-            return Ran {
-                outcome: MaintenanceOutcome::Failed { exit: None },
-                duration: started.elapsed(),
-                output: "the maintain command names no program\n".to_owned(),
-            }
-        }
-    };
+    let program = &maintenance.command.program;
     let mut command = Command::new(program);
     command
-        .args(arguments)
+        .args(&maintenance.command.args)
         .current_dir(worktree)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

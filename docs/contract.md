@@ -2042,7 +2042,11 @@ that (`--pool 0 --overflow 0`, say), naming the identity and where each value ca
 A `delete` entry is a relative path inside the worktree; an absolute or escaping (`..`)
 entry is refused at load. `maintain.command` is a non-empty argv list spawned with no
 shell — `&&` and pipes are passed through literally, so a host that wants composition
-writes a script and names it — and `timeout` is a `Span`, default `30m`. What the
+writes a script and names it — read into a `MaintenanceCommand` whose `program` is the
+first element and whose `args` are the rest, so a rule that holds no command at all is
+unrepresentable rather than refused later: an empty sequence is refused where the
+document deserializes, naming the key, and serializing writes the same sequence back.
+`timeout` is a `Span`, default `30m`. What the
 maintain verb *does* is the next amendment's; this one declares the configuration it
 reads and the stored shape it fills.
 
@@ -2081,7 +2085,10 @@ pub struct WorkspaceDefault { pub pool: u32, pub overflow: Bound, pub delete: Ve
 pub struct WorkspaceRule { pub r#match: rules::RuleMatch, pub pool: Option<u32>,
                            pub overflow: Option<Bound>, pub delete: Option<Vec<PathBuf>>,
                            pub maintain: Option<Maintenance> }
-pub struct Maintenance { pub command: Vec<String>, pub timeout: Span }   // argv, no shell; 30m
+pub struct Maintenance { pub command: MaintenanceCommand, pub timeout: Span }  // no shell; 30m
+pub struct MaintenanceCommand { pub program: String, pub args: Vec<String> }
+    // serde: the document's non-empty sequence — first element the program, the rest
+    // its arguments — refused empty where it deserializes, written back as it was read
 
 pub struct SessionRequest { /* repo, branch, base, execution_checkout as today, plus: */
     pub pool: Option<u32>, pub overflow: Option<Bound> }

@@ -624,7 +624,9 @@ fn a_workspaces_file_this_build_cannot_honour_is_refused_naming_what_is_wrong() 
         .args(["session", "open", "project"])
         .assert()
         .code(2)
-        .stderr(predicates::str::contains("maintain command with no argv"));
+        .stderr(predicates::str::contains(
+            "maintain.command is an empty list: name the program to run and its arguments",
+        ));
     configure_workspaces(
         &fixture.world,
         "version: 1\ndefault: {maintain: {command: [make], timeout: 1h30m}}\n",
