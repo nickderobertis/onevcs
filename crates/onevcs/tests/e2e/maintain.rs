@@ -493,6 +493,23 @@ fn a_configured_command_reaches_the_slot_whole_and_one_with_no_argv_is_refused_b
             "maintain.command is an empty list: name the program to run and its arguments",
         ));
     assert_eq!(runs_in(&slot), 1, "the refused document ran nothing");
+
+    // And a sequence that is not empty but names an empty program is refused the same
+    // way: a list of one empty string is still nothing to spawn.
+    crate::pool::configure_workspaces(
+        &fixture.world,
+        "version: 1\ndefault: {pool: 1, maintain: {command: [\"\", \"--all\"]}}\n",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--json"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "maintain.command names an empty program: its first element is the program to run",
+        ));
+    assert_eq!(runs_in(&slot), 1, "and it ran nothing either");
 }
 
 #[test]
@@ -571,36 +588,134 @@ fn a_slot_a_process_is_working_inside_is_unavailable_and_the_next_pass_maintains
 }
 
 #[test]
-fn only_an_unusable_clone_or_record_is_broken_and_the_slots_beside_it_are_still_maintained() {
-    let (fixture, _) = fixture_with(3, 3, &["ok"], "30s");
+fn a_slot_whose_occupancy_this_run_cannot_take_is_unavailable_and_is_maintained_once_it_is_free() {
+    // Two slots, the second cut after the first so the lock it takes is the only one
+    // that appears: an occupancy nothing can release is the one state a *slot* reaches
+    // that no session record and no damaged file shows, and it is what `claim` asks
+    // for last before it writes a claim.
+    let (fixture, _) = fixture_with(2, 1, &["ok"], "30s");
+    let slot_1 = slot_dir(&fixture, 1);
+
+    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock on
+    // the slot directory, and holding it is the only thing that makes the take answer
+    // "somebody is in here": every verb takes it, works, and releases it before the
+    // process exits, so there is no command to run that leaves a slot occupied for the
+    // length of a journey. The lock is found the only way anything can find it — by
+    // what appeared when the slot was cut, since it is named after a digest of the
+    // directory — and held while the real CLI meets it, exactly as `lifecycle.rs` and
+    // `edges.rs` reach a run root's.
+    let (holding, _, warm) = open(&fixture, &["--branch", "feature/first"]);
+    assert_eq!(warm["slot"], 1, "the session takes the slot already cut");
+    let before = fixture.world.locks();
+    let (cutting, _, placed) = open(&fixture, &["--branch", "feature/second"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 2, "created": true})
+    );
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [occupancy] = opened.as_slice() else {
+        panic!("cutting one slot takes exactly one new lock, not {opened:?}");
+    };
+    close(&fixture, &cutting);
+    close(&fixture, &holding);
+    let occupant = World::occupy(occupancy);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    let slot_2 = slot_dir(&fixture, 2);
+    // Nothing is wrong with it and no record names it: `pool status` reads it idle, so
+    // the outcome below can only be the occupancy take failing.
+    let listed = status(&fixture);
+    assert_eq!(listed["slots"][1]["number"], 2, "{listed}");
+    assert_eq!(listed["slots"][1]["state"]["state"], "idle", "{listed}");
+
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "nothing ran in it, so nothing failed: {report}");
+    let slots = report["identities"][0]["outcome"]["slots"]
+        .as_array()
+        .expect("slots");
+    assert_eq!(
+        slots[1]["outcome"],
+        serde_json::json!({"unavailable": {"holder": "a command is working in it right now"}}),
+        "an occupied slot is unavailable, and says what holds it: {report}"
+    );
+    assert_eq!(
+        slots[0]["outcome"]["ran"]["outcome"], "succeeded",
+        "the slot beside it was maintained: {report}"
+    );
+    assert_eq!(runs_in(&slot_1), 1);
+    assert_eq!(runs_in(&slot_2), 0, "nothing ran under the occupant");
+    assert_eq!(
+        record(&slot_2)["maintaining"],
+        serde_json::Value::Null,
+        "and no claim was written on it"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--older-than", "1h"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("slot 1 — kept: not due"))
+        .stdout(predicates::str::contains(
+            "slot 2 — kept: a command is working in it right now",
+        ));
+
+    // The occupancy released, the very next pass claims the slot and maintains it —
+    // which is what makes it unavailable rather than broken.
+    drop(occupant);
+    let (code, report) = maintain(&fixture, &["project", "--older-than", "1h"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(
+        report["identities"][0]["outcome"]["slots"][1]["outcome"]["ran"]["outcome"], "succeeded",
+        "{report}"
+    );
+    assert_eq!(runs_in(&slot_2), 1);
+    assert_eq!(runs_in(&slot_1), 1, "the maintained slot was left alone");
+}
+
+#[test]
+fn an_unusable_clone_worktree_or_record_is_broken_and_the_slot_beside_them_is_still_maintained() {
+    // The three ways the contract defines a broken slot, one per slot, so each is
+    // named by its own reason rather than covered by whichever happens to be first.
+    let (fixture, _) = fixture_with(4, 4, &["ok"], "30s");
     let slot_1 = slot_dir(&fixture, 1);
     let slot_2 = slot_dir(&fixture, 2);
     let slot_3 = slot_dir(&fixture, 3);
+    let slot_4 = slot_dir(&fixture, 4);
     damage(&slot_1, Damage::LoseClone);
-    damage(&slot_2, Damage::GarbleRecord);
+    damage(&slot_2, Damage::LoseWorktree);
+    damage(&slot_3, Damage::GarbleRecord);
 
     let (code, report) = maintain(&fixture, &["project"]);
     assert_eq!(code, 0, "nothing ran in the damaged slots: {report}");
     let slots = report["identities"][0]["outcome"]["slots"]
         .as_array()
         .expect("slots");
-    let lost = slots[0]["outcome"]["broken"]["reason"]
-        .as_str()
-        .unwrap_or_else(|| panic!("slot 1 is broken: {report}"));
+    let broken_reason = |number: usize| -> String {
+        slots[number - 1]["outcome"]["broken"]["reason"]
+            .as_str()
+            .unwrap_or_else(|| panic!("slot {number} is broken: {report}"))
+            .to_owned()
+    };
+    let lost_clone = broken_reason(1);
     assert!(
-        lost.contains(&slot_1.join("clone").display().to_string())
-            && lost.contains("is missing or not a repository"),
-        "the reason names what is wrong with it: {lost}"
+        lost_clone.contains(&slot_1.join("clone").display().to_string())
+            && lost_clone.contains("is missing or not a repository"),
+        "the reason names the clone: {lost_clone}"
     );
-    let garbled = slots[1]["outcome"]["broken"]["reason"]
-        .as_str()
-        .unwrap_or_else(|| panic!("slot 2 is broken: {report}"));
+    let lost_worktree = broken_reason(2);
     assert!(
-        garbled.contains(&slot_2.join("slot.json").display().to_string())
+        lost_worktree.contains(&slot_2.join("worktree").display().to_string())
+            && lost_worktree.contains("is missing or not a repository"),
+        "and the worktree: {lost_worktree}"
+    );
+    let garbled = broken_reason(3);
+    assert!(
+        garbled.contains(&slot_3.join("slot.json").display().to_string())
             && garbled.contains("is malformed"),
-        "and so does the unreadable record's: {garbled}"
+        "and the unreadable record: {garbled}"
     );
-    for slot in &slots[..2] {
+    for slot in &slots[..3] {
         assert!(
             slot["outcome"]["unavailable"].is_null(),
             "an unusable slot is broken rather than busy: {slot}"
@@ -608,11 +723,12 @@ fn only_an_unusable_clone_or_record_is_broken_and_the_slots_beside_it_are_still_
     }
     assert_eq!(runs_in(&slot_1), 0);
     assert_eq!(runs_in(&slot_2), 0);
+    assert_eq!(runs_in(&slot_3), 0);
     assert_eq!(
-        slots[2]["outcome"]["ran"]["outcome"], "succeeded",
+        slots[3]["outcome"]["ran"]["outcome"], "succeeded",
         "a damaged neighbour does not stop the pass: {report}"
     );
-    assert_eq!(runs_in(&slot_3), 1);
+    assert_eq!(runs_in(&slot_4), 1);
     fixture
         .world
         .onevcs()
@@ -620,8 +736,9 @@ fn only_an_unusable_clone_or_record_is_broken_and_the_slots_beside_it_are_still_
         .assert()
         .success()
         .stdout(predicates::str::contains("slot 1 — kept: its clone at"))
-        .stdout(predicates::str::contains("slot 2 — kept: its record at"))
-        .stdout(predicates::str::contains("slot 3 — kept: not due"));
+        .stdout(predicates::str::contains("slot 2 — kept: its worktree at"))
+        .stdout(predicates::str::contains("slot 3 — kept: its record at"))
+        .stdout(predicates::str::contains("slot 4 — kept: not due"));
 }
 
 #[test]

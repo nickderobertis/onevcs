@@ -2044,7 +2044,8 @@ entry is refused at load. `maintain.command` is a non-empty argv list spawned wi
 shell — `&&` and pipes are passed through literally, so a host that wants composition
 writes a script and names it — read into a `MaintenanceCommand` whose `program` is the
 first element and whose `args` are the rest, so a rule that holds no command at all is
-unrepresentable rather than refused later: an empty sequence is refused where the
+unrepresentable rather than refused later: an empty sequence — and a first element
+that is the empty string, which names nothing to spawn either — is refused where the
 document deserializes, naming the key, and serializing writes the same sequence back.
 `timeout` is a `Span`, default `30m`. What the
 maintain verb *does* is the next amendment's; this one declares the configuration it

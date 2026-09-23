@@ -368,20 +368,40 @@ pub struct Maintenance {
 /// The document's own form is unchanged: a non-empty sequence whose first element is
 /// the program and whose rest are its arguments, spawned **with no shell**, so `&&`,
 /// pipes and globs are passed through literally rather than composed. A host that
-/// wants composition writes a script and names it here. An empty sequence is refused
-/// where the document deserializes, naming the key, and what this build writes is the
-/// sequence it read.
+/// wants composition writes a script and names it here. Both ways a document can
+/// name nothing to spawn — an empty sequence, and a first element that is the empty
+/// string — are refused where it deserializes, naming the key; what this build
+/// writes is the sequence it read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaintenanceCommand {
-    /// The program, spawned in the slot's worktree.
+    // llmlint: ignore-block[invalid_states_unrepresentable] the amendment fixes this
+    // field as `pub program: String`, the way it fixes `SlotState::Maintaining`'s
+    // `since`, and the other nodes building against this release read that spelling —
+    // so a non-empty string newtype here is a change to the declared surface rather
+    // than this crate's to make alone, and it is put to that surface's owner rather
+    // than taken. What the type cannot say, the trust boundary does: every program
+    // that arrives from a document comes through the `Deserialize` below, which
+    // refuses an empty one by name, so nothing a host wrote reaches a spawn with no
+    // program. Block-scoped rather than line-scoped because a line-scoped directive
+    // covers only the line below it, which a reason this long would make a comment.
+    /// The program, spawned in the slot's worktree. Never empty.
     pub program: String,
-    /// Its arguments, in the order the sequence spelled them.
+    // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// Its arguments, in the order the sequence spelled them. An argument may be the
+    /// empty string — a program is entitled to take one — which is why only the
+    /// program is held to being non-empty.
     pub args: Vec<String>,
 }
 
 /// What the refusal of an empty command says, naming the key an operator edits.
 const EMPTY_COMMAND: &str =
     "maintain.command is an empty list: name the program to run and its arguments";
+
+/// And what the refusal of one whose program is the empty string says, which is the
+/// same absence spelled a second way: a sequence of one empty element is a list that
+/// is not empty and still names nothing to spawn.
+const EMPTY_PROGRAM: &str =
+    "maintain.command names an empty program: its first element is the program to run";
 
 impl MaintenanceCommand {
     /// The program and its arguments as one sequence, which is what a document spells
@@ -410,6 +430,9 @@ impl<'de> Deserialize<'de> for MaintenanceCommand {
         let Some((program, args)) = argv.split_first() else {
             return Err(serde::de::Error::custom(EMPTY_COMMAND));
         };
+        if program.is_empty() {
+            return Err(serde::de::Error::custom(EMPTY_PROGRAM));
+        }
         Ok(MaintenanceCommand {
             program: program.clone(),
             args: args.to_vec(),

@@ -5459,6 +5459,51 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
         "the sequence is read as the program and its arguments, spawned with no shell"
     );
     assert_eq!(maintain.command.argv(), ["cargo", "sweep", "--time", "7"]);
+    // The two public fields, read directly: the first element of the sequence is the
+    // program and *only* the rest are its arguments — the split a spawn depends on,
+    // and the one a consumer reads by name.
+    assert_eq!(maintain.command.program, "cargo");
+    assert_eq!(maintain.command.args, ["sweep", "--time", "7"]);
+    let direct: MaintenanceCommand =
+        serde_yaml_ng::from_str("[\"cargo\", \"sweep\", \"--time\", \"7\"]")
+            .expect("a command deserializes from the sequence a document spells");
+    assert_eq!(direct.program, "cargo", "the first element is the program");
+    assert_eq!(
+        direct.args,
+        ["sweep", "--time", "7"],
+        "and the remaining elements are its arguments, none of them dropped"
+    );
+    assert_eq!(
+        serde_yaml_ng::to_value(&direct).expect("it serializes"),
+        serde_yaml_ng::Value::Sequence(
+            ["cargo", "sweep", "--time", "7"]
+                .into_iter()
+                .map(serde_yaml_ng::Value::from)
+                .collect()
+        ),
+        "and serializing reconstructs [program, ...args]"
+    );
+    let single: MaintenanceCommand =
+        serde_yaml_ng::from_str("[\"make\"]").expect("a program with no arguments is a command");
+    assert_eq!(single.program, "make");
+    assert!(single.args.is_empty(), "no arguments is no arguments");
+    // A sequence that is not empty and still names nothing to spawn is the same
+    // absence spelled a second way, and is refused at the same boundary.
+    let nameless = serde_yaml_ng::from_str::<MaintenanceCommand>("[\"\", \"--all\"]")
+        .expect_err("an empty program is nothing to spawn");
+    assert!(
+        nameless.to_string().contains(
+            "maintain.command names an empty program: its first element is the program to run"
+        ),
+        "the refusal names the key: {nameless}"
+    );
+    let empty_argument: MaintenanceCommand = serde_yaml_ng::from_str("[\"make\", \"\"]")
+        .expect("a program is entitled to an empty argument");
+    assert_eq!(
+        empty_argument.args,
+        [""],
+        "only the program is held non-empty"
+    );
     assert_eq!(maintain.timeout, "30m".parse::<Span>().expect("a span"));
     assert_eq!(
         maintain.timeout.as_duration(),
@@ -5505,6 +5550,15 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
             "maintain.command is an empty list: name the program to run and its arguments"
         ),
         "the refusal names the key: {empty}"
+    );
+    assert!(
+        serde_yaml_ng::from_str::<WorkspacesFile>(
+            "version: 1\ndefault: {maintain: {command: [\"\"]}}\n",
+        )
+        .expect_err("nor is a document naming an empty program")
+        .to_string()
+        .contains("maintain.command names an empty program"),
+        "a document naming an empty program is refused where it is read"
     );
 
     // A document with only a version is the shipped default whole: every rule
