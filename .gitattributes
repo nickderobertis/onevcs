@@ -1,1 +1,8 @@
 * text=auto eol=lf
+
+# The screenshot assets: never line-ending-normalized, never diffed as text. The SVGs
+# are text but carry a base64 font, so a diff of one is noise rather than signal — and
+# a byte the `text=auto` rule rewrote would drift the hash screencomp gates on.
+docs/screenshots/*.svg -text -diff
+docs/screenshots/*.gif binary
+screenshots/fonts/*.ttf binary

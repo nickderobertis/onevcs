@@ -1,0 +1,48 @@
+# screencomp configuration. See https://github.com/nickderobertis/screencomp.
+
+[capture]
+# One lane, and the reason is what the shots are made of: they are deterministic
+# SVGs — pure layout maths over a vendored, pinned font embedded into each file as
+# base64 — rather than rasterized pixels whose anti-aliasing drifts across CPUs. The
+# bytes are therefore identical on every architecture, so one committed baseline is
+# correct everywhere and a second lane would only be a second copy of the first.
+#
+# This is the single source for the lane name. scripts/host-arch.sh derives *this
+# host's* lane from `uname -m` for the capture, the bless and the guard; the guard
+# reads the declared list back out of this file and refuses a host it does not name,
+# saying how to add one. CI fans one job out per entry here.
+arches = ["x86_64"]
+
+[comment]
+title = "Terminal screenshots"
+marker = "screencomp"        # [A-Za-z0-9_-]; one sticky comment per marker
+embed_limit = 10             # embed images inline when <= N shots differ (0 disables)
+
+# No `[[toggle]]`, deliberately: every scene here is a different verb rather than one
+# surface at different settings, so there is nothing for a gallery to flip between.
+# `screencomp doctor` is what would catch a capture that started using one anyway.
+
+[guard]
+# Local pre-push guard (.githooks/pre-push): re-capture only when something that can
+# change the rendered output changes — the commands' own rendering, the CLI surface,
+# the scratch host the scenes are driven against, or the capture machinery itself.
+paths = [
+  "crates/onevcs/src/cli.rs",
+  "crates/onevcs/src/app.rs",
+  "crates/onevcs/src/status.rs",
+  "crates/onevcs/src/recover.rs",
+  "crates/onevcs/src/registry.rs",
+  "crates/onevcs/src/rules.rs",
+  "crates/onevcs/src/pool.rs",
+  "crates/onevcs/src/pool/**",
+  "crates/onevcs/src/release.rs",
+  "crates/onevcs/src/releases.rs",
+  "crates/onevcs/src/guidance.rs",
+  "crates/onevcs/tests/fixtures/gh",
+  "scripts/screenshots.sh",
+  "scripts/screenshots-capture.sh",
+  "scripts/screenshots-normalize.awk",
+  "scripts/host-arch.sh",
+  "screenshots/**",
+]
+gallery = "shots/review"

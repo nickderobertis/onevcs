@@ -1,0 +1,651 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
+mkdir -p "$STATE"
+
+# Every call this host is asked to make, one line each, in order. A journey about
+# what a *credential* can reach has to assert over this rather than over the
+# answer: a stand-in that replies is indistinguishable from one that was allowed
+# to be asked, so which endpoints a path touched is readable nowhere else. An
+# argument's own newlines are folded into spaces so one call stays one line.
+{ printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+
+# Whether this call asked to be shown content carrying terminal escape sequences,
+# and whether this world's `gh` predates the flag. One that does rejects it here,
+# while parsing its arguments, rather than after asking GitHub anything.
+allow_escapes=0
+for argument in "$@"; do
+  [ "$argument" = "--allow-escape-sequences" ] || continue
+  allow_escapes=1
+done
+if [ "$allow_escapes" = "1" ] && [ -f "$STATE/no-escape-flag" ]; then
+  printf 'unknown flag: --allow-escape-sequences\n' >&2
+  exit 1
+fi
+
+ORIGIN="$(cat "$STATE/origin")"
+CHECKS="$STATE/checks.rows"
+# A repository's checks move while something is watching them, which is the whole
+# premise of watching. This world says so by writing a second rollup and the number
+# of *readings of the rollup* after which it takes over — counted off the call log
+# above, which already holds this call, so `1` means "from the second reading on".
+# Counted in readings rather than in wall-clock time so a journey states the moment
+# it means instead of racing for it.
+if [ -f "$STATE/checks-flip-after" ] && [ -f "$STATE/checks.rows.next" ]; then
+  if [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+       -gt "$(cat "$STATE/checks-flip-after")" ]; then
+    CHECKS="$STATE/checks.rows.next"
+  fi
+fi
+malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
+
+# Which commit this host believes a change request is at, which is not necessarily
+# where the branch is: GitHub records that when it *processes* a push rather than
+# when the push returns, and renders the rollup from that head's checks. A world
+# that says nothing here is a host that never noticed, which is the recorded head
+# for ever; one that does says so in readings of the rollup, the same unit the
+# rollup's own flip above is counted in.
+head_seen() {
+  local recorded="$1" branch="$2"
+  if [ -f "$STATE/head-noticed-after" ] \
+    && [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+         -gt "$(cat "$STATE/head-noticed-after")" ]; then
+    git --git-dir "$ORIGIN" rev-parse "refs/heads/$branch" 2>/dev/null || printf '%s' "$recorded"
+    return
+  fi
+  printf '%s' "$recorded"
+}
+
+# What a credential GitHub will not let read a change request's check runs is told,
+# in the two shapes it is told it: the GraphQL rollup names the node it would not
+# produce, and the REST endpoints answer 403. Both are refusals, and neither says
+# there are no checks.
+refused_graphql() {
+  printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup.nodes.0.commit.statusCheckRollup.contexts.nodes.0)\n' >&2
+  exit 1
+}
+
+# Whether this world's credential may read check runs at all. `actions-only` is the
+# fine-grained token the real tier runs under: it reads the Actions API and the
+# repository's rulesets, and nothing that resolves a check run.
+readable_rollup() {
+  case "$malformed" in
+    checks-refused|actions-only*|misleading-refusal) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# One job's log, addressed by the job's **id** — the id a row has in this world,
+# which is what both `gh run view --job` and the Actions API answer to.
+#
+# The only answer here that is content rather than this host's own words, so the
+# only one the escape guard can fire on. It fires on what the content carries, the
+# way `gh` does, rather than on having been asked.
+job_log() {
+  local want="$1" name source
+  if [ -f "$STATE/no-logs" ]; then
+    printf 'this repository keeps its check logs to itself\n' >&2
+    exit 1
+  fi
+  name="$(awk -F'|' -v want="$want" 'NF && ++row == want { print $1 }' "$CHECKS" 2>/dev/null || printf '')"
+  if [ -z "$name" ]; then
+    printf 'could not find any jobs with ID %s\n' "$want" >&2
+    exit 1
+  fi
+  source="$STATE/log-$name.txt"
+  if [ ! -f "$source" ]; then
+    source="$STATE/rendered-log"
+    printf 'the host log for check %s\n' "$name" >"$source"
+  fi
+  if [ -f "$STATE/guards-escapes" ] && [ "$allow_escapes" = "0" ] \
+    && LC_ALL=C grep -q "$(printf '\033')" "$source"; then
+    printf 'the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway\n' >&2
+    exit 1
+  fi
+  cat "$source"
+}
+
+command="${1:-}"; shift || true
+
+case "$command" in
+  api)
+    path="${1:-}"; shift || true
+    query=""
+    case "$path" in
+      *\?*) query="${path#*\?}"; path="${path%%\?*}" ;;
+    esac
+    if [ "$path" = "user" ]; then
+      printf 'tester\n'
+      exit 0
+    fi
+    # Everything below is GitHub's REST API: the Actions endpoints and the
+    # repository's rulesets, which is what a token that may not resolve a check run
+    # is left with. `checks-refused` is the credential that may not read those
+    # either, and it declines here the way the API declines.
+    if [ "$malformed" = "checks-refused" ]; then
+      printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
+      exit 1
+    fi
+    case "$path" in
+      */actions/runs)
+        head_sha="${query#*head_sha=}"; head_sha="${head_sha%%&*}"
+        runs=0
+        for record in "$STATE"/pr-*.env; do
+          [ -e "$record" ] || continue
+          # Through the same lag the change request's own head is reported through:
+          # GitHub attaches a workflow run to a commit when it processes the push,
+          # so a run on the head this host has not noticed yet is a run it does not
+          # report either.
+          if ( . "$record"; [ "$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")" = "$head_sha" ] ); then runs=1; fi
+        done
+        if [ "$runs" = "0" ]; then
+          # No workflow has run on that commit, which is what a commit nothing was
+          # opened against reports.
+          printf '{"total_count":0,"workflow_runs":[]}\n'
+          exit 0
+        fi
+        # A run whose own record says it ran against something that is not a commit
+        # hash. The commit a job's check is attached to is taken off this field
+        # rather than off the query, so this is the one place that answer can arrive
+        # malformed on the Actions path.
+        if [ "$malformed" = "actions-only-run-head-not-a-commit" ]; then
+          head_sha="the tip of feature/x"
+        fi
+        printf '{"total_count":1,"workflow_runs":[{"id":1,"head_sha":"%s","status":"completed"}]}\n' "$head_sha"
+        exit 0 ;;
+      */actions/runs/*/jobs)
+        # The same rows the rollup is rendered from, as the jobs of that one run —
+        # so what this host reports through either source and what it acts on when
+        # asked to merge cannot disagree. A job's id is its row, which is the id
+        # `gh run view --job` answers to as well, and `html_url` is the same address
+        # the rollup reports that check's `detailsUrl` as: one check, one place on
+        # the host, whichever source a credential can read it from.
+        slug="${path#repos/}"; slug="${slug%%/actions/*}"
+        rows=""; separator=""; row=0; entry=""
+        while IFS='|' read -r name status conclusion required; do
+          [ -n "$name" ] || continue
+          row=$((row + 1))
+          if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
+          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\"}"
+          separator=","
+        done <"$CHECKS" 2>/dev/null || true
+        total="$row"
+        # A page that held entries back. The listing says how many there are, and a
+        # build that read the short list as the whole answer would wait for a check
+        # it was never shown.
+        if [ "$malformed" = "actions-only-truncated" ]; then total=$((row + 1)); fi
+        printf '{"total_count":%s,"jobs":[%s]}\n' "$total" "$rows"
+        exit 0 ;;
+      */actions/jobs/*/logs)
+        job="${path%/logs}"; job="${job##*/}"
+        job_log "$job"
+        exit 0 ;;
+      */branches/*/protection/required_status_checks)
+        # Classic branch protection, the second way GitHub protects a branch and the
+        # one a credential without administration rights is refused. Unset, the
+        # branch has none, which GitHub says as a 404 that is an answer.
+        if [ "$malformed" = "classic-protection-refused" ]; then
+          printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
+          exit 1
+        fi
+        if [ ! -f "$STATE/classic-protection" ]; then
+          printf 'gh: Branch not protected (HTTP 404)\n' >&2
+          exit 1
+        fi
+        contexts=""; separator=""
+        while IFS= read -r context; do
+          [ -n "$context" ] || continue
+          contexts="$contexts$separator\"$context\""
+          separator=","
+        done <"$STATE/classic-protection"
+        printf '{"strict":false,"contexts":[%s],"checks":[]}\n' "$contexts"
+        exit 0 ;;
+      */rules/branches/*)
+        case "$malformed" in
+          actions-only-rules-not-a-list)
+            printf '{"rules":[]}\n'
+            exit 0 ;;
+          actions-only-rules-unsaid)
+            # A ruleset that says it requires status checks and will not say which.
+            printf '[{"type":"required_status_checks","parameters":{}}]\n'
+            exit 0 ;;
+        esac
+        contexts=""; separator=""
+        while IFS='|' read -r name status conclusion required; do
+          [ -n "$name" ] || continue
+          [ "$required" = "true" ] || continue
+          contexts="$contexts$separator{\"context\":\"$name\",\"integration_id\":15368}"
+          separator=","
+        done <"$CHECKS" 2>/dev/null || true
+        if [ -z "$contexts" ]; then
+          # A repository with no ruleset requiring anything, which is what the
+          # scratch repository the real tier runs against answers.
+          printf '[]\n'
+          exit 0
+        fi
+        printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[%s]}}]\n' "$contexts"
+        exit 0 ;;
+    esac
+    printf 'fake gh: unsupported api path %s\n' "$path" >&2
+    exit 1
+    ;;
+  run)
+    # `gh run view --log --job` addresses a job by its **id**, never by a check's
+    # name, so this answers to the id `pr checks` reported for that row and to
+    # nothing else — a caller that passed a name would fail here as it does against
+    # the real host.
+    job=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --job) job="${2:-}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    job_log "$job"
+    exit 0
+    ;;
+  pr) ;;
+  *)
+    printf 'fake gh: unsupported command %s\n' "$command" >&2
+    exit 1
+    ;;
+esac
+
+subcommand="${1:-}"; shift || true
+number=""
+case "$subcommand" in
+  view|merge|checks|ready|edit)
+    number="${1:-}"; shift || true
+    # The number is what selects the per-change state this subcommand reads, so it
+    # is argv reaching a path. Refuse anything but digits here, at the one place the
+    # value arrives, rather than letting it name a file further down.
+    case "$number" in
+      ""|*[!0-9]*)
+        printf 'fake gh: pr %s addresses a change by its number, not %s\n' "$subcommand" "$number" >&2
+        exit 1 ;;
+    esac
+    ;;
+esac
+
+repo=""; head=""; base=""; title=""; body=""; auto=0; json_fields=""; only_required=0
+draft=0; body_file=""; titled=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) repo="${2:-}"; shift 2 ;;
+    --head) head="${2:-}"; shift 2 ;;
+    --base) base="${2:-}"; shift 2 ;;
+    --title) title="${2:-}"; titled=1; shift 2 ;;
+    --body) body="${2:-}"; shift 2 ;;
+    --body-file) body_file="${2:-}"; shift 2 ;;
+    --json) json_fields="${2:-}"; shift 2 ;;
+    --state) shift 2 ;;
+    --auto) auto=1; shift ;;
+    --draft) draft=1; shift ;;
+    --required) only_required=1; shift ;;
+    *) shift ;;
+  esac
+done
+
+# The rollup and the merge decision are rendered from the same rows, so what the
+# host reports and what it acts on cannot disagree.
+#
+# It carries no `isRequired`, because `gh pr view` carries none: its rollup says
+# what a check is called, where it is, and how it ended, and nothing about whether
+# it blocks anything. Emitting one here is what let this crate read a field the
+# real host has never returned. Whether a check blocks is answered by
+# `pr checks --required`, below.
+rollup() {
+  printf '['
+  local separator="" name status conclusion required entry row=0
+  while IFS='|' read -r name status conclusion required; do
+    [ -n "$name" ] || continue
+    row=$((row + 1))
+    if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
+    # `detailsUrl` is where a check run says it is, and it is the same address
+    # `pr checks` reports as that row's `link` — one check, one place on the host,
+    # whichever call asked about it.
+    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s"}' \
+      "$separator" "$name" "$status" "$entry" "$repo" "$row"
+    separator=","
+  done <"$CHECKS" 2>/dev/null || true
+  printf ']'
+}
+
+verdict() {
+  local name status conclusion required total settled red
+  total=0; settled=0; red=0
+  while IFS='|' read -r name status conclusion required; do
+    [ -n "$name" ] || continue
+    [ "$required" = "true" ] || continue
+    total=$((total + 1))
+    [ "$status" = "completed" ] || continue
+    settled=$((settled + 1))
+    case "$conclusion" in
+      success|skipped|neutral) ;;
+      *) red=1 ;;
+    esac
+  done <"$CHECKS" 2>/dev/null || true
+  if [ "$red" = "1" ]; then printf 'red'
+  elif [ "$total" -gt 0 ] && [ "$total" = "$settled" ]; then printf 'green'
+  else printf 'pending'; fi
+}
+
+# One value as a JSON string, escaped the way `gh` prints its `--json` fields: a
+# change request's title and body are the two answers here that are prose rather
+# than this host's own words, and a body carries newlines and quotes.
+json_string() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
+
+# What one change request's record holds as its title or its body, as a JSON string,
+# with the one newline `printf '%s\n'` wrote after it taken back off — exactly one,
+# so a body that ends in a blank line still reads as one. Read and encoded in one
+# function, because a command substitution between the two would strip the trailing
+# newlines the body really carries.
+json_recorded() {
+  local text
+  text="$(cat "$1"; printf x)"
+  text="${text%x}"
+  json_string "${text%$'\n'}"
+}
+
+# Perform the merge of one change request, with real git against the real bare
+# origin, and record it as merged.
+land_pr() {
+  . "$STATE/pr-$1.env"
+  work="$STATE/merge-$PR_NUMBER"
+  rm -rf "$work"
+  git clone -q "$ORIGIN" "$work"
+  git -C "$work" checkout -q "$PR_BASE"
+  git -C "$work" merge -q --squash "origin/$PR_HEAD"
+  git -C "$work" commit -q -m "$(cat "$STATE/pr-$PR_NUMBER.title") (#$PR_NUMBER)"
+  git -C "$work" push -q origin "$PR_BASE"
+  oid="$(git -C "$work" rev-parse HEAD)"
+  {
+    printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
+    printf 'PR_URL=%s\n' "$PR_URL"
+    printf 'PR_STATE=MERGED\n'
+    printf 'PR_HEAD=%q\n' "$PR_HEAD"
+    printf 'PR_BASE=%q\n' "$PR_BASE"
+    printf 'PR_HEAD_SHA=%s\n' "$PR_HEAD_SHA"
+    printf 'PR_MERGE_COMMIT=%s\n' "$oid"
+  } >"$STATE/pr-$PR_NUMBER.env"
+  rm -rf "$work"
+}
+
+# GitHub's native auto-merge, on GitHub's own clock: a change this host was asked to
+# hold lands the moment its required checks go green, whether or not anybody asks it
+# to again. Every call is such a moment, which is what lets a publication that is
+# watching the change observe the landing without a second process driving it.
+settle_auto_merges() {
+  local armed pr
+  for armed in "$STATE"/auto-*; do
+    [ -e "$armed" ] || continue
+    pr="${armed##*/auto-}"
+    [ -f "$STATE/pr-$pr.env" ] || continue
+    [ ! -f "$STATE/closed-$pr" ] || continue
+    [ ! -f "$STATE/refuse-merge" ] || continue
+    [ "$(verdict)" = "green" ] || continue
+    ( . "$STATE/pr-$pr.env"; [ "$PR_STATE" = "OPEN" ] ) || continue
+    # Silenced, because this runs *inside* whatever call happened to be the moment
+    # the host landed it: `git merge --squash` prints a line even under `-q`, and on
+    # a `pr view --json` call that line would arrive ahead of the JSON.
+    ( land_pr "$pr" ) >/dev/null
+  done
+}
+# On the calls that *observe* the change request, never on the one that arms the
+# hold: GitHub lands a held change between calls, and landing it during the very
+# call that asked it to hold would leave that call merging something already merged.
+case "$subcommand" in
+  view|checks|list) settle_auto_merges ;;
+esac
+
+case "$subcommand" in
+  checks)
+    # Where `gh` reports whether a check blocks the merge, and where each check
+    # ran. `gh pr view`'s rollup says neither, which is why this is a second call.
+    . "$STATE/pr-$number.env"
+    # It resolves the same check runs the rollup does, so a credential refused
+    # there is refused here — this command is not a second way in.
+    readable_rollup || refused_graphql
+    if [ -f "$STATE/no-checks-yet" ]; then
+      # What `gh` says about a head nothing has reported on yet, on every form of
+      # this call — deliberately one word away from the "no required checks" wording
+      # further down, which says the opposite: that the repository requires none.
+      printf "no checks reported on the '%s' branch\n" "$PR_HEAD" >&2
+      exit 1
+    fi
+    if [ "$only_required" = "0" ]; then
+      case "$malformed" in
+        no-check-list)
+          printf 'the host will not list the checks on this change request\n' >&2
+          exit 1 ;;
+        no-job)
+          # It reported the check and will not say where it ran.
+          printf '[]\n'
+          exit 0 ;;
+        jobless-link)
+          printf '[{"name":"%s","state":"COMPLETED","link":"https://github.com/%s/actions/runs/1"}]\n' \
+            "$(awk -F'|' 'NF { print $1; exit }' "$CHECKS")" "$repo"
+          exit 0 ;;
+        non-list)
+          # Well-formed JSON that is not a list of checks: an answer nothing can be
+          # searched for a job, as distinct from one that lists no job.
+          printf '{"checks":[]}\n'
+          exit 0 ;;
+      esac
+    fi
+    if [ "$only_required" = "1" ] && [ -f "$STATE/partial-checks" ]; then
+      # A host that will not say which of its checks block the merge. Deliberately
+      # not the "no required checks" wording, which means the opposite: that the
+      # repository requires none and the host knows it.
+      printf 'the host declines to say which of its checks block the merge\n' >&2
+      exit 1
+    fi
+    rows=""; separator=""; row=0; unsettled=0
+    while IFS='|' read -r name status conclusion required; do
+      [ -n "$name" ] || continue
+      # Counted over every row, filtered or not, so the job id a row reports is the
+      # one `gh run view --job` answers to.
+      row=$((row + 1))
+      if [ "$only_required" = "1" ] && [ "$required" != "true" ]; then continue; fi
+      [ "$status" = "completed" ] || unsettled=1
+      rows="$rows$separator{\"name\":\"$name\",\"state\":\"$status\",\"link\":\"https://github.com/$repo/actions/runs/1/job/$row\"}"
+      separator=","
+    done <"$CHECKS" 2>/dev/null || true
+    if [ "$only_required" = "1" ] && [ -z "$rows" ]; then
+      printf "no required checks reported on the '%s' branch\n" "$PR_HEAD" >&2
+      exit 1
+    fi
+    printf '[%s]\n' "$rows"
+    # gh reports a non-zero status when a check it has just printed has not
+    # settled. The rollup above is still the answer, and a caller that read this
+    # as a failure would be unable to watch a check at all.
+    [ "$unsettled" = "0" ] || exit 8
+    exit 0
+    ;;
+  list)
+    printf '['
+    separator=""
+    for record in "$STATE"/pr-*.env; do
+      [ -e "$record" ] || continue
+      . "$record"
+      [ "$PR_STATE" = "OPEN" ] || continue
+      # Somebody closed it without merging it, which is a thing that happens to a
+      # change request and leaves the branch exactly where it was.
+      [ ! -f "$STATE/closed-$PR_NUMBER" ] || continue
+      [ "$PR_HEAD" = "$head" ] || continue
+      [ "$PR_BASE" = "$base" ] || continue
+      PR_HEAD_SHA="$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")"
+      case "$malformed" in
+        no-number)
+          printf '%s{"url":"%s","state":"%s","headRefOid":"%s"}' \
+            "$separator" "$PR_URL" "$PR_STATE" "$PR_HEAD_SHA"
+          separator=","
+          continue ;;
+        no-head)
+          printf '%s{"number":%s,"url":"%s","state":"%s"}' \
+            "$separator" "$PR_NUMBER" "$PR_URL" "$PR_STATE"
+          separator=","
+          continue ;;
+      esac
+      printf '%s{"number":%s,"url":"%s","state":"%s","headRefOid":"%s"}' \
+        "$separator" "$PR_NUMBER" "$PR_URL" "$PR_STATE" "$PR_HEAD_SHA"
+      separator=","
+    done
+    printf ']\n'
+    ;;
+  create)
+    case "$malformed" in
+      no-url)
+        printf 'created something, somewhere\n'
+        exit 0 ;;
+      url-names-no-change)
+        printf 'https://github.com/%s/pulls\n' "$repo"
+        exit 0 ;;
+    esac
+    next=1
+    while [ -f "$STATE/pr-$next.env" ]; do next=$((next + 1)); done
+    head_sha="$(git --git-dir "$ORIGIN" rev-parse "refs/heads/$head" 2>/dev/null || printf 'unknown')"
+    {
+      printf 'PR_NUMBER=%s\n' "$next"
+      printf 'PR_URL=https://github.com/%s/pull/%s\n' "$repo" "$next"
+      printf 'PR_STATE=OPEN\n'
+      # %q, because git lets a branch name carry a quote and this record is sourced.
+      printf 'PR_HEAD=%q\n' "$head"
+      printf 'PR_BASE=%q\n' "$base"
+      printf 'PR_HEAD_SHA=%s\n' "$head_sha"
+      printf 'PR_MERGE_COMMIT=\n'
+      printf 'PR_DRAFT=%s\n' "$draft"
+    } >"$STATE/pr-$next.env"
+    printf '%s\n' "$title" >"$STATE/pr-$next.title"
+    printf '%s\n' "$body" >"$STATE/pr-$next.body"
+    printf 'https://github.com/%s/pull/%s\n' "$repo" "$next"
+    ;;
+  view)
+    . "$STATE/pr-$number.env"
+    PR_HEAD_SHA="$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")"
+    # A host that answers with a head that is not a commit hash at all. The rollup
+    # is rendered from this same field, so what a check is attached to arrives
+    # malformed here and nowhere else on that path.
+    if [ "$malformed" = "head-not-a-commit" ]; then PR_HEAD_SHA="the tip of the branch"; fi
+    if [ -f "$STATE/closed-$number" ]; then PR_STATE=CLOSED; fi
+    # `gh` returns exactly the fields it was asked for, and so does this: a caller
+    # that reads a field out of an answer it never requested is a caller that works
+    # here and fails against the real host.
+    wanted() { case ",$json_fields," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+    merge_commit=null
+    if [ -n "$PR_MERGE_COMMIT" ]; then merge_commit="{\"oid\":\"$PR_MERGE_COMMIT\"}"; fi
+    case "$malformed" in
+      no-head)
+        printf '{"number":%s,"state":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":[]}\n' \
+          "$PR_NUMBER" "$PR_STATE"
+        exit 0 ;;
+      rollup-not-a-list)
+        printf '{"number":%s,"state":"%s","headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":"soon"}\n' \
+          "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA"
+        exit 0 ;;
+      no-state)
+        # Its checks are answered as usual, so the publication reaches the merge —
+        # which is the call that has to know whether the change is already merged.
+        printf '{"number":%s,"headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":%s}\n' \
+          "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
+        exit 0 ;;
+      misleading-refusal)
+        if wanted statusCheckRollup; then
+          printf 'GraphQL: another field said Resource not accessible while the checks service was unavailable\n' >&2
+          exit 1
+        fi
+        ;;
+      checks-refused|actions-only*)
+        # What real GitHub answers a credential the repository does not allow to read
+        # its checks: `gh pr view` fails *whole*, however much of what it was asked
+        # for the token could see. Every other field list is answered as usual, which
+        # is the point — a caller that asked only for what it reads is unaffected.
+        if wanted statusCheckRollup; then
+          refused_graphql
+        fi
+        ;;
+    esac
+    separator=""
+    printf '{'
+    if wanted number; then printf '%s"number":%s' "$separator" "$PR_NUMBER"; separator=","; fi
+    if wanted state; then printf '%s"state":"%s"' "$separator" "$PR_STATE"; separator=","; fi
+    if wanted mergeStateStatus; then printf '%s"mergeStateStatus":"CLEAN"' "$separator"; separator=","; fi
+    if wanted headRefOid; then printf '%s"headRefOid":"%s"' "$separator" "$PR_HEAD_SHA"; separator=","; fi
+    # A host that answers the call and says nothing about the draft state, which is
+    # not the same as saying it is not one: whether the change may be asked to merge
+    # rests on this field, so its absence is a refusal rather than a `false`.
+    if wanted isDraft && [ "$malformed" != "no-draft-state" ]; then
+      is_draft=false
+      # A draft the host was asked to make ready for review is not one any more,
+      # which is what makes lifting it observable and lifting it twice a no-op.
+      if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then is_draft=true; fi
+      printf '%s"isDraft":%s' "$separator" "$is_draft"; separator=","
+    fi
+    if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
+    # The description, as `gh pr edit` last left it or `gh pr create` opened it.
+    if wanted title; then printf '%s"title":%s' "$separator" "$(json_recorded "$STATE/pr-$number.title")"; separator=","; fi
+    if wanted body && [ "$malformed" != "no-description" ]; then printf '%s"body":%s' "$separator" "$(json_recorded "$STATE/pr-$number.body")"; separator=","; fi
+    if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
+    printf '}\n'
+    ;;
+  edit)
+    # `gh pr edit`: the body arrives as a file, because a body is prose that does not
+    # survive an argument vector, and the title only when the call replaces it. Both
+    # land in the same records `pr create` wrote, so `pr view` answers the description
+    # as it now stands whichever call wrote it.
+    . "$STATE/pr-$number.env"
+    if [ -f "$STATE/refuse-edit" ]; then
+      printf 'the host declines to edit %s\n' "$PR_URL" >&2
+      exit 1
+    fi
+    if [ -n "$body_file" ]; then
+      if [ ! -f "$body_file" ]; then
+        printf 'could not read body file %s\n' "$body_file" >&2
+        exit 1
+      fi
+      { cat "$body_file"; printf '\n'; } >"$STATE/pr-$number.body"
+    fi
+    if [ "$titled" = "1" ]; then printf '%s\n' "$title" >"$STATE/pr-$number.title"; fi
+    printf '%s\n' "$PR_URL"
+    ;;
+  ready)
+    . "$STATE/pr-$number.env"
+    if [ -f "$STATE/refuse-ready" ]; then
+      # A host that will not take the change out of its draft: the credential may
+      # not, or the host is having a bad day. Nothing is lifted.
+      printf 'the host declines to make %s ready for review\n' "$PR_URL" >&2
+      exit 1
+    fi
+    : >"$STATE/ready-$PR_NUMBER"
+    printf '%s is marked as "ready for review"\n' "$PR_URL"
+    ;;
+  merge)
+    . "$STATE/pr-$number.env"
+    if [ "$auto" = "1" ] && [ -f "$STATE/auto-merge-unavailable" ]; then
+      printf 'Auto-merge is not enabled for this repository\n' >&2
+      exit 1
+    fi
+    if [ "$auto" = "1" ] && [ "$(verdict)" != "green" ]; then
+      # Native auto-merge: the host holds the change and lands it when its own
+      # required checks pass. Nothing merges now, and the hold is recorded so a
+      # later call can land it the way GitHub would.
+      : >"$STATE/auto-$PR_NUMBER"
+      exit 0
+    fi
+    if [ -f "$STATE/refuse-merge" ]; then
+      # Accepted, and then nothing happens — the shape a caller cannot tell from a
+      # merge that worked without asking the host again.
+      exit 0
+    fi
+    ( land_pr "$PR_NUMBER" ) >/dev/null
+    ;;
+  *)
+    printf 'fake gh: unsupported pr subcommand %s\n' "$subcommand" >&2
+    exit 1
+    ;;
+esac
