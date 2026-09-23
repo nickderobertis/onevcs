@@ -163,8 +163,10 @@ contradicts the contract is a contract bug to report, not a caption to fix.
   workflow exports it per arch lane.
 - `shots/baseline/<arch>.json` — the committed digest baseline (no images).
 - `docs/screenshots/*.svg` and `docs/screenshots/demo.gif` — the committed copies the
-  README embeds. They live in this repository and nowhere else; no gallery is published
-  from here today.
+  README embeds, and the only images this repository carries. Nothing here links to a
+  published gallery: screencomp's reusable workflow builds one on a `gh-pages` branch,
+  but serving it is a repository setting the owner turns on, so there is no URL to
+  write down and none is written down.
 
 ## Commands
 
