@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0](https://github.com/nickderobertis/onevcs/compare/v0.31.2...v0.32.0) - 2026-09-23
+
+### Added
+
+- *(event)* [**breaking**] own the event vocabulary and Phase, off the bus agent crate ([#205](https://github.com/nickderobertis/onevcs/pull/205))
+
 ## [0.31.2](https://github.com/nickderobertis/onevcs/compare/v0.31.1...v0.31.2) - 2026-09-23
 
 ### Documentation
