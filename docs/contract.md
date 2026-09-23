@@ -2733,6 +2733,9 @@ Error::UnresolvableReference { reference: String, reason: String }
     // reason: exactly what `Invalid` carried; the CLI prints it under the same
     // `invalid input:` prefix and exits 2
 ```
+
+Event kinds added: none.
+
 ### Session state this host cannot read is refused, never read as state it does not have
 
 The listing every session read is decided from used to answer an **empty list** where
