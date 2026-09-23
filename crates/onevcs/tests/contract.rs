@@ -3524,7 +3524,8 @@ fn the_amendment_declares_the_operations_the_command_line_renders() {
     let declarations = amendment_declaring("pub fn repositories");
     for declared in [
         "pub fn register_checkout(path: &Path, origin: Option<&Url>) -> Result<Registration>;",
-        "pub fn repositories(providers: &Providers<'_>, audit_gates: bool)",
+        "pub fn repositories(providers: &Providers<'_>, audit: GateAudit)",
+        "pub enum GateAudit { Skipped, Asked }",
         "-> Result<Vec<RegisteredRepository>>;",
         "pub fn resolve_repository(providers: &Providers<'_>, repo: &str) \
          -> Result<ResolvedRepository>;",
@@ -3536,12 +3537,17 @@ fn the_amendment_declares_the_operations_the_command_line_renders() {
         "pub fn import_branch(request: &ImportRequest) -> Result<Imported>;",
         "pub fn integrate(request: &IntegrateRequest) -> Result<Integration>;",
         "pub fn sync(branch: Option<&str>) -> Result<Synced>;",
-        "pub fn sweep(dry_run: bool, min_age: Duration) -> Result<SweepReport>;",
+        "pub fn sweep(sweeping: Sweeping, min_age: Duration) -> Result<SweepReport>;",
+        "pub enum Sweeping { Rehearse, Reclaim }",
+        "pub struct IntegrateRequest { pub branches: Vec<String>, pub push: BasePush }",
+        "pub enum BasePush { Push, Keep }",
+        "pub enum TrailerPrefixSource { RulesFile, BuiltIn }",
         "pub fn read_artifact(id: &ArtifactId) -> Result<String>;",
         "pub fn rules_check(repo: &str) -> Result<RulesCheck>;",
         "impl EventLines {",
         "pub fn open(session: &SessionToken, filter: Option<EventFilter>) -> Result<Self>;",
         "pub fn read(&mut self) -> Result<Vec<EventLine>>;",
+        "pub fn session(&self) -> &SessionToken;",
         "pub struct EventLine { pub text: String, pub envelope: Option<Envelope> }",
     ] {
         assert!(

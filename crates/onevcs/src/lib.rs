@@ -115,9 +115,10 @@ pub use landed::{Landed, LandingEvidence};
 pub use ops::{
     import_branch, integrate, publish_branch, read_artifact, recover, register_checkout,
     registered_identities, repositories, resolve_repository, rules_check, sweep, sync, work_status,
-    BranchPublishRequest, CheckoutAudit, ImportRequest, IntegrateRequest, MatchedRule,
-    MergePathCoverage, RecoverRequest, RegisteredCheckout, RegisteredRepository, Registration,
-    RequiredChecksAnswer, ResolvedPolicy, ResolvedRepository, RulesCheck, StatusReport, Synced,
+    BasePush, BranchPublishRequest, CheckoutAudit, GateAudit, ImportRequest, IntegrateRequest,
+    MatchedRule, MergePathCoverage, RecoverRequest, RegisteredCheckout, RegisteredRepository,
+    Registration, RequiredChecksAnswer, ResolvedPolicy, ResolvedRepository, RulesCheck,
+    StatusReport, Sweeping, Synced, TrailerPrefixSource,
 };
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,

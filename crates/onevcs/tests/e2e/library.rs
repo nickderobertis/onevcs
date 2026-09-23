@@ -5871,7 +5871,8 @@ fn the_registry_operations_answer_the_values_the_registry_commands_render() {
 
     // The listing, with and without the audit. Without it nothing reads the rules
     // file and no host is asked, so neither answer is invented.
-    let plain = onevcs::repositories(&Providers::real(), false).expect("the listing");
+    let plain =
+        onevcs::repositories(&Providers::real(), onevcs::GateAudit::Skipped).expect("the listing");
     assert_eq!(plain.len(), 1);
     assert_eq!(plain[0].identity, "github.com/acme-corp/hosted");
     assert_eq!(plain[0].required_checks, None);
@@ -5895,7 +5896,8 @@ fn the_registry_operations_answer_the_values_the_registry_commands_render() {
             required: false,
         },
     ]);
-    let audited = onevcs::repositories(&Providers::real(), true).expect("the audited listing");
+    let audited = onevcs::repositories(&Providers::real(), onevcs::GateAudit::Asked)
+        .expect("the audited listing");
     match audited[0]
         .required_checks
         .as_ref()
@@ -5955,7 +5957,10 @@ fn the_registry_operations_answer_the_values_the_registry_commands_render() {
             .as_deref(),
         Some("acme-corp")
     );
-    assert!(!checked.trailer_prefix_from_rules);
+    assert_eq!(
+        checked.trailer_prefix_source,
+        onevcs::TrailerPrefixSource::BuiltIn
+    );
     assert!(!checked.trailer_prefix.is_empty());
 
     // And the refusal: a repository nothing resolves is an `Err` from the operation
@@ -6101,7 +6106,7 @@ fn the_branch_operations_answer_values_where_their_commands_print_prose() {
     // over the branch that was imported above.
     let integrated = onevcs::integrate(&onevcs::IntegrateRequest {
         branches: vec!["feature/stranded".to_owned()],
-        push: false,
+        push: onevcs::BasePush::Keep,
     })
     .expect("the train runs");
     assert_eq!(&*integrated.base, "main");
@@ -6275,8 +6280,11 @@ fn the_status_and_sweep_reads_answer_the_values_their_commands_render() {
     );
 
     // The sweep, decided but not performed: its text form is the command's output.
-    let report =
-        onevcs::sweep(true, std::time::Duration::from_secs(24 * 3600)).expect("the sweep decides");
+    let report = onevcs::sweep(
+        onevcs::Sweeping::Rehearse,
+        std::time::Duration::from_secs(24 * 3600),
+    )
+    .expect("the sweep decides");
     let printed = stdout_of(|| {
         assert_eq!(run(&["onevcs", "sweep", "--dry-run"], Providers::real()), 0);
     });
@@ -6333,5 +6341,62 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
     assert!(
         origin_tip(&world, &origin, "feature/finished").is_some(),
         "and the branch the change request was opened from is on the origin"
+    );
+
+    // …and the other half of the pairing: work a step was interrupted in the middle
+    // of, committed behind an unattested incomplete-step marker. `publish-branch`
+    // refuses it — publishing it would mean attesting that a green verification
+    // cleared what stopped — and `recover` is the verb that writes that attestation.
+    let interrupted = open(&Git, "feature/interrupted");
+    std::fs::write(interrupted.worktree.join("work.txt"), "half-done\n")
+        .expect("work left in the tree");
+    Git.preserve(&interrupted, onevcs::Provenance::IncompleteStep)
+        .expect("the interrupted work is preserved behind its marker");
+    onevcs::close_session(&Providers::real(), &interrupted.token).expect("the session closes");
+
+    let refused = onevcs::publish_branch(
+        &Providers::real(),
+        &onevcs::BranchPublishRequest {
+            repo: checkout.clone(),
+            branch: "feature/interrupted".to_owned(),
+            title: None,
+            body: None,
+            policy: None,
+        },
+    )
+    .expect_err("completed work is what publish-branch takes");
+    assert!(
+        refused.to_string().contains("incomplete provenance"),
+        "{refused}"
+    );
+
+    // …and the report says so of it before the recovery, which is what makes the
+    // assertion after it mean anything.
+    assert!(
+        onevcs::recoverable(&Scope::All)
+            .expect("the report")
+            .iter()
+            .any(|row| row.branch.branch == "feature/interrupted"
+                && row.branch.provenance == onevcs::Provenance::IncompleteStep),
+        "the branch is interrupted work until something attests it"
+    );
+
+    let outcome = onevcs::recover(
+        &Providers::real(),
+        &onevcs::RecoverRequest {
+            repo: checkout,
+            branch: "feature/interrupted".to_owned(),
+            title: Some(subject("feat: land the interrupted work")),
+            body: None,
+        },
+    )
+    .expect("the interrupted branch recovers");
+    assert!(
+        matches!(outcome, PublishOutcome::ChangeOpen(_)),
+        "recovery publishes under the identity's own policy: {outcome:?}"
+    );
+    assert!(
+        origin_tip(&world, &origin, "feature/interrupted").is_some(),
+        "the recovered branch is on the origin, under the change request it opened"
     );
 }

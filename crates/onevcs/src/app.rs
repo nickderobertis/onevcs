@@ -26,8 +26,8 @@ use crate::host::ProtectionSource;
 use crate::import::Wrote;
 use crate::landed::Landed;
 use crate::ops::{
-    BranchPublishRequest, ImportRequest, IntegrateRequest, MergePathCoverage, RecoverRequest,
-    RequiredChecksAnswer, ResolvedPolicy,
+    BasePush, BranchPublishRequest, GateAudit, ImportRequest, IntegrateRequest, MergePathCoverage,
+    RecoverRequest, RequiredChecksAnswer, ResolvedPolicy, Sweeping, TrailerPrefixSource,
 };
 use crate::preserve::Preservation;
 use crate::providers::Providers;
@@ -348,7 +348,13 @@ fn spell_approvals(approvals: crate::rules::Approvals) -> &'static str {
 /// what each identity's host requires and what covers each checkout's merge path are
 /// values the operation resolved, and this turns them into lines.
 fn repos(args: &ReposArgs, providers: &Providers<'_>) -> Result<u8> {
-    let listed = crate::repositories(providers, args.audit_gates)?;
+    let listed = crate::repositories(
+        providers,
+        match args.audit_gates {
+            true => GateAudit::Asked,
+            false => GateAudit::Skipped,
+        },
+    )?;
     if listed.is_empty() {
         println!("no repositories registered");
         return Ok(0);
@@ -1261,7 +1267,10 @@ fn import_branch(args: &ImportArgs) -> Result<u8> {
 fn integrate_branches(args: &IntegrateArgs) -> Result<u8> {
     let outcome = crate::integrate(&IntegrateRequest {
         branches: args.branches.clone(),
-        push: args.push,
+        push: match args.push {
+            true => BasePush::Push,
+            false => BasePush::Keep,
+        },
     })?;
     println!("Integration train for {}:", outcome.base);
     for branch in &outcome.branches {
@@ -1305,7 +1314,13 @@ fn sync(args: &SyncArgs) -> Result<u8> {
 /// The two formats are two renderings of the one report, so a consumer reading the
 /// JSON and an operator reading the prose are told the same decisions.
 fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
-    let report = crate::sweep(args.dry_run, args.min_age_hours)?;
+    let report = crate::sweep(
+        match args.dry_run {
+            true => Sweeping::Rehearse,
+            false => Sweeping::Reclaim,
+        },
+        args.min_age_hours,
+    )?;
     match args.format {
         SweepFormat::Json => print_json(&report),
         SweepFormat::Text => {
@@ -1409,9 +1424,9 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
     println!(
         "trailer_prefix: {} (from {})",
         checked.trailer_prefix,
-        match checked.trailer_prefix_from_rules {
-            true => "the rules file",
-            false => "the default",
+        match checked.trailer_prefix_source {
+            TrailerPrefixSource::RulesFile => "the rules file",
+            TrailerPrefixSource::BuiltIn => "the default",
         }
     );
     Ok(0)

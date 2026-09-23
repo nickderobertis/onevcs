@@ -313,7 +313,7 @@ pub struct EventLine {
 /// does with a loop around it.
 #[derive(Debug)]
 pub struct EventLines {
-    session: String,
+    session: SessionToken,
     reader: Reader,
     filter: Option<EventFilter>,
 }
@@ -322,10 +322,16 @@ impl EventLines {
     /// Open the stream a session token names, optionally through a filter.
     pub fn open(session: &SessionToken, filter: Option<EventFilter>) -> Result<Self> {
         Ok(Self {
-            session: session.0.clone(),
+            session: session.clone(),
             reader: Reader::open(&session.0)?,
             filter,
         })
+    }
+
+    /// The session whose stream this reads, so a caller following several at once
+    /// can say whose lines it is holding.
+    pub fn session(&self) -> &SessionToken {
+        &self.session
     }
 
     /// The lines appended since the last call, in the order they were written.
@@ -337,7 +343,7 @@ impl EventLines {
                 // Unfiltered, nothing here is judged and the line is handed on as the
                 // file's own bytes; the envelope is offered where it could be read and
                 // is not what the answer depends on.
-                let envelope = match attributed_record(record, &self.session) {
+                let envelope = match attributed_record(record, &self.session.0) {
                     Ok(Line::Known(known)) => Some(known.envelope),
                     Ok(Line::Unknown(_)) | Err(_) => None,
                 };
@@ -347,7 +353,7 @@ impl EventLines {
             // Read as a value, and therefore checked as one — by the same seam
             // `EventStream` reads through, so the two surfaces refuse the same line for
             // the same reason.
-            let Line::Known(known) = attributed_record(record, &self.session)? else {
+            let Line::Known(known) = attributed_record(record, &self.session.0)? else {
                 continue;
             };
             if !filter.matches(&known.envelope) {

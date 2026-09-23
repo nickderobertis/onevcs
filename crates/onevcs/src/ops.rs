@@ -174,19 +174,33 @@ pub enum RequiredChecksAnswer {
     },
 }
 
+/// Whether a listing carries the gate audit, which is what `--audit-gates` asks for.
+///
+/// Named rather than a flag, because the two answers are different documents: one is
+/// the registry as it stands, and the other reaches a host and reads this host's
+/// rules — a distinction a caller should have to spell at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateAudit {
+    /// The registry as it stands: no rules read, no host asked.
+    Skipped,
+    /// Each identity's required checks, and each checkout's policy and what covers
+    /// its merge path.
+    Asked,
+}
+
 /// Every registered repository, in the order `onevcs repos` lists them.
 ///
-/// `audit_gates` is the command's own `--audit-gates`: with it, each identity
-/// carries what its host requires and each checkout the policy it publishes under
-/// and what covers its merge path. Without it nothing reads the rules file and no
-/// host is asked — the answer is the registry as it stands.
+/// With [`GateAudit::Asked`], each identity carries what its host requires and each
+/// checkout the policy it publishes under and what covers its merge path. With
+/// [`GateAudit::Skipped`] nothing reads the rules file and no host is asked — the
+/// answer is the registry as it stands.
 pub fn repositories(
     providers: &Providers<'_>,
-    audit_gates: bool,
+    audit: GateAudit,
 ) -> Result<Vec<RegisteredRepository>> {
     let registry = store::load()?;
     let mut listed = listing(&registry);
-    if !audit_gates {
+    if audit == GateAudit::Skipped {
         return Ok(listed);
     }
     // The audit is about each identity's merge path, and the merge path is the
@@ -444,13 +458,23 @@ pub fn import_branch(request: &ImportRequest) -> Result<Imported> {
     )
 }
 
+/// What the train does with the base once it has advanced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BasePush {
+    /// Push it, which is what the repository's own `pre-push` hook rules on —
+    /// `onevcs integrate --push`.
+    Push,
+    /// Leave it in the checkout, unpushed and unverified.
+    Keep,
+}
+
 /// Which branches to merge into their base, in order.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegrateRequest {
     /// The branches to take, in the order they are to be taken.
     pub branches: Vec<String>,
-    /// Whether to push the advanced base, which is what the `pre-push` hook rules on.
-    pub push: bool,
+    /// What becomes of the base the train advanced.
+    pub push: BasePush,
 }
 
 /// Merge finished branches into their base, in order.
@@ -464,7 +488,12 @@ pub fn integrate(request: &IntegrateRequest) -> Result<Integration> {
     let resolution = store::resolve_here(&registry)?;
     let token = format!("integrate-{}", policy::branch_slug(&resolution.alias));
     let mut stream = Stream::open(&token)?;
-    crate::integrate::run(&resolution, &request.branches, request.push, &mut stream)
+    crate::integrate::run(
+        &resolution,
+        &request.branches,
+        request.push == BasePush::Push,
+        &mut stream,
+    )
 }
 
 /// What one fast-forward of a publication checkout did.
@@ -530,15 +559,27 @@ pub fn sync(branch: Option<&str>) -> Result<Synced> {
     })
 }
 
+/// Whether a sweep performs what it decided, which is what `--dry-run` asks.
+///
+/// Named rather than a flag, because the difference between the two is whether
+/// directories are removed, and a call site that spells it `true` says nothing about
+/// which way round that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sweeping {
+    /// Decide everything, remove nothing.
+    Rehearse,
+    /// Decide, and reclaim what was decided.
+    Reclaim,
+}
+
 /// Reclaim the publication workspaces this host has finished with.
 ///
-/// The library form of `onevcs sweep`. `dry_run` decides everything it would do
-/// without doing any of it; `min_age` is how long evidence outlives the failure
-/// that produced it. Every outcome it reports is a decision — a directory somebody
-/// else owns is an expected outcome of a shared state root rather than a failure —
-/// so an `Err` here means the sweep could not run at all.
-pub fn sweep(dry_run: bool, min_age: Duration) -> Result<SweepReport> {
-    crate::sweep::run(dry_run, min_age)
+/// The library form of `onevcs sweep`. `min_age` is how long evidence outlives the
+/// failure that produced it. Every outcome it reports is a decision — a directory
+/// somebody else owns is an expected outcome of a shared state root rather than a
+/// failure — so an `Err` here means the sweep could not run at all.
+pub fn sweep(sweeping: Sweeping, min_age: Duration) -> Result<SweepReport> {
+    crate::sweep::run(sweeping == Sweeping::Rehearse, min_age)
 }
 
 /// Read one stored artifact.
@@ -613,10 +654,19 @@ pub struct RulesCheck {
     pub policy: ResolvedPolicy,
     /// The git trailer key provenance is written and read under.
     pub trailer_prefix: String,
-    /// Whether the rules file set that prefix, or it is the built-in default. It is
-    /// not part of the matched policy: one vocabulary reads and writes every
-    /// repository's provenance.
-    pub trailer_prefix_from_rules: bool,
+    /// What set that prefix. It is not part of the matched policy: one vocabulary
+    /// reads and writes every repository's provenance, so it is resolved once, from
+    /// the file or the default.
+    pub trailer_prefix_source: TrailerPrefixSource,
+}
+
+/// What decided the provenance trailer prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrailerPrefixSource {
+    /// This host's rules file names it.
+    RulesFile,
+    /// Nothing names one, so the built-in default applies.
+    BuiltIn,
 }
 
 /// Explain how one repository resolves against this host's rules.
@@ -639,6 +689,9 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck> {
         }),
         policy: ResolvedPolicy::of(&resolved),
         trailer_prefix: provenance::from_rules(&file).prefix().to_string(),
-        trailer_prefix_from_rules: file.trailer_prefix.is_some(),
+        trailer_prefix_source: match file.trailer_prefix.is_some() {
+            true => TrailerPrefixSource::RulesFile,
+            false => TrailerPrefixSource::BuiltIn,
+        },
     })
 }

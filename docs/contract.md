@@ -2766,8 +2766,9 @@ pub struct ResolvedPolicy { pub publication: MergePolicy, pub publication_from: 
 pub enum MergePathCoverage { PrePushHook(PathBuf), RequiredChecks, None }
 
 /// `onevcs repos`, with and without `--audit-gates`.
-pub fn repositories(providers: &Providers<'_>, audit_gates: bool)
+pub fn repositories(providers: &Providers<'_>, audit: GateAudit)
     -> Result<Vec<RegisteredRepository>>;
+pub enum GateAudit { Skipped, Asked }
 pub struct RegisteredRepository { pub identity: String, pub gate: String,
                                   pub checkouts: Vec<RegisteredCheckout>,
                                   pub required_checks: Option<RequiredChecksAnswer> }
@@ -2804,18 +2805,21 @@ pub fn import_branch(request: &ImportRequest) -> Result<Imported>;
 pub struct ImportRequest { pub repo: PathBuf, pub branch: String,
                            pub from: Option<String>, pub under: Option<String> }
 pub fn integrate(request: &IntegrateRequest) -> Result<Integration>;
-pub struct IntegrateRequest { pub branches: Vec<String>, pub push: bool }
+pub struct IntegrateRequest { pub branches: Vec<String>, pub push: BasePush }
+pub enum BasePush { Push, Keep }
 pub fn sync(branch: Option<&str>) -> Result<Synced>;
 pub struct Synced { pub identity: String, pub branch: String, pub checkout: PathBuf,
                     pub before: String, pub after: String }
 impl Synced { pub fn moved(&self) -> bool; }
-pub fn sweep(dry_run: bool, min_age: Duration) -> Result<SweepReport>;
+pub fn sweep(sweeping: Sweeping, min_age: Duration) -> Result<SweepReport>;
+pub enum Sweeping { Rehearse, Reclaim }
 
 /// `onevcs events`: one session's stream as the file its writers left, which is what
 /// the command prints. `EventStream` beside it is the same file read as values.
 impl EventLines {
     pub fn open(session: &SessionToken, filter: Option<EventFilter>) -> Result<Self>;
     pub fn read(&mut self) -> Result<Vec<EventLine>>;
+    pub fn session(&self) -> &SessionToken;
 }
 pub struct EventLine { pub text: String, pub envelope: Option<Envelope> }
 
@@ -2824,8 +2828,10 @@ pub fn read_artifact(id: &ArtifactId) -> Result<String>;
 pub fn rules_check(repo: &str) -> Result<RulesCheck>;
 pub struct RulesCheck { pub identity: String, pub checkout: PathBuf, pub rules: String,
                         pub matched: Option<MatchedRule>, pub policy: ResolvedPolicy,
-                        pub trailer_prefix: String, pub trailer_prefix_from_rules: bool }
+                        pub trailer_prefix: String,
+                        pub trailer_prefix_source: TrailerPrefixSource }
 pub struct MatchedRule { pub index: usize, pub criteria: RuleMatch }
+pub enum TrailerPrefixSource { RulesFile, BuiltIn }
 
 // Re-exported beside them, because these operations answer in them: `Imported`,
 // `ImportSource` and `Wrote`; `Integration`, `BranchOutcome`, `IntegrationStatus`
@@ -2833,6 +2839,12 @@ pub struct MatchedRule { pub index: usize, pub criteria: RuleMatch }
 ```
 
 Four things about that surface are decisions rather than consequences.
+
+**A mode a command spells as a flag is an enum here, never a bare `bool`.**
+`GateAudit`, `BasePush`, `Sweeping` and `TrailerPrefixSource` each name two answers
+that are different documents or different actions, and a call site spelling one of
+them `true` says nothing about which way round it is. The flag stays a flag on the
+command line, where it has a name.
 
 **An operation takes `Providers` exactly where its command reaches an interface**, and
 no other operation gains one: `repositories` does because the gate audit asks the host
