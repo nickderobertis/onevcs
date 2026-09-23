@@ -294,8 +294,8 @@ fn the_recorded_fixture_is_the_checked_in_file_the_provenance_note_names() {
         "the compiled-in fixture and the checked-in file came apart"
     );
 
-    let readme =
-        std::fs::read_to_string(recorded.join("README.md")).expect("the fixture carries its                                                                    provenance");
+    let readme = std::fs::read_to_string(recorded.join("README.md"))
+        .expect("the fixture carries its provenance");
     assert!(
         readme.contains("onemessagebus-agent-v0.8.0"),
         "the provenance note no longer says which tag the fixture was copied from"
