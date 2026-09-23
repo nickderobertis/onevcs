@@ -6400,3 +6400,150 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
         "the recovered branch is on the origin, under the change request it opened"
     );
 }
+
+#[test]
+fn a_stream_read_as_lines_hands_on_what_a_read_as_values_refuses() {
+    // The two readers of one file, over the lines that separate them. `EventStream`
+    // is a reader of *values*, so a line that is not one is a gap it must announce;
+    // `EventLines` is a reader of the file, and the line it cannot parse is the line
+    // an operator most needs to see — which is why `onevcs events` prints it.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let vcs = knowing(&identity);
+    let mine = open(&vcs, "feature/mine");
+    let theirs = open(&vcs, "feature/theirs");
+    let stream_of = |token: &SessionToken| {
+        world
+            .home()
+            .join("streams")
+            .join(format!("{}.ndjson", token.0))
+    };
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test,
+    // exactly as in the two journeys above: no interface of this crate can write a line
+    // that is not an envelope, or one session's envelope into another's file — a `Stream`
+    // is opened by the token it writes under and only ever appends whole envelopes. What
+    // a torn write or a damaged disk leaves can only be put there directly, and that it
+    // is unreachable through the API is why the readers check the file at all.
+    let intruder = std::fs::read_to_string(stream_of(&theirs.token)).expect("their stream");
+    let mut mixed = std::fs::read_to_string(stream_of(&mine.token)).expect("my stream");
+    mixed.push_str("{\"v\": 1}\n");
+    mixed.push_str(&intruder);
+    std::fs::write(stream_of(&mine.token), &mixed).expect("a stream carrying both");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    let read = onevcs::EventLines::open(&mine.token, None)
+        .expect("the stream")
+        .read()
+        .expect("a reader of the file refuses none of it");
+    assert_eq!(
+        read.iter()
+            .map(|line| format!("{}\n", line.text))
+            .collect::<String>(),
+        mixed,
+        "every line of the file comes back as its writer left it"
+    );
+    assert_eq!(
+        read.iter()
+            .map(|line| line.envelope.is_some())
+            .collect::<Vec<_>>(),
+        vec![true, false, false],
+        "the envelope is offered for this session's own line, and for neither the line \
+         that is not one nor the line belonging to another session"
+    );
+    // …and the command prints exactly that, which is the whole reason the reader
+    // tolerates them.
+    assert_eq!(
+        stdout_of(|| assert_eq!(
+            run(&["onevcs", "events", &mine.token.0], Providers::real()),
+            0
+        )),
+        mixed,
+    );
+
+    // Given a filter it is the stricter of the two, because an event has to be read
+    // to be judged: both lines are refused where they are read, naming the line.
+    let everything = EventFilter {
+        include: Vec::new(),
+        exclude: Vec::new(),
+    };
+    let refused = onevcs::EventLines::open(&mine.token, Some(everything))
+        .expect("the stream")
+        .read()
+        .expect_err("a filter cannot judge a line it cannot read");
+    assert!(refused.to_string().contains("line 2"), "{refused}");
+
+    // The same line, read as a value: refused whether or not anything is filtering.
+    let refused = EventStream::open(&mine.token)
+        .expect("the stream")
+        .read()
+        .expect_err("a reader of values refuses a line that is not one");
+    assert!(refused.to_string().contains("line 2"), "{refused}");
+}
+
+#[test]
+fn the_gate_audit_answers_an_unhosted_identity_and_a_host_it_could_not_read() {
+    // Three answers, and none of them is another: a consumer that reads "nothing
+    // required" stops waiting on a check, and one that reads "unreadable" or "no host
+    // answers for this" knows it has not been told.
+    let world = World::new();
+    inhabit(&world);
+    let hosted_origin = world.bare_origin("hosted");
+    let hosted_checkout = world.clone_of(&hosted_origin, "hosted");
+    let url = onevcs::Url::parse("https://github.com/acme-corp/hosted.git").expect("a URL");
+    onevcs::register_checkout(&hosted_checkout, Some(&url)).expect("the checkout registers");
+
+    // No program answers as `gh` on this host yet, so the host cannot be read — which
+    // is an answer that says so, never an empty list of required checks.
+    let audited = onevcs::repositories(&Providers::real(), onevcs::GateAudit::Asked)
+        .expect("the audited listing");
+    let reason = match audited[0]
+        .required_checks
+        .as_ref()
+        .expect("the audit asked")
+    {
+        onevcs::RequiredChecksAnswer::Unreadable { reason } => reason.clone(),
+        other => panic!("a host that could not be read is not: {other:?}"),
+    };
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(&["onevcs", "repos", "--audit-gates"], Providers::real()),
+            0
+        );
+    });
+    assert!(
+        printed.contains(&format!("  required checks: unreadable — {reason}\n")),
+        "the command renders that answer as the refusal it is: {printed}"
+    );
+
+    // An identity with no host at all is a different answer again: nothing was asked,
+    // because there is nobody to ask.
+    let local_origin = world.bare_origin("unhosted");
+    let local_checkout = world.clone_of(&local_origin, "unhosted");
+    onevcs::register_checkout(&local_checkout, None).expect("the local checkout registers");
+    let audited = onevcs::repositories(&Providers::real(), onevcs::GateAudit::Asked)
+        .expect("the audited listing");
+    let unhosted = audited
+        .iter()
+        .find(|repository| repository.identity.contains("unhosted"))
+        .expect("the local identity is listed");
+    assert_eq!(
+        unhosted.required_checks,
+        Some(onevcs::RequiredChecksAnswer::NotHosted)
+    );
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(&["onevcs", "repos", "--audit-gates"], Providers::real()),
+            0
+        );
+    });
+    assert!(
+        printed.contains(&format!(
+            "  required checks: none: {:?} is not a github.com repository, so no host answers \
+             for it\n",
+            unhosted.identity
+        )),
+        "{printed}"
+    );
+}
