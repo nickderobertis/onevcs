@@ -19,18 +19,36 @@ The vocabulary is a **change request**, not a pull request, and stack metadata i
 expected later, and naming the concept after one host is what would have to be
 undone to add the second.
 
-## Every process emits the same envelope, and the types are `onemessagebus`'s
+## Every process emits the same envelope shape, and the words in it are its own
 
 `oneagentgraph`, `onevcs`, and `onepipeline` all emit the same NDJSON envelope.
 Each once kept its own copy of the types, and the copies drifted: this crate's
-matcher grew a `phase` the other two never had. So the envelope, its filter
+matcher grew a `phase` the other two never had. So the envelope *shape*, its filter
 grammar, the payload bound and the redaction tables were extracted into
-`onemessagebus` and its agent profile, `onemessagebus-agent`, and `onevcs` is their
-first consumer. It re-exports them at the paths it always had and keeps its own
-vocabulary — `EventKind`, and the phase each kind belongs to. The contract test
-still asserts this crate's serialization against the fixtures in
-`docs/contract.md`, now through the re-exported types, so a bus that stopped writing
-those bytes fails here.
+`onemessagebus`, which is generic over the vocabulary a consumer declares, and
+`onevcs` is one of its consumers.
+
+The **words** came back. They briefly lived in a shared profile crate,
+`onemessagebus-agent`, and that was the bus holding a vocabulary some other library
+owns — the same pattern the onejudge codec and the planner channel were factored out
+of it for. So this crate declares its own `Vocabulary` over the bus core
+(`crates/onevcs/src/vocabulary.rs`): the source word `vcs`, the four phases, the six
+reserved labels, and what a matcher may ask of them. `onevcs` is the right home for
+them because it is the only library that can answer for them — it stamps a phase on
+every event it writes, `PhaseOf` classifies its own kinds into one, and
+`EventStream` derives which phases a session can produce and refuses a filter for
+one it cannot.
+
+`Source` is the bus core's open newtype rather than a closed enum, because the one
+place a source word arrives from outside is a filter and a consumer merging several
+producers writes one filter for all of them: a word this crate does not produce
+matches nothing of this crate's, which is an answer rather than a refusal.
+
+Everything is at the paths it always had, and the bytes are unchanged. The contract
+test still asserts this crate's serialization against the fixtures in
+`docs/contract.md`, and `crates/onevcs/tests/recorded/onevcs-session.ndjson` — a
+stream a real publication wrote before the vocabulary moved — is read back and
+re-serialized byte for byte, so a word that changed fails here.
 
 ## Dependency direction is one-way
 

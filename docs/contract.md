@@ -34,23 +34,38 @@ probe. Status then answers `Released` with `source: acknowledged`; a probe-deriv
 event emission are the same for either target style. This uses the existing acknowledgement
 record, so the persisted release-record schema remains version 1.
 
-### The envelope, its filter, its bounds and its redaction are `onemessagebus`'s
+### The envelope's shape is `onemessagebus`'s, and the words in it are this crate's
 
 The planner ruled that this crate adopts `onemessagebus` 0.4.0 and
-`onemessagebus-agent` 0.4.0 in place of its own copy of the shared envelope. That
-ruling is the one edit made below the rule: the title and first sentence of the
-envelope section now say the types are `onemessagebus-agent`'s, re-exported here,
-and that `onemessagebus`'s `docs/contract.md` is the one source of the fenced text,
-which stays as a copy. Its fixtures are still extracted by `tests/contract.rs` and
-parsed through the re-exported types.
+`onemessagebus-agent` 0.4.0 in place of its own copy of the shared envelope, and
+later that the agent profile crate is retired and each producer declares its own
+vocabulary over the bus core. That is the one edit made below the rule: the title
+and first sentence of the envelope section now say the *shape* is `onemessagebus`'s
+and the words are this crate's, and that `onemessagebus`'s `docs/contract.md` is the
+one source of the fenced text, which stays as a copy. Its fixtures are still
+extracted by `tests/contract.rs` and parsed through the declared types.
 
-`Envelope`, `Labels`, `Source`, `Phase`, `ArtifactRef`, `EventFilter` and
-`EventMatcher` are re-exports of the agent profile's types at the paths they always
-had. Writing a stream is the bus's `Emitter`, splitting one into records is its
-`Reader`, and a payload's bound and redaction are its `bound_payload` and `Redactor`.
-What stays this crate's is its vocabulary (`EventKind`, written into the envelope's
-open `kind`), the phase each of those kinds belongs to, where a stream and an
-artifact live, and what its readers refuse. The bytes a stream carries are unchanged.
+`Envelope`, `EventFilter` and `EventMatcher` are the bus core's generic `Envelope`,
+`Filter` and `Matcher` over this crate's own `Vocabulary` implementation, at the
+paths they always had; `Phase`, `Dimensions`, `Labels` and `MatchFields` are this
+crate's declarations (`crates/onevcs/src/vocabulary.rs`), and `Source` and
+`ArtifactRef` are the bus core's. Writing a stream is the bus's `Emitter` over that
+vocabulary, splitting one into records is its `Reader`, and a payload's bound and
+redaction are its `bound_payload` and `Redactor`. What stays this crate's besides
+the vocabulary is `EventKind` (written into the envelope's open `kind`), the phase
+each of those kinds belongs to, where a stream and an artifact live, and what its
+readers refuse. The bytes a stream carries are unchanged, and
+`crates/onevcs/tests/recorded/onevcs-session.ndjson` — a stream a real publication
+wrote before the move — is read back and re-serialized byte for byte to prove it.
+
+`Source` is the bus core's **open** newtype rather than the closed three-word enum
+the profile crate declared, and this crate's word is `SOURCE_WORD` (`"vcs"`). The
+one place a source word arrives from outside is a filter, and a consumer merging
+several producers writes one filter for all of them — so a word this crate does not
+produce is admitted and matches no envelope of this crate's, where it used to be
+refused as an unknown variant. Everything else about a filter is judged exactly as
+before: the same kinds, the same phases, the same labels, and the same refusal for a
+phase the session does not have.
 
 One refusal 0.23.0 made is not made at 0.4.0, and is a bus-side follow-up rather
 than something this crate restores: a filter spec whose `include:` or `exclude:`
@@ -392,10 +407,10 @@ exclude:            # list of matchers; a match here always rejects (wins over i
   - {kind: lock-wait}
 ```
 
-The grammar has one source, the way the envelope does: `onemessagebus`'s
-`docs/contract.md`, whose filter type `onemessagebus-agent` declares and this crate
-re-exports. This repository keeps the fixture above as a copy of that text and its
-suite parses the copy through the re-exported type, so the grammar and the code that
+The grammar has one source, the way the envelope's shape does: `onemessagebus`'s
+`docs/contract.md`, whose filter type this crate instantiates over its own
+vocabulary. This repository keeps the fixture above as a copy of that text and its
+suite parses the copy through the declared type, so the grammar and the code that
 reads it cannot come apart here without failing. A departure from the grammar is
 raised with the bus's owner as a proposal, never taken here.
 
@@ -406,17 +421,20 @@ equality; `kind` is a glob over the event kind's kebab-case wire string, so
 `change-*` is `change-opened`, `change-check`, and `change-merged`; and `run_id`,
 `node`, `step`, `member`, and `persona` are exact equality against the envelope's
 reserved `labels` keys, where a matcher naming a label the envelope did not stamp
-does not match it. Deliberately **not** in the grammar: `stream`, which is a
-producing process's id rather than a family, and payload fields, which differ per
-kind. The filter types are `onemessagebus-agent`'s, as the envelope's are, and this
-crate re-exports them under the names below.
+does not match it. A `source` word this crate does not produce is admitted and
+matches none of its envelopes, because `Source` is the bus core's open newtype.
+Deliberately **not** in the grammar: `stream`, which is a producing process's id
+rather than a family, and payload fields, which differ per kind. The filter types
+are the bus core's generic ones over this crate's vocabulary, as the envelope is,
+and this crate exports them under the names below.
 
 ```rust
 impl EventStream {                           // `open`, `session`, `read` unchanged, plus:
     pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self>;
 }
-// `pub use onemessagebus_agent::event::{EventFilter, Matcher as EventMatcher};`, the
-// agent profile's instances of the bus's `Filter` and `Matcher`:
+// `pub type EventFilter = onemessagebus::Filter<VcsEvents>;` and
+// `pub type EventMatcher = onemessagebus::Matcher<VcsEvents>;`, the bus's `Filter`
+// and `Matcher` over this crate's own `Vocabulary` implementation:
 pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }
 pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,
                           pub fields: MatchFields }
@@ -1310,7 +1328,7 @@ whole point is that a wrong `no` here is the answer somebody pastes a publicatio
 under.
 
 ```rust
-pub enum Phase { Development, Integrate, Review, Release } // `onemessagebus-agent`'s, re-exported
+pub enum Phase { Development, Integrate, Review, Release } // this crate's own declaration
 impl Phase {
     pub fn as_str(self) -> &'static str;         // development | integrate | review | release
     pub fn every() -> [Phase; 4];
@@ -2932,9 +2950,9 @@ Event kinds added: none.
 
 ---
 
-### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)
+### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)
 
-Every process in the stack emits NDJSON, one envelope shape, whose types are `onemessagebus-agent`'s and are re-exported here; `onemessagebus`'s `docs/contract.md` is the one source of the fenced text below, which stays here as a copy of it:
+Every process in the stack emits NDJSON, one envelope shape, which is `onemessagebus`'s generic `Envelope` over each producer's own vocabulary — this crate's is declared in `crates/onevcs/src/vocabulary.rs` and exported at the paths below; `onemessagebus`'s `docs/contract.md` is the one source of the fenced text below, which stays here as a copy of it:
 
 ```json
 {"v": 1, "ts": "<RFC3339, millisecond, UTC>", "stream": "<unique id per producing process>",

@@ -1,20 +1,26 @@
-//! The shared NDJSON event envelope, and the filter a consumer reads it through.
+//! The NDJSON event envelope this crate writes, and the filter a consumer reads it
+//! through.
 //!
-//! The envelope, its labels, its sources and phases, an artifact reference and the
-//! filter grammar are `onemessagebus-agent`'s, re-exported here so every path a
-//! consumer imports keeps resolving. `onemessagebus`'s `docs/contract.md` is the one
-//! source of that shape; this crate holds its own bytes to the copy in
-//! `docs/contract.md` through these re-exports, so a bus that stopped writing what
-//! this crate always wrote fails here rather than downstream.
+//! The *shape* of an envelope — a version, a stamp, a stream, a sequence number, a
+//! source, a kind, the labels, the payload, the artifacts — and the filter grammar
+//! over it are `onemessagebus`'s, and `onemessagebus`'s `docs/contract.md` is the
+//! one source of that shape. The **words** are this crate's: `src/vocabulary.rs`
+//! declares the source, the phases, the reserved labels and what a matcher may ask
+//! of them, and the types re-exported below are the bus core's generic ones over
+//! that vocabulary. This crate holds its own bytes to the copy in
+//! `docs/contract.md`, so an envelope that stopped being what this crate always
+//! wrote fails here rather than downstream.
 //!
-//! What stays this crate's is its vocabulary — the closed [`EventKind`], and the
-//! phase each kind belongs to — and how a line of a stream it wrote is read back.
+//! What stays in this module is the rest of that vocabulary — the closed
+//! [`EventKind`], and the phase each kind belongs to — and how a line of a stream
+//! this crate wrote is read back.
 
 use onemessagebus::Kind;
 use serde::{Deserialize, Serialize};
 
-pub use onemessagebus_agent::event::{
-    ArtifactRef, Envelope, EventFilter, Labels, Matcher as EventMatcher, Phase, Source,
+pub use crate::vocabulary::{
+    ArtifactRef, Dimensions, Envelope, EventFilter, EventMatcher, Labels, MatchFields, Phase,
+    Source, VcsEvents, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
 
 /// What an event says happened.
@@ -184,10 +190,10 @@ impl From<EventKind> for Kind {
 /// The phase an event of one of this crate's kinds belongs to, where the kind alone
 /// decides it.
 ///
-/// A trait rather than an inherent method because [`Phase`] is the agent profile's
-/// type and the mapping is this crate's: the profile owns the four phases, and which
-/// of them an `onevcs` kind is in is a fact about `onevcs`'s vocabulary. With it in
-/// scope the call is spelled `Phase::of(kind)`, as it always was.
+/// A trait rather than an inherent method because the four phases are declared in
+/// `src/vocabulary.rs`, beside the rest of the wire words, and which of them an
+/// `onevcs` kind is in is a fact about the kinds declared here. With it in scope
+/// the call is spelled `Phase::of(kind)`, as it always was.
 pub trait PhaseOf {
     /// The phase an event of this kind belongs to, where the kind alone decides it.
     ///

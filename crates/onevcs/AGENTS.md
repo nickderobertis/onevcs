@@ -67,11 +67,23 @@ which is what `onevcs events` prints.
 
 Reading events takes a filter on both surfaces — `EventStream::open_filtered` and
 `onevcs events --filter` — and the grammar is **`onemessagebus`'s**, shared with
-`oneagentgraph` and `onepipeline`. The envelope, the filter, the payload bound, the
-redaction tables, and the emitter and reader over a stream are that crate's and its
-agent profile's (`event.rs` re-exports them); what stays here is `EventKind`, the
-phase each kind belongs to, where streams and artifacts live, and what a reader
-refuses. Do not extend any of it here: a change is a proposal to the bus's owner.
+`oneagentgraph` and `onepipeline`. The envelope's *shape*, the filter grammar, the
+payload bound, the redaction tables, and the emitter and reader over a stream are
+that crate's, generic over a vocabulary. The **words** are this crate's:
+`vocabulary.rs` declares the `Vocabulary` implementation — the source word `vcs`
+(`SOURCE_WORD`), the four phases, the six reserved labels, and what a matcher may
+ask of them — and `event.rs` re-exports the bus's types over it. What else stays
+here is `EventKind`, the phase each kind belongs to, where streams and artifacts
+live, and what a reader refuses. Do not extend the *grammar* here: a change to it
+is a proposal to the bus's owner. The vocabulary is ours, and every change to it
+moves bytes on a wire three repositories read — `tests/recorded/` is the stream a
+real publication wrote before the vocabulary moved, and `tests/recorded.rs` holds
+this build to reading it back and re-serializing it with no byte changed.
+
+`Source` is the bus core's **open** newtype, so a filter naming a word this crate
+does not produce is admitted and matches nothing of this crate's, rather than being
+refused as an unknown variant. That is deliberate: a consumer merging several
+producers writes one filter for all of them.
 Two rules follow from what filtering is for. A filter decides
 which events a consumer *wants*, never which lines of a file are worth reading, so
 it is applied after the refusals — a stream that is not what a writer left is

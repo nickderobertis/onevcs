@@ -26,9 +26,6 @@ path = "src/lib.rs"
 # version requirement is what `cargo publish` uploads — a bare path resolves to
 # nothing on crates.io — and release-plz keeps it in step with the sibling.
 onevcs = { version = "0.31.2", path = "../onevcs" }
-# The envelope's `phase` travels in the agent profile's dimensions, which `onevcs`
-# re-exports the envelope of but does not name.
-onemessagebus-agent = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A change request's head commit and a preserved commit both need a hash-shaped

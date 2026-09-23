@@ -24,8 +24,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use clap::CommandFactory;
-use onemessagebus::Kind;
-use onemessagebus_agent::event::{Dimensions, MatchFields};
+use onemessagebus::{Admits, Kind};
 use onevcs::cli::Cli;
 use onevcs::declaration::{self, Declaration, RepositoryPath};
 use onevcs::registry::{Checkout, Identity, Registry};
@@ -39,15 +38,16 @@ use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::workspaces::{MaintenanceCommand, WorkspaceDefault, WorkspacesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest,
-    ChangeSpec, Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter,
-    EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding, IdentityMaintenance,
-    IdentityOutcome, Labels, Landed, LandingEvidence, Lifecycle, LineChange, Liveness,
-    MaintainReport, MaintenanceOutcome, MergeOutcome, MergePolicy, NetNegative, OnOrigin, Phase,
-    PhaseOf, PoolStatus, PreservedBranch, ProtectionSource, Provenance, Providers, PruneReport,
-    Publication, PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks,
-    Retention, Scope, Selection, Session, SessionChange, SessionHolder, SessionRecord,
-    SessionRequest, SessionToken, Sha, SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source,
-    Span, Subject, Url, Vcs, WorkspaceCapacity,
+    ChangeSpec, Check, CheckSource, Description, Dimensions, DraftReason, Envelope, Error,
+    EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding,
+    IdentityMaintenance, IdentityOutcome, Labels, Landed, LandingEvidence, Lifecycle, LineChange,
+    Liveness, MaintainReport, MaintenanceOutcome, MatchFields, MergeOutcome, MergePolicy,
+    NetNegative, OnOrigin, Phase, PhaseOf, PoolStatus, PreservedBranch, ProtectionSource,
+    Provenance, Providers, PruneReport, Publication, PublishOutcome, PublishRequest, Recoverable,
+    RemoteHost, RequiredChecks, Retention, Scope, Selection, Session, SessionChange, SessionHolder,
+    SessionRecord, SessionRequest, SessionToken, Sha, SlotMaintenance, SlotOutcome, SlotState,
+    SlotStatus, Source, Span, Subject, Url, Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS,
+    SOURCE_WORD,
 };
 use serde_json::{json, Value};
 
@@ -116,8 +116,7 @@ fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
         .expect("cargo metadata lists packages");
     for (name, version) in [
         ("onevcs", env!("CARGO_PKG_VERSION")),
-        ("onemessagebus", "0.8.0"),
-        ("onemessagebus-agent", "0.8.0"),
+        ("onemessagebus", "0.9.0"),
     ] {
         let matches: Vec<_> = packages
             .iter()
@@ -133,6 +132,15 @@ fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
             "the consumer must resolve the adopted {name}"
         );
     }
+    // The event vocabulary is this crate's own now, so nothing a consumer links
+    // reaches the retired profile crate — not `onevcs`, not `onevcs-testing`, and
+    // not the bus core between them.
+    assert!(
+        !packages
+            .iter()
+            .any(|package| package["name"] == "onemessagebus-agent"),
+        "a consumer still resolves onemessagebus-agent: {packages:?}"
+    );
 }
 
 /// Every fenced code block in the contract, as `(language, body)`. The language
@@ -394,7 +402,7 @@ fn the_envelope_fixture_carries_the_declared_types() {
 
     assert_eq!(envelope.v, 1);
     assert_eq!(envelope.seq, 42);
-    assert_eq!(envelope.source, Source::Vcs);
+    assert_eq!(envelope.source, Source::from(SOURCE_WORD));
     assert_eq!(envelope.kind, Kind::from(EventKind::SessionOpened));
     assert_eq!(envelope.dimensions.phase, Some(Phase::Development));
     assert_eq!(envelope.ts, "2026-08-07T12:34:56.789Z");
@@ -463,7 +471,7 @@ fn labels_that_the_producer_did_not_know_are_omitted_rather_than_null() {
         ts: "2026-08-07T12:34:56.789Z".to_owned(),
         stream: "onevcs-7f3a9c2e".to_owned(),
         seq: 0,
-        source: Source::Vcs,
+        source: Source::from(SOURCE_WORD),
         kind: EventKind::SessionClosed.into(),
         dimensions: Dimensions::at(Phase::Development),
         labels: Labels::default(),
@@ -485,10 +493,19 @@ fn an_event_kind_the_contract_does_not_name_is_rejected() {
         serde_json::from_value(fixture).expect("the envelope carries any kind it is handed");
     assert!(serde_json::from_value::<EventKind>(json!(envelope.kind)).is_err());
 
-    // A source is not open: the three families are the profile's closed set.
+    // A source *is* open, which is the one thing about the envelope that differs from
+    // the closed enum the retired profile crate declared: an envelope naming a
+    // producer this build never heard of is read rather than refused, because a
+    // consumer merging several producers relays one it does not interpret. Which
+    // producer wrote a line is then a comparison against `SOURCE_WORD` rather than a
+    // parse, and `stream::attributed` is where a line that is not this session's is
+    // refused.
     let mut fixture = envelope_fixture("vcs", "session-opened");
     fixture["source"] = json!("somewhere-else");
-    assert!(serde_json::from_value::<Envelope>(fixture).is_err());
+    let elsewhere: Envelope =
+        serde_json::from_value(fixture).expect("the envelope carries any source word");
+    assert_eq!(elsewhere.source, Source::from("somewhere-else"));
+    assert_ne!(elsewhere.source, Source::from(SOURCE_WORD));
 
     // …and neither is the envelope itself: a top-level key the contract does not
     // declare is refused by name rather than dropped.
@@ -3685,6 +3702,84 @@ fn unlabelled(source: &str, kind: &str) -> Envelope {
 }
 
 #[test]
+fn the_event_vocabulary_is_this_crates_own_over_the_buss_open_source() {
+    // The amendment says whose the words are, because that is the thing a reader of
+    // it has to know before anything else: the *shape* is the bus's and the words
+    // are declared here.
+    let contract = contract();
+    for stated in [
+        "### The envelope's shape is `onemessagebus`'s, and the words in it are this crate's",
+        "crates/onevcs/src/vocabulary.rs",
+        "`Source` is the bus core's **open** newtype",
+    ] {
+        assert!(
+            contract.contains(stated),
+            "the contract no longer states: {stated}"
+        );
+    }
+
+    // The word this crate stamps, which a consumer merging several producers selects
+    // it by. One place, and it is the word every envelope this crate writes carries.
+    assert_eq!(SOURCE_WORD, "vcs");
+    assert_eq!(
+        Source::from(SOURCE_WORD),
+        envelope("vcs", "session-opened").source
+    );
+
+    // The six reserved label keys, in the order the wire lists them, and what each
+    // admits — which is what a command line typing `--label round=2` reads, and what
+    // no Rust type can tell it.
+    assert_eq!(
+        RESERVED_LABELS
+            .iter()
+            .map(|reserved| (reserved.key, reserved.admits))
+            .collect::<Vec<_>>(),
+        vec![
+            ("run_id", Admits::Text),
+            ("round", Admits::Integer),
+            ("node", Admits::Text),
+            ("step", Admits::Text),
+            ("member", Admits::Text),
+            ("persona", Admits::Text),
+        ]
+    );
+    assert_eq!(
+        DIMENSIONS
+            .iter()
+            .map(|reserved| (reserved.key, reserved.admits))
+            .collect::<Vec<_>>(),
+        vec![("phase", Admits::Word)]
+    );
+
+    // And the source is open, which is the one behaviour the move changed. A word the
+    // closed enum refused is now a matcher this crate parses, admits, and answers
+    // nothing for — because it has no envelope of that source and never will.
+    let billing = EventFilter::parse(r#"{"include": [{"source": "billing"}]}"#)
+        .expect("a source word this crate does not produce is a filter, not a refusal");
+    assert_eq!(
+        billing.include[0].source,
+        Some(Source::from("billing")),
+        "the matcher no longer carries the word it was given"
+    );
+    for kind in ["session-opened", "change-opened", "push"] {
+        assert!(
+            !billing.matches(&envelope("vcs", kind)),
+            "a filter for another producer's source admitted a {kind} of this one's"
+        );
+    }
+    // The same word in `exclude` rejects nothing, so the filter is everything this
+    // crate wrote — which is the other half of "matches no envelope of ours".
+    let excluding = EventFilter::parse(r#"{"exclude": [{"source": "billing"}]}"#)
+        .expect("the same word excludes as well as includes");
+    for kind in ["session-opened", "change-opened", "push"] {
+        assert!(
+            excluding.matches(&envelope("vcs", kind)),
+            "excluding another producer's source dropped a {kind} of this one's"
+        );
+    }
+}
+
+#[test]
 fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     // Reconciled the way the three amendments above are: every field is named where
     // the type is built, and the amendment is held to declaring it. What is worth
@@ -3693,7 +3788,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     // asked what it admits, rather than described.
     let filter = EventFilter {
         include: vec![EventMatcher {
-            source: Some(Source::Vcs),
+            source: Some(Source::from(SOURCE_WORD)),
             kind: Some("change-*".to_owned()),
             fields: MatchFields {
                 phase: Some(Phase::Review),
@@ -3717,7 +3812,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
         parsed,
         EventFilter {
             include: vec![EventMatcher {
-                source: Some(Source::Vcs),
+                source: Some(Source::from(SOURCE_WORD)),
                 kind: Some("gate-*".to_owned()),
                 ..EventMatcher::default()
             }],
@@ -3737,7 +3832,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     // that is the half this repository owns.
     let same_shape = EventFilter {
         include: vec![EventMatcher {
-            source: Some(Source::Vcs),
+            source: Some(Source::from(SOURCE_WORD)),
             kind: Some("change-*".to_owned()),
             ..EventMatcher::default()
         }],
@@ -3760,7 +3855,8 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
     for declared in [
         "pub fn open_filtered(session: &SessionToken, filter: EventFilter) -> Result<Self>;",
         "pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }",
-        "pub use onemessagebus_agent::event::{EventFilter, Matcher as EventMatcher};",
+        "pub type EventFilter = onemessagebus::Filter<VcsEvents>;",
+        "pub type EventMatcher = onemessagebus::Matcher<VcsEvents>;",
         "pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,",
         "pub fields: MatchFields }",
         "pub struct MatchFields { pub phase: Option<Phase>, pub run_id: Option<String>,",
@@ -3847,7 +3943,7 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
     // The literal is exhaustive on purpose: a field added to `EventMatcher` fails to
     // compile here rather than passing a gate that never looked at it.
     let every_field = EventMatcher {
-        source: Some(Source::Vcs),
+        source: Some(Source::from(SOURCE_WORD)),
         kind: Some("push".to_owned()),
         fields: MatchFields {
             phase: Some(Phase::Development),
@@ -4023,8 +4119,6 @@ fn a_filter_spec_the_grammar_does_not_name_is_refused_where_it_is_read() {
         // A matcher that is not a mapping of fields.
         ("include: [fetch]", "include[0]"),
         ("exclude: [[{kind: fetch}]]", "exclude[0]"),
-        // A source outside the three families.
-        ("include: [{source: onevcs}]", "`onevcs`"),
         // A field compared as a string, given something that is not one.
         ("include: [{kind: 7}]", "kind: invalid type"),
         ("exclude: [{node: [service]}]", "expected a string"),
@@ -4046,6 +4140,19 @@ fn a_filter_spec_the_grammar_does_not_name_is_refused_where_it_is_read() {
             "the refusal of {spec:?} does not name {named}: {refused}"
         );
     }
+
+    // Deliberately not among them: a source word this producer does not write.
+    // `Source` is the bus core's open word, so a consumer that merges several
+    // producers hands one filter to each and each answers for its own envelopes —
+    // `the_event_vocabulary_is_this_crates_own_over_the_buss_open_source` is where
+    // that is held, and `tests/e2e/filter.rs` drives it through the binary.
+    assert_eq!(
+        EventFilter::parse("include: [{source: onevcs}]")
+            .expect("a source word this producer does not write is a filter, not a refusal")
+            .include[0]
+            .source,
+        Some(Source::from("onevcs"))
+    );
 
     // And the same document, refused the same way where a consumer embeds it in a
     // configuration of its own rather than handing over the text.

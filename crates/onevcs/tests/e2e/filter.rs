@@ -450,10 +450,6 @@ fn a_spec_the_grammar_does_not_name_is_refused_before_a_single_event_is_reported
             "`kinds`",
         ),
         (r#"{"exclude": [["kind"]]}"#.to_owned(), "exclude[0]"),
-        (
-            r#"{"include": [{"source": "onevcs"}]}"#.to_owned(),
-            "`onevcs`",
-        ),
         // A list that is not one, from a file rather than inline.
         (spec.to_string_lossy().into_owned(), "include: invalid type"),
     ] {
@@ -492,6 +488,61 @@ fn a_spec_the_grammar_does_not_name_is_refused_before_a_single_event_is_reported
         .assert()
         .code(2)
         .stderr(predicate::str::contains("cannot read the event filter at"));
+}
+
+#[test]
+fn a_source_word_this_producer_does_not_write_is_admitted_and_matches_none_of_its_events() {
+    // The envelope's `source` is the bus core's *open* word, not a closed enum of the
+    // three producers this stack happens to have today. A consumer following several
+    // of them writes one filter and hands it to each, so a word naming somebody
+    // else's producer has to be a question this one can answer — and the answer is
+    // "none of mine", not a refusal. `billing` is exactly that word: nothing in this
+    // stack produces it, and the closed enum this crate used to carry refused it.
+    let (fixture, token) = published("feature/another-producer");
+    let world = &fixture.world;
+
+    let everything = kinds(&reported(world, &token, &[]));
+    assert!(
+        everything.contains(&"session-opened".to_owned())
+            && everything.contains(&"push".to_owned()),
+        "the session wrote no stream to filter: {everything:?}"
+    );
+
+    // Named in `include` alone: the filter parses, the command succeeds, and not one
+    // of this session's events comes back.
+    assert_eq!(
+        reported(
+            world,
+            &token,
+            &["--filter", r#"{"include": [{"source": "billing"}]}"#],
+        ),
+        Vec::<Value>::new(),
+        "a filter for another producer's source handed back this producer's events"
+    );
+
+    // Named in `exclude` alone: it rejects nothing this session wrote, so the read is
+    // the whole stream. Which is what makes the answer above "there are none of those"
+    // rather than "the filter admitted nothing at all".
+    assert_eq!(
+        kinds(&reported(
+            world,
+            &token,
+            &["--filter", r#"{"exclude": [{"source": "billing"}]}"#],
+        )),
+        everything,
+        "excluding another producer's source dropped this producer's events"
+    );
+
+    // And this producer's own word still selects its own events, so admitting the
+    // unknown one did not make `source` stop meaning anything.
+    assert_eq!(
+        kinds(&reported(
+            world,
+            &token,
+            &["--filter", r#"{"include": [{"source": "vcs"}]}"#],
+        )),
+        everything
+    );
 }
 
 #[test]

@@ -25,12 +25,12 @@
 // a real session record under a real state root, and the same substituted `gh` every
 // journey in this suite uses.
 
-use onemessagebus_agent::event::MatchFields;
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, EventFilter, EventMatcher,
-    EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, Landed, MergeOutcome,
-    MergePolicy, Phase, PhaseOf, Providers, PublishOutcome, PublishRequest, RemoteHost, Retention,
-    Scope, Session, SessionRequest, SessionToken, Source, TargetName, Vcs,
+    EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, Landed, MatchFields,
+    MergeOutcome, MergePolicy, Phase, PhaseOf, Providers, PublishOutcome, PublishRequest,
+    RemoteHost, Retention, Scope, Session, SessionRequest, SessionToken, Source, TargetName, Vcs,
+    SOURCE_WORD,
 };
 use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
 
@@ -1529,7 +1529,7 @@ fn an_event_stream_reads_what_the_real_backend_wrote_and_refuses_what_nobody_did
         vec![onevcs::EventKind::Fetch, onevcs::EventKind::SessionOpened]
     );
     let opened = &events[1];
-    assert_eq!(opened.source, onevcs::Source::Vcs);
+    assert_eq!(opened.source, Source::from(SOURCE_WORD));
     assert_eq!(opened.v, 1);
     assert_eq!(opened.stream, session.token.0);
     assert_eq!(opened.payload["branch"], "feature/streamed");
@@ -1728,7 +1728,7 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
         &session.token,
         EventFilter {
             include: vec![EventMatcher {
-                source: Some(Source::Vcs),
+                source: Some(Source::from(SOURCE_WORD)),
                 kind: Some("session-*".to_owned()),
                 ..EventMatcher::default()
             }],
@@ -1788,19 +1788,54 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
     );
 
     // A filter that admits nothing admits nothing, rather than reverting to
-    // everything the way an unreadable one silently would.
-    let nothing = EventFilter {
-        include: vec![EventMatcher {
-            source: Some(Source::Pipeline),
-            ..EventMatcher::default()
-        }],
-        exclude: Vec::new(),
-    };
-    assert!(EventStream::open_filtered(&session.token, nothing.clone())
-        .expect("the stream")
-        .read()
-        .expect("no event of another source is in it")
-        .is_empty());
+    // everything the way an unreadable one silently would. And the source it names
+    // does not have to be a producer this crate has heard of: `Source` is the bus
+    // core's open word, so a consumer that merges several producers hands the one
+    // filter it was configured with to each of them, and each answers for its own
+    // envelopes rather than refusing the question. `billing` is a word the closed
+    // enum this crate used to carry would have refused outright.
+    for word in ["pipeline", "billing"] {
+        let nothing = EventFilter {
+            include: vec![EventMatcher {
+                source: Some(Source::from(word)),
+                ..EventMatcher::default()
+            }],
+            exclude: Vec::new(),
+        };
+        assert!(
+            EventStream::open_filtered(&session.token, nothing)
+                .expect("a source word this crate does not produce is still a filter")
+                .read()
+                .expect("no event of another source is in it")
+                .is_empty(),
+            "a filter for {word} handed back an event this session wrote"
+        );
+
+        // The same word in `exclude` rejects nothing this session wrote, so what
+        // comes back is the whole stream — the other half of "matches none of ours".
+        let everything = EventFilter {
+            include: Vec::new(),
+            exclude: vec![EventMatcher {
+                source: Some(Source::from(word)),
+                ..EventMatcher::default()
+            }],
+        };
+        assert_eq!(
+            EventStream::open_filtered(&session.token, everything)
+                .expect("the stream")
+                .read()
+                .expect("excluding another source drops nothing of this one's")
+                .iter()
+                .map(kind_of)
+                .collect::<Vec<_>>(),
+            vec![
+                onevcs::EventKind::SessionOpened,
+                onevcs::EventKind::ChangeOpened,
+                onevcs::EventKind::SessionClosed
+            ],
+            "excluding {word} dropped an event this session wrote"
+        );
+    }
 
     // And a filter never decides which lines of the file are worth reading: a stream
     // that is not what a writer left is refused whichever events were asked for.
@@ -1843,7 +1878,14 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
 
     std::fs::write(&path, "{\"v\": 1}\n").expect("a stream to corrupt");
     // llmlint: ignore-end[tests_mirror_real_usage]
-    let refused = EventStream::open_filtered(&session.token, nothing)
+    let admitting_nothing = EventFilter {
+        include: vec![EventMatcher {
+            source: Some(Source::from("pipeline")),
+            ..EventMatcher::default()
+        }],
+        exclude: Vec::new(),
+    };
+    let refused = EventStream::open_filtered(&session.token, admitting_nothing)
         .expect("the stream is still there")
         .read()
         .expect_err("a line that is not an envelope is refused, filter or no filter");

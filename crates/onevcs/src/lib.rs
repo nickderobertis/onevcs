@@ -91,6 +91,7 @@ mod store;
 mod stream;
 mod sweep;
 mod vcs;
+mod vocabulary;
 mod workspace;
 pub mod workspaces;
 
@@ -100,8 +101,8 @@ pub use declaration::{
 };
 pub use error::{Error, Result};
 pub use event::{
-    ArtifactId, ArtifactRef, Envelope, EventFilter, EventKind, EventMatcher, Labels, Phase,
-    PhaseOf, Source,
+    ArtifactId, ArtifactRef, Dimensions, Envelope, EventFilter, EventKind, EventMatcher, Labels,
+    MatchFields, Phase, PhaseOf, Source, VcsEvents, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description, GitHub,
