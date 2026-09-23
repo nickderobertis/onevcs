@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1](https://github.com/nickderobertis/onevcs/compare/v0.31.0...v0.31.1) - 2026-09-23
+
+### Added
+
+- *(api)* expose every command as a typed library operation, starting with registered identities ([#211](https://github.com/nickderobertis/onevcs/pull/211))
+- *(status)* answer a reference that names no known work with a typed error ([#210](https://github.com/nickderobertis/onevcs/pull/210))
+
 ## [0.31.0](https://github.com/nickderobertis/onevcs/compare/v0.30.2...v0.31.0) - 2026-09-23
 
 ### Fixed
