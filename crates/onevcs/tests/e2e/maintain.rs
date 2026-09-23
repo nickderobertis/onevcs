@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::lifecycle::{orphan_working_in, stop_orphan, Fixture};
-use crate::pool::{claim_slot, close, creation_identity, open, pooled, status};
+use crate::pool::{claim_slot, close, creation_identity, damage, open, pooled, status, Damage};
 use crate::world::World;
 
 /// The maintenance script a host would name: a marker per run, a copy of every slot
@@ -42,11 +42,27 @@ case "$1" in
 esac
 "#;
 
+/// A maintenance script that records the argv it was spawned with, one argument per
+/// line, so a journey reads back exactly what reached the program.
+const ARGV_SCRIPT: &str = r#"#!/usr/bin/env bash
+set -u
+mkdir -p target
+: > target/argv
+for argument in "$@"; do printf '%s\n' "$argument" >> target/argv; done
+echo run >> target/maintained
+echo "maintaining $PWD"
+"#;
+
 /// Install the maintenance script on this host and say where it is.
 fn install_script(world: &World) -> PathBuf {
-    let path = world.path("bin/maintain.sh");
+    install(world, "bin/maintain.sh", SCRIPT)
+}
+
+/// Install one executable script at `at`, and say where it is.
+fn install(world: &World, at: &str, body: &str) -> PathBuf {
+    let path = world.path(at);
     std::fs::create_dir_all(path.parent().expect("a bin directory")).expect("bin/");
-    std::fs::write(&path, SCRIPT).expect("the maintenance script");
+    std::fs::write(&path, body).expect("the maintenance script");
     let mut permissions = std::fs::metadata(&path)
         .expect("script metadata")
         .permissions();
@@ -385,14 +401,14 @@ fn a_slot_in_use_or_under_a_live_claim_is_skipped_and_a_void_claim_is_cleared_an
         slots[0]["outcome"]["ran"]["outcome"], "succeeded",
         "{report}"
     );
-    let reason = slots[1]["outcome"]["broken"]["reason"]
+    let holder = slots[1]["outcome"]["unavailable"]["holder"]
         .as_str()
         .unwrap_or_else(|| panic!("slot 2 is kept for its claim: {report}"));
     assert!(
-        reason.contains(&format!(
+        holder.contains(&format!(
             "(pid {worker}) has claimed it since 2026-09-19T00:00:00.000Z"
         )),
-        "the reason names the holder: {reason}"
+        "a busy slot is unavailable rather than broken, and names its holder: {holder}"
     );
     assert_eq!(runs_in(&slot_1), 1);
     assert_eq!(runs_in(&slot_2), 1, "nothing ran under the live claim");
@@ -415,6 +431,314 @@ fn a_slot_in_use_or_under_a_live_claim_is_skipped_and_a_void_claim_is_cleared_an
     );
     assert_eq!(runs_in(&slot_2), 2);
     assert_eq!(record(&slot_2)["maintaining"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_configured_command_reaches_the_slot_whole_and_one_with_no_argv_is_refused_before_it_runs() {
+    let (fixture, _) = fixture_with(1, 1, &["ok"], "30s");
+    let slot = slot_dir(&fixture, 1);
+    let script = install(&fixture.world, "bin/argv.sh", ARGV_SCRIPT);
+
+    // Arguments a shell would have eaten: `&&` composes nothing, `*.rs` expands to
+    // nothing, and an argument with a space stays one argument.
+    let arguments = ["--time", "7 days", "&&", "echo pwned", "*.rs"];
+    let argv: Vec<String> = std::iter::once(script.display().to_string())
+        .chain(arguments.iter().map(|part| (*part).to_owned()))
+        .map(|part| format!("{part:?}"))
+        .collect();
+    crate::pool::configure_workspaces(
+        &fixture.world,
+        format!(
+            "version: 1\ndefault: {{pool: 1, maintain: {{command: [{}]}}}}\n",
+            argv.join(", ")
+        ),
+    );
+
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(
+        report["identities"][0]["outcome"]["slots"][0]["outcome"]["ran"]["outcome"], "succeeded",
+        "{report}"
+    );
+    let recorded = std::fs::read_to_string(target_of(&slot).join("argv"))
+        .expect("the script recorded the argv it was spawned with");
+    assert_eq!(
+        recorded.lines().collect::<Vec<&str>>(),
+        arguments,
+        "every argument reached the program in order and unchanged, with no shell"
+    );
+    assert_eq!(runs_in(&slot), 1);
+
+    // A command with nothing to spawn is refused where the document is read, naming
+    // the file and the key, and the pass runs nothing at all.
+    crate::pool::configure_workspaces(
+        &fixture.world,
+        "version: 1\ndefault: {pool: 1, maintain: {command: []}}\n",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--json"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            fixture
+                .world
+                .home()
+                .join("workspaces.yml")
+                .display()
+                .to_string(),
+        ))
+        .stderr(predicates::str::contains(
+            "maintain.command is an empty list: name the program to run and its arguments",
+        ));
+    assert_eq!(runs_in(&slot), 1, "the refused document ran nothing");
+
+    // And a sequence that is not empty but names an empty program is refused the same
+    // way: a list of one empty string is still nothing to spawn.
+    crate::pool::configure_workspaces(
+        &fixture.world,
+        "version: 1\ndefault: {pool: 1, maintain: {command: [\"\", \"--all\"]}}\n",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--json"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "maintain.command names an empty program: its first element is the program to run",
+        ));
+    assert_eq!(runs_in(&slot), 1, "and it ran nothing either");
+}
+
+#[test]
+fn a_slot_a_process_is_working_inside_is_unavailable_and_the_next_pass_maintains_it() {
+    let (fixture, _) = fixture_with(2, 2, &["ok"], "30s");
+    let slot_1 = slot_dir(&fixture, 1);
+    let slot_2 = slot_dir(&fixture, 2);
+
+    // A publication closes the session's record and leaves the tree on its branch, so
+    // the slot reads idle while the worker that session left is still inside it —
+    // which is the state a maintenance command must not run under, and a busy slot
+    // rather than a damaged one.
+    fixture.verified_by("exit 0");
+    let (published, tree, placed) = open(&fixture, &["--branch", "feature/published"]);
+    assert_eq!(placed["slot"], 1);
+    fixture
+        .world
+        .commit_file(&tree, "published.txt", "published\n", "feat: land it");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &published])
+        .assert()
+        .success();
+    let occupant = orphan_working_in(&tree);
+
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "nothing ran in it, so nothing failed: {report}");
+    let slots = report["identities"][0]["outcome"]["slots"]
+        .as_array()
+        .expect("slots");
+    let holder = slots[0]["outcome"]["unavailable"]["holder"]
+        .as_str()
+        .unwrap_or_else(|| panic!("slot 1 is unavailable, not broken: {report}"));
+    assert!(
+        holder.contains("a process is still working inside it")
+            && holder.contains(&occupant.to_string()),
+        "the holder is described, down to the process: {holder}"
+    );
+    assert!(
+        slots[0]["outcome"]["broken"].is_null(),
+        "a slot something is working in is healthy: {report}"
+    );
+    assert_eq!(runs_in(&slot_1), 0, "nothing ran under the worker");
+    assert_eq!(
+        slots[1]["outcome"]["ran"]["outcome"], "succeeded",
+        "{report}"
+    );
+    assert_eq!(runs_in(&slot_2), 1);
+    assert_eq!(
+        record(&slot_1)["maintaining"],
+        serde_json::Value::Null,
+        "and no claim was written on it"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--older-than", "1h"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "slot 1 — kept: a process is still working inside it",
+        ))
+        .stdout(predicates::str::contains("slot 2 — kept: not due"));
+
+    // Unavailable is transient, which is the whole of what separates it from broken:
+    // with the worker gone the next pass claims the slot and maintains it.
+    stop_orphan(occupant);
+    let (code, report) = maintain(&fixture, &["project", "--older-than", "1h"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(
+        report["identities"][0]["outcome"]["slots"][0]["outcome"]["ran"]["outcome"], "succeeded",
+        "{report}"
+    );
+    assert_eq!(runs_in(&slot_1), 1);
+}
+
+#[test]
+fn a_slot_whose_occupancy_this_run_cannot_take_is_unavailable_and_is_maintained_once_it_is_free() {
+    // Two slots, the second cut after the first so the lock it takes is the only one
+    // that appears: an occupancy nothing can release is the one state a *slot* reaches
+    // that no session record and no damaged file shows, and it is what `claim` asks
+    // for last before it writes a claim.
+    let (fixture, _) = fixture_with(2, 1, &["ok"], "30s");
+    let slot_1 = slot_dir(&fixture, 1);
+
+    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock on
+    // the slot directory, and holding it is the only thing that makes the take answer
+    // "somebody is in here": every verb takes it, works, and releases it before the
+    // process exits, so there is no command to run that leaves a slot occupied for the
+    // length of a journey. The lock is found the only way anything can find it — by
+    // what appeared when the slot was cut, since it is named after a digest of the
+    // directory — and held while the real CLI meets it, exactly as `lifecycle.rs` and
+    // `edges.rs` reach a run root's.
+    let (holding, _, warm) = open(&fixture, &["--branch", "feature/first"]);
+    assert_eq!(warm["slot"], 1, "the session takes the slot already cut");
+    let before = fixture.world.locks();
+    let (cutting, _, placed) = open(&fixture, &["--branch", "feature/second"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 2, "created": true})
+    );
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [occupancy] = opened.as_slice() else {
+        panic!("cutting one slot takes exactly one new lock, not {opened:?}");
+    };
+    close(&fixture, &cutting);
+    close(&fixture, &holding);
+    let occupant = World::occupy(occupancy);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    let slot_2 = slot_dir(&fixture, 2);
+    // Nothing is wrong with it and no record names it: `pool status` reads it idle, so
+    // the outcome below can only be the occupancy take failing.
+    let listed = status(&fixture);
+    assert_eq!(listed["slots"][1]["number"], 2, "{listed}");
+    assert_eq!(listed["slots"][1]["state"]["state"], "idle", "{listed}");
+
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "nothing ran in it, so nothing failed: {report}");
+    let slots = report["identities"][0]["outcome"]["slots"]
+        .as_array()
+        .expect("slots");
+    assert_eq!(
+        slots[1]["outcome"],
+        serde_json::json!({"unavailable": {"holder": "a command is working in it right now"}}),
+        "an occupied slot is unavailable, and says what holds it: {report}"
+    );
+    assert_eq!(
+        slots[0]["outcome"]["ran"]["outcome"], "succeeded",
+        "the slot beside it was maintained: {report}"
+    );
+    assert_eq!(runs_in(&slot_1), 1);
+    assert_eq!(runs_in(&slot_2), 0, "nothing ran under the occupant");
+    assert_eq!(
+        record(&slot_2)["maintaining"],
+        serde_json::Value::Null,
+        "and no claim was written on it"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--older-than", "1h"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("slot 1 — kept: not due"))
+        .stdout(predicates::str::contains(
+            "slot 2 — kept: a command is working in it right now",
+        ));
+
+    // The occupancy released, the very next pass claims the slot and maintains it —
+    // which is what makes it unavailable rather than broken.
+    drop(occupant);
+    let (code, report) = maintain(&fixture, &["project", "--older-than", "1h"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(
+        report["identities"][0]["outcome"]["slots"][1]["outcome"]["ran"]["outcome"], "succeeded",
+        "{report}"
+    );
+    assert_eq!(runs_in(&slot_2), 1);
+    assert_eq!(runs_in(&slot_1), 1, "the maintained slot was left alone");
+}
+
+#[test]
+fn an_unusable_clone_worktree_or_record_is_broken_and_the_slot_beside_them_is_still_maintained() {
+    // The three ways the contract defines a broken slot, one per slot, so each is
+    // named by its own reason rather than covered by whichever happens to be first.
+    let (fixture, _) = fixture_with(4, 4, &["ok"], "30s");
+    let slot_1 = slot_dir(&fixture, 1);
+    let slot_2 = slot_dir(&fixture, 2);
+    let slot_3 = slot_dir(&fixture, 3);
+    let slot_4 = slot_dir(&fixture, 4);
+    damage(&slot_1, Damage::LoseClone);
+    damage(&slot_2, Damage::LoseWorktree);
+    damage(&slot_3, Damage::GarbleRecord);
+
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "nothing ran in the damaged slots: {report}");
+    let slots = report["identities"][0]["outcome"]["slots"]
+        .as_array()
+        .expect("slots");
+    let broken_reason = |number: usize| -> String {
+        slots[number - 1]["outcome"]["broken"]["reason"]
+            .as_str()
+            .unwrap_or_else(|| panic!("slot {number} is broken: {report}"))
+            .to_owned()
+    };
+    let lost_clone = broken_reason(1);
+    assert!(
+        lost_clone.contains(&slot_1.join("clone").display().to_string())
+            && lost_clone.contains("is missing or not a repository"),
+        "the reason names the clone: {lost_clone}"
+    );
+    let lost_worktree = broken_reason(2);
+    assert!(
+        lost_worktree.contains(&slot_2.join("worktree").display().to_string())
+            && lost_worktree.contains("is missing or not a repository"),
+        "and the worktree: {lost_worktree}"
+    );
+    let garbled = broken_reason(3);
+    assert!(
+        garbled.contains(&slot_3.join("slot.json").display().to_string())
+            && garbled.contains("is malformed"),
+        "and the unreadable record: {garbled}"
+    );
+    for slot in &slots[..3] {
+        assert!(
+            slot["outcome"]["unavailable"].is_null(),
+            "an unusable slot is broken rather than busy: {slot}"
+        );
+    }
+    assert_eq!(runs_in(&slot_1), 0);
+    assert_eq!(runs_in(&slot_2), 0);
+    assert_eq!(runs_in(&slot_3), 0);
+    assert_eq!(
+        slots[3]["outcome"]["ran"]["outcome"], "succeeded",
+        "a damaged neighbour does not stop the pass: {report}"
+    );
+    assert_eq!(runs_in(&slot_4), 1);
+    fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--older-than", "1h"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("slot 1 — kept: its clone at"))
+        .stdout(predicates::str::contains("slot 2 — kept: its worktree at"))
+        .stdout(predicates::str::contains("slot 3 — kept: its record at"))
+        .stdout(predicates::str::contains("slot 4 — kept: not due"));
 }
 
 #[test]

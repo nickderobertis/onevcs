@@ -2042,7 +2042,12 @@ that (`--pool 0 --overflow 0`, say), naming the identity and where each value ca
 A `delete` entry is a relative path inside the worktree; an absolute or escaping (`..`)
 entry is refused at load. `maintain.command` is a non-empty argv list spawned with no
 shell — `&&` and pipes are passed through literally, so a host that wants composition
-writes a script and names it — and `timeout` is a `Span`, default `30m`. What the
+writes a script and names it — read into a `MaintenanceCommand` whose `program` is the
+first element and whose `args` are the rest, so a rule that holds no command at all is
+unrepresentable rather than refused later: an empty sequence — and a first element
+that is the empty string, which names nothing to spawn either — is refused where the
+document deserializes, naming the key, and serializing writes the same sequence back.
+`timeout` is a `Span`, default `30m`. What the
 maintain verb *does* is the next amendment's; this one declares the configuration it
 reads and the stored shape it fills.
 
@@ -2081,7 +2086,10 @@ pub struct WorkspaceDefault { pub pool: u32, pub overflow: Bound, pub delete: Ve
 pub struct WorkspaceRule { pub r#match: rules::RuleMatch, pub pool: Option<u32>,
                            pub overflow: Option<Bound>, pub delete: Option<Vec<PathBuf>>,
                            pub maintain: Option<Maintenance> }
-pub struct Maintenance { pub command: Vec<String>, pub timeout: Span }   // argv, no shell; 30m
+pub struct Maintenance { pub command: MaintenanceCommand, pub timeout: Span }  // no shell; 30m
+pub struct MaintenanceCommand { pub program: String, pub args: Vec<String> }
+    // serde: the document's non-empty sequence — first element the program, the rest
+    // its arguments — refused empty where it deserializes, written back as it was read
 
 pub struct SessionRequest { /* repo, branch, base, execution_checkout as today, plus: */
     pub pool: Option<u32>, pub overflow: Option<Bound> }
@@ -2231,7 +2239,9 @@ pub struct SlotMaintenance { pub number: u32, pub outcome: SlotOutcome }
 pub enum SlotOutcome {
     NotDue { last_maintained: String },
     InUse { session: SessionToken },
-    Broken { reason: String },
+    Unavailable { holder: String },   // busy, not broken: a live claim, an occupancy it
+                                      // could not take, or a process working inside it
+    Broken { reason: String },        // an unusable clone, worktree or record
     Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }
 ```
 
@@ -2242,10 +2252,12 @@ onevcs pool maintain [REPO] [--older-than SPAN] [--json]
 `MaintenanceOutcome` is the type the pool amendment declares. `IdentityOutcome` and
 `SlotOutcome` serialize externally tagged in kebab case, the way `MaintenanceOutcome`
 does: `"no-slots"`, `{"claimed": {"by_pid": N}}`, `{"slots": [...]}`; `{"not-due":
-{"last_maintained": "<RFC3339>"}}`, `{"ran": {"outcome": "succeeded", "duration_ms":
-N, "log": "<id>"}}`. Exit codes: **`0`** when nothing ran or every command succeeded;
-**`1`** when any ran command failed or timed out (the report says which); **`2`** for
-an invalid request — a `REPO` nothing resolves, a malformed `SPAN`. The human report
+{"last_maintained": "<RFC3339>"}}`, `{"unavailable": {"holder": "<what holds it>"}}`,
+`{"broken": {"reason": "<what is wrong with it>"}}`, `{"ran": {"outcome": "succeeded",
+"duration_ms": N, "log": "<id>"}}`. Exit codes:
+**`0`** when nothing ran or every command succeeded;
+**`1`** when any ran command failed or timed out (the report says which);
+**`2`** for an invalid request — a `REPO` nothing resolves, a malformed `SPAN`. The human report
 follows `sweep`'s shape: what it did, then per identity what it kept and why.
 
 **How one identity is maintained.** Take the identity's maintenance lock — an
@@ -2253,8 +2265,12 @@ exclusive, non-blocking take keyed on the identity, the way run-root occupancy i
 keyed; held by another process, the outcome is `Claimed` naming the holder's pid and
 nothing else is touched. Shed surplus idle slots exactly as `open` does. Then for each
 slot in number order, with its state read *then* rather than at the survey: skip one
-in use (an open record names it, `InUse`), one whose claim names a live process this
-run did not write, one not due, one broken; otherwise **claim it** — write
+in use (an open record names it, `InUse`), one not due, one broken, and one something
+else has right now — a claim naming a live process this run did not write, an
+occupancy it could not take, or a process working inside a slot the last session left
+unreturned — which is `Unavailable` naming that holder rather than `Broken`, because a
+busy slot is healthy and a later pass finds it clear, while `Broken` is an unusable
+clone, worktree or record that waiting does not mend; otherwise **claim it** — write
 `maintaining` with this process's `pid`, `started` and `since` — run `command` with the
 slot's worktree as working directory, no shell, this process's environment, stdout and
 stderr captured as one artifact, bounded by `timeout` with the process tree ended on

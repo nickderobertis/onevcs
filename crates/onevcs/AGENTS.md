@@ -1034,7 +1034,7 @@ goes and cuts or takes the slot itself; `workspace::close` returns one through
   `stranded` asks of stray work. A later session's `stray_work` passes over a branch
   another closed record of the identity names, because that record answers for it.
 
-`pool/maintain.rs` is the one verb that writes the maintenance claim, and three things
+`pool/maintain.rs` is the one verb that writes the maintenance claim, and four things
 about it are easy to undo. **It holds no schedule**: `--older-than` is the caller's
 interval, measured against `last_maintained` on the slot, and the attempt is what is
 stamped — success, failure or timeout alike — so a broken script costs one run per
@@ -1044,7 +1044,12 @@ and each slot is claimed under the placement lock with its state re-read *then* 
 holding the placement lock across a command, which is what keeps `open` from waiting.
 **The command is bounded the way a git command is**: its own process group, both pipes
 read as they arrive, the group ended when the bound fires; a second spelling of that
-would be a second answer to what a fired bound takes down.
+would be a second answer to what a fired bound takes down. **Busy is not broken**: a
+slot a live claim, an occupancy or a process inside it keeps this run out of is
+`Unavailable` naming that holder, and `Broken` is reserved for a clone, worktree or
+record that waiting does not mend — a consumer routes on the variant, and one that had
+to parse the reason to tell an unusable slot from a busy one reported false breakage
+every time a pass met a session's leftover worker.
 
 
 ## Everything durable lives under one state root

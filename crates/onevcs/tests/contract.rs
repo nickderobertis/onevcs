@@ -36,7 +36,7 @@ use onevcs::releases::{
     SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
 use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
-use onevcs::workspaces::{WorkspaceDefault, WorkspacesFile};
+use onevcs::workspaces::{MaintenanceCommand, WorkspaceDefault, WorkspacesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest,
     ChangeSpec, Check, CheckSource, Description, DraftReason, Envelope, Error, EventFilter,
@@ -5452,8 +5452,57 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
         .expect("the example names maintenance");
     assert_eq!(
         maintain.command,
-        vec!["cargo", "sweep", "--time", "7"],
-        "the command is an argv list, spawned with no shell"
+        MaintenanceCommand {
+            program: "cargo".to_owned(),
+            args: vec!["sweep".to_owned(), "--time".to_owned(), "7".to_owned()],
+        },
+        "the sequence is read as the program and its arguments, spawned with no shell"
+    );
+    assert_eq!(maintain.command.argv(), ["cargo", "sweep", "--time", "7"]);
+    // The two public fields, read directly: the first element of the sequence is the
+    // program and *only* the rest are its arguments — the split a spawn depends on,
+    // and the one a consumer reads by name.
+    assert_eq!(maintain.command.program, "cargo");
+    assert_eq!(maintain.command.args, ["sweep", "--time", "7"]);
+    let direct: MaintenanceCommand =
+        serde_yaml_ng::from_str("[\"cargo\", \"sweep\", \"--time\", \"7\"]")
+            .expect("a command deserializes from the sequence a document spells");
+    assert_eq!(direct.program, "cargo", "the first element is the program");
+    assert_eq!(
+        direct.args,
+        ["sweep", "--time", "7"],
+        "and the remaining elements are its arguments, none of them dropped"
+    );
+    assert_eq!(
+        serde_yaml_ng::to_value(&direct).expect("it serializes"),
+        serde_yaml_ng::Value::Sequence(
+            ["cargo", "sweep", "--time", "7"]
+                .into_iter()
+                .map(serde_yaml_ng::Value::from)
+                .collect()
+        ),
+        "and serializing reconstructs [program, ...args]"
+    );
+    let single: MaintenanceCommand =
+        serde_yaml_ng::from_str("[\"make\"]").expect("a program with no arguments is a command");
+    assert_eq!(single.program, "make");
+    assert!(single.args.is_empty(), "no arguments is no arguments");
+    // A sequence that is not empty and still names nothing to spawn is the same
+    // absence spelled a second way, and is refused at the same boundary.
+    let nameless = serde_yaml_ng::from_str::<MaintenanceCommand>("[\"\", \"--all\"]")
+        .expect_err("an empty program is nothing to spawn");
+    assert!(
+        nameless.to_string().contains(
+            "maintain.command names an empty program: its first element is the program to run"
+        ),
+        "the refusal names the key: {nameless}"
+    );
+    let empty_argument: MaintenanceCommand = serde_yaml_ng::from_str("[\"make\", \"\"]")
+        .expect("a program is entitled to an empty argument");
+    assert_eq!(
+        empty_argument.args,
+        [""],
+        "only the program is held non-empty"
     );
     assert_eq!(maintain.timeout, "30m".parse::<Span>().expect("a span"));
     assert_eq!(
@@ -5478,6 +5527,38 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
     assert_eq!(
         as_value["rules"][0]["maintain"]["timeout"],
         serde_yaml_ng::Value::from("30m")
+    );
+    assert_eq!(
+        as_value["rules"][0]["maintain"]["command"],
+        serde_yaml_ng::Value::Sequence(
+            ["cargo", "sweep", "--time", "7"]
+                .into_iter()
+                .map(serde_yaml_ng::Value::from)
+                .collect()
+        ),
+        "a command is written back as the sequence the host wrote"
+    );
+
+    // An argv with nothing to spawn is refused where the document is read, naming the
+    // key the operator edits, rather than reaching a policy that resolves to it.
+    let empty = serde_yaml_ng::from_str::<WorkspacesFile>(
+        "version: 1\ndefault: {maintain: {command: []}}\n",
+    )
+    .expect_err("an empty command is not a command");
+    assert!(
+        empty.to_string().contains(
+            "maintain.command is an empty list: name the program to run and its arguments"
+        ),
+        "the refusal names the key: {empty}"
+    );
+    assert!(
+        serde_yaml_ng::from_str::<WorkspacesFile>(
+            "version: 1\ndefault: {maintain: {command: [\"\"]}}\n",
+        )
+        .expect_err("nor is a document naming an empty program")
+        .to_string()
+        .contains("maintain.command names an empty program"),
+        "a document naming an empty program is refused where it is read"
     );
 
     // A document with only a version is the shipped default whole: every rule
@@ -5741,7 +5822,8 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         "pub maintain: Option<Maintenance> }",
         "pub struct WorkspaceRule { pub r#match: rules::RuleMatch, pub pool: Option<u32>,",
         "pub overflow: Option<Bound>, pub delete: Option<Vec<PathBuf>>,",
-        "pub struct Maintenance { pub command: Vec<String>, pub timeout: Span }",
+        "pub struct Maintenance { pub command: MaintenanceCommand, pub timeout: Span }",
+        "pub struct MaintenanceCommand { pub program: String, pub args: Vec<String> }",
         "pub pool: Option<u32>, pub overflow: Option<Bound> }",
         "Error::PoolExhausted { reason: String }",
         "pub fn workspace_capacity(request: &SessionRequest) -> Result<WorkspaceCapacity>;",
@@ -5809,12 +5891,18 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
                     },
                     SlotMaintenance {
                         number: 3,
+                        outcome: SlotOutcome::Unavailable {
+                            holder: "a process is still working inside it: pid 9".to_owned(),
+                        },
+                    },
+                    SlotMaintenance {
+                        number: 4,
                         outcome: SlotOutcome::Broken {
                             reason: "its clone is missing".to_owned(),
                         },
                     },
                     SlotMaintenance {
-                        number: 4,
+                        number: 5,
                         outcome: SlotOutcome::Ran {
                             outcome: MaintenanceOutcome::Failed { exit: Some(3) },
                             duration_ms: 1_200,
@@ -5843,8 +5931,10 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
         json!([
             {"number": 1, "outcome": {"not-due": {"last_maintained": "2026-09-19T10:00:00.000Z"}}},
             {"number": 2, "outcome": {"in-use": {"session": "s-1"}}},
-            {"number": 3, "outcome": {"broken": {"reason": "its clone is missing"}}},
-            {"number": 4, "outcome": {"ran": {
+            {"number": 3, "outcome": {"unavailable": {
+                "holder": "a process is still working inside it: pid 9"}}},
+            {"number": 4, "outcome": {"broken": {"reason": "its clone is missing"}}},
+            {"number": 5, "outcome": {"ran": {
                 "outcome": {"failed": {"exit": 3}}, "duration_ms": 1200, "log": "a-1"}}},
         ]),
         "a slot's outcome is externally tagged in kebab case, as the amendment spells it"
@@ -5875,6 +5965,7 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
         "pub enum SlotOutcome {",
         "NotDue { last_maintained: String },",
         "InUse { session: SessionToken },",
+        "Unavailable { holder: String },",
         "Broken { reason: String },",
         "Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }",
     ] {
