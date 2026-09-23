@@ -1057,3 +1057,298 @@ fn a_live_holder_refuses_a_launch_until_the_caller_acknowledges_that_exact_sessi
     onevcs::close_session(&Providers::real(), &opened.token).expect("the launch's session closes");
     elsewhere.released();
 }
+
+/// What `session holders` printed, with its exit code and its two streams.
+fn holders_of(fixture: &Fixture) -> std::process::Output {
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "holders", "project", "--json"])
+        .output()
+        .expect("holders runs")
+}
+
+/// Overwrite one session record with bytes that are not a record.
+///
+/// A record a build wrote that a later one refuses, a write a full disk cut in half,
+/// a file an operator edited: this crate offers no verb that produces one, and
+/// `pool.rs` stages a broken *slot* record the same way. What is driven over it is
+/// the real CLI, and what the journey asserts is what the real reader decided.
+// llmlint: ignore-block[tests_mirror_real_usage] see the paragraph above: a record on
+// disk that will not parse is reachable through no interface of this crate, and
+// writing one is the only way a journey can put the reader in front of it.
+fn garble_record(fixture: &Fixture, token: &str) {
+    std::fs::write(record_path(fixture, token), "not a session record\n")
+        .expect("the journey stages a record this build will not read");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
+#[test]
+fn a_session_directory_this_host_cannot_list_refuses_the_holders_rather_than_answering_none() {
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/held"]);
+    fixture.world.commit_file(
+        &worktree,
+        "held.txt",
+        "one\n",
+        "feat: work nobody published",
+    );
+
+    // The premise: while the records read, this session is a holder. Without it the
+    // refusal below would be indistinguishable from a repository nobody is in.
+    let before = holders_of(&fixture);
+    assert!(before.status.success());
+    let rows: Vec<SessionHolder> = serde_json::from_slice(&before.stdout).expect("JSON");
+    assert!(
+        rows.iter().any(|holder| holder.token.0 == token),
+        "the premise: {token} holds the repository while its record reads: {rows:?}"
+    );
+
+    let refused = fixture
+        .world
+        .with_unreadable_records(|| holders_of(&fixture));
+
+    assert!(
+        !refused.status.success(),
+        "a listing nobody got is not a listing of nobody:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        refused.stdout.is_empty(),
+        "and nothing is answered from it: {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    let said = String::from_utf8(refused.stderr).expect("the refusal is UTF-8");
+    assert!(
+        said.contains(&format!(
+            "cannot list the session records in {}",
+            fixture.world.sessions_dir().display()
+        )),
+        "the refusal names the directory that could not be read:\n{said}"
+    );
+
+    // And the very same command answers again once the directory does: what was
+    // refused was the reading, not the repository.
+    let after = holders_of(&fixture);
+    assert!(after.status.success());
+    let rows: Vec<SessionHolder> = serde_json::from_slice(&after.stdout).expect("JSON");
+    assert!(
+        rows.iter().any(|holder| holder.token.0 == token),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn a_session_record_this_host_cannot_read_refuses_the_holders_and_names_the_record() {
+    let fixture = Fixture::local(&local_direct());
+    let (held, worktree) = fixture.open(&["--branch", "feature/still-held"]);
+    fixture.world.commit_file(
+        &worktree,
+        "held.txt",
+        "one\n",
+        "feat: work nobody published",
+    );
+    let (torn, _) = fixture.open(&["--branch", "feature/torn-record"]);
+    garble_record(&fixture, &torn);
+
+    let refused = holders_of(&fixture);
+    assert!(
+        !refused.status.success(),
+        "a record that would not read is not a record of nobody:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    let said = String::from_utf8(refused.stderr).expect("the refusal is UTF-8");
+    assert!(
+        said.contains(&record_path(&fixture, &torn).display().to_string()),
+        "the refusal names the record that could not be read:\n{said}"
+    );
+    // The other session is not answered for from what did read: one unreadable
+    // record is the whole listing refused, because what the answer is *for* is
+    // deciding who is still in the repository.
+    assert!(
+        refused.stdout.is_empty(),
+        "nothing is answered beside it: {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        !said.contains(&format!("no session {held:?} is open")),
+        "and the refusal is about the record it met, not about the one that read:\n{said}"
+    );
+}
+
+/// Open a session on the identity's one warm slot, do `work` in its worktree, and
+/// close it — leaving a closed record naming that slot.
+#[cfg(target_os = "linux")]
+fn closed_on_the_slot(fixture: &Fixture, branch: &str, work: impl FnOnce(&Path)) -> String {
+    let (token, worktree, placement) = crate::pool::open(fixture, &["--branch", branch]);
+    assert_eq!(placement["kind"], "slot", "{branch} is placed on the slot");
+    work(&worktree);
+    crate::pool::close(fixture, &token);
+    token
+}
+
+/// What one pass over this host's session records answered, and how many times it
+/// listed the directory to answer it.
+#[cfg(target_os = "linux")]
+struct Scan {
+    /// The tokens `session holders` reported, in order.
+    holders: Vec<String>,
+    /// The tokens `onevcs sweep` named as records with nothing left behind them.
+    litter: Vec<String>,
+    /// How many times the session directory itself was opened for listing.
+    listings: usize,
+}
+
+/// Drive the two scans over this host and count what they read.
+///
+/// The sweep is a rehearsal past the age floor, so it decides about every record
+/// there is and forgets none: what the two passes are compared on has to be the same
+/// set of records both times.
+#[cfg(target_os = "linux")]
+fn scan(fixture: &Fixture) -> Scan {
+    let watch = crate::listings::Listings::of(&fixture.world.sessions_dir());
+    let held = holders_of(fixture);
+    assert!(
+        held.status.success(),
+        "{}",
+        String::from_utf8_lossy(&held.stderr)
+    );
+    let swept = fixture
+        .world
+        .onevcs()
+        .args([
+            "sweep",
+            "--dry-run",
+            "--min-age-hours",
+            "0",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("sweep runs");
+    assert!(
+        swept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&swept.stderr)
+    );
+    let listings = watch.taken();
+
+    let held: Vec<SessionHolder> = serde_json::from_slice(&held.stdout).expect("JSON");
+    let report: serde_json::Value = serde_json::from_slice(&swept.stdout).expect("JSON");
+    let mut holders: Vec<String> = held.into_iter().map(|holder| holder.token.0).collect();
+    holders.sort();
+    let mut litter: Vec<String> = report["session_records"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|record| record["session"].as_str().expect("a token").to_owned())
+        .collect();
+    litter.sort();
+    Scan {
+        holders,
+        litter,
+        listings,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn sorted(tokens: &[&str]) -> Vec<String> {
+    let mut sorted: Vec<String> = tokens.iter().map(|token| (*token).to_owned()).collect();
+    sorted.sort();
+    sorted
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_holder_and_a_sweep_scan_list_the_session_directory_once_however_many_records_are_in_it() {
+    // Whether a closed session's tree is still its own is decided from the *other*
+    // records, and each scan used to ask that by re-reading every record on the host
+    // — twice per record, since the ownership question is asked again inside the
+    // unpublished-work one. On a host whose closed pooled sessions accumulate, that
+    // is every holder read and every sweep growing with the day's history, and
+    // nothing the binary prints says so. So the counting is the kernel's: `inotify`
+    // on the session directory's own inode, one event per `opendir`, whoever made it.
+    let fixture = crate::pool::pooled(&crate::pool::sized(1, "unlimited"));
+
+    // Litter: pooled sessions that committed nothing and closed. Each names the one
+    // slot, and each is answered for by nobody.
+    let mut litter: Vec<String> = (0..2)
+        .map(|n| closed_on_the_slot(&fixture, &format!("feature/spent-{n}"), |_| {}))
+        .collect();
+
+    // Not litter: a pooled session whose work reached the execution checkout and no
+    // origin. Its record answers for that work whatever became of the slot.
+    let carrying = closed_on_the_slot(&fixture, "feature/carrying", |worktree| {
+        fixture.world.commit_file(
+            worktree,
+            "carried.txt",
+            "one\n",
+            "feat: nobody published this",
+        );
+    });
+
+    // And the session holding the slot now, with an uncommitted file in the worktree
+    // every closed record above also names. That file is the ownership decision made
+    // visible: it is this session's work, and a closed record that read the slot's
+    // tree as its own would be retained for it and stop being litter.
+    let (live, live_tree, _) = crate::pool::open(&fixture, &["--branch", "feature/live"]);
+    let in_progress = live_tree.join("in-progress.txt");
+    std::fs::write(&in_progress, "the live session's\n").expect("the live session works");
+
+    let few = scan(&fixture);
+    // The premise, and what stops this journey passing by counting nothing: each of
+    // the two scans opens the directory exactly once.
+    assert_eq!(
+        few.listings, 2,
+        "one listing for the holder read and one for the sweep"
+    );
+    assert_eq!(
+        few.holders,
+        sorted(&[&carrying, &live]),
+        "the sessions something is still behind are the holders"
+    );
+    assert_eq!(
+        few.litter,
+        sorted(&litter.iter().map(String::as_str).collect::<Vec<_>>()),
+        "and the records with nothing behind them are the ones the sweep names"
+    );
+
+    // The same host with four times the closed records, every one of them on that
+    // same slot, and every ownership decision the same one.
+    std::fs::remove_file(&in_progress).expect("the live session's work is taken back");
+    crate::pool::close(&fixture, &live);
+    litter.push(live);
+    litter.extend(
+        (2..8).map(|n| closed_on_the_slot(&fixture, &format!("feature/spent-{n}"), |_| {})),
+    );
+    let (later, later_tree, _) = crate::pool::open(&fixture, &["--branch", "feature/later"]);
+    std::fs::write(later_tree.join("in-progress.txt"), "the later session's\n")
+        .expect("the later session works");
+
+    let many = scan(&fixture);
+    assert_eq!(
+        many.holders,
+        sorted(&[&carrying, &later]),
+        "the same two kinds of answer over four times the records"
+    );
+    assert_eq!(
+        many.litter,
+        sorted(&litter.iter().map(String::as_str).collect::<Vec<_>>()),
+        "and every record with nothing behind it is still named"
+    );
+    assert!(
+        many.litter.len() >= few.litter.len() * 4,
+        "the premise: the record count grew — {} against {}",
+        many.litter.len(),
+        few.litter.len()
+    );
+    assert_eq!(
+        many.listings,
+        few.listings,
+        "the two scans list the session directory the same number of times over {} records \
+         as over {}: what grows with the record count is the reading of each record once, \
+         never the listing",
+        many.litter.len(),
+        few.litter.len(),
+    );
+}

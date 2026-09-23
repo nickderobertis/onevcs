@@ -198,6 +198,16 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
         outside_this_verb(&mut report, path, &identities);
     }
 
+    // The session records first, and before a single directory is removed. The two
+    // scans decide independently — a family is a publication's or a recovery's run
+    // root, and no record names one — so the order says nothing about what this verb
+    // answers. What it says is what happens when the records cannot be read at all:
+    // that listing is refused rather than answered empty, and a pass that would go on
+    // to reclaim would have removed workspaces on the strength of a question it never
+    // got an answer to. The report's own sections are ordered by its rendering, not
+    // by this.
+    records(&mut report, dry_run, min_age)?;
+
     let mut families: Vec<Verb> = Verb::ALL.to_vec();
     // By the directory's own name rather than by the enum's order, so the report
     // reads the same however the verbs come to be declared.
@@ -205,7 +215,6 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     for verb in families {
         family(&mut report, verb, min_age, &landings)?;
     }
-    records(&mut report, dry_run, min_age)?;
     Ok(report)
 }
 
