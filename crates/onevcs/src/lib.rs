@@ -36,6 +36,13 @@
 //! branches that still hold unpublished work, and [`EventStream`] the envelopes one
 //! session wrote. The command line is a rendering of those rather than a second path
 //! through them.
+//!
+//! **Every** command is: [`registered_identities`] and [`repositories`] are what
+//! `onevcs repos` prints, [`register_checkout`], [`resolve_repository`],
+//! [`publish_branch`], [`recover`], [`work_status`], [`import_branch`],
+//! [`integrate`], [`sync`], [`sweep`], [`rules_check`], [`read_artifact`] and
+//! [`EventLines`] are the rest, and a command with no such operation fails this
+//! crate's own contract suite.
 
 #![warn(missing_docs)]
 
@@ -61,6 +68,7 @@ mod label;
 mod landed;
 mod lock;
 mod merge_path;
+mod ops;
 mod policy;
 mod pool;
 mod preserve;
@@ -99,7 +107,18 @@ pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description, GitHub,
     Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
+pub use import::{Imported, Source as ImportSource, Wrote};
+pub use integrate::{
+    BranchOutcome, Ending as IntegrationEnding, Outcome as Integration, Status as IntegrationStatus,
+};
 pub use landed::{Landed, LandingEvidence};
+pub use ops::{
+    import_branch, integrate, publish_branch, read_artifact, recover, register_checkout,
+    registered_identities, repositories, resolve_repository, rules_check, sweep, sync, work_status,
+    BranchPublishRequest, CheckoutAudit, ImportRequest, IntegrateRequest, MatchedRule,
+    MergePathCoverage, RecoverRequest, RegisteredCheckout, RegisteredRepository, Registration,
+    RequiredChecksAnswer, ResolvedPolicy, ResolvedRepository, RulesCheck, StatusReport, Synced,
+};
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
     IdentityOutcome, MaintainReport, MaintenanceOutcome, PoolStatus, PruneReport, SlotMaintenance,
@@ -124,7 +143,8 @@ pub use session::{
     Provenance, Recoverable, Scope, Selection, Session, SessionHolder, SessionRecord,
     SessionRequest, SessionToken,
 };
-pub use stream::EventStream;
+pub use stream::{EventLine, EventLines, EventStream};
+pub use sweep::Report as SweepReport;
 pub use vcs::{Git, Vcs};
 pub use workspaces::{first_matching, Bound, Span};
 
@@ -214,34 +234,6 @@ pub fn describe_change(
 /// draft is asked for nothing and reported as it stands.
 pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionChange> {
     change::ready_change(providers, token)
-}
-
-/// Every repository identity this host has registered, in the order `onevcs repos`
-/// lists them.
-///
-/// The library form of the unindented lines `onevcs repos` prints: one normalized
-/// origin per registered identity — `host/owner/name` for a hosted one, the origin
-/// path for a local one — which is the key every other repository-taking operation
-/// here accepts.
-///
-/// It exists because the enumeration had no library form at all. The migration-aware
-/// loader is private, so a consumer that wanted the registered identities — to
-/// maintain each of them, to sweep across them, to ask what each one releases — had
-/// to spawn the binary and parse the prose `repos` prints, which couples it to a
-/// display line nobody promised to keep.
-///
-/// The order is the registry's own, which is the order the command prints, so the
-/// two readings of one document cannot come apart. A registry an older build wrote
-/// is migrated as this reads it, exactly as the command migrates it, and a document
-/// this build cannot read is an `Err` naming what could not be read rather than an
-/// empty list — "this host has registered nothing" and "this host's registry could
-/// not be read" are opposite facts, and a caller acts on only one of them.
-///
-/// It takes no [`Providers`] for the reason [`session_holders`] does not: the
-/// registry is this host's own document, and there is nothing here for an
-/// implementation of either interface to answer.
-pub fn registered_identities() -> Result<Vec<String>> {
-    Ok(store::load()?.identities.into_keys().collect())
 }
 
 /// Every session recorded for one repository, live or not, in token order.

@@ -3405,6 +3405,152 @@ fn the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers() {
     }
 }
 
+/// Every leaf of the command surface: a top-level command with no subcommands, or
+/// each subcommand of one that has them, spelled the way a user types it.
+fn command_leaves() -> BTreeSet<String> {
+    fn walk(command: &clap::Command, prefix: &str, into: &mut BTreeSet<String>) {
+        let mut subcommands = command.get_subcommands().peekable();
+        if subcommands.peek().is_none() {
+            into.insert(prefix.to_owned());
+            return;
+        }
+        for sub in subcommands {
+            let named = match prefix.is_empty() {
+                true => sub.get_name().to_owned(),
+                false => format!("{prefix} {}", sub.get_name()),
+            };
+            walk(sub, &named, into);
+        }
+    }
+    let mut leaves = BTreeSet::new();
+    walk(&Cli::command(), "", &mut leaves);
+    leaves
+}
+
+/// The typed library operation each command is a rendering of.
+///
+/// One row per leaf of the command surface, and the parity test below fails when the
+/// two sets differ — which is what stops the next command from being added as a
+/// handler with its operation buried inside it. The names are the crate's own public
+/// paths, and the binding beside each row is what proves the operation still exists
+/// with the shape stated here: a rename breaks the compile rather than the table.
+const OPERATION_OF: &[(&str, &str)] = &[
+    ("register", "onevcs::register_checkout"),
+    ("repos", "onevcs::repositories"),
+    ("resolve", "onevcs::resolve_repository"),
+    ("session open", "onevcs::Vcs::open_session"),
+    ("session adopt", "onevcs::Vcs::adopt_session"),
+    ("session close", "onevcs::close_session"),
+    ("session holders", "onevcs::session_holders"),
+    ("publish", "onevcs::publish"),
+    ("publish-branch", "onevcs::publish_branch"),
+    ("change show", "onevcs::session_change"),
+    ("change describe", "onevcs::describe_change"),
+    ("change ready", "onevcs::ready_change"),
+    ("preserve", "onevcs::preserve"),
+    ("recover", "onevcs::recover"),
+    ("recoverable", "onevcs::Vcs::recoverable_matching"),
+    ("status", "onevcs::work_status"),
+    ("import", "onevcs::import_branch"),
+    ("integrate", "onevcs::integrate"),
+    ("sync", "onevcs::sync"),
+    ("sweep", "onevcs::sweep"),
+    ("events", "onevcs::EventLines::open"),
+    ("artifact cat", "onevcs::read_artifact"),
+    ("rules check", "onevcs::rules_check"),
+    ("release targets", "onevcs::release_targets"),
+    ("release discover", "onevcs::release_discovery"),
+    ("release latest", "onevcs::release_latest"),
+    ("release status", "onevcs::release_status"),
+    ("release acknowledge", "onevcs::acknowledge_release"),
+    ("release declaration", "onevcs::read_release_declaration"),
+    ("pool status", "onevcs::pool_status"),
+    ("pool prune", "onevcs::pool_prune"),
+    ("pool maintain", "onevcs::pool_maintain"),
+];
+
+#[test]
+fn every_command_renders_a_typed_library_operation() {
+    let commands = command_leaves();
+    let covered: BTreeSet<String> = OPERATION_OF
+        .iter()
+        .map(|(command, _)| (*command).to_owned())
+        .collect();
+    assert_eq!(
+        commands, covered,
+        "every command of this crate is a rendering of a typed library operation, and \
+         this table is where the two are reconciled: a command with no row has an \
+         operation nobody outside the binary can reach, and a row with no command names \
+         one nothing renders"
+    );
+    // Every operation the table names, named: a row that has gone stale fails to
+    // compile rather than passing as a string nothing resolves.
+    let _ = onevcs::register_checkout;
+    let _ = onevcs::repositories;
+    let _ = onevcs::resolve_repository;
+    let _ = <dyn Vcs>::open_session;
+    let _ = <dyn Vcs>::adopt_session;
+    let _ = onevcs::close_session;
+    let _ = onevcs::session_holders;
+    let _ = onevcs::publish;
+    let _ = onevcs::publish_branch;
+    let _ = onevcs::session_change;
+    let _ = onevcs::describe_change;
+    let _ = onevcs::ready_change;
+    let _ = onevcs::preserve;
+    let _ = onevcs::recover;
+    let _ = <dyn Vcs>::recoverable_matching;
+    let _ = onevcs::work_status;
+    let _ = onevcs::import_branch;
+    let _ = onevcs::integrate;
+    let _ = onevcs::sync;
+    let _ = onevcs::sweep;
+    let _ = onevcs::EventLines::open;
+    let _ = onevcs::read_artifact;
+    let _ = onevcs::rules_check;
+    let _ = onevcs::release_targets;
+    let _ = onevcs::release_discovery;
+    let _ = onevcs::release_latest;
+    let _ = onevcs::release_status;
+    let _ = onevcs::acknowledge_release;
+    let _ = onevcs::read_release_declaration;
+    let _ = onevcs::pool_status;
+    let _ = onevcs::pool_prune;
+    let _ = onevcs::pool_maintain;
+}
+
+#[test]
+fn the_amendment_declares_the_operations_the_command_line_renders() {
+    let declarations = amendment_declaring("pub fn repositories");
+    for declared in [
+        "pub fn register_checkout(path: &Path, origin: Option<&Url>) -> Result<Registration>;",
+        "pub fn repositories(providers: &Providers<'_>, audit_gates: bool)",
+        "-> Result<Vec<RegisteredRepository>>;",
+        "pub fn resolve_repository(providers: &Providers<'_>, repo: &str) \
+         -> Result<ResolvedRepository>;",
+        "pub fn publish_branch(providers: &Providers<'_>, request: &BranchPublishRequest)",
+        "-> Result<PublishOutcome>;",
+        "pub fn recover(providers: &Providers<'_>, request: &RecoverRequest) \
+         -> Result<PublishOutcome>;",
+        "pub fn work_status(providers: &Providers<'_>, reference: &str) -> Result<StatusReport>;",
+        "pub fn import_branch(request: &ImportRequest) -> Result<Imported>;",
+        "pub fn integrate(request: &IntegrateRequest) -> Result<Integration>;",
+        "pub fn sync(branch: Option<&str>) -> Result<Synced>;",
+        "pub fn sweep(dry_run: bool, min_age: Duration) -> Result<SweepReport>;",
+        "pub fn read_artifact(id: &ArtifactId) -> Result<String>;",
+        "pub fn rules_check(repo: &str) -> Result<RulesCheck>;",
+        "impl EventLines {",
+        "pub fn open(session: &SessionToken, filter: Option<EventFilter>) -> Result<Self>;",
+        "pub fn read(&mut self) -> Result<Vec<EventLine>>;",
+        "pub struct EventLine { pub text: String, pub envelope: Option<Envelope> }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+}
+
 #[test]
 fn the_amendment_declares_the_registered_identity_read() {
     // The signature is fixed for this plan: a sibling repository's relink replaces a

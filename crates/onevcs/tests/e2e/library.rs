@@ -5783,11 +5783,10 @@ fn a_registry_older_than_this_build_is_migrated_by_the_library_read_as_it_is_by_
         vec![key.clone()],
         "the library read migrates the document exactly as the command does"
     );
-    assert_eq!(
+    assert!(
         std::fs::read_to_string(world.home().join("registry.json"))
             .expect("a registry")
             .contains("\"version\": 6"),
-        true,
         "and leaves it at the version this build writes"
     );
 
@@ -5823,5 +5822,516 @@ fn a_registry_this_build_cannot_read_refuses_the_identity_read_rather_than_answe
         stderr_of(|| assert_eq!(run(&["onevcs", "repos"], Providers::real()), 2)).trim(),
         format!("onevcs: {reason}"),
         "and the command refuses the same read with the same words"
+    );
+}
+
+#[test]
+fn the_registry_operations_answer_the_values_the_registry_commands_render() {
+    let world = World::new();
+    inhabit(&world);
+    let origin = world.bare_origin("hosted");
+    let checkout = world.clone_of(&origin, "hosted");
+    configure_rules(
+        &world,
+        "version: 1\nrules:\n  - match: {host: github.com, owner: acme-corp}\n    \
+         publication: change-open\n    approvals: none\ndefault: \
+         {publication: local-direct, approvals: none}\n",
+    );
+
+    // The registration itself, as a value: what was recorded, what it publishes
+    // under, and what covers its merge path.
+    let url = onevcs::Url::parse("https://github.com/acme-corp/hosted.git").expect("a URL");
+    let registered =
+        onevcs::register_checkout(&checkout, Some(&url)).expect("the checkout registers");
+    assert_eq!(registered.identity, "github.com/acme-corp/hosted");
+    assert_eq!(registered.alias, "hosted");
+    assert_eq!(registered.checkout, checkout);
+    assert_eq!(registered.policy.publication, MergePolicy::ChangeOpen);
+    assert_eq!(registered.policy.publication_from, "rule 1");
+    assert_eq!(registered.policy.approvals_from, "rule 1");
+    // No `pre-push` hook, and a policy that opens a change request: the host's
+    // required checks are what would rule on it.
+    assert_eq!(
+        registered.coverage,
+        onevcs::MergePathCoverage::RequiredChecks
+    );
+
+    // …and the command is a rendering of exactly that.
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(&["onevcs", "repos", "--audit-gates"], Providers::real()),
+            0
+        );
+    });
+    assert!(
+        printed.contains("publication: change-open (from rule 1)")
+            && printed.contains("merge-path coverage: the host's required checks"),
+        "{printed}"
+    );
+
+    // The listing, with and without the audit. Without it nothing reads the rules
+    // file and no host is asked, so neither answer is invented.
+    let plain = onevcs::repositories(&Providers::real(), false).expect("the listing");
+    assert_eq!(plain.len(), 1);
+    assert_eq!(plain[0].identity, "github.com/acme-corp/hosted");
+    assert_eq!(plain[0].required_checks, None);
+    assert_eq!(plain[0].checkouts.len(), 1);
+    assert_eq!(plain[0].checkouts[0].alias, "hosted");
+    assert_eq!(plain[0].checkouts[0].path, checkout);
+    assert_eq!(plain[0].checkouts[0].audit, None);
+
+    world.install_fake_host(&origin);
+    world.host_checks(&[
+        crate::world::Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        },
+        crate::world::Check {
+            name: "advisory",
+            status: "completed",
+            conclusion: Some("failure"),
+            required: false,
+        },
+    ]);
+    let audited = onevcs::repositories(&Providers::real(), true).expect("the audited listing");
+    match audited[0]
+        .required_checks
+        .as_ref()
+        .expect("the audit asked the host")
+    {
+        onevcs::RequiredChecksAnswer::Answered { base, checks } => {
+            assert_eq!(base, "main");
+            assert!(
+                checks.checks.contains("gate") && !checks.checks.contains("advisory"),
+                "the required ones and only those: {:?}",
+                checks.checks
+            );
+        }
+        other => panic!("the host answered, so this is not: {other:?}"),
+    }
+    let audit = audited[0].checkouts[0]
+        .audit
+        .as_ref()
+        .expect("the audit resolved the checkout");
+    assert_eq!(audit.policy.publication, MergePolicy::ChangeOpen);
+    assert_eq!(audit.coverage, onevcs::MergePathCoverage::RequiredChecks);
+
+    // One repository argument, resolved: the same identity through the seam, with
+    // the policy that decides how it publishes travelling with it.
+    let resolved = onevcs::resolve_repository(&Providers::real(), "hosted").expect("it resolves");
+    assert_eq!(resolved.identity, "github.com/acme-corp/hosted");
+    assert_eq!(resolved.alias, "hosted");
+    assert_eq!(resolved.publication_checkout, checkout);
+    assert_eq!(resolved.policy.publication, MergePolicy::ChangeOpen);
+    let printed = stdout_of(|| {
+        assert_eq!(run(&["onevcs", "resolve", "hosted"], Providers::real()), 0);
+    });
+    let rendered: serde_json::Value = serde_json::from_str(&printed).expect("resolve prints JSON");
+    assert_eq!(rendered["identity"], resolved.identity);
+    assert_eq!(rendered["alias"], resolved.alias);
+    assert_eq!(rendered["origin"], resolved.origin);
+    assert_eq!(rendered["gate"], resolved.gate);
+    assert_eq!(rendered["publication"], "change-open");
+    assert_eq!(rendered["approvals"], "none");
+
+    // How that policy was decided, which is the question asked before a publication
+    // rather than deduced from one afterwards.
+    let checked = onevcs::rules_check("hosted").expect("the rules resolve");
+    assert_eq!(checked.identity, resolved.identity);
+    assert_eq!(checked.checkout, checkout);
+    assert_eq!(
+        checked.matched.as_ref().map(|matched| matched.index),
+        Some(1),
+        "the first matching rule is what decided it"
+    );
+    assert_eq!(
+        checked
+            .matched
+            .expect("a matched rule")
+            .criteria
+            .owner
+            .as_deref(),
+        Some("acme-corp")
+    );
+    assert!(!checked.trailer_prefix_from_rules);
+    assert!(!checked.trailer_prefix.is_empty());
+
+    // And the refusal: a repository nothing resolves is an `Err` from the operation
+    // and exit code 2 from the command, in the same words.
+    let refused = onevcs::resolve_repository(&Providers::real(), "nobody-registered-this")
+        .expect_err("an unregistered repository is refused rather than invented");
+    assert_eq!(
+        stderr_of(|| assert_eq!(
+            run(
+                &["onevcs", "resolve", "nobody-registered-this"],
+                Providers::real()
+            ),
+            2
+        ))
+        .trim(),
+        format!("onevcs: {refused}"),
+    );
+}
+
+#[test]
+fn the_branch_operations_answer_values_where_their_commands_print_prose() {
+    let fixture = crate::lifecycle::Fixture::local(&crate::lifecycle::local_direct());
+    inhabit(&fixture.world);
+    let checkout = fixture.checkout.clone();
+
+    // A branch only a live session's run clone has, which is exactly what `import`
+    // is for: nothing outside that clone can reach it yet.
+    let session = Git
+        .open_session(SessionRequest {
+            repo: "project".to_owned(),
+            branch: Some("feature/stranded".to_owned()),
+            base: None,
+            execution_checkout: None,
+            pool: None,
+            overflow: None,
+            labels: Default::default(),
+        })
+        .expect("a session over the registered repository");
+    fixture.world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: strand the work",
+    );
+
+    let imported = onevcs::import_branch(&onevcs::ImportRequest {
+        repo: checkout.clone(),
+        branch: "feature/stranded".to_owned(),
+        from: None,
+        under: None,
+    })
+    .expect("the branch imports");
+    assert_eq!(imported.wrote, onevcs::Wrote::Created);
+    assert_eq!(imported.destination, checkout);
+    assert_eq!(
+        fixture
+            .world
+            .git(&checkout, &["rev-parse", "feature/stranded"]),
+        imported.tip,
+        "the ref the checkout now has is the commit the value names"
+    );
+
+    // Run again, the same import writes nothing — and the command is a rendering of
+    // that same value, which is how the two are held to one answer.
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(
+                &[
+                    "onevcs",
+                    "import",
+                    "feature/stranded",
+                    "--repo",
+                    &checkout.to_string_lossy(),
+                ],
+                Providers::real(),
+            ),
+            0
+        );
+    });
+    assert!(
+        printed.starts_with(&format!(
+            "already had feature/stranded in {}",
+            checkout.display()
+        )),
+        "{printed}"
+    );
+
+    // The refusal: a branch nobody has is named rather than reported as imported.
+    let refused = onevcs::import_branch(&onevcs::ImportRequest {
+        repo: checkout.clone(),
+        branch: "feature/nobody-has".to_owned(),
+        from: None,
+        under: None,
+    })
+    .expect_err("a branch nothing holds is refused");
+    assert!(
+        refused.to_string().contains("feature/nobody-has"),
+        "{refused}"
+    );
+
+    // The fast-forward, which is one of the two verbs that answer for "here".
+    std::env::set_current_dir(&checkout)
+        .expect("both verbs answer for the checkout they are run in");
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture.world.commit_file(
+        &elsewhere,
+        "two.txt",
+        "two\n",
+        "feat: somebody else's commit",
+    );
+    fixture.world.git(&elsewhere, &["push", "origin", "main"]);
+    let moved = onevcs::sync(None).expect("the checkout fast-forwards");
+    assert!(
+        moved.moved(),
+        "the origin moved, so the checkout did: {moved:?}"
+    );
+    assert_eq!(moved.branch, "main");
+    assert_eq!(moved.checkout, checkout);
+    assert_eq!(
+        moved.after,
+        fixture.world.git(&checkout, &["rev-parse", "HEAD"])
+    );
+
+    let level = onevcs::sync(None).expect("the checkout syncs again");
+    assert!(!level.moved(), "nothing moved the second time: {level:?}");
+    let printed = stdout_of(|| {
+        assert_eq!(run(&["onevcs", "sync"], Providers::real()), 0);
+    });
+    assert!(
+        printed.contains("was already level with origin/main"),
+        "the command renders the same answer: {printed}"
+    );
+
+    // A branch name git would not accept is refused where it is handed over, rather
+    // than by whichever git command met it first.
+    let refused = onevcs::sync(Some("not a branch")).expect_err("a name git refuses is refused");
+    assert!(
+        refused.to_string().contains("not a valid branch name"),
+        "{refused}"
+    );
+
+    // …and the train, which is the other: a local-direct identity's own merge path,
+    // over the branch that was imported above.
+    let integrated = onevcs::integrate(&onevcs::IntegrateRequest {
+        branches: vec!["feature/stranded".to_owned()],
+        push: false,
+    })
+    .expect("the train runs");
+    assert_eq!(&*integrated.base, "main");
+    assert_eq!(integrated.branches.len(), 1);
+    assert!(
+        integrated.ending.advanced() && !integrated.ending.pushed(),
+        "asked not to push, the train advances the base and stops there: {:?}",
+        integrated.ending
+    );
+}
+
+#[test]
+fn a_sessions_stream_reads_as_lines_through_the_library_exactly_as_the_command_prints_it() {
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(
+        &world,
+        LOCAL,
+        "feature/streamed",
+        "echo the-gate-ran\nexit 0",
+    );
+    onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+
+    let mut lines = onevcs::EventLines::open(&session.token, None).expect("the session's stream");
+    let read = lines.read().expect("every line of it");
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(&["onevcs", "events", &session.token.0], Providers::real()),
+            0
+        );
+    });
+    assert_eq!(
+        read.iter()
+            .map(|line| format!("{}\n", line.text))
+            .collect::<String>(),
+        printed,
+        "the library reads the file the command prints, byte for byte"
+    );
+    assert!(
+        read.iter().all(|line| line.envelope.is_some()),
+        "every line this build wrote is an envelope it can read"
+    );
+    assert!(
+        lines.read().expect("nothing since").is_empty(),
+        "reading again yields what has been appended since, which is nothing"
+    );
+
+    // With a filter it is the same file, less the events nobody asked for — and the
+    // command's own filtered output is that same subset.
+    let only_pushes = EventFilter {
+        include: vec![EventMatcher {
+            kind: Some("push".to_owned()),
+            ..EventMatcher::default()
+        }],
+        exclude: Vec::new(),
+    };
+    let filtered = onevcs::EventLines::open(&session.token, Some(only_pushes.clone()))
+        .expect("the stream again")
+        .read()
+        .expect("the events it was asked for");
+    assert!(!filtered.is_empty(), "the publication pushed something");
+    let spec = serde_json::to_string(&only_pushes).expect("a filter document");
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(
+                &["onevcs", "events", &session.token.0, "--filter", &spec],
+                Providers::real(),
+            ),
+            0
+        );
+    });
+    assert_eq!(
+        filtered
+            .iter()
+            .map(|line| format!("{}\n", line.text))
+            .collect::<String>(),
+        printed,
+        "a filtered read is a subset of the unfiltered one, byte for byte"
+    );
+
+    // The evidence a publication kept, read by its id: what the merge path wrote.
+    let artifact = world
+        .events(&session.token.0)
+        .into_iter()
+        .filter_map(|event| {
+            event["artifacts"]
+                .as_array()?
+                .first()?
+                .get("id")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .next()
+        .expect("the publication stored at least one artifact");
+    let contents =
+        onevcs::read_artifact(&onevcs::ArtifactId(artifact.clone())).expect("the artifact reads");
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(&["onevcs", "artifact", "cat", &artifact], Providers::real()),
+            0
+        );
+    });
+    assert_eq!(
+        contents, printed,
+        "the command prints what the library reads"
+    );
+    assert!(
+        contents.contains("the-gate-ran"),
+        "the merge path's own output is what was kept: {contents}"
+    );
+
+    // Both refusals: an id that is not one, and a session that wrote nothing.
+    assert!(onevcs::read_artifact(&onevcs::ArtifactId("../escape".to_owned())).is_err());
+    let refused = onevcs::EventLines::open(&SessionToken("s-nobody-opened".to_owned()), None)
+        .expect_err("a session with no stream is refused rather than read as empty");
+    assert!(refused.to_string().contains("s-nobody-opened"), "{refused}");
+}
+
+#[test]
+fn the_status_and_sweep_reads_answer_the_values_their_commands_render() {
+    let world = World::new();
+    inhabit(&world);
+    let session = ready_to_publish(&world, LOCAL, "feature/reported", "exit 0");
+
+    let report =
+        onevcs::work_status(&Providers::real(), &session.token.0).expect("the report is answered");
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(&["onevcs", "status", &session.token.0], Providers::real()),
+            0
+        );
+    });
+    assert_eq!(
+        report.render(),
+        printed,
+        "the human form is the value's own rendering"
+    );
+    let printed = stdout_of(|| {
+        assert_eq!(
+            run(
+                &["onevcs", "status", &session.token.0, "--json"],
+                Providers::real(),
+            ),
+            0
+        );
+    });
+    assert_eq!(
+        format!(
+            "{}\n",
+            serde_json::to_string(&report).expect("the report serializes")
+        ),
+        printed,
+        "and `--json` is the value's own serialization, which is the versioned document"
+    );
+
+    // A reference nothing resolves is refused, by both surfaces and in one wording.
+    let refused = onevcs::work_status(&Providers::real(), "s-nobody-opened")
+        .expect_err("a reference nothing resolves is refused");
+    assert_eq!(
+        stderr_of(|| assert_eq!(
+            run(&["onevcs", "status", "s-nobody-opened"], Providers::real()),
+            2
+        ))
+        .trim(),
+        format!("onevcs: {refused}"),
+    );
+
+    // The sweep, decided but not performed: its text form is the command's output.
+    let report =
+        onevcs::sweep(true, std::time::Duration::from_secs(24 * 3600)).expect("the sweep decides");
+    let printed = stdout_of(|| {
+        assert_eq!(run(&["onevcs", "sweep", "--dry-run"], Providers::real()), 0);
+    });
+    assert_eq!(format!("{report}\n"), printed);
+}
+
+#[test]
+fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
+    let world = World::new();
+    inhabit(&world);
+    // A finished branch no session holds: worked in a session, then closed, which is
+    // what hands the branch back to the execution checkout.
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    world.install_pre_push(&world.path("hosted"), "exit 0");
+    let session = worked(&world, "feature/finished");
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+
+    let checkout = world.path("hosted");
+    // `recover` is refused on it, because provenance is the whole of what separates
+    // the two branch-keyed verbs — and the refusal names the verb that takes it.
+    let refused = onevcs::recover(
+        &Providers::real(),
+        &onevcs::RecoverRequest {
+            repo: checkout.clone(),
+            branch: "feature/finished".to_owned(),
+            title: None,
+            body: None,
+        },
+    )
+    .expect_err("a branch carrying no incomplete-step marker is not recoverable work");
+    assert!(
+        refused
+            .to_string()
+            .contains("carries no unattested incomplete provenance"),
+        "{refused}"
+    );
+
+    let outcome = onevcs::publish_branch(
+        &Providers::real(),
+        &onevcs::BranchPublishRequest {
+            repo: checkout.clone(),
+            branch: "feature/finished".to_owned(),
+            title: None,
+            body: None,
+            policy: None,
+        },
+    )
+    .expect("the completed branch publishes");
+    assert!(
+        matches!(outcome, PublishOutcome::ChangeOpen(_)),
+        "an identity that publishes through a change request opens one: {outcome:?}"
+    );
+    assert!(
+        origin_tip(&world, &origin, "feature/finished").is_some(),
+        "and the branch the change request was opened from is on the origin"
     );
 }

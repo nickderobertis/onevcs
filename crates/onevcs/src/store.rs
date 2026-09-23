@@ -451,6 +451,32 @@ pub struct Resolution {
     pub publication: PathBuf,
 }
 
+/// The registered repository the current directory belongs to.
+///
+/// The three verbs that answer for "here" — the merge train, the fast-forward, and
+/// an unscoped `recoverable` — resolve it through this one walk, so what "here"
+/// means cannot come to differ between them.
+pub fn resolve_here(registry: &Registry) -> Result<Resolution> {
+    let here = std::env::current_dir()
+        .map_err(|e| error::invalid(format!("cannot read the current directory: {e}")))?;
+    let canonical = std::fs::canonicalize(&here).unwrap_or(here);
+    let mut candidate: Option<&Path> = Some(canonical.as_path());
+    while let Some(path) = candidate {
+        for (alias, checkout) in &registry.checkouts {
+            if checkout.path == path {
+                return resolve(registry, alias);
+            }
+        }
+        candidate = path.parent();
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "{} is not inside a registered checkout; register it with `onevcs register PATH`",
+            canonical.display()
+        ),
+    })
+}
+
 /// Resolve a repository argument — an identity key, a registered alias, an origin
 /// URL, or a path — to the identity and checkout it selects.
 pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {

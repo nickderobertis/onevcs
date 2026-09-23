@@ -273,6 +273,95 @@ fn to_index(position: u64) -> usize {
     usize::try_from(position).unwrap_or(usize::MAX)
 }
 
+/// One line of a session's event stream, as its writer left it.
+///
+/// The bytes are the answer: a reader of a *file* hands on the line its producer
+/// wrote rather than a re-serialization of what it parsed, so what a later build
+/// recorded and this one has no word for still reads, and a filtered read is a
+/// subset of an unfiltered one byte for byte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventLine {
+    /// The line's own bytes, without the newline that ended it.
+    pub text: String,
+    /// The envelope it carries, where this build could read one belonging to this
+    /// session. `None` is a line that is not one — a kind this build has no word
+    /// for, a line no writer left, or an event of another stream — which only an
+    /// unfiltered read ever hands back, since a filter has to read an event to
+    /// judge it and refuses what it cannot.
+    pub envelope: Option<Envelope>,
+}
+
+/// A reader over one session's event stream **as text**, which is what `onevcs
+/// events` prints.
+///
+/// [`EventStream`] beside it is the same file read as *values*, and the difference
+/// is which of the two a caller needs. A consumer acting on what a session did
+/// wants envelopes, and a line that is not one is a gap it must be told about —
+/// that is `EventStream`, and it refuses. A consumer *showing* a session's stream
+/// wants the file: a line this build cannot parse is the line somebody most needs
+/// to see, and the envelope is versioned, so refusing it would stop a stream a
+/// later build wrote from being readable at all.
+///
+/// Opened with an [`EventFilter`], it is the second reading and not a third: an
+/// event has to be read to be judged, so a line that is not this session's envelope
+/// is refused there, naming it, rather than passed through — which would report an
+/// event the filter never admitted — or dropped, which would hide one. A kind this
+/// build has no word for is left out, because a filter is a statement about the
+/// events a consumer wants and that is not one of them however it is spelled.
+///
+/// Reading again yields whatever has been appended since, which is what `--follow`
+/// does with a loop around it.
+#[derive(Debug)]
+pub struct EventLines {
+    session: String,
+    reader: Reader,
+    filter: Option<EventFilter>,
+}
+
+impl EventLines {
+    /// Open the stream a session token names, optionally through a filter.
+    pub fn open(session: &SessionToken, filter: Option<EventFilter>) -> Result<Self> {
+        Ok(Self {
+            session: session.0.clone(),
+            reader: Reader::open(&session.0)?,
+            filter,
+        })
+    }
+
+    /// The lines appended since the last call, in the order they were written.
+    pub fn read(&mut self) -> Result<Vec<EventLine>> {
+        let mut lines = Vec::new();
+        for record in self.reader.records()? {
+            let text = record.text.clone();
+            let Some(filter) = &self.filter else {
+                // Unfiltered, nothing here is judged and the line is handed on as the
+                // file's own bytes; the envelope is offered where it could be read and
+                // is not what the answer depends on.
+                let envelope = match attributed_record(record, &self.session) {
+                    Ok(Line::Known(known)) => Some(known.envelope),
+                    Ok(Line::Unknown(_)) | Err(_) => None,
+                };
+                lines.push(EventLine { text, envelope });
+                continue;
+            };
+            // Read as a value, and therefore checked as one — by the same seam
+            // `EventStream` reads through, so the two surfaces refuse the same line for
+            // the same reason.
+            let Line::Known(known) = attributed_record(record, &self.session)? else {
+                continue;
+            };
+            if !filter.matches(&known.envelope) {
+                continue;
+            }
+            lines.push(EventLine {
+                text,
+                envelope: Some(known.envelope),
+            });
+        }
+        Ok(lines)
+    }
+}
+
 /// A reader over one session's event stream, as values rather than as text.
 ///
 /// What `onevcs events TOKEN` writes to stdout, handed back typed and attributed:
