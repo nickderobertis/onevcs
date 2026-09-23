@@ -2206,6 +2206,15 @@ fn every_error_says_what_failed_and_which_exit_code_it_is() {
             },
             "pool exhausted: no session of github.com/acme/x can be placed now",
         ),
+        // Deliberately `Invalid`'s own prefix: the amendment fixes what an operator
+        // reads for this case as unchanged, and the kind is what a router reads.
+        (
+            Error::UnresolvableReference {
+                reference: "0f1e2d3".to_owned(),
+                reason: "\"0f1e2d3\" names no work this host knows".to_owned(),
+            },
+            "invalid input: \"0f1e2d3\" names no work this host knows",
+        ),
     ];
     for (error, expected) in cases {
         assert!(
@@ -6178,6 +6187,69 @@ fn the_amendment_states_the_once_per_read_reconciliation_of_a_late_merge() {
             "the release amendment no longer declares: {line}"
         );
     }
+}
+
+#[test]
+fn the_amendment_gives_an_unresolvable_reference_its_own_kind_and_moves_no_output() {
+    // A consumer falling back from one spelling of a reference to another routes on
+    // the kind; an operator reads exactly what they read before. Both halves are the
+    // amendment's, so both are held to it here — and `tests/e2e/library.rs` and
+    // `tests/e2e/accounting.rs` drive the library read and the binary over a
+    // reference nothing answers to.
+    let declared = amendment_declaring("Error::UnresolvableReference");
+    assert!(
+        declared.contains("Error::UnresolvableReference { reference: String, reason: String }"),
+        "the amendment no longer declares the variant: {declared}"
+    );
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "`release_status` answers a reference naming no work this host knows with \
+         `Error::UnresolvableReference` rather than `Error::Invalid`",
+        "**A consumer that falls back from one spelling of a reference to another has to \
+         fire on exactly this case, and never on an I/O failure or a host that refused.**",
+        "**Nothing an operator sees moves.**",
+        "So every command's output and exit status for this case is what it was, exit code \
+         `2` included",
+        "**It is answered at four refusals and nowhere else**, which are the four ways a \
+         reference can name no work here",
+        "**A record this host holds and cannot read is not a reference this host cannot \
+         resolve**",
+        "a change-request URL whose recorded stream names no branch, or names a branch git \
+         would not accept, keeps `Error::Invalid`. So does a reference resolving to work in \
+         *another* repository than the one asked about — it named work this host knows.",
+    ] {
+        assert!(
+            amendments.contains(sentence),
+            "the unresolvable-reference amendment no longer says: {sentence}"
+        );
+    }
+
+    // What the amendment fixes about the rendering and the code, asked of the types
+    // rather than of the prose: the same prefix `Invalid` renders under, and the kind
+    // that fixes the exit code at 2.
+    let unresolvable = Error::UnresolvableReference {
+        reference: "feature/nobody-holds-this".to_owned(),
+        reason: "\"feature/nobody-holds-this\" names no work this host knows".to_owned(),
+    };
+    assert_eq!(
+        unresolvable.to_string(),
+        Error::Invalid {
+            reason: "\"feature/nobody-holds-this\" names no work this host knows".to_owned(),
+        }
+        .to_string(),
+        "the refusal an operator reads is the one they read before"
+    );
+    assert_eq!(
+        FailureKind::of(&unresolvable),
+        FailureKind::Invalid,
+        "an unresolvable reference is not a publication failure, so the fixed vocabulary has no \
+         kind of its own for it"
+    );
+    assert_eq!(
+        FailureKind::of(&unresolvable).exit_code(),
+        2,
+        "the exit status for this case is the one `Invalid` has today"
+    );
 }
 
 #[test]

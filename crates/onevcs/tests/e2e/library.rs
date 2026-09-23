@@ -4215,6 +4215,225 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
     );
 }
 
+/// A `change-opened` line a stream carries, written by hand so a change request can be
+/// recorded here without a host having opened one.
+///
+/// It is the only way to reach two of the refusals below: a URL whose branch nothing
+/// holds, and a record naming no branch at all. Both are states a stream written by an
+/// older build — or by a run whose clone has since gone — really leaves behind.
+fn record_change_opened(world: &World, token: &str, url: &str, branch: Option<&str>) {
+    let streams = world.home().join("streams");
+    std::fs::create_dir_all(&streams).expect("a streams directory");
+    let mut payload = serde_json::Map::new();
+    payload.insert("url".to_owned(), serde_json::json!(url));
+    if let Some(branch) = branch {
+        payload.insert("branch".to_owned(), serde_json::json!(branch));
+    }
+    std::fs::write(
+        streams.join(format!("{token}.ndjson")),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "v": 1,
+                "ts": "2026-01-01T00:00:00.000Z",
+                "stream": token,
+                "seq": 1,
+                "source": "vcs",
+                "kind": "change-opened",
+                "labels": {},
+                "payload": serde_json::Value::Object(payload),
+                "artifacts": [],
+            })
+        ),
+    )
+    .expect("a hand-written change-opened line");
+}
+
+#[test]
+fn a_reference_naming_no_work_here_is_its_own_kind_and_a_record_that_will_not_read_is_not() {
+    // A consumer that falls back from one spelling of a reference to another has to
+    // fire on exactly "this host cannot resolve that" and never on an I/O failure or a
+    // host that refused — onepipeline's release asker, falling back from a squash
+    // commit to the change request it settled
+    // (https://github.com/nickderobertis/onepipeline/issues/420). Matching the
+    // refusal's prose is what there was, and it breaks the day the wording changes. So
+    // the four refusals that mean it answer `Error::UnresolvableReference`, and the two
+    // that mean "this host holds a record it cannot read" deliberately do not.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _identity) = hosted(&world, LOCAL);
+    std::fs::write(world.path("answers"), "1.0.0\n").expect("what the probe answers");
+    std::fs::write(
+        world.home().join("releases.yml"),
+        [
+            "version: 1",
+            "default:",
+            "  adoption: fast",
+            "repositories:",
+            "  - match: {host: github.com, owner: acme-corp, name: hosted}",
+            "    adoption: published",
+            "    default_target: crate",
+            "    targets:",
+            "      - name: crate",
+            "        style: automated",
+            "        probe:",
+            r#"          shell: 'cat "$HOME/answers"'"#,
+            "          timeout_seconds: 20",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("a release-targets file");
+
+    // Work this read really answers for, so every refusal below is about the reference
+    // it was asked and not about a repository with nothing to release.
+    let session = open(&Git, "feature/released-work");
+    world.commit_file(&session.worktree, "thing.txt", "work\n", "feat: work");
+    let publication = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    assert!(
+        matches!(publication.outcome, PublishOutcome::Merged(_)),
+        "a local-direct publication merges: {:?}",
+        publication.outcome
+    );
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+    assert!(
+        onevcs::release_status("feature/released-work", None).is_ok(),
+        "the release read answers for work it can resolve, so the refusals below are the \
+         reference's own"
+    );
+
+    // The spelling the consumer asks about first: a commit no branch of any registered
+    // identity carries.
+    let unknown_commit = "0123456789abcdef0123456789abcdef01234567";
+    match onevcs::release_status(unknown_commit, None) {
+        Err(onevcs::Error::UnresolvableReference { reference, reason }) => {
+            assert_eq!(
+                reference, unknown_commit,
+                "the kind carries what could not be resolved, so a router need not parse the \
+                 reason"
+            );
+            assert!(
+                reason.contains("names no work this host knows")
+                    && reason.contains("onevcs recoverable"),
+                "the reason an operator reads is the one they read before: {reason}"
+            );
+        }
+        other => panic!("a commit nothing here carries is an unresolvable reference: {other:?}"),
+    }
+
+    // …and the one it falls back to: a change request no `onevcs` on this host opened.
+    let unknown_url = "https://github.com/acme-corp/hosted/pull/4242";
+    match onevcs::release_status(unknown_url, None) {
+        Err(onevcs::Error::UnresolvableReference { reference, reason }) => {
+            assert_eq!(reference, unknown_url);
+            assert!(
+                reason.contains("was opened through `onevcs` on this host"),
+                "{reason}"
+            );
+        }
+        other => panic!("a change request nobody opened here is unresolvable: {other:?}"),
+    }
+
+    // The third spelling of the same thing: this host recorded the change request, and
+    // the branch it named is held by no checkout or run clone.
+    let vanished = "https://github.com/acme-corp/hosted/pull/7";
+    record_change_opened(
+        &world,
+        "s-vanished",
+        vanished,
+        Some("feature/nothing-holds-this"),
+    );
+    match onevcs::release_status(vanished, None) {
+        Err(onevcs::Error::UnresolvableReference { reference, reason }) => {
+            assert_eq!(reference, vanished);
+            assert!(
+                reason.contains("which no checkout or run clone of any registered identity holds"),
+                "{reason}"
+            );
+        }
+        other => panic!("a recorded change request nothing holds is unresolvable: {other:?}"),
+    }
+
+    // The line this variant is drawn along, and the reason it is drawn there: a stream
+    // this host *holds* and cannot read is a malformed record rather than a reference
+    // nobody knows, and a consumer that retried one as the other would route on a
+    // misclassification. Both keep the kind they had.
+    for (token, url, branch, said) in [
+        (
+            "s-nameless",
+            "https://github.com/acme-corp/hosted/pull/8",
+            None,
+            "names no branch",
+        ),
+        (
+            "s-unnameable",
+            "https://github.com/acme-corp/hosted/pull/9",
+            Some("not a branch..name"),
+            "is a name git would not accept",
+        ),
+    ] {
+        record_change_opened(&world, token, url, branch);
+        match onevcs::release_status(url, None) {
+            Err(onevcs::Error::Invalid { reason }) => assert!(reason.contains(said), "{reason}"),
+            other => panic!(
+                "a record this host cannot read is not an unresolvable reference, so \
+                             it keeps `Invalid`: {other:?}"
+            ),
+        }
+    }
+
+    // The narrowed spelling of the first refusal, which only a read taking a repository
+    // reaches: same kind, and a reason naming the repository it was narrowed to.
+    match onevcs::landing_status(unknown_commit, Some("hosted")) {
+        Err(onevcs::Error::UnresolvableReference { reference, reason }) => {
+            assert_eq!(reference, unknown_commit);
+            assert!(
+                reason.contains("names no work this host knows in repository"),
+                "{reason}"
+            );
+        }
+        other => panic!(
+            "naming the repository narrows the question, it does not change the kind: \
+                         {other:?}"
+        ),
+    }
+
+    // And the nearest refusal that must *not* become this kind: a reference that
+    // resolves, to work in another repository than the one asked about. It named work
+    // this host knows, so a consumer holding on it would hold for ever. The session
+    // token is the spelling that reaches it — a branch name is *searched for* within
+    // the named repository, and not finding it there is the first refusal above.
+    let other_origin = world.bare_origin("other");
+    let other_checkout = world.clone_of(&other_origin, "other");
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &other_checkout.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/other.git",
+            ],
+            Providers::real(),
+        ),
+        0,
+        "a second repository registers"
+    );
+    match onevcs::landing_status(&session.token.0, Some("other")) {
+        Err(onevcs::Error::Invalid { reason }) => assert!(
+            reason.contains("names work in repository")
+                && reason.contains("github.com/acme-corp/hosted"),
+            "the refusal names both identities: {reason}"
+        ),
+        other => panic!("work in another repository is not an unresolvable reference: {other:?}"),
+    }
+}
+
 /// The reason a session holds its own change request as a draft with: the work is
 /// still being made.
 fn held_by_the_session() -> DraftReason {
