@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.2](https://github.com/nickderobertis/onevcs/compare/v0.30.1...v0.30.2) - 2026-09-23
+
+### Fixed
+
+- *(workspace)* fail closed on unreadable session records, and scan open run roots once ([#206](https://github.com/nickderobertis/onevcs/pull/206))
+
 ## [0.30.1](https://github.com/nickderobertis/onevcs/compare/v0.30.0...v0.30.1) - 2026-09-21
 
 ### Fixed
