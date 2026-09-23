@@ -2673,6 +2673,35 @@ onevcs recoverable [--repo PATH] [--all] [--label KEY=VALUE]... [--session TOKEN
 
 Event kinds added: none.
 
+### Session state this host cannot read is refused, never read as state it does not have
+
+The listing every session read is decided from used to answer an **empty list** where
+the session directory would not list, and to skip a record that would not load. That
+made unreadable state and absent state the same answer, and what reads it decides
+about absence: whether a slot is free, whether a run root is anybody's, whether a
+record is litter. A sweep, a pool prune, the placement shed, a maintenance claim and
+the reclamation in front of `session open` could each therefore remove or reuse a
+workspace holding live work, and nothing anywhere said the state had been unreadable.
+
+**A session directory that is there and will not list, and a record that is there and
+will not load, are each refused, naming what could not be read** — the directory, or
+the record by its path. **A session directory that is not there is still an empty
+list**, because a host that has never opened a session holds no records, which is a
+fact rather than a failure.
+
+The library operations a consumer sequences its own work behind answer that way:
+`session_holders`, `recoverable`, `pool_maintain`, `workspace_capacity`, `preserve`
+and `session` each return `Err` rather than answering from, or acting on, part of a
+listing. Every destructive path refuses before it removes anything: `onevcs sweep`
+decides about the session records before it reclaims a single workspace, `pool prune`
+and the shed refuse before a slot is removed, and the reclamation of abandoned run
+roots refuses rather than reading no records as no open sessions.
+
+No signature moves, no type changes, and no new variant: what a caller meets is
+`Error::Invalid` — exit code `2` — where an empty answer used to be.
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

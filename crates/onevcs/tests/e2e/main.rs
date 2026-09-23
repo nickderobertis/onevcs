@@ -88,6 +88,11 @@ mod labels;
 mod library;
 #[cfg(unix)]
 mod lifecycle;
+// Linux only: it counts a directory's own `opendir` calls through `inotify`, which
+// only Linux has. Its head carries the reason the counting is outside the process,
+// and the journeys that use it are gated the same way.
+#[cfg(target_os = "linux")]
+mod listings;
 // Unix only: its maintenance command is a POSIX shell script, and a fired bound takes a
 // process *group*, which has no portable spelling. Its own header carries the reason.
 #[cfg(unix)]

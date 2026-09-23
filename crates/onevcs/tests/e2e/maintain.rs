@@ -720,3 +720,97 @@ fn an_identity_with_no_maintain_command_or_no_slots_is_reported_so_and_an_invali
         .stderr(predicates::str::contains("\"5x\" is not a span"))
         .stderr(predicates::str::contains("exactly one unit letter"));
 }
+
+#[test]
+fn a_session_directory_this_host_cannot_list_refuses_a_maintenance_run_and_claims_no_slot() {
+    // A slot is claimed only where the records say no open session is in it, so a
+    // listing nobody got must stop the claim rather than read as an idle pool: the
+    // command a claim runs works in the slot's own worktree.
+    let (fixture, _script) = fixture_with(2, 2, &["ok"], "30s");
+    let first = slot_dir(&fixture, 1);
+    let second = slot_dir(&fixture, 2);
+
+    let refused = fixture.world.with_unreadable_records(|| {
+        fixture
+            .world
+            .onevcs()
+            .args(["pool", "maintain", "project", "--json"])
+            .output()
+            .expect("the binary runs")
+    });
+
+    assert!(
+        !refused.status.success(),
+        "maintenance decided from a listing nobody got is what this refuses:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains(&format!(
+            "cannot list the session records in {}",
+            fixture.world.sessions_dir().display()
+        )),
+        "the refusal names the directory:\n{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(runs_in(&first), 0, "nothing ran in slot 1");
+    assert_eq!(runs_in(&second), 0, "nothing ran in slot 2");
+    for slot in [&first, &second] {
+        assert_eq!(
+            record(slot)["maintaining"],
+            serde_json::Value::Null,
+            "and no slot was claimed: {}",
+            slot.display()
+        );
+    }
+
+    // The same command, once the records read, maintains both.
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(runs_in(&first), 1, "{report}");
+    assert_eq!(runs_in(&second), 1, "{report}");
+}
+
+#[test]
+fn a_session_record_this_host_cannot_read_refuses_a_maintenance_run_and_claims_no_slot() {
+    // A claim is written on the strength of "no open record names this slot", and a
+    // record that was skipped rather than read is exactly the record that would have
+    // said one does.
+    let (fixture, _script) = fixture_with(2, 2, &["ok"], "30s");
+    let first = slot_dir(&fixture, 1);
+    let second = slot_dir(&fixture, 2);
+    let torn = fixture.world.unreadable_record();
+
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "project", "--json"])
+        .output()
+        .expect("the binary runs");
+
+    assert!(
+        !refused.status.success(),
+        "maintenance that skipped a record it could not read is what this refuses:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains(&torn.display().to_string()),
+        "the refusal names the record:\n{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(runs_in(&first), 0, "nothing ran in slot 1");
+    assert_eq!(runs_in(&second), 0, "nothing ran in slot 2");
+    for slot in [&first, &second] {
+        assert_eq!(
+            record(slot)["maintaining"],
+            serde_json::Value::Null,
+            "and no slot was claimed: {}",
+            slot.display()
+        );
+    }
+
+    std::fs::remove_file(&torn).expect("the journey takes its own staging back");
+    let (code, report) = maintain(&fixture, &["project"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(runs_in(&first), 1, "{report}");
+    assert_eq!(runs_in(&second), 1, "{report}");
+}
