@@ -2751,8 +2751,11 @@ test.** The operations below are what the remaining handlers call, and each hand
 does nothing afterwards but render what it was handed — so a command's output and its
 exit code are one decision spelled twice rather than two paths that could disagree.
 `every_command_renders_a_typed_library_operation` in `tests/contract.rs` reconciles
-the parser's leaves against the table of operations, so a command added without one
-fails the gate rather than reopening the gap this amendment closes.
+that three ways, so a command added without an operation — or with one buried inside
+its handler — fails the gate rather than reopening the gap this amendment closes: the
+table's commands are exactly the parser's leaves, each operation is named as a value
+and so must exist with that path, and the handler `app.rs` dispatches each command to
+is read out of the source and must be the one that calls it.
 
 ```rust
 /// `onevcs register`: the identity a checkout's origin resolved to, the policy it

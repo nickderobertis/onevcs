@@ -3427,52 +3427,147 @@ fn command_leaves() -> BTreeSet<String> {
     leaves
 }
 
+/// One operation of the table below: its path, type-checked, and the same path as
+/// the text the table reads by.
+///
+/// One token produces both, so the name in the table cannot drift from the operation
+/// it names — a row that has gone stale fails to compile rather than passing as a
+/// string nothing resolves.
+macro_rules! operation {
+    ($op:expr) => {{
+        let _typed = $op;
+        stringify!($op)
+    }};
+}
+
 /// The typed library operation each command is a rendering of.
 ///
-/// One row per leaf of the command surface, and the parity test below fails when the
-/// two sets differ — which is what stops the next command from being added as a
-/// handler with its operation buried inside it. The names are the crate's own public
-/// paths, and the binding beside each row is what proves the operation still exists
-/// with the shape stated here: a rename breaks the compile rather than the table.
-const OPERATION_OF: &[(&str, &str)] = &[
-    ("register", "onevcs::register_checkout"),
-    ("repos", "onevcs::repositories"),
-    ("resolve", "onevcs::resolve_repository"),
-    ("session open", "onevcs::Vcs::open_session"),
-    ("session adopt", "onevcs::Vcs::adopt_session"),
-    ("session close", "onevcs::close_session"),
-    ("session holders", "onevcs::session_holders"),
-    ("publish", "onevcs::publish"),
-    ("publish-branch", "onevcs::publish_branch"),
-    ("change show", "onevcs::session_change"),
-    ("change describe", "onevcs::describe_change"),
-    ("change ready", "onevcs::ready_change"),
-    ("preserve", "onevcs::preserve"),
-    ("recover", "onevcs::recover"),
-    ("recoverable", "onevcs::Vcs::recoverable_matching"),
-    ("status", "onevcs::work_status"),
-    ("import", "onevcs::import_branch"),
-    ("integrate", "onevcs::integrate"),
-    ("sync", "onevcs::sync"),
-    ("sweep", "onevcs::sweep"),
-    ("events", "onevcs::EventLines::open"),
-    ("artifact cat", "onevcs::read_artifact"),
-    ("rules check", "onevcs::rules_check"),
-    ("release targets", "onevcs::release_targets"),
-    ("release discover", "onevcs::release_discovery"),
-    ("release latest", "onevcs::release_latest"),
-    ("release status", "onevcs::release_status"),
-    ("release acknowledge", "onevcs::acknowledge_release"),
-    ("release declaration", "onevcs::read_release_declaration"),
-    ("pool status", "onevcs::pool_status"),
-    ("pool prune", "onevcs::pool_prune"),
-    ("pool maintain", "onevcs::pool_maintain"),
-];
+/// One row per leaf of the command surface, reconciled three ways by the test below:
+/// the commands must be exactly the parser's leaves, each operation must exist (the
+/// macro names it as a value), and the handler `app.rs` dispatches that command to
+/// must be the one that calls it. That is what stops the next command from being
+/// added as a handler with its operation buried inside it.
+fn operation_of() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("register", operation!(onevcs::register_checkout)),
+        ("repos", operation!(onevcs::repositories)),
+        ("resolve", operation!(onevcs::resolve_repository)),
+        ("session open", operation!(<dyn Vcs>::open_session)),
+        ("session adopt", operation!(<dyn Vcs>::adopt_session)),
+        ("session close", operation!(onevcs::close_session)),
+        ("session holders", operation!(onevcs::session_holders)),
+        ("publish", operation!(onevcs::publish)),
+        ("publish-branch", operation!(onevcs::publish_branch)),
+        ("change show", operation!(onevcs::session_change)),
+        ("change describe", operation!(onevcs::describe_change)),
+        ("change ready", operation!(onevcs::ready_change)),
+        ("preserve", operation!(onevcs::preserve)),
+        ("recover", operation!(onevcs::recover)),
+        ("recoverable", operation!(<dyn Vcs>::recoverable_matching)),
+        ("status", operation!(onevcs::work_status)),
+        ("import", operation!(onevcs::import_branch)),
+        ("integrate", operation!(onevcs::integrate)),
+        ("sync", operation!(onevcs::sync)),
+        ("sweep", operation!(onevcs::sweep)),
+        ("events", operation!(onevcs::EventLines::open)),
+        ("artifact cat", operation!(onevcs::read_artifact)),
+        ("rules check", operation!(onevcs::rules_check)),
+        ("release targets", operation!(onevcs::release_targets)),
+        ("release discover", operation!(onevcs::release_discovery)),
+        ("release latest", operation!(onevcs::release_latest)),
+        ("release status", operation!(onevcs::release_status)),
+        (
+            "release acknowledge",
+            operation!(onevcs::acknowledge_release),
+        ),
+        (
+            "release declaration",
+            operation!(onevcs::read_release_declaration),
+        ),
+        ("pool status", operation!(onevcs::pool_status)),
+        ("pool prune", operation!(onevcs::pool_prune)),
+        ("pool maintain", operation!(onevcs::pool_maintain)),
+    ]
+}
+
+/// `app.rs`'s own dispatch, as the map from a command to the function that renders
+/// it: read out of the source rather than restated, because what this reconciles is
+/// which handler each command actually reaches.
+fn handler_of() -> BTreeMap<String, String> {
+    let source = repo_file("crates/onevcs/src/app.rs");
+    let dispatch = source
+        .split_once("fn dispatch(")
+        .expect("app.rs dispatches the commands it renders")
+        .1;
+    let dispatch = dispatch.split_once("\n}\n").expect("the dispatch ends").0;
+    let mut handlers = BTreeMap::new();
+    let mut nested: Option<String> = None;
+    for line in dispatch.lines().map(str::trim) {
+        // `Command::Session { command } => match command {` opens a group whose arms
+        // are that command's subcommands.
+        if let Some(variant) = line
+            .strip_prefix("Command::")
+            .and_then(|rest| rest.split_once(" { command } => match command {"))
+            .map(|(variant, _)| variant)
+        {
+            nested = Some(kebab(variant));
+            continue;
+        }
+        if line == "}," {
+            nested = None;
+            continue;
+        }
+        let Some((left, right)) = line.split_once(" => ") else {
+            continue;
+        };
+        let Some((_, variant)) = left.split_once("::") else {
+            continue;
+        };
+        let variant = variant.split(['(', ' ']).next().unwrap_or(variant);
+        let handler = right.split('(').next().unwrap_or(right);
+        if variant.is_empty() || handler.is_empty() {
+            continue;
+        }
+        let command = match &nested {
+            Some(prefix) => format!("{prefix} {}", kebab(variant)),
+            None => kebab(variant),
+        };
+        handlers.insert(command, handler.to_owned());
+    }
+    handlers
+}
+
+/// A clap subcommand's name, which is its variant spelled in kebab-case.
+fn kebab(variant: &str) -> String {
+    let mut name = String::new();
+    for (index, character) in variant.char_indices() {
+        if character.is_ascii_uppercase() && index > 0 {
+            name.push('-');
+        }
+        name.push(character.to_ascii_lowercase());
+    }
+    name
+}
+
+/// The body of one function of `app.rs`, from its signature to the closing brace in
+/// the first column.
+fn handler_body(source: &str, handler: &str) -> String {
+    let opened = source
+        .split_once(&format!("\nfn {handler}("))
+        .unwrap_or_else(|| panic!("app.rs declares no `fn {handler}`"))
+        .1;
+    opened
+        .split_once("\n}\n")
+        .unwrap_or_else(|| panic!("`fn {handler}` never ends"))
+        .0
+        .to_owned()
+}
 
 #[test]
 fn every_command_renders_a_typed_library_operation() {
     let commands = command_leaves();
-    let covered: BTreeSet<String> = OPERATION_OF
+    let operations = operation_of();
+    let covered: BTreeSet<String> = operations
         .iter()
         .map(|(command, _)| (*command).to_owned())
         .collect();
@@ -3483,40 +3578,34 @@ fn every_command_renders_a_typed_library_operation() {
          operation nobody outside the binary can reach, and a row with no command names \
          one nothing renders"
     );
-    // Every operation the table names, named: a row that has gone stale fails to
-    // compile rather than passing as a string nothing resolves.
-    let _ = onevcs::register_checkout;
-    let _ = onevcs::repositories;
-    let _ = onevcs::resolve_repository;
-    let _ = <dyn Vcs>::open_session;
-    let _ = <dyn Vcs>::adopt_session;
-    let _ = onevcs::close_session;
-    let _ = onevcs::session_holders;
-    let _ = onevcs::publish;
-    let _ = onevcs::publish_branch;
-    let _ = onevcs::session_change;
-    let _ = onevcs::describe_change;
-    let _ = onevcs::ready_change;
-    let _ = onevcs::preserve;
-    let _ = onevcs::recover;
-    let _ = <dyn Vcs>::recoverable_matching;
-    let _ = onevcs::work_status;
-    let _ = onevcs::import_branch;
-    let _ = onevcs::integrate;
-    let _ = onevcs::sync;
-    let _ = onevcs::sweep;
-    let _ = onevcs::EventLines::open;
-    let _ = onevcs::read_artifact;
-    let _ = onevcs::rules_check;
-    let _ = onevcs::release_targets;
-    let _ = onevcs::release_discovery;
-    let _ = onevcs::release_latest;
-    let _ = onevcs::release_status;
-    let _ = onevcs::acknowledge_release;
-    let _ = onevcs::read_release_declaration;
-    let _ = onevcs::pool_status;
-    let _ = onevcs::pool_prune;
-    let _ = onevcs::pool_maintain;
+
+    // …and the row's operation is the one that command's own handler calls, read out
+    // of `app.rs` rather than taken on trust: a row paired with the wrong operation,
+    // or a handler that went back to doing the work itself, fails here.
+    let source = repo_file("crates/onevcs/src/app.rs");
+    let handlers = handler_of();
+    for (command, operation) in &operations {
+        let handler = handlers
+            .get(*command)
+            .unwrap_or_else(|| panic!("app.rs dispatches nothing for `onevcs {command}`"));
+        let body = handler_body(&source, handler);
+        // Two spellings, because an operation is reached two ways: a free function by
+        // path, and a method of the seam on whichever implementation was supplied.
+        let named = operation
+            .trim_start_matches("<dyn ")
+            .replace('>', "")
+            .replace("onevcs::", "");
+        let method = named
+            .rsplit("::")
+            .next()
+            .expect("a last segment")
+            .to_owned();
+        assert!(
+            body.contains(&named) || body.contains(&format!(".{method}(")),
+            "`onevcs {command}` is dispatched to `{handler}`, which does not call \
+             {operation} — the table says it renders that operation"
+        );
+    }
 }
 
 #[test]
