@@ -3414,6 +3414,262 @@ fn the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers() {
     }
 }
 
+/// Every leaf of the command surface: a top-level command with no subcommands, or
+/// each subcommand of one that has them, spelled the way a user types it.
+fn command_leaves() -> BTreeSet<String> {
+    fn walk(command: &clap::Command, prefix: &str, into: &mut BTreeSet<String>) {
+        let mut subcommands = command.get_subcommands().peekable();
+        if subcommands.peek().is_none() {
+            into.insert(prefix.to_owned());
+            return;
+        }
+        for sub in subcommands {
+            let named = match prefix.is_empty() {
+                true => sub.get_name().to_owned(),
+                false => format!("{prefix} {}", sub.get_name()),
+            };
+            walk(sub, &named, into);
+        }
+    }
+    let mut leaves = BTreeSet::new();
+    walk(&Cli::command(), "", &mut leaves);
+    leaves
+}
+
+/// One operation of the table below: its path, type-checked, and the same path as
+/// the text the table reads by.
+///
+/// One token produces both, so the name in the table cannot drift from the operation
+/// it names — a row that has gone stale fails to compile rather than passing as a
+/// string nothing resolves.
+macro_rules! operation {
+    ($op:expr) => {{
+        let _typed = $op;
+        stringify!($op)
+    }};
+}
+
+/// The typed library operation each command is a rendering of.
+///
+/// One row per leaf of the command surface, reconciled three ways by the test below:
+/// the commands must be exactly the parser's leaves, each operation must exist (the
+/// macro names it as a value), and the handler `app.rs` dispatches that command to
+/// must be the one that calls it. That is what stops the next command from being
+/// added as a handler with its operation buried inside it.
+fn operation_of() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("register", operation!(onevcs::register_checkout)),
+        ("repos", operation!(onevcs::repositories)),
+        ("resolve", operation!(onevcs::resolve_repository)),
+        ("session open", operation!(<dyn Vcs>::open_session)),
+        ("session adopt", operation!(<dyn Vcs>::adopt_session)),
+        ("session close", operation!(onevcs::close_session)),
+        ("session holders", operation!(onevcs::session_holders)),
+        ("publish", operation!(onevcs::publish)),
+        ("publish-branch", operation!(onevcs::publish_branch)),
+        ("change show", operation!(onevcs::session_change)),
+        ("change describe", operation!(onevcs::describe_change)),
+        ("change ready", operation!(onevcs::ready_change)),
+        ("preserve", operation!(onevcs::preserve)),
+        ("recover", operation!(onevcs::recover)),
+        ("recoverable", operation!(<dyn Vcs>::recoverable_matching)),
+        ("status", operation!(onevcs::work_status)),
+        ("import", operation!(onevcs::import_branch)),
+        ("integrate", operation!(onevcs::integrate)),
+        ("sync", operation!(onevcs::sync)),
+        ("sweep", operation!(onevcs::sweep)),
+        ("events", operation!(onevcs::EventLines::open)),
+        ("artifact cat", operation!(onevcs::read_artifact)),
+        ("rules check", operation!(onevcs::rules_check)),
+        ("release targets", operation!(onevcs::release_targets)),
+        ("release discover", operation!(onevcs::release_discovery)),
+        ("release latest", operation!(onevcs::release_latest)),
+        ("release status", operation!(onevcs::release_status)),
+        (
+            "release acknowledge",
+            operation!(onevcs::acknowledge_release),
+        ),
+        (
+            "release declaration",
+            operation!(onevcs::read_release_declaration),
+        ),
+        ("pool status", operation!(onevcs::pool_status)),
+        ("pool prune", operation!(onevcs::pool_prune)),
+        ("pool maintain", operation!(onevcs::pool_maintain)),
+    ]
+}
+
+/// `app.rs`'s own dispatch, as the map from a command to the function that renders
+/// it: read out of the source rather than restated, because what this reconciles is
+/// which handler each command actually reaches.
+fn handler_of() -> BTreeMap<String, String> {
+    let source = repo_file("crates/onevcs/src/app.rs");
+    let dispatch = source
+        .split_once("fn dispatch(")
+        .expect("app.rs dispatches the commands it renders")
+        .1;
+    let dispatch = dispatch.split_once("\n}\n").expect("the dispatch ends").0;
+    let mut handlers = BTreeMap::new();
+    let mut nested: Option<String> = None;
+    for line in dispatch.lines().map(str::trim) {
+        // `Command::Session { command } => match command {` opens a group whose arms
+        // are that command's subcommands.
+        if let Some(variant) = line
+            .strip_prefix("Command::")
+            .and_then(|rest| rest.split_once(" { command } => match command {"))
+            .map(|(variant, _)| variant)
+        {
+            nested = Some(kebab(variant));
+            continue;
+        }
+        if line == "}," {
+            nested = None;
+            continue;
+        }
+        let Some((left, right)) = line.split_once(" => ") else {
+            continue;
+        };
+        let Some((_, variant)) = left.split_once("::") else {
+            continue;
+        };
+        let variant = variant.split(['(', ' ']).next().unwrap_or(variant);
+        let handler = right.split('(').next().unwrap_or(right);
+        if variant.is_empty() || handler.is_empty() {
+            continue;
+        }
+        let command = match &nested {
+            Some(prefix) => format!("{prefix} {}", kebab(variant)),
+            None => kebab(variant),
+        };
+        handlers.insert(command, handler.to_owned());
+    }
+    handlers
+}
+
+/// A clap subcommand's name, which is its variant spelled in kebab-case.
+fn kebab(variant: &str) -> String {
+    let mut name = String::new();
+    for (index, character) in variant.char_indices() {
+        if character.is_ascii_uppercase() && index > 0 {
+            name.push('-');
+        }
+        name.push(character.to_ascii_lowercase());
+    }
+    name
+}
+
+/// The body of one function of `app.rs`, from its signature to the closing brace in
+/// the first column.
+fn handler_body(source: &str, handler: &str) -> String {
+    let opened = source
+        .split_once(&format!("\nfn {handler}("))
+        .unwrap_or_else(|| panic!("app.rs declares no `fn {handler}`"))
+        .1;
+    opened
+        .split_once("\n}\n")
+        .unwrap_or_else(|| panic!("`fn {handler}` never ends"))
+        .0
+        .to_owned()
+}
+
+#[test]
+fn every_command_renders_a_typed_library_operation() {
+    let commands = command_leaves();
+    let operations = operation_of();
+    let covered: BTreeSet<String> = operations
+        .iter()
+        .map(|(command, _)| (*command).to_owned())
+        .collect();
+    assert_eq!(
+        commands, covered,
+        "every command of this crate is a rendering of a typed library operation, and \
+         this table is where the two are reconciled: a command with no row has an \
+         operation nobody outside the binary can reach, and a row with no command names \
+         one nothing renders"
+    );
+
+    // …and the row's operation is the one that command's own handler calls, read out
+    // of `app.rs` rather than taken on trust: a row paired with the wrong operation,
+    // or a handler that went back to doing the work itself, fails here.
+    let source = repo_file("crates/onevcs/src/app.rs");
+    let handlers = handler_of();
+    for (command, operation) in &operations {
+        let handler = handlers
+            .get(*command)
+            .unwrap_or_else(|| panic!("app.rs dispatches nothing for `onevcs {command}`"));
+        let body = handler_body(&source, handler);
+        // Two spellings, because an operation is reached two ways: a free function by
+        // path, and a method of the seam on whichever implementation was supplied.
+        let named = operation
+            .trim_start_matches("<dyn ")
+            .replace('>', "")
+            .replace("onevcs::", "");
+        let method = named
+            .rsplit("::")
+            .next()
+            .expect("a last segment")
+            .to_owned();
+        assert!(
+            body.contains(&named) || body.contains(&format!(".{method}(")),
+            "`onevcs {command}` is dispatched to `{handler}`, which does not call \
+             {operation} — the table says it renders that operation"
+        );
+    }
+}
+
+#[test]
+fn the_amendment_declares_the_operations_the_command_line_renders() {
+    let declarations = amendment_declaring("pub fn repositories");
+    for declared in [
+        "pub fn register_checkout(path: &Path, origin: Option<&Url>) -> Result<Registration>;",
+        "pub fn repositories(providers: &Providers<'_>, audit: GateAudit)",
+        "pub enum GateAudit { Skipped, Asked }",
+        "-> Result<Vec<RegisteredRepository>>;",
+        "pub fn resolve_repository(providers: &Providers<'_>, repo: &str) \
+         -> Result<ResolvedRepository>;",
+        "pub fn publish_branch(providers: &Providers<'_>, request: &BranchPublishRequest)",
+        "-> Result<PublishOutcome>;",
+        "pub fn recover(providers: &Providers<'_>, request: &RecoverRequest) \
+         -> Result<PublishOutcome>;",
+        "pub fn work_status(providers: &Providers<'_>, reference: &str) -> Result<StatusReport>;",
+        "pub fn import_branch(request: &ImportRequest) -> Result<Imported>;",
+        "pub fn integrate(request: &IntegrateRequest) -> Result<Integration>;",
+        "pub fn sync(branch: Option<&str>) -> Result<Synced>;",
+        "pub fn sweep(sweeping: Sweeping, min_age: Duration) -> Result<SweepReport>;",
+        "pub enum Sweeping { Rehearse, Reclaim }",
+        "pub struct IntegrateRequest { pub branches: Vec<String>, pub push: BasePush }",
+        "pub enum BasePush { Push, Keep }",
+        "pub enum TrailerPrefixSource { RulesFile, BuiltIn }",
+        "pub fn read_artifact(id: &ArtifactId) -> Result<String>;",
+        "pub fn rules_check(repo: &str) -> Result<RulesCheck>;",
+        "impl EventLines {",
+        "pub fn open(session: &SessionToken, filter: Option<EventFilter>) -> Result<Self>;",
+        "pub fn read(&mut self) -> Result<Vec<EventLine>>;",
+        "pub fn session(&self) -> &SessionToken;",
+        "pub struct EventLine { pub text: String, pub envelope: Option<Envelope> }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+}
+
+#[test]
+fn the_amendment_declares_the_registered_identity_read() {
+    // The signature is fixed for this plan: a sibling repository's relink replaces a
+    // subprocess with exactly this call, so a rename or a retype here is a break in
+    // another repository rather than a detail of this one.
+    let read: fn() -> onevcs::Result<Vec<String>> = onevcs::registered_identities;
+    let _ = read;
+
+    let declarations = amendment_declaring("pub fn registered_identities");
+    assert!(
+        declarations.contains("pub fn registered_identities() -> Result<Vec<String>>;"),
+        "the amendment no longer declares the read: {declarations}"
+    );
+}
+
 /// The envelope fixture as a value, with the labels the contract stamps on it.
 fn envelope(source: &str, kind: &str) -> Envelope {
     serde_json::from_value(envelope_fixture(source, kind)).expect("the fixture deserializes")

@@ -1288,7 +1288,10 @@ struct Totals {
 }
 
 /// The JSON form: every section the text form renders, from the same value, under
-/// the field names [`SCHEMA_VERSION`] fixes.
+/// the field names `SCHEMA_VERSION` fixes. Spelled without a link because the
+/// constant is this module's and the report is public: a link from a public item to a
+/// private one is a rustdoc error, and publishing the constant to satisfy one would be
+/// surface nobody asked for.
 impl Serialize for Report {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut report = serializer.serialize_struct("Report", 11)?;

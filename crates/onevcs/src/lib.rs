@@ -36,6 +36,13 @@
 //! branches that still hold unpublished work, and [`EventStream`] the envelopes one
 //! session wrote. The command line is a rendering of those rather than a second path
 //! through them.
+//!
+//! **Every** command is: [`registered_identities`] and [`repositories`] are what
+//! `onevcs repos` prints, [`register_checkout`], [`resolve_repository`],
+//! [`publish_branch`], [`recover`], [`work_status`], [`import_branch`],
+//! [`integrate`], [`sync`], [`sweep`], [`rules_check`], [`read_artifact`] and
+//! [`EventLines`] are the rest, and a command with no such operation fails this
+//! crate's own contract suite.
 
 #![warn(missing_docs)]
 
@@ -61,6 +68,7 @@ mod label;
 mod landed;
 mod lock;
 mod merge_path;
+mod ops;
 mod policy;
 mod pool;
 mod preserve;
@@ -99,7 +107,19 @@ pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description, GitHub,
     Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
+pub use import::{Imported, Source as ImportSource, Wrote};
+pub use integrate::{
+    BranchOutcome, Ending as IntegrationEnding, Outcome as Integration, Status as IntegrationStatus,
+};
 pub use landed::{Landed, LandingEvidence};
+pub use ops::{
+    import_branch, integrate, publish_branch, read_artifact, recover, register_checkout,
+    registered_identities, repositories, resolve_repository, rules_check, sweep, sync, work_status,
+    BasePush, BranchPublishRequest, CheckoutAudit, GateAudit, ImportRequest, IntegrateRequest,
+    MatchedRule, MergePathCoverage, RecoverRequest, RegisteredCheckout, RegisteredRepository,
+    Registration, RequiredChecksAnswer, ResolvedPolicy, ResolvedRepository, RulesCheck,
+    StatusReport, Sweeping, Synced, TrailerPrefixSource,
+};
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
     IdentityOutcome, MaintainReport, MaintenanceOutcome, PoolStatus, PruneReport, SlotMaintenance,
@@ -124,7 +144,8 @@ pub use session::{
     Provenance, Recoverable, Scope, Selection, Session, SessionHolder, SessionRecord,
     SessionRequest, SessionToken,
 };
-pub use stream::EventStream;
+pub use stream::{EventLine, EventLines, EventStream};
+pub use sweep::Report as SweepReport;
 pub use vcs::{Git, Vcs};
 pub use workspaces::{first_matching, Bound, Span};
 

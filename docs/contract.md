@@ -2765,6 +2765,171 @@ No signature moves, no type changes, and no new variant: what a caller meets is
 
 Event kinds added: none.
 
+### The command line is a rendering of typed operations, and every command has one
+
+`onevcs::run` answers a process: an exit code and a line of prose. Twelve commands had
+nothing else — the operation behind them was a private function over private values —
+so a consumer embedding this crate had to spawn the binary and parse what it printed
+to learn something the library already knew. `onepipeline` does exactly that for the
+registered identities today, and one reworded display line breaks it silently.
+
+The first of them is the enumeration `onevcs repos` prints:
+
+```rust
+/// Every repository identity this host has registered, in the order `onevcs repos`
+/// lists them: one normalized origin — `host/owner/name` hosted, the origin path
+/// local — per identity, which is the key every repository-taking operation takes.
+pub fn registered_identities() -> Result<Vec<String>>;
+```
+
+It is the migration-aware loader's answer, so a registry an older build wrote is
+migrated as this reads it exactly as the command migrates it, and the order is the
+registry document's own — which is the order the unindented lines of `onevcs repos`
+come out in. A registry this build cannot read is an `Err` naming what could not be
+read and never an empty list: "this host has registered nothing" and "this host's
+registry could not be read" are opposite facts, and a caller acts on only one.
+
+It takes no `Providers`, for the reason `session_holders` does not: the registry is
+this host's own document, and there is nothing here for a supplied implementation of
+either interface to answer.
+
+**Every other command that had no library form gains one, and the parity is held by a
+test.** The operations below are what the remaining handlers call, and each handler
+does nothing afterwards but render what it was handed — so a command's output and its
+exit code are one decision spelled twice rather than two paths that could disagree.
+`every_command_renders_a_typed_library_operation` in `tests/contract.rs` reconciles
+that three ways, so a command added without an operation — or with one buried inside
+its handler — fails the gate rather than reopening the gap this amendment closes: the
+table's commands are exactly the parser's leaves, each operation is named as a value
+and so must exist with that path, and the handler `app.rs` dispatches each command to
+is read out of the source and must be the one that calls it.
+
+```rust
+/// `onevcs register`: the identity a checkout's origin resolved to, the policy it
+/// publishes under, and what covers its merge path.
+pub fn register_checkout(path: &Path, origin: Option<&Url>) -> Result<Registration>;
+pub struct Registration { pub identity: String, pub alias: String,
+                          pub checkout: PathBuf, pub gate: String,
+                          pub policy: ResolvedPolicy, pub coverage: MergePathCoverage }
+pub struct ResolvedPolicy { pub publication: MergePolicy, pub publication_from: String,
+                            pub approvals: Approvals, pub approvals_from: String }
+pub enum MergePathCoverage { PrePushHook(PathBuf), RequiredChecks, None }
+
+/// `onevcs repos`, with and without `--audit-gates`.
+pub fn repositories(providers: &Providers<'_>, audit: GateAudit)
+    -> Result<Vec<RegisteredRepository>>;
+pub enum GateAudit { Skipped, Asked }
+pub struct RegisteredRepository { pub identity: String, pub gate: String,
+                                  pub checkouts: Vec<RegisteredCheckout>,
+                                  pub required_checks: Option<RequiredChecksAnswer> }
+pub struct RegisteredCheckout { pub alias: String, pub path: PathBuf,
+                                pub audit: Option<CheckoutAudit> }
+pub struct CheckoutAudit { pub policy: ResolvedPolicy, pub coverage: MergePathCoverage }
+pub enum RequiredChecksAnswer { NotHosted, Unreadable { reason: String },
+                                Answered { base: String, checks: RequiredChecks } }
+
+/// `onevcs resolve`.
+pub fn resolve_repository(providers: &Providers<'_>, repo: &str) -> Result<ResolvedRepository>;
+pub struct ResolvedRepository { pub identity: String, pub alias: String, pub origin: String,
+                                pub gate: String, pub publication_checkout: PathBuf,
+                                pub policy: ResolvedPolicy }
+
+/// `onevcs publish-branch` and `onevcs recover`: one path, and provenance is the
+/// whole of what separates them.
+pub fn publish_branch(providers: &Providers<'_>, request: &BranchPublishRequest)
+    -> Result<PublishOutcome>;
+pub fn recover(providers: &Providers<'_>, request: &RecoverRequest) -> Result<PublishOutcome>;
+pub struct BranchPublishRequest { pub repo: PathBuf, pub branch: String,
+                                  pub title: Option<Subject>, pub body: Option<String>,
+                                  pub policy: Option<MergePolicy> }
+pub struct RecoverRequest { pub repo: PathBuf, pub branch: String,
+                            pub title: Option<Subject>, pub body: Option<String> }
+
+/// `onevcs status`. Its two renderings are its surface.
+pub fn work_status(providers: &Providers<'_>, reference: &str) -> Result<StatusReport>;
+pub struct StatusReport(/* the report's sections stay private */);
+impl StatusReport { pub fn render(&self) -> String; }   // and `Serialize`: the --json bytes
+
+/// `onevcs import`, `onevcs integrate`, `onevcs sync`, `onevcs sweep`.
+pub fn import_branch(request: &ImportRequest) -> Result<Imported>;
+pub struct ImportRequest { pub repo: PathBuf, pub branch: String,
+                           pub from: Option<String>, pub under: Option<String> }
+pub fn integrate(request: &IntegrateRequest) -> Result<Integration>;
+pub struct IntegrateRequest { pub branches: Vec<String>, pub push: BasePush }
+pub enum BasePush { Push, Keep }
+pub fn sync(branch: Option<&str>) -> Result<Synced>;
+pub struct Synced { pub identity: String, pub branch: String, pub checkout: PathBuf,
+                    pub before: String, pub after: String }
+impl Synced { pub fn moved(&self) -> bool; }
+pub fn sweep(sweeping: Sweeping, min_age: Duration) -> Result<SweepReport>;
+pub enum Sweeping { Rehearse, Reclaim }
+
+/// `onevcs events`: one session's stream as the file its writers left, which is what
+/// the command prints. `EventStream` beside it is the same file read as values.
+impl EventLines {
+    pub fn open(session: &SessionToken, filter: Option<EventFilter>) -> Result<Self>;
+    pub fn read(&mut self) -> Result<Vec<EventLine>>;
+    pub fn session(&self) -> &SessionToken;
+}
+pub struct EventLine { pub text: String, pub envelope: Option<Envelope> }
+
+/// `onevcs artifact cat` and `onevcs rules check`.
+pub fn read_artifact(id: &ArtifactId) -> Result<String>;
+pub fn rules_check(repo: &str) -> Result<RulesCheck>;
+pub struct RulesCheck { pub identity: String, pub checkout: PathBuf, pub rules: String,
+                        pub matched: Option<MatchedRule>, pub policy: ResolvedPolicy,
+                        pub trailer_prefix: String,
+                        pub trailer_prefix_source: TrailerPrefixSource }
+pub struct MatchedRule { pub index: usize, pub criteria: RuleMatch }
+pub enum TrailerPrefixSource { RulesFile, BuiltIn }
+
+// Re-exported beside them, because these operations answer in them: `Imported`,
+// `ImportSource` and `Wrote`; `Integration`, `BranchOutcome`, `IntegrationStatus`
+// and `IntegrationEnding`; `SweepReport`.
+```
+
+Four things about that surface are decisions rather than consequences.
+
+**A mode a command spells as a flag is an enum here, never a bare `bool`.**
+`GateAudit`, `BasePush`, `Sweeping` and `TrailerPrefixSource` each name two answers
+that are different documents or different actions, and a call site spelling one of
+them `true` says nothing about which way round it is. The flag stays a flag on the
+command line, where it has a name.
+
+**An operation takes `Providers` exactly where its command reaches an interface**, and
+no other operation gains one: `repositories` does because the gate audit asks the host
+what it requires, `resolve_repository` because the identity is resolved through the
+seam, the two branch-keyed publications and `work_status` because they reach a host.
+`register_checkout`, `import_branch`, `integrate`, `sync`, `sweep`, `rules_check`,
+`read_artifact` and `registered_identities` take none, for the reason `session_holders`
+does not: they read this host's own state root and its own documents, and there is
+nothing there for a supplied implementation to answer.
+
+**`integrate` and `sync` answer for the repository the current directory is in**,
+which is what their commands have always done — the train reads its candidates out of
+one publication checkout, and a sync only ever fast-forwards the branch a checkout is
+already on. Widening either to take a repository argument is a command-surface change
+and a separate question.
+
+**`status`'s report stays a document rather than a dozen types.** It is versioned by
+its own report version and held to checked-in goldens byte for byte, so what a
+consumer reads is the JSON it already reads, plus the rendering a person reads. Making
+its sections public would freeze a shape that is meant to keep moving under that
+version — and `landing_status` beside it is still the *decision* on its own, asked of
+every repository with no host consulted.
+
+**Reading a stream as lines is not a second reader of it.** `EventStream` hands back
+values and refuses a line that is not one, because a consumer acting on what a session
+did must be told about a gap. `EventLines` hands back the file: the line its producer
+wrote, and the envelope beside it where this build could read one. That is what
+`onevcs events` prints, and it is why a stream a later build wrote still reads — a
+command that refused what it could not parse would stop showing the one line somebody
+most needs to see. Given a filter it is the stricter of the two, because an event has
+to be read to be judged: a line that is not this session's envelope is refused there,
+and a kind this build has no word for is left out.
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)
