@@ -126,6 +126,18 @@ not tell you:
   sets `usePty: false`: Nx's pseudo-terminal reader drops a fast task's output
   outright often enough to catch in a test loop, and this tier's terminal output
   *is* its verdict.
+- **`just screenshots` is informational and lives outside both**, like `deps-check`,
+  `semver-check` and `smoke-real`. It drives the real release binary against a scratch
+  host built the way the e2e tier builds one and renders each scene to a deterministic
+  SVG whose digest is committed; `.github/workflows/visual-docs.yml` is its own
+  workflow and no step of it is reachable from `check`, from `gate`, or from CI's
+  `gate` job. [`screenshots/AGENTS.md`](screenshots/AGENTS.md) is the durable
+  explanation — what the scenes are, what the capture is pinned to, and how to
+  re-bless after an intended output change.
+- **`just bootstrap` now activates a git hook**, and it is the only one:
+  `core.hooksPath` is pointed at the committed `.githooks/`, which carries the
+  screencomp pre-push guard and nothing else. `just gate` stays unhooked and is still
+  the bar you run before pushing.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable merge base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole.

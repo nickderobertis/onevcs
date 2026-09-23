@@ -1,5 +1,7 @@
 # onevcs
 
+![A terminal running one change end to end: `onevcs session open` answering with a session token and the worktree it cut, a commit on that branch, then `onevcs publish` while a backgrounded `onevcs events --follow` fills the window with NDJSON envelopes as they are written — the push, the change request opened, each check reported as it resolves, the merge, and the release probes — ending on "merged at" and the landing commit](docs/screenshots/demo.gif)
+
 Version control and its remote host behind one host-neutral vocabulary, for agent
 workflows.
 
@@ -27,6 +29,18 @@ onevcs publish "$token"                            # verify, then land it
 onevcs events "$token"                             # everything it did, as NDJSON
 onevcs release status "$token"                     # …and whether a release carries it
 ```
+
+`onevcs rules check REPO` is the second line of that, on its own: it resolves the
+checkout to an identity, says which rule of the rules file matched it, and gives the
+publication and approvals that rule decided with the source of each.
+
+![`onevcs rules check widgets` printing repo, identity, checkout and rules-file paths, the matched rule with its host/owner/name matcher, then publication change-auto and approvals none, each marked "(from rule 1)", and the trailer prefix taken from the rules file](docs/screenshots/rules-check.svg)
+
+`onevcs repos --audit-gates` reads the same decision back for **every** registered
+identity at once, and beside each one what actually verifies a publication there —
+the host's required checks, and whether anything on the merge path runs a gate:
+
+![`onevcs repos --audit-gates` listing three identities: a plain git remote whose required checks are "none" because no host answers for it and whose merge path covers nothing, a github.com identity publishing change-open whose coverage is the host's required checks, and a third publishing change-auto and covered by a pre-push hook, each with its policy and approvals and the rule they came from](docs/screenshots/audit-gates.svg)
 
 A session can also open its change request **as a draft it holds** while its work
 is still being made, and finish the description off once it has evidence to put in
@@ -62,6 +76,8 @@ verb that lands it, with the origin beside it. The library form is `preserve`,
 answering `Pushed`, `AlreadyOnOrigin`, or `NoRemote`, and `recoverable` is the
 enumeration beside it.
 
+![`onevcs recoverable --all` over three branches: one whose run was left open and is only in a pool slot's clone, one marked landed whose recorded landing commit is named and which says there is nothing to resume, and one marked "on origin" that `onevcs preserve` pushed and nothing published — each with its identity, an indented "Found in:" path, why it stopped, and a pasteable "Resume: onevcs publish-branch …" line](docs/screenshots/recoverable.svg)
+
 `onevcs status REF` answers what became of a piece of work, asked by whichever
 name you hold — a change request's URL, a session token, a branch, or a commit. It
 reports the identity's resolved policy, the session, every checkout and per-run
@@ -74,6 +90,8 @@ reads as landed rather than as unpublished however far the base has moved since,
 and one that history cannot decide reads as `unknown` rather than as work nobody
 published. A host that cannot be reached leaves its section unavailable instead of
 failing the command.
+
+![`onevcs status` over an open change request: a "work:" header naming the branch and identity, then identity, session, branch and publication sections — the session closed and stale, the branch one commit ahead with its provenance complete, the publication open and not landed with its change-request URL and merge policy — then a checks table with one required check completed successfully, one still in progress, and one advisory check failed, the merge path's pass verdict and its log, and a "next:" line saying nothing advances the work while the host is still deciding](docs/screenshots/status.svg)
 
 A branch is often worked on by more than one session — a run stops and the next
 one continues the name — so the older session's record names the one that
@@ -91,7 +109,10 @@ be sequenced behind the release that carries it rather than behind the merge.
 adopts `fast` (the work is enough) or `published` (the release is what is depended
 on); `onevcs release latest REPO [--target NAME]` says what is out right now; and
 `onevcs release status REF [--target NAME]` says whether the release carrying one
-landed change has happened yet, asked by the same four names `onevcs status` takes.
+landed change has happened yet, asked by the same four names `onevcs status` takes —
+`released: crate 1.5.0 (automated, probed)`, `not released`, or `not answered`.
+
+![`onevcs release targets` for one repository: its identity, `adoption: published`, its default target, the declaration it read out of that repository's own release-targets.toml, and a table of two declared targets — each automated, each answered by that declaration's own probe script given the target's registry-qualified identifier](docs/screenshots/release-targets.svg)
 
 A target's **style decides its shape**. An *automated* target carries a probe — a
 script the repository carries, or a one-liner run through `sh` — and is answered by
@@ -139,6 +160,8 @@ idle tick, a cron, a person — and `--older-than` is what makes every caller ch
 skipping a slot maintained within that span. It exits `0` when nothing ran or every
 command succeeded, `1` when any command failed or timed out, naming the artifact that
 holds what it wrote.
+
+![`onevcs pool status` for one identity: a pool of 2 with 2 slots created, 1 idle and 1 in use, an overflow of 4 with none in use, and a per-slot block for each — slot 1 in use by a named session, slot 2 idle and carrying the timestamp and "succeeded" outcome of its last maintenance, both with their slot path and the execution checkout they borrow from](docs/screenshots/pool-status.svg)
 
 `onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]` reclaims the workspaces those
 landings leave behind. Every branch published by name cuts a run root — a clone, a
@@ -210,6 +233,15 @@ onevcs --help
 `--help` is the command surface, and `publish` reserves its own exit codes for a
 verification that failed, a request that was invalid, and a base that moved under
 it.
+
+![`onevcs --help` in a terminal: the one-line description, the usage line, and the whole command list — register, repos, resolve, session, publish, publish-branch, change, preserve, recover, recoverable, status, import, integrate, sync, sweep, events, artifact, rules, release and pool — each with the one-line summary of what it does, then the global help and version options](docs/screenshots/help.svg)
+
+> Every picture in this README is a real capture of this CLI: the release binary
+> driven against a scratch host of real origins, clones and hooks, with no network
+> and no credential, rendered by [`just screenshots`](screenshots/AGENTS.md). The
+> digest of each still is committed, so CI refuses the moment the output it shows
+> stops matching what the binary prints; the animation at the top is a rendering of
+> one such run's own output, regenerated with `just screenshots-gif`.
 
 ## Embed it
 
