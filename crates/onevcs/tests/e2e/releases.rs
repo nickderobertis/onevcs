@@ -296,6 +296,48 @@ fn an_automated_target_is_released_only_by_a_version_strictly_greater_than_the_l
 }
 
 #[test]
+fn a_release_status_over_a_reference_nothing_answers_to_refuses_exactly_as_it_always_has() {
+    // The kind behind this refusal is new — `Error::UnresolvableReference`, so that a
+    // consumer falling back from one spelling of a reference to another routes on the
+    // kind rather than on the sentence
+    // (https://github.com/nickderobertis/onepipeline/issues/420). What an operator sees
+    // is deliberately not new, and this is what holds that: the same `invalid input:`
+    // line on stderr, the same words after it, nothing on stdout, and exit code 2.
+    let releasing = Releasing::with(&answering("crate"));
+    releasing.answers("crate", "1.0.0\n");
+    releasing.land("feature/one");
+
+    // The repository really answers, so each refusal below is the reference's own and
+    // not a repository with nothing to release.
+    assert_eq!(
+        releasing.json(&["status", "feature/one"])["state"],
+        "not-released"
+    );
+
+    for (reference, said) in [
+        // A name nothing answers to, and a commit no branch here carries: the spelling
+        // a consumer asks about first, since a squash commit is what a landing leaves.
+        ("nothing-here", "names no work this host knows"),
+        (
+            "0123456789abcdef0123456789abcdef01234567",
+            "names no work this host knows",
+        ),
+        // …and the one it falls back to.
+        (
+            "https://github.com/acme-corp/hosted/pull/4242",
+            "was opened through `onevcs` on this host",
+        ),
+    ] {
+        releasing
+            .release(&["status", reference])
+            .code(2)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("onevcs: invalid input: "))
+            .stderr(predicate::str::contains(said));
+    }
+}
+
+#[test]
 fn a_target_with_no_release_at_landing_is_carried_by_the_first_version_it_ever_answers() {
     let releasing = Releasing::with(&answering("crate"));
     // Nothing has ever been released, which the probe says by printing nothing.

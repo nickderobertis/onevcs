@@ -24,6 +24,14 @@ msrv-version := `sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml`
 # Keep the gate's own output to signal: successes are silent, failures are not.
 export CARGO_TERM_QUIET := "true"
 
+# The renderer the terminal screenshots are frozen with. Read out of
+# scripts/ci-install-freeze.sh — which is what CI's Visual-docs workflow runs — so the
+# local install and the CI install have one pin between them rather than two that
+# drift. NOT part of the gate or `just bootstrap`: screenshots are informational, like
+# the benches. screencomp (the classify/gallery/PR-comment tool) is installed
+# separately; see https://github.com/nickderobertis/screencomp.
+freeze-version := `sed -n 's/^freeze_version="\([^"]*\)".*/\1/p' scripts/ci-install-freeze.sh`
+
 # List available recipes.
 default:
     @just --list
@@ -262,6 +270,47 @@ lint-llm *paths:
 lint-llm-validate *args:
     @command -v llmlint >/dev/null 2>&1 || { echo "llmlint not installed — run 'just setup-llmlint'" >&2; exit 1; }
     llmlint validate {{args}}
+
+# --- Terminal screenshots (informational; never part of `check` or CI's gate) ---
+# Deterministic SVGs of the real CLI's output over a scratch host built the way the
+# e2e tier builds one, rendered by `freeze` from a vendored pinned font, and
+# gated/galleried/PR-commented by screencomp (see screenshots/AGENTS.md). Out of the
+# gate like `deps-check` and `semver-check`; CI's Visual-docs workflow owns the
+# comparison, and the pre-push guard regenerates this host's lane baseline on drift.
+
+# Install the pinned screenshot renderer (`freeze`) on demand. Needs Go.
+screenshots-tools:
+    @command -v go >/dev/null || { echo "go not found: needed to install freeze; see https://go.dev/dl" >&2; exit 1; }
+    go install github.com/charmbracelet/freeze@v{{freeze-version}}
+    @echo "installed freeze to $(go env GOPATH)/bin (ensure it is on PATH)"
+
+# Drive the real release binary against the scratch host and render each scene to
+# shots/current/<arch>/ and docs/screenshots/. Needs `freeze` on PATH.
+# Capture the terminal screenshots.
+screenshots:
+    @bash scripts/screenshots.sh
+
+# Regenerate the animated hero GIF (docs/screenshots/demo.gif — one change's whole
+# life, the event stream arriving as the publication runs). Like the stills it drives
+# the REAL release binary against the same scratch host, then renders faithful frames
+# with the vendored JetBrains Mono (Pillow only — no ttyd/ffmpeg). Informational and
+# NOT hash-gated (a GIF is not byte-reproducible), so regenerate on demand and commit.
+# Needs Python 3 + Pillow (`pip install Pillow`).
+# Regenerate the animated hero GIF (docs/screenshots/demo.gif).
+screenshots-gif:
+    @command -v python3 >/dev/null || { echo "python3 not found: needed to render the demo GIF" >&2; exit 1; }
+    @python3 -c "import PIL" 2>/dev/null || { echo "Pillow not installed: pip install Pillow" >&2; exit 1; }
+    @cargo build --release --locked --bin onevcs
+    @python3 scripts/demo-gif.py
+
+# Refresh the committed baseline manifest from a fresh capture, after an INTENDED
+# output change. There is one lane per arch in [capture].arches (screencomp.toml) and
+# this refreshes THIS host's lane, named by scripts/host-arch.sh so it matches what
+# the pre-push guard classifies. Commit shots/baseline/ + docs/screenshots/ together.
+# Recapture and refresh this host's committed baseline after an intended change.
+screenshots-bless: screenshots
+    @bash scripts/bless-baseline.sh
+    @echo "baseline refreshed for the $(bash scripts/host-arch.sh) lane; commit shots/baseline/ + docs/screenshots/"
 
 # The blocking `llmlint` PR check; `just gate` runs it before you push.
 #

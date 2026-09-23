@@ -148,6 +148,38 @@ pub enum Error {
         /// every holder: token, branch, worktree, owner pid and liveness.
         reason: String,
     },
+
+    /// A reference named no work this host knows — it is not a change request
+    /// `onevcs` opened, a session token it printed, a branch any checkout or run
+    /// clone of a registered identity holds, or a commit one of those branches
+    /// carries. The CLI reports this as exit code 2.
+    ///
+    /// A kind of its own for the reason [`Error::PushedUnverified`] is one: a caller
+    /// branches on the *kind*. A consumer that falls back from one spelling of a
+    /// reference to another — onepipeline's release asker, from a squash commit to
+    /// the change request it settled — has to fire on exactly this case and never on
+    /// an I/O failure or a host that refused, and telling them apart by matching the
+    /// reason's prose breaks silently the day the wording changes.
+    ///
+    /// It says nothing new to whoever reads the refusal, so it renders and exits
+    /// exactly as [`Error::Invalid`] does, down to the `invalid input:` prefix: the
+    /// typed answer is for the router, and a rewording of the CLI's output would be
+    /// the breaking change this exists to prevent. [`FailureKind`](crate::FailureKind)
+    /// — the vocabulary fixed across the three libraries that route a publication's
+    /// outcome — gains no kind for it and reports it as `Invalid`, which is what fixes
+    /// the exit code at 2.
+    // llmlint: ignore[names_match_behavior] the wording of the refusal an operator
+    // reads is unchanged on purpose, so this renders under `Invalid`'s prefix rather
+    // than its own; the variant name is what the router matches on.
+    #[error("invalid input: {reason}")]
+    UnresolvableReference {
+        /// The reference as it was asked about, so a caller that routes on this kind
+        /// names what it could not resolve without parsing the reason.
+        reference: String,
+        /// What the reference was searched for as, and where the spellings that do
+        /// answer are listed.
+        reason: String,
+    },
 }
 
 /// The result type every fallible entry point in this crate returns.

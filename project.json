@@ -4,6 +4,10 @@
   "projectType": "application",
   "tags": ["scope:repo"],
   "targets": {
+    "bootstrap": {
+      "command": "bash scripts/install-hooks.sh",
+      "options": { "cwd": "." }
+    },
     "lint-llm-diff": {
       "command": "./scripts/llmlint-judge.sh",
       "options": { "cwd": ".", "usePty": false }

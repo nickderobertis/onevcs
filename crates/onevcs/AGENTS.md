@@ -37,15 +37,33 @@ cannot happen if the command never asked.
 
 ## Both surfaces, one decision
 
-`publish`, `session close`, and reading a session's events each have a typed
-library entry point beside the CLI — `crate::publish` answering a `Publication`,
-`close_session`, `session`, and `EventStream`. The CLI is a *rendering* of those
-and never a second path: `app::publish_session` calls `crate::publish` and turns
-the outcome into stdout, stderr, and an exit code. A consumer that had to parse
-that stdout is why the value exists, so a failure that the CLI reports as a
-non-zero exit is a `PublishOutcome::Failed` rather than an `Err` — the two
-surfaces cannot disagree about which failures are which. `tests/e2e/library.rs`
-drives every one of them twice, on the providers and on real `Git` + `gh`.
+**Every command has a typed library operation, and the CLI is a rendering of it.**
+`app.rs` calls one operation and turns what it hands back into stdout, stderr and an
+exit code; it decides nothing else. A consumer that had to parse that stdout is why
+the values exist, so a failure the CLI reports as a non-zero exit is a
+`PublishOutcome::Failed` rather than an `Err` — the two surfaces cannot disagree
+about which failures are which. `tests/e2e/library.rs` drives them against the
+commands' own output, and twice over for the publication path: on the providers and
+on real `Git` + `gh`.
+
+`ops.rs` is where the operations that had no home of their own live — the ones whose
+body used to sit inside a handler, or which composed two private modules and a
+rendering. One that belongs to a module (a publication, a session, a pool, a release)
+stays there and is re-exported from `lib.rs` beside them.
+
+`every_command_renders_a_typed_library_operation` in `tests/contract.rs` is what
+keeps it true: it reconciles the parser's leaves against a table naming the operation
+each one renders, so a command added with its operation buried inside its handler
+fails the gate. Adding a command means adding both, and the row.
+
+Two of those operations are shaped by a decision worth not undoing. `work_status`
+answers a `StatusReport` whose sections stay **private**: the report is a document
+versioned by `status::REPORT_VERSION` and held to checked-in goldens, and its two
+renderings — `render()` and `Serialize` — are its surface, so the shape can keep
+moving without this crate owing semver on a dozen types. And `EventLines` is a
+*second* reader of a stream on purpose: `EventStream` hands back values and refuses a
+line that is not one, while `EventLines` hands back the file as its writers left it,
+which is what `onevcs events` prints.
 
 Reading events takes a filter on both surfaces — `EventStream::open_filtered` and
 `onevcs events --filter` — and the grammar is **`onemessagebus`'s**, shared with

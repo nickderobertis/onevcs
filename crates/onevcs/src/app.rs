@@ -21,13 +21,17 @@ use crate::cli::{
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
-use crate::event::EventFilter;
+use crate::event::{ArtifactId, EventFilter};
 use crate::host::ProtectionSource;
+use crate::import::Wrote;
 use crate::landed::Landed;
+use crate::ops::{
+    BasePush, BranchPublishRequest, GateAudit, ImportRequest, IntegrateRequest, MergePathCoverage,
+    RecoverRequest, RequiredChecksAnswer, ResolvedPolicy, Sweeping, TrailerPrefixSource,
+};
 use crate::preserve::Preservation;
 use crate::providers::Providers;
 use crate::publish::{DraftReason, PublishOutcome, PublishRequest, Retention, Subject};
-use crate::registry::Registry;
 use crate::releases::{
     Acknowledgement, Baseline, DeclarationSource, Probe, ReleaseAnswer, ReleaseMethod,
     ReleaseStatus, ReleaseTarget, RepositoryReleases, TargetName, TargetSource,
@@ -35,12 +39,8 @@ use crate::releases::{
 use crate::session::{
     Lifecycle, Provenance, Scope, Selection, SessionHolder, SessionRequest, SessionToken,
 };
-use crate::store::{self, Resolution};
-use crate::stream::Stream;
-use crate::{
-    git, guidance, import, integrate, label, lock, policy, provenance, publish, publish_branch,
-    recover, status, stream, sweep, workspace,
-};
+use crate::store;
+use crate::{git, guidance, label, lock, policy, publish};
 
 /// The exit code `onevcs session open` answers a pool that admits nothing with.
 ///
@@ -302,26 +302,16 @@ fn describe_slot_outcome(outcome: &crate::SlotOutcome) -> String {
     }
 }
 
+/// Render what `onevcs register` recorded, which is [`crate::register_checkout`]'s
+/// answer.
 fn register(args: &RegisterArgs) -> Result<u8> {
-    let origin = args.origin.as_ref().map(url::Url::to_string);
-    let resolution = store::register(&args.path, origin.as_deref())?;
-    // What was registered is the identity and its checkout; how it publishes is the
-    // rules file's answer, resolved here so the coverage line below is about the
-    // merge path the identity will actually take.
-    let registry = store::load()?;
-    let (file, source) = policy::load(&registry)?;
-    let resolved = policy::resolve_for(&file, &source, &resolution);
-    println!("{}", resolution.key);
-    println!("  alias: {}", resolution.alias);
-    print_policy("  ", &resolved);
-    println!("  gate: {}", resolution.identity.gate);
-    let coverage = store::merge_path_coverage(
-        &resolution,
-        &resolution.publication,
-        resolved.policy.publication,
-    );
-    println!("  merge-path coverage: {}", coverage.describe());
-    if coverage == store::Coverage::None {
+    let registered = crate::register_checkout(&args.path, args.origin.as_ref())?;
+    println!("{}", registered.identity);
+    println!("  alias: {}", registered.alias);
+    print_policy("  ", &registered.policy);
+    println!("  gate: {}", registered.gate);
+    println!("  merge-path coverage: {}", registered.coverage.describe());
+    if registered.coverage == MergePathCoverage::None {
         eprintln!(
             "onevcs: warning: nothing on this identity's merge path runs a gate, so a \
              publication is unproven. Install an executable pre-push hook."
@@ -331,15 +321,15 @@ fn register(args: &RegisterArgs) -> Result<u8> {
 }
 
 /// The two policy fields as every rendering of a resolved policy prints them.
-fn print_policy(indent: &str, resolved: &policy::Resolved) {
+fn print_policy(indent: &str, resolved: &ResolvedPolicy) {
     println!(
         "{indent}publication: {} (from {})",
-        policy::spell(resolved.policy.publication),
+        policy::spell(resolved.publication),
         resolved.publication_from
     );
     println!(
         "{indent}approvals: {} (from {})",
-        spell_approvals(resolved.policy.approvals),
+        spell_approvals(resolved.approvals),
         resolved.approvals_from
     );
 }
@@ -351,51 +341,37 @@ fn spell_approvals(approvals: crate::rules::Approvals) -> &'static str {
     }
 }
 
+/// Render the registry the way `onevcs repos` lists it, which is
+/// [`crate::repositories`]'s answer.
+///
+/// The audit is part of that answer rather than a second reading of the registry:
+/// what each identity's host requires and what covers each checkout's merge path are
+/// values the operation resolved, and this turns them into lines.
 fn repos(args: &ReposArgs, providers: &Providers<'_>) -> Result<u8> {
-    let registry = store::load()?;
-    if registry.identities.is_empty() {
+    let listed = crate::repositories(
+        providers,
+        match args.audit_gates {
+            true => GateAudit::Asked,
+            false => GateAudit::Skipped,
+        },
+    )?;
+    if listed.is_empty() {
         println!("no repositories registered");
         return Ok(0);
     }
-    // The audit is about each identity's merge path, and the merge path is the
-    // resolved policy's: which verifier covers it follows from how it publishes, so
-    // the rules are read once here and resolved per checkout below. The plain
-    // listing reads no rules at all — it is the registry as it stands.
-    let rules = if args.audit_gates {
-        Some(policy::load(&registry)?)
-    } else {
-        None
-    };
-    for (key, identity) in &registry.identities {
-        println!("{key}\t{}", identity.gate);
-        let checkouts: Vec<(&String, &crate::registry::Checkout)> = registry
-            .checkouts
-            .iter()
-            .filter(|(_, checkout)| checkout.identity == *key)
-            .collect();
-        if let (true, Some((_, first))) = (args.audit_gates, checkouts.first()) {
+    for repository in &listed {
+        println!("{}\t{}", repository.identity, repository.gate);
+        if let Some(answer) = &repository.required_checks {
             println!(
                 "  required checks: {}",
-                required_checks_line(key, first, providers)
+                required_checks_line(&repository.identity, answer)
             );
         }
-        for (alias, checkout) in checkouts {
-            println!("  {alias}\t{}", checkout.path.display());
-            if let Some((file, source)) = &rules {
-                let resolution = Resolution {
-                    key: key.clone(),
-                    identity: identity.clone(),
-                    alias: alias.clone(),
-                    publication: checkout.path.clone(),
-                };
-                let resolved = policy::resolve_for(file, source, &resolution);
-                print_policy("    ", &resolved);
-                let coverage = store::merge_path_coverage(
-                    &resolution,
-                    &checkout.path,
-                    resolved.policy.publication,
-                );
-                println!("    merge-path coverage: {}", coverage.describe());
+        for checkout in &repository.checkouts {
+            println!("  {}\t{}", checkout.alias, checkout.path.display());
+            if let Some(audit) = &checkout.audit {
+                print_policy("    ", &audit.policy);
+                println!("    merge-path coverage: {}", audit.coverage.describe());
             }
         }
     }
@@ -410,30 +386,19 @@ fn repos(args: &ReposArgs, providers: &Providers<'_>) -> Result<u8> {
 /// branch from more than one source, and a credential may be refused one of them, so
 /// an answer a source did not contribute to says so — and an *empty* answer with a
 /// source unconsulted is unknown, never none, because "this source found nothing"
-/// and "this merge path requires nothing" are opposite facts. The list is asked of
-/// the host through the seam, for the base the identity's first registered checkout
-/// tracks — the base is a fact about the origin, so any checkout of it answers.
-fn required_checks_line(
-    key: &str,
-    checkout: &crate::registry::Checkout,
-    providers: &Providers<'_>,
-) -> String {
-    let Some(slug) = crate::gh::slug(key) else {
-        return format!(
-            "none: {key:?} is not a {} repository, so no host answers for it",
-            crate::gh::HOST
-        );
-    };
-    let asked = git::default_branch(&checkout.path, "origin").and_then(|base| {
-        providers
-            .hosting
-            .for_repo(&slug)?
-            .required_checks_on(&base)
-            .map(|checks| (base, checks))
-    });
-    let (base, answer) = match asked {
-        Ok(asked) => asked,
-        Err(error) => return format!("unreadable — {error}"),
+/// and "this merge path requires nothing" are opposite facts. Three of the five are
+/// the three [`RequiredChecksAnswer`] variants; the other two are what a complete
+/// answer and an incomplete one read as.
+fn required_checks_line(key: &str, answer: &RequiredChecksAnswer) -> String {
+    let (base, answer) = match answer {
+        RequiredChecksAnswer::NotHosted => {
+            return format!(
+                "none: {key:?} is not a {} repository, so no host answers for it",
+                crate::gh::HOST
+            )
+        }
+        RequiredChecksAnswer::Unreadable { reason } => return format!("unreadable — {reason}"),
+        RequiredChecksAnswer::Answered { base, checks } => (base, checks),
     };
     let names = answer.checks.iter().cloned().collect::<Vec<_>>().join(", ");
     if answer.complete() {
@@ -467,28 +432,20 @@ fn required_checks_line(
     }
 }
 
+/// Render what one repository argument resolves to, which is
+/// [`crate::resolve_repository`]'s answer.
 fn resolve(args: &ResolveArgs, providers: &Providers<'_>) -> Result<u8> {
-    let registry = store::load()?;
-    let resolution = store::resolve(&registry, &args.repo)?;
-    // Through the trait, which is the seam a second implementation replaces.
-    let identity = providers.vcs.resolve_identity(&args.repo)?;
-    debug_assert_eq!(identity, resolution.identity);
-    // The policy the identity publishes under travels with the answer, in place of
-    // the classification the registry no longer holds: it is what every verb that
-    // routes on "local or through the host" reads, so a caller resolving an identity
-    // to decide the same thing reads the same value.
-    let (file, source) = policy::load(&registry)?;
-    let resolved = policy::resolve_for(&file, &source, &resolution);
+    let resolved = crate::resolve_repository(providers, &args.repo)?;
     println!(
         "{}",
         serde_json::json!({
-            "identity": resolution.key,
-            "alias": resolution.alias,
-            "origin": resolution.identity.origin,
+            "identity": resolved.identity,
+            "alias": resolved.alias,
+            "origin": resolved.origin,
             "publication": policy::spell(resolved.policy.publication),
             "approvals": spell_approvals(resolved.policy.approvals),
-            "gate": resolution.identity.gate,
-            "publication_checkout": resolution.publication.display().to_string(),
+            "gate": resolved.gate,
+            "publication_checkout": resolved.publication_checkout.display().to_string(),
         })
     );
     Ok(0)
@@ -936,8 +893,8 @@ fn spelled(value: Option<&str>) -> &str {
     value.unwrap_or("unrecorded")
 }
 
+/// Render what `onevcs recover` did, which is [`crate::recover`]'s answer.
 fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
-    let registry = store::load()?;
     let title = explicit_title(args.title.as_ref())?;
     let body = explicit_body(
         &[
@@ -950,21 +907,20 @@ fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
         args.body.as_ref(),
         args.body_file.as_deref(),
     )?;
-    let token = format!("recover-{}", policy::branch_slug(&args.branch));
-    let mut stream = Stream::open(&token)?;
-    report_publication(recover::run(
-        &registry,
-        &args.repo,
-        &args.branch,
-        title,
-        body,
-        providers.hosting,
-        &mut stream,
+    report_publication(crate::recover(
+        providers,
+        &RecoverRequest {
+            repo: args.repo.clone(),
+            branch: args.branch.clone(),
+            title,
+            body,
+        },
     ))
 }
 
+/// Render what `onevcs publish-branch` did, which is [`crate::publish_branch`]'s
+/// answer.
 fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result<u8> {
-    let registry = store::load()?;
     let title = explicit_title(args.title.as_ref())?;
     let body = explicit_body(
         &[
@@ -977,17 +933,15 @@ fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result
         args.body.as_ref(),
         args.body_file.as_deref(),
     )?;
-    let token = format!("publish-branch-{}", policy::branch_slug(&args.branch));
-    let mut stream = Stream::open(&token)?;
-    report_publication(publish_branch::run(
-        &registry,
-        &args.repo,
-        &args.branch,
-        title,
-        body,
-        args.policy,
-        providers.hosting,
-        &mut stream,
+    report_publication(crate::publish_branch(
+        providers,
+        &BranchPublishRequest {
+            repo: args.repo.clone(),
+            branch: args.branch.clone(),
+            title,
+            body,
+            policy: args.policy,
+        },
     ))
 }
 
@@ -1010,7 +964,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         // unreadable current directory, which widens the question rather than
         // narrowing it and can therefore hide no work.
         // llmlint: ignore[boundary_inputs_validated] discards only which of two documented answers to give
-        None => resolve_here(&registry).ok(),
+        None => store::resolve_here(&registry).ok(),
     };
     let scope = match &covered {
         Some(resolution) => Scope::Repo(resolution.alias.clone()),
@@ -1274,38 +1228,32 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
 
 /// Render everything this host knows about one piece of work.
 ///
-/// One rendering of one answer: [`status::Report`] is what was found, and `--json`
-/// and the human form are two spellings of it rather than two readings of the
-/// store. The host is reached through the seam like every other command that
-/// touches one, and a host that could not be reached leaves a section of the report
-/// unavailable rather than failing the command — which is the whole reason this
-/// answers at all when `gh pr checks` would not.
+/// One rendering of one answer: [`crate::work_status`] is what was found, and
+/// `--json` and the human form are two spellings of it rather than two readings of
+/// the store.
 fn report_status(args: &StatusArgs, providers: &Providers<'_>) -> Result<u8> {
-    let registry = store::load()?;
-    let report = status::run(&registry, &args.reference, providers.hosting)?;
+    let report = crate::work_status(providers, &args.reference)?;
     if args.json {
-        println!("{}", serde_json::to_string(&report).map_err(serialization)?);
-    } else {
-        print!("{}", report.render());
+        return print_json(&report);
     }
+    print!("{}", report.render());
     Ok(0)
 }
 
+/// Render what `onevcs import` wrote, which is [`crate::import_branch`]'s answer.
 fn import_branch(args: &ImportArgs) -> Result<u8> {
-    let registry = store::load()?;
-    let imported = import::run(
-        &registry,
-        &args.repo,
-        &args.branch,
-        args.from.as_deref(),
-        args.r#as.as_deref(),
-    )?;
+    let imported = crate::import_branch(&ImportRequest {
+        repo: args.repo.clone(),
+        branch: args.branch.clone(),
+        from: args.from.clone(),
+        under: args.r#as.clone(),
+    })?;
     println!(
         "{} {} in {} from {}, at {}",
         match imported.wrote {
-            import::Wrote::Created => "imported",
-            import::Wrote::FastForwarded => "fast-forwarded",
-            import::Wrote::Unchanged => "already had",
+            Wrote::Created => "imported",
+            Wrote::FastForwarded => "fast-forwarded",
+            Wrote::Unchanged => "already had",
         },
         imported.name,
         imported.destination.display(),
@@ -1315,12 +1263,15 @@ fn import_branch(args: &ImportArgs) -> Result<u8> {
     Ok(0)
 }
 
+/// Render what the merge train did, which is [`crate::integrate`]'s answer.
 fn integrate_branches(args: &IntegrateArgs) -> Result<u8> {
-    let registry = store::load()?;
-    let resolution = resolve_here(&registry)?;
-    let token = format!("integrate-{}", policy::branch_slug(&resolution.alias));
-    let mut stream = Stream::open(&token)?;
-    let outcome = integrate::run(&resolution, &args.branches, args.push, &mut stream)?;
+    let outcome = crate::integrate(&IntegrateRequest {
+        branches: args.branches.clone(),
+        push: match args.push {
+            true => BasePush::Push,
+            false => BasePush::Keep,
+        },
+    })?;
     println!("Integration train for {}:", outcome.base);
     for branch in &outcome.branches {
         println!("  {}: {}", branch.branch, branch.status.describe());
@@ -1330,43 +1281,24 @@ fn integrate_branches(args: &IntegrateArgs) -> Result<u8> {
     Ok(0)
 }
 
+/// Render what one fast-forward did, which is [`crate::sync`]'s answer.
+///
+/// Which repository, and which commit it is on now. A host runs this against
+/// several identities in a row and reads the answers together, and `main
+/// fast-forwarded to origin/main` says nothing about *which* main, or about
+/// whether anything moved.
 fn sync(args: &SyncArgs) -> Result<u8> {
-    let registry = store::load()?;
-    let resolution = resolve_here(&registry)?;
-    let checkout = &resolution.publication;
-    // The name goes on to spell a ref, so an unusable one is refused here rather
-    // than by whichever git command met it first.
-    let branch = match args.branch.clone() {
-        Some(branch) => workspace::Ref::try_from(branch).map_err(|reason| Error::Invalid {
-            reason: format!("{reason}: it is not a valid branch name"),
-        })?,
-        None => workspace::Ref::from_git(git::default_branch(checkout, "origin")?),
-    };
-    if git::current_branch(checkout)? != *branch {
-        return Err(Error::Invalid {
-            reason: format!(
-                "{} does not have {branch:?} checked out; sync only ever fast-forwards the \
-                 branch a checkout is already on",
-                checkout.display()
-            ),
-        });
-    }
-    let before = git::head_sha(checkout)?;
-    git::fetch(checkout, "origin")?;
-    git::merge_ff_only(checkout, &format!("origin/{branch}"))?;
-    let now = git::head_sha(checkout)?;
-    // Which repository, and which commit it is on now. A host runs this against
-    // several identities in a row and reads the answers together, and `main
-    // fast-forwarded to origin/main` says nothing about *which* main, or about
-    // whether anything moved.
+    let synced = crate::sync(args.branch.as_deref())?;
     println!(
         "{identity}: {branch} {moved} origin/{branch} at {now}, in {checkout}",
-        identity = resolution.key,
-        moved = match now == before {
-            true => "was already level with",
-            false => "fast-forwarded to",
+        identity = synced.identity,
+        branch = synced.branch,
+        moved = match synced.moved() {
+            false => "was already level with",
+            true => "fast-forwarded to",
         },
-        checkout = checkout.display(),
+        now = synced.after,
+        checkout = synced.checkout.display(),
     );
     Ok(0)
 }
@@ -1382,7 +1314,13 @@ fn sync(args: &SyncArgs) -> Result<u8> {
 /// The two formats are two renderings of the one report, so a consumer reading the
 /// JSON and an operator reading the prose are told the same decisions.
 fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
-    let report = sweep::run(args.dry_run, args.min_age_hours)?;
+    let report = crate::sweep(
+        match args.dry_run {
+            true => Sweeping::Rehearse,
+            false => Sweeping::Reclaim,
+        },
+        args.min_age_hours,
+    )?;
     match args.format {
         SweepFormat::Json => print_json(&report),
         SweepFormat::Text => {
@@ -1392,25 +1330,20 @@ fn sweep_workspaces(args: &SweepArgs) -> Result<u8> {
     }
 }
 
+/// Print one session's event stream, which is [`crate::EventLines`]'s answer.
+///
+/// The bytes rather than the values [`crate::EventStream`] hands back: a stream is
+/// written by whichever process produced it, and this command is a reader of one
+/// file rather than a validator of it — a line it could not parse is still a line
+/// its reader wants to see. Under `--filter` it is one line further, and which
+/// refusals that adds is the reader's own; see [`crate::EventLines`].
 fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
-    let token = args.token.as_str();
     // Read before the stream is opened, so a spec that is not a filter is refused
     // as the argument it is rather than after a first batch of events has already
     // been written to stdout under it.
     let filter = args.filter.as_deref().map(load_filter).transpose()?;
-    // The bytes rather than the values [`crate::EventStream`] hands back: a stream
-    // is written by whichever process produced it, and this command is a reader of
-    // one file rather than a validator of it — a line it could not parse is still a
-    // line its reader wants to see. Under `--filter` it is one line further: an
-    // event has to be *read* to be judged, so a line this build cannot parse is
-    // refused there, naming it, rather than passed through (which would report an
-    // event the filter never admitted) or dropped (which would hide one).
-    //
-    // A record's number is one-based and counted across every batch, so a refusal
-    // names the line of the file rather than of the read it happened to arrive in —
-    // the same numbering `EventStream::read` refuses by, because it is the same cursor.
-    let mut reader = stream::Reader::open(token)?;
-    let session = SessionToken(token.to_owned());
+    let session = SessionToken(args.token.clone());
+    let mut lines = crate::EventLines::open(&session, filter)?;
     loop {
         // Ask first, then drain. Closing providers append `session-closed` before
         // publishing the closed lifecycle, so once closure is visible this read is
@@ -1423,45 +1356,16 @@ fn events(args: &EventsArgs, providers: &Providers<'_>) -> Result<u8> {
                 .map(|record| record.lifecycle == Lifecycle::Closed)
                 .unwrap_or(true);
         let mut out = std::io::stdout().lock();
-        for record in reader.records()? {
-            let line = record.text.clone();
-            if let Some(filter) = &filter {
-                // Read as a value, and therefore checked as one — by the same seam
-                // `EventStream` reads through, so the two surfaces refuse the same
-                // line for the same reason. Unfiltered, nothing here is read and the
-                // line is passed on as the file's own bytes; with a filter, a line
-                // that is not an envelope cannot be judged, and one attributed to
-                // another session would be judged against a consumer's statement
-                // about *this* one.
-                //
-                // llmlint: ignore[boundary_inputs_validated] `attributed_record`, called below,
-                // is the check, and it has run over this line before the `else` arm can
-                // discard it: a line that is not an envelope and one belonging to another
-                // stream are both refused there. The envelope's version and its stamp are not this
-                // surface's to judge and never have been — `onevcs events` renders one
-                // file, `status` is what reports a version it cannot read as a gap — so
-                // what falls through here is a value no filter in this grammar could have
-                // matched, not a line that went unchecked.
-                let crate::event::Line::Known(known) = stream::attributed_record(record, token)?
-                else {
-                    // A kind this build has no word for: a filter is a statement
-                    // about the events a consumer wants, and this is not one of
-                    // them however it is spelled — `phase` and `source` are the
-                    // envelope's to answer and the kind is what says how to read
-                    // the rest. Left out rather than refused, so a stream carrying
-                    // a later build's kinds still reads.
-                    continue;
-                };
-                if !filter.matches(&known.envelope) {
-                    continue;
-                }
-            }
+        for line in lines.read()? {
             // The line as it was written, never a re-serialization of what was just
             // parsed: a filtered stream is a subset of the unfiltered one byte for
             // byte, including whatever a later build's envelope carries that this
             // one does not name.
-            writeln!(out, "{line}").map_err(|e| {
-                error::invalid(format!("cannot write the event stream for {token:?}: {e}"))
+            writeln!(out, "{}", line.text).map_err(|e| {
+                error::invalid(format!(
+                    "cannot write the event stream for {:?}: {e}",
+                    args.token
+                ))
             })?;
         }
         drop(out);
@@ -1492,23 +1396,21 @@ fn load_filter(spec: &str) -> Result<EventFilter> {
     EventFilter::parse(&document).map_err(|refusal| error::invalid(refusal.to_string()))
 }
 
+/// Print one stored artifact, which is [`crate::read_artifact`]'s answer.
 fn artifact(id: &str) -> Result<u8> {
-    print!("{}", stream::read_artifact(id)?);
+    print!("{}", crate::read_artifact(&ArtifactId(id.to_owned()))?);
     Ok(0)
 }
 
+/// Render how one repository resolves against this host's rules, which is
+/// [`crate::rules_check`]'s answer.
 fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
-    let registry = store::load()?;
-    let resolution = store::resolve(&registry, &args.repo)?;
-    let (file, source) = policy::load(&registry)?;
-    let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
-
+    let checked = crate::rules_check(&args.repo)?;
     println!("repo: {}", args.repo);
-    println!("identity: {}", resolution.key);
-    println!("checkout: {}", resolution.publication.display());
-    println!("rules: {}", resolved.source);
-    match &resolved.matched {
+    println!("identity: {}", checked.identity);
+    println!("checkout: {}", checked.checkout.display());
+    println!("rules: {}", checked.rules);
+    match &checked.matched {
         Some(matched) => println!(
             "matched: rule {} {}",
             matched.index,
@@ -1516,16 +1418,15 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
         ),
         None => println!("matched: no rule; the default applies"),
     }
-    print_policy("", &resolved);
+    print_policy("", &checked.policy);
     // Not part of the matched policy: one vocabulary reads and writes every
     // repository's provenance, so it is reported once, from the file or the default.
     println!(
         "trailer_prefix: {} (from {})",
-        provenance::from_rules(&file).prefix(),
-        if file.trailer_prefix.is_some() {
-            "the rules file"
-        } else {
-            "the default"
+        checked.trailer_prefix,
+        match checked.trailer_prefix_source {
+            TrailerPrefixSource::RulesFile => "the rules file",
+            TrailerPrefixSource::BuiltIn => "the default",
         }
     );
     Ok(0)
@@ -1835,28 +1736,6 @@ fn describe_match(criteria: &crate::rules::RuleMatch) -> String {
         parts.push(format!("path: {path}"));
     }
     format!("{{{}}}", parts.join(", "))
-}
-
-/// The registered repository the current directory belongs to.
-fn resolve_here(registry: &Registry) -> Result<Resolution> {
-    let here = std::env::current_dir()
-        .map_err(|e| error::invalid(format!("cannot read the current directory: {e}")))?;
-    let canonical = std::fs::canonicalize(&here).unwrap_or(here);
-    let mut candidate: Option<&Path> = Some(canonical.as_path());
-    while let Some(path) = candidate {
-        for (alias, checkout) in &registry.checkouts {
-            if checkout.path == path {
-                return store::resolve(registry, alias);
-            }
-        }
-        candidate = path.parent();
-    }
-    Err(Error::Invalid {
-        reason: format!(
-            "{} is not inside a registered checkout; register it with `onevcs register PATH`",
-            canonical.display()
-        ),
-    })
 }
 
 /// How a report answers a question a reader asked in the plural.

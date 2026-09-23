@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "shots": [
+    {
+      "name": "audit-gates",
+      "toggles": {},
+      "hash": "9ca0d6da64ff7d9f681c6e90ae2efbd9b0d8b7475032885a882d2169acd9c49b"
+    },
+    {
+      "name": "help",
+      "toggles": {},
+      "hash": "0dfd0298d619d13c0860401f684b43a723662da7aff2a2cbd86211c1bd08f022"
+    },
+    {
+      "name": "pool-status",
+      "toggles": {},
+      "hash": "ae0cbf48ba61b8db4a3418187eb9364a8ee9ed1b21cd2f159326160d74a56ed9"
+    },
+    {
+      "name": "recoverable",
+      "toggles": {},
+      "hash": "8ee36b45784a70571abe5be79001292b14f80c48a7a563a67c78e85c6fb139d9"
+    },
+    {
+      "name": "release-targets",
+      "toggles": {},
+      "hash": "856ad769320507842f52ca47e0446f4dedd798c3c859475edbdb3e0ffe78e049"
+    },
+    {
+      "name": "rules-check",
+      "toggles": {},
+      "hash": "f33c3d39082437454012b1ad41d319b4fc0f040fb13888e9acbc332b594dfe00"
+    },
+    {
+      "name": "status",
+      "toggles": {},
+      "hash": "390bbc0b3d4f256f139be1eefa0a143be91150294865f39de0c999c1b133ce24"
+    }
+  ]
+}
