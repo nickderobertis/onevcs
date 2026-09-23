@@ -276,6 +276,7 @@ fn describe_slot_outcome(outcome: &crate::SlotOutcome) -> String {
         crate::SlotOutcome::InUse { session } => {
             format!("kept: session {} is working in it", session.0)
         }
+        crate::SlotOutcome::Unavailable { holder } => format!("kept: {holder}"),
         crate::SlotOutcome::Broken { reason } => format!("kept: {reason}"),
         crate::SlotOutcome::Ran {
             outcome,

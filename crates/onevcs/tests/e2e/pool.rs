@@ -180,7 +180,7 @@ pub fn creation_identity(pid: u32) -> u64 {
 /// crate offers a verb for and every one of which a host reaches from outside it: a
 /// disk that filled half way through a clone, an operator with a broom, a record a
 /// build wrote that a later one refuses. These are the ways the journeys stage that.
-enum Damage<'a> {
+pub enum Damage<'a> {
     /// The clone is gone.
     LoseClone,
     /// The worktree is gone.
@@ -201,7 +201,7 @@ enum Damage<'a> {
 // then has to recover from, exactly as `sweep.rs` backdates run roots it could not
 // age through any verb. Every assertion around a damaged slot goes through `pool
 // status`, `session open`, `session close` and `pool prune`.
-fn damage(slot: &Path, how: Damage<'_>) {
+pub fn damage(slot: &Path, how: Damage<'_>) {
     let record = slot.join("slot.json");
     let done = match how {
         Damage::LoseClone => std::fs::remove_dir_all(slot.join("clone")),

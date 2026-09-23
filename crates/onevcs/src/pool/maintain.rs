@@ -132,9 +132,18 @@ pub enum SlotOutcome {
         /// The session working in it.
         session: SessionToken,
     },
-    /// It could not be claimed, and the reason: its clone, worktree or record is
-    /// not usable, a live claim this run did not write is on it, or something is
-    /// working inside it.
+    /// Something else has it right now: a live claim this run did not write, an
+    /// occupancy it could not take, or a process working inside it.
+    ///
+    /// A healthy slot that is busy, and a later run finds it clear — which is what
+    /// separates it from [`SlotOutcome::Broken`], so a consumer reads breakage off
+    /// the variant rather than off a reason it has to parse.
+    Unavailable {
+        /// What holds it: the claim, the occupancy, or the processes inside it.
+        holder: String,
+    },
+    /// It could not be claimed because its clone, worktree or record is not usable —
+    /// nothing waiting clears.
     Broken {
         /// What is wrong with it.
         reason: String,
@@ -297,13 +306,14 @@ fn claim(
         .into_iter()
         .filter(|record| record.identity == identity && record.state == Lifecycle::Open)
         .collect();
-    let kept = |reason: String| Ok(Err(SlotOutcome::Broken { reason }));
+    let broken = |reason: String| Ok(Err(SlotOutcome::Broken { reason }));
+    let held_by = |holder: String| Ok(Err(SlotOutcome::Unavailable { holder }));
     let (record, state) = state_of(&dir, number, identity, &open);
     let mut record = match (record, state) {
         (_, SlotState::InUse { session }) => return Ok(Err(SlotOutcome::InUse { session })),
-        (_, SlotState::Broken { reason }) => return kept(reason),
+        (_, SlotState::Broken { reason }) => return broken(reason),
         (_, SlotState::Maintaining { pid, since }) => {
-            return kept(format!(
+            return held_by(format!(
                 "a maintenance run this one did not start (pid {pid}) has claimed it since {since}"
             ))
         }
@@ -312,7 +322,7 @@ fn claim(
         // `state_of` answers `Idle` only after it has read the record, and it hands
         // that record back beside the state. Said as a kept slot rather than a panic,
         // because the answer to a reader that could not say is always "kept".
-        (None, SlotState::Idle) => return kept("its record could not be read".to_owned()),
+        (None, SlotState::Idle) => return broken("its record could not be read".to_owned()),
     };
     if let (Some(span), Some(last)) = (older_than, &record.last_maintained) {
         if !due(last, span) {
@@ -324,7 +334,7 @@ fn claim(
     // The exclusive take proves nothing is inside the slot right now, and holding it
     // through the run is what a prune meeting the slot then refuses on.
     let Some(held) = lock::try_exclusive(&workspace::occupancy_identity(&dir))? else {
-        return kept("a command is working in it right now".to_owned());
+        return held_by("a command is working in it right now".to_owned());
     };
     // A slot whose last session closed without returning it may still have that
     // session's worker inside; the census `open` skips it on keeps a maintenance
@@ -333,7 +343,7 @@ fn claim(
         let holders = processes::holding(&dir);
         if !holders.is_empty() {
             let named: Vec<String> = holders.iter().map(ToString::to_string).collect();
-            return kept(format!(
+            return held_by(format!(
                 "a process is still working inside it: {}",
                 named.join("; ")
             ));

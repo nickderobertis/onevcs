@@ -5809,12 +5809,18 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
                     },
                     SlotMaintenance {
                         number: 3,
+                        outcome: SlotOutcome::Unavailable {
+                            holder: "a process is still working inside it: pid 9".to_owned(),
+                        },
+                    },
+                    SlotMaintenance {
+                        number: 4,
                         outcome: SlotOutcome::Broken {
                             reason: "its clone is missing".to_owned(),
                         },
                     },
                     SlotMaintenance {
-                        number: 4,
+                        number: 5,
                         outcome: SlotOutcome::Ran {
                             outcome: MaintenanceOutcome::Failed { exit: Some(3) },
                             duration_ms: 1_200,
@@ -5843,8 +5849,10 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
         json!([
             {"number": 1, "outcome": {"not-due": {"last_maintained": "2026-09-19T10:00:00.000Z"}}},
             {"number": 2, "outcome": {"in-use": {"session": "s-1"}}},
-            {"number": 3, "outcome": {"broken": {"reason": "its clone is missing"}}},
-            {"number": 4, "outcome": {"ran": {
+            {"number": 3, "outcome": {"unavailable": {
+                "holder": "a process is still working inside it: pid 9"}}},
+            {"number": 4, "outcome": {"broken": {"reason": "its clone is missing"}}},
+            {"number": 5, "outcome": {"ran": {
                 "outcome": {"failed": {"exit": 3}}, "duration_ms": 1200, "log": "a-1"}}},
         ]),
         "a slot's outcome is externally tagged in kebab case, as the amendment spells it"
@@ -5875,6 +5883,7 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
         "pub enum SlotOutcome {",
         "NotDue { last_maintained: String },",
         "InUse { session: SessionToken },",
+        "Unavailable { holder: String },",
         "Broken { reason: String },",
         "Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }",
     ] {

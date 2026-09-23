@@ -2231,7 +2231,9 @@ pub struct SlotMaintenance { pub number: u32, pub outcome: SlotOutcome }
 pub enum SlotOutcome {
     NotDue { last_maintained: String },
     InUse { session: SessionToken },
-    Broken { reason: String },
+    Unavailable { holder: String },   // busy, not broken: a live claim, an occupancy it
+                                      // could not take, or a process working inside it
+    Broken { reason: String },        // an unusable clone, worktree or record
     Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }
 ```
 
@@ -2242,10 +2244,12 @@ onevcs pool maintain [REPO] [--older-than SPAN] [--json]
 `MaintenanceOutcome` is the type the pool amendment declares. `IdentityOutcome` and
 `SlotOutcome` serialize externally tagged in kebab case, the way `MaintenanceOutcome`
 does: `"no-slots"`, `{"claimed": {"by_pid": N}}`, `{"slots": [...]}`; `{"not-due":
-{"last_maintained": "<RFC3339>"}}`, `{"ran": {"outcome": "succeeded", "duration_ms":
-N, "log": "<id>"}}`. Exit codes: **`0`** when nothing ran or every command succeeded;
-**`1`** when any ran command failed or timed out (the report says which); **`2`** for
-an invalid request — a `REPO` nothing resolves, a malformed `SPAN`. The human report
+{"last_maintained": "<RFC3339>"}}`, `{"unavailable": {"holder": "<what holds it>"}}`,
+`{"broken": {"reason": "<what is wrong with it>"}}`, `{"ran": {"outcome": "succeeded",
+"duration_ms": N, "log": "<id>"}}`. Exit codes:
+**`0`** when nothing ran or every command succeeded;
+**`1`** when any ran command failed or timed out (the report says which);
+**`2`** for an invalid request — a `REPO` nothing resolves, a malformed `SPAN`. The human report
 follows `sweep`'s shape: what it did, then per identity what it kept and why.
 
 **How one identity is maintained.** Take the identity's maintenance lock — an
@@ -2253,8 +2257,12 @@ exclusive, non-blocking take keyed on the identity, the way run-root occupancy i
 keyed; held by another process, the outcome is `Claimed` naming the holder's pid and
 nothing else is touched. Shed surplus idle slots exactly as `open` does. Then for each
 slot in number order, with its state read *then* rather than at the survey: skip one
-in use (an open record names it, `InUse`), one whose claim names a live process this
-run did not write, one not due, one broken; otherwise **claim it** — write
+in use (an open record names it, `InUse`), one not due, one broken, and one something
+else has right now — a claim naming a live process this run did not write, an
+occupancy it could not take, or a process working inside a slot the last session left
+unreturned — which is `Unavailable` naming that holder rather than `Broken`, because a
+busy slot is healthy and a later pass finds it clear, while `Broken` is an unusable
+clone, worktree or record that waiting does not mend; otherwise **claim it** — write
 `maintaining` with this process's `pid`, `started` and `since` — run `command` with the
 slot's worktree as working directory, no shell, this process's environment, stdout and
 stderr captured as one artifact, bounded by `timeout` with the process tree ended on
