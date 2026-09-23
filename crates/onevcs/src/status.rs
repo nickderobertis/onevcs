@@ -792,6 +792,24 @@ fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a
         .collect()
 }
 
+/// What one landing read judges its copies under: where this identity keeps its
+/// authoritative checkout, which object store may be lent, the base and the work, what
+/// this host recorded about it, and the session records read once for the whole
+/// answer.
+///
+/// One value rather than seven arguments, because every caller of [`judge`] assembles
+/// exactly this and the list had grown past reading.
+struct Judging<'a> {
+    resolution: &'a Resolution,
+    lent: Option<&'a Path>,
+    base: &'a Ref,
+    work: &'a Work,
+    recorded: &'a landed::Recorded,
+    trailers: &'a provenance::Trailers,
+    /// Which run each clone belongs to, for naming a copy git will not read.
+    sessions: &'a [workspace::Record],
+}
+
 /// Ask every copy of the branch this host holds whether the work landed.
 ///
 /// Each is asked through `lent` — the object store of the checkout every publication
@@ -801,19 +819,14 @@ fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a
 /// Answers every verdict it reached, and beside them every copy git would not read.
 fn judge(
     holders: &[&Holder],
-    resolution: &Resolution,
-    lent: Option<&Path>,
-    base: &Ref,
-    work: &Work,
-    recorded: &landed::Recorded,
-    trailers: &provenance::Trailers,
+    under: &Judging<'_>,
 ) -> (Vec<(PathBuf, String, Landed)>, Vec<String>) {
-    let current = vcs::base_commit(&resolution.publication, base);
+    let current = vcs::base_commit(&under.resolution.publication, under.base);
     let mut judged = Vec::new();
     let mut unread = Vec::new();
     for holder in holders {
-        let asked = git::Asked::borrowing(&holder.path, lent);
-        let compared = vcs::judged_against(asked, base, current.as_ref());
+        let asked = git::Asked::borrowing(&holder.path, under.lent);
+        let compared = vcs::judged_against(asked, under.base, current.as_ref());
         // A copy git will not read is one this read goes on without. It is a *copy*
         // of the work, not the work — every other copy still holds the branch, and
         // the records that decide a landing are not in it at all — so a torn one is
@@ -822,12 +835,16 @@ fn judge(
             asked,
             &compared,
             current.as_ref(),
-            &work.branch,
-            recorded,
-            trailers,
+            &under.work.branch,
+            under.recorded,
+            under.trailers,
         ) {
             Ok(verdict) => judged.push((holder.path.clone(), compared, verdict)),
-            Err(failure) => unread.push(unreadable(&holder.path, &failure.to_string())),
+            Err(failure) => unread.push(unreadable(
+                &holder.path,
+                &failure.to_string(),
+                under.sessions,
+            )),
         }
     }
     (judged, unread)
@@ -1000,7 +1017,12 @@ pub(crate) fn landing_of_within(
     let (file, _) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
-    let holders = holders_of(registry, &resolution, &work.branch)?;
+    // The one reading of this host's records for the whole answer: which copies hold
+    // the branch is decided from it, and so is which run a copy git will not read
+    // belonged to. A listing this host cannot read refuses here rather than turning
+    // into a finding that says nobody owns the torn clone.
+    let sessions = workspace::all()?;
+    let holders = holders_of(registry, &resolution, &work.branch, &sessions)?;
     // The store every copy is asked through, read once: it is the checkout every
     // publication fast-forwards, so a landing's evidence is in it whether or not the
     // copy holding the branch has fetched since.
@@ -1021,12 +1043,15 @@ pub(crate) fn landing_of_within(
     }
     let (judged, unread) = judge(
         &carrying,
-        &resolution,
-        lent.as_deref(),
-        &base,
-        &work,
-        &told.recorded,
-        &trailers,
+        &Judging {
+            resolution: &resolution,
+            lent: lent.as_deref(),
+            base: &base,
+            work: &work,
+            recorded: &told.recorded,
+            trailers: &trailers,
+            sessions: &sessions,
+        },
     );
     unreadable.extend(unread);
     let carrier = carrier_of(&judged);
@@ -1077,7 +1102,12 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     // name git's parser has already accepted.
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
 
-    let holders = holders_of(registry, &resolution, &work.branch)?;
+    // The one reading of this host's records for the whole answer: which copies hold
+    // the branch is decided from it, and so is which run a copy git will not read
+    // belonged to. A listing this host cannot read refuses here rather than turning
+    // into a finding that says nobody owns the torn clone.
+    let sessions = workspace::all()?;
+    let holders = holders_of(registry, &resolution, &work.branch, &sessions)?;
     // The store every copy is asked through, read once: it is the checkout every
     // publication fast-forwards, so a landing's evidence is in it whether or not the
     // copy holding the branch has fetched since.
@@ -1108,12 +1138,15 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
 
     let (judged, unread) = judge(
         &carrying,
-        &resolution,
-        lent.as_deref(),
-        &base,
-        &work,
-        &told.recorded,
-        &trailers,
+        &Judging {
+            resolution: &resolution,
+            lent: lent.as_deref(),
+            base: &base,
+            work: &work,
+            recorded: &told.recorded,
+            trailers: &trailers,
+            sessions: &sessions,
+        },
     );
     notes.extend(unread);
     let carrier = carrier_of(&judged);
@@ -1618,8 +1651,12 @@ fn judge_provenance<'a>(
     )
 }
 
-fn holders_of(registry: &Registry, resolution: &Resolution, branch: &str) -> Result<Vec<Holder>> {
-    let sessions = workspace::all()?;
+fn holders_of(
+    registry: &Registry,
+    resolution: &Resolution,
+    branch: &str,
+    sessions: &[workspace::Record],
+) -> Result<Vec<Holder>> {
     let mut holders = Vec::new();
     for path in workspace::checkouts_of(registry, resolution)? {
         if !git::is_repo(&path) || !git::branch_exists(&path, branch) {
@@ -2450,6 +2487,10 @@ fn by_commit(
     notes: &mut Vec<String>,
 ) -> Result<Vec<Work>> {
     let mut found: Vec<Work> = Vec::new();
+    // Read once and before a repository is opened, for the reason the landing read
+    // above reads its own: a clone this search cannot read is named with the run it
+    // belonged to, and a listing nobody got is refused rather than answered empty.
+    let sessions = workspace::all()?;
     for identity in identities(registry, within) {
         let resolution = store::resolve(registry, &identity)?;
         let root = git::default_branch(&resolution.publication, "origin").ok();
@@ -2465,7 +2506,7 @@ fn by_commit(
             let branches = match git::branches(&path) {
                 Ok(branches) => branches,
                 Err(failure) => {
-                    notes.push(unreadable(&path, &failure.to_string()));
+                    notes.push(unreadable(&path, &failure.to_string(), &sessions));
                     continue;
                 }
             };
@@ -2477,7 +2518,7 @@ fn by_commit(
                     Ok(true) => {}
                     Ok(false) => continue,
                     Err(failure) => {
-                        notes.push(unreadable(&path, &failure.to_string()));
+                        notes.push(unreadable(&path, &failure.to_string(), &sessions));
                         break;
                     }
                 }
@@ -2513,13 +2554,19 @@ fn by_commit(
 /// It names the session whose clone it is where a record says so, because that is
 /// what makes the finding actionable: the clone is that run's disposable copy, and
 /// which run it belonged to says whether anything is lost with it.
-fn unreadable(path: &Path, said: &str) -> String {
-    let session = workspace::all().ok().and_then(|records| {
-        records
-            .into_iter()
-            .find(|record| record.clone == path)
-            .map(|record| record.token.to_string())
-    });
+///
+/// The records are **handed in** rather than read here, and that is what stopped this
+/// answering from a listing nobody got: it used to take `workspace::all().ok()`, so a
+/// session directory this host could not read became a finding saying the clone
+/// belongs to nobody. Naming whose run a torn clone is is the one thing this string
+/// adds, and a reader that met *the copy at …* would go looking for a run the
+/// records, had they been readable, name. The caller reads them once and propagates
+/// the refusal.
+fn unreadable(path: &Path, said: &str, sessions: &[workspace::Record]) -> String {
+    let session = sessions
+        .iter()
+        .find(|record| record.clone == path)
+        .map(|record| record.token.to_string());
     let whose = match session {
         Some(token) => format!("the run clone of session {token} at {}", path.display()),
         None => format!("the copy at {}", path.display()),

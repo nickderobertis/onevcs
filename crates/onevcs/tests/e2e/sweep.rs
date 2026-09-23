@@ -3042,3 +3042,107 @@ fn a_format_the_verb_does_not_write_is_refused_at_the_boundary() {
         .stderr(predicate::str::contains("--format"))
         .stderr(predicate::str::contains("json"));
 }
+
+/// One `onevcs sweep` that is expected to refuse, with its two streams.
+fn sweep_refused(fixture: &Fixture, extra: &[&str]) -> (String, String) {
+    let ran = fixture
+        .world
+        .onevcs()
+        .arg("sweep")
+        .args(extra)
+        .output()
+        .expect("sweep runs");
+    assert!(
+        !ran.status.success(),
+        "the sweep was expected to refuse and did not:\n{}",
+        String::from_utf8_lossy(&ran.stdout)
+    );
+    (
+        String::from_utf8(ran.stdout).expect("the report is UTF-8"),
+        String::from_utf8(ran.stderr).expect("the diagnosis is UTF-8"),
+    )
+}
+
+/// A publication workspace past the age floor and a record with nothing behind it:
+/// the two kinds of litter this verb reaps, so a journey can show it reaped neither.
+fn litter(fixture: &Fixture) -> (PathBuf, PathBuf) {
+    finished_branch(fixture, "feature/landed");
+    publish_branch(fixture, "feature/landed");
+    let run_root = only_run_root(&publications(&fixture.world));
+    backdate(&run_root, 72);
+    let (token, _) = fixture.open(&["--branch", "feature/nothing-behind"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let record = fixture.world.sessions_dir().join(format!("{token}.json"));
+    assert!(record.is_file(), "the premise: the record is on disk");
+    (run_root, record)
+}
+
+#[test]
+fn a_session_directory_this_host_cannot_list_refuses_the_whole_sweep_and_removes_nothing() {
+    // The failure this is about is not a sweep that says less than it could: it is a
+    // sweep that reads *no records* as *no sessions* and reaps a workspace somebody
+    // is still working in. So the listing is refused, and refused before a single
+    // directory is removed — what a pass that went on to reclaim would be reclaiming
+    // on is a question it never got an answer to.
+    let fixture = Fixture::local(&local_direct());
+    let (run_root, record) = litter(&fixture);
+
+    let (report, said) = fixture
+        .world
+        .with_unreadable_records(|| sweep_refused(&fixture, &["--min-age-hours", "0"]));
+
+    assert!(
+        said.contains(&format!(
+            "cannot list the session records in {}",
+            fixture.world.sessions_dir().display()
+        )),
+        "the refusal names the directory it could not read:\n{said}"
+    );
+    assert!(
+        run_root.is_dir() && run_root.join("clone").is_dir(),
+        "and it refused before removing anything: the workspace is where it was:\n{report}"
+    );
+    assert!(record.is_file(), "and so is the record:\n{report}");
+
+    // The same command, once the directory lists again, takes both — so what was
+    // refused was the reading and never the litter.
+    let done = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(!run_root.exists(), "the workspace is reclaimed:\n{done}");
+    assert!(!record.exists(), "and the record is forgotten:\n{done}");
+}
+
+#[test]
+fn a_session_record_this_host_cannot_read_refuses_the_sweep_and_names_the_record() {
+    let fixture = Fixture::local(&local_direct());
+    let (run_root, record) = litter(&fixture);
+    let torn = fixture.world.unreadable_record();
+
+    let (report, said) = sweep_refused(&fixture, &["--min-age-hours", "0"]);
+
+    assert!(
+        said.contains(&torn.display().to_string()),
+        "the refusal names the record it could not read:\n{said}"
+    );
+    assert!(
+        run_root.is_dir(),
+        "and nothing was removed on the strength of a listing nobody got:\n{report}"
+    );
+    assert!(
+        record.is_file(),
+        "the readable record is where it was:\n{report}"
+    );
+    assert!(
+        torn.is_file(),
+        "and so is the one that would not read:\n{report}"
+    );
+
+    std::fs::remove_file(&torn).expect("the journey takes its own staging back");
+    let done = swept(&fixture, &["--min-age-hours", "0"]);
+    assert!(!run_root.exists(), "the workspace is reclaimed:\n{done}");
+    assert!(!record.exists(), "and the record is forgotten:\n{done}");
+}

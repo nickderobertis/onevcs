@@ -75,6 +75,65 @@ impl World {
         self.path(".onevcs")
     }
 
+    /// Where this host keeps its session records.
+    pub fn sessions_dir(&self) -> PathBuf {
+        self.home().join("sessions")
+    }
+
+    /// Leave a session record on this host that this build will not read, and say
+    /// where it is.
+    ///
+    /// A record a build wrote that a later one refuses, a write a full disk cut in
+    /// half, a file an operator edited: no verb of this crate produces one, which is
+    /// why a journey writes it. What runs over it is the real binary and the real
+    /// reader, and `pool.rs` stages a broken *slot* record the same way.
+    // llmlint: ignore-block[tests_mirror_real_usage] see the paragraph above: a record
+    // on disk that will not parse is reachable through no interface of this crate, and
+    // writing one is the only way a journey can put the real reader in front of one.
+    pub fn unreadable_record(&self) -> PathBuf {
+        let path = self.sessions_dir().join("s-unreadable-record.json");
+        std::fs::create_dir_all(self.sessions_dir()).expect("a session directory");
+        std::fs::write(&path, "not a session record\n").expect("a record this build refuses");
+        path
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    /// Run `act` with the session directory listable by nobody, and put its mode
+    /// back afterwards.
+    ///
+    /// The **host** is arranged rather than the tool: a real mode on a real
+    /// directory, so the binary's own `read_dir` leaves the process, crosses the
+    /// VFS, and comes back `EACCES` exactly as it would on a directory an operator
+    /// or a container had closed. There is no product interface that makes a
+    /// directory unlistable, and that is the whole premise of the journeys that use
+    /// this — every assertion around it goes through the compiled binary.
+    // llmlint: ignore-block[tests_mirror_real_usage] see the paragraph above: a
+    // directory this host will not list is a fact about the host, reachable by no
+    // verb of this crate, and `sweep.rs` already arranges several the same way. What
+    // is driven over it is the real CLI.
+    pub fn with_unreadable_records<T>(&self, act: impl FnOnce() -> T) -> T {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = self.sessions_dir();
+        let original = std::fs::metadata(&directory)
+            .unwrap_or_else(|e| panic!("{} is there to close: {e}", directory.display()))
+            .permissions();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o000))
+            .expect("this host closes its own scratch directory");
+        // The premise, checked here rather than left for an assertion to read as the
+        // behaviour under test: a host running as root would list it anyway, and the
+        // journey would then pass without ever having built what it is about.
+        assert!(
+            std::fs::read_dir(&directory).is_err(),
+            "the premise: {} is unlistable to this user. It is not — this suite must              not run as a user the mode does not bind.",
+            directory.display()
+        );
+        let outcome = act();
+        std::fs::set_permissions(&directory, original).expect("the records are readable again");
+        outcome
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
     /// The `onevcs` binary, pointed at this world.
     pub fn onevcs(&self) -> assert_cmd::Command {
         assert_cmd::Command::from_std(self.onevcs_std())

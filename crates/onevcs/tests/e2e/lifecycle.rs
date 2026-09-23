@@ -7051,6 +7051,69 @@ fn a_run_root_no_session_record_names_is_reclaimed_by_the_next_open() {
 }
 
 #[test]
+fn an_open_over_a_session_directory_it_cannot_list_refuses_before_reclaiming_anything() {
+    // The reclamation above is what protects a live dispatch's run root, and what it
+    // protects with is the records: an open record naming a run root is never a
+    // candidate. So a listing nobody got must stop the pass rather than read as "no
+    // session is open", which would hand every run root on the host to the lease and
+    // the retention bound — and a dispatch holds no lease between its commands.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/orphaned"]);
+    let orphaned = worktree.parent().expect("a run root").to_owned();
+    // llmlint: ignore-block[tests_mirror_real_usage] the run root this leaves is an
+    // `open` killed between cutting its directory and writing its record, and an
+    // operator pruning their own session store: see the journey above, whose premise
+    // this is. Everything asserted below runs the real CLI over it.
+    std::fs::remove_file(
+        fixture
+            .world
+            .home()
+            .join("sessions")
+            .join(format!("{token}.json")),
+    )
+    .expect("an operator can remove a session record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    // No `--branch`, deliberately: a pin is resolved against the records before the
+    // reclamation runs, so an unpinned open is the spelling whose first reading of
+    // them is the reclamation's own.
+    let refused = fixture.world.with_unreadable_records(|| {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "open", "project"])
+            .output()
+            .expect("the binary runs")
+    });
+
+    assert!(
+        !refused.status.success(),
+        "an open that reclaimed on a listing nobody got is what this refuses:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains(&format!(
+            "cannot list the session records in {}",
+            fixture.world.sessions_dir().display()
+        )),
+        "the refusal names the directory:\n{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        orphaned.is_dir(),
+        "and it refused before reclaiming anything"
+    );
+
+    // The same command, once the records read, reclaims it — so what was refused was
+    // the reading rather than the housekeeping.
+    fixture.open(&[]);
+    assert!(
+        !orphaned.is_dir(),
+        "the run root goes once the records read"
+    );
+}
+
+#[test]
 fn a_per_run_policy_may_narrow_the_rules_but_never_widen_them() {
     let world = World::new();
     let origin = world.bare_origin("narrowed");
