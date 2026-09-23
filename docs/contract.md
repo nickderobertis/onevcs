@@ -2718,6 +2718,36 @@ No signature moves, no type changes, and no new variant: what a caller meets is
 
 Event kinds added: none.
 
+### The command line is a rendering of typed operations, and every command has one
+
+`onevcs::run` answers a process: an exit code and a line of prose. Twelve commands had
+nothing else — the operation behind them was a private function over private values —
+so a consumer embedding this crate had to spawn the binary and parse what it printed
+to learn something the library already knew. `onepipeline` does exactly that for the
+registered identities today, and one reworded display line breaks it silently.
+
+The first of them is the enumeration `onevcs repos` prints:
+
+```rust
+/// Every repository identity this host has registered, in the order `onevcs repos`
+/// lists them: one normalized origin — `host/owner/name` hosted, the origin path
+/// local — per identity, which is the key every repository-taking operation takes.
+pub fn registered_identities() -> Result<Vec<String>>;
+```
+
+It is the migration-aware loader's answer, so a registry an older build wrote is
+migrated as this reads it exactly as the command migrates it, and the order is the
+registry document's own — which is the order the unindented lines of `onevcs repos`
+come out in. A registry this build cannot read is an `Err` naming what could not be
+read and never an empty list: "this host has registered nothing" and "this host's
+registry could not be read" are opposite facts, and a caller acts on only one.
+
+It takes no `Providers`, for the reason `session_holders` does not: the registry is
+this host's own document, and there is nothing here for a supplied implementation of
+either interface to answer.
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (these types are `onemessagebus-agent`'s, re-exported by this crate)

@@ -1336,7 +1336,9 @@ fn a_path_rule_matches_the_checkout_rather_than_the_origin() {
         ));
 }
 
-fn write_registry(world: &World, value: &serde_json::Value) {
+/// Stage a registry document on this host, at whatever version a journey needs to
+/// put this build's reader in front of.
+pub fn write_registry(world: &World, value: &serde_json::Value) {
     std::fs::create_dir_all(world.home()).expect("a state root");
     std::fs::write(
         world.home().join("registry.json"),

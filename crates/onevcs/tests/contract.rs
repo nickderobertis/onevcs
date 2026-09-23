@@ -3405,6 +3405,21 @@ fn the_amendment_declares_the_holder_enumeration_and_the_shape_it_answers() {
     }
 }
 
+#[test]
+fn the_amendment_declares_the_registered_identity_read() {
+    // The signature is fixed for this plan: a sibling repository's relink replaces a
+    // subprocess with exactly this call, so a rename or a retype here is a break in
+    // another repository rather than a detail of this one.
+    let read: fn() -> onevcs::Result<Vec<String>> = onevcs::registered_identities;
+    let _ = read;
+
+    let declarations = amendment_declaring("pub fn registered_identities");
+    assert!(
+        declarations.contains("pub fn registered_identities() -> Result<Vec<String>>;"),
+        "the amendment no longer declares the read: {declarations}"
+    );
+}
+
 /// The envelope fixture as a value, with the labels the contract stamps on it.
 fn envelope(source: &str, kind: &str) -> Envelope {
     serde_json::from_value(envelope_fixture(source, kind)).expect("the fixture deserializes")

@@ -5664,3 +5664,164 @@ fn the_landing_read_refuses_session_records_it_cannot_read_rather_than_deciding_
     );
     onevcs::close_session(&Providers::real(), &held.token).expect("the session closes");
 }
+
+/// The identities `onevcs repos` lists: the first field of each line it does not
+/// indent, which is the identity key, in the order it printed them.
+///
+/// Read off the command's own bytes rather than composed, because what this journey
+/// compares is the library answer against the display line a consumer parses today.
+fn identities_printed_by(repos: &str) -> Vec<String> {
+    repos
+        .lines()
+        .filter(|line| !line.starts_with(char::is_whitespace) && !line.is_empty())
+        .filter(|line| line.contains('\t'))
+        .map(|line| line.split('\t').next().expect("a first field").to_owned())
+        .collect()
+}
+
+/// What `onevcs repos` prints on this host, taken off this process's own stdout.
+fn repos_listing() -> String {
+    stdout_of(|| {
+        assert_eq!(
+            run(&["onevcs", "repos"], Providers::real()),
+            0,
+            "the listing succeeds"
+        );
+    })
+}
+
+/// A registered hosted checkout, under the origin it should normalize to.
+fn registered(world: &World, name: &str, origin_url: &str) {
+    let origin = world.bare_origin(name);
+    let checkout = world.clone_of(&origin, name);
+    assert_eq!(
+        run(
+            &[
+                "onevcs",
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                origin_url,
+            ],
+            Providers::real(),
+        ),
+        0,
+        "the repository registers"
+    );
+}
+
+#[test]
+fn the_registered_identities_are_the_ones_the_command_lists_over_either_registry() {
+    let world = World::new();
+    inhabit(&world);
+
+    // A host that has registered nothing: an empty answer, and the command's own
+    // listing carries no identity line either. Empty is an answer here — the
+    // refusal below is what a registry this build cannot read gives instead.
+    assert_eq!(
+        onevcs::registered_identities().expect("a host with no registry answers"),
+        Vec::<String>::new(),
+    );
+    assert_eq!(
+        identities_printed_by(&repos_listing()),
+        Vec::<String>::new()
+    );
+
+    // Registered out of order on purpose: the promise is the command's order, which
+    // is the registry document's, and registration order would pass a comparison
+    // that has nothing to say.
+    registered(&world, "zeta", "https://github.com/acme-corp/zeta.git");
+    registered(&world, "alpha", "ssh://git@github.com/acme-corp/alpha.git");
+
+    let listed = identities_printed_by(&repos_listing());
+    assert_eq!(
+        listed,
+        vec![
+            "github.com/acme-corp/alpha".to_owned(),
+            "github.com/acme-corp/zeta".to_owned(),
+        ],
+        "the command lists both identities, normalized, in the registry's order"
+    );
+    assert_eq!(
+        onevcs::registered_identities().expect("the identities"),
+        listed,
+        "the library answers exactly what the command prints, in its order"
+    );
+
+    // …and each of them is a key the rest of this surface takes, which is the whole
+    // reason a consumer asks for the list at all.
+    for identity in onevcs::registered_identities().expect("the identities") {
+        onevcs::session_holders(&identity).expect("each identity resolves as a repository");
+    }
+}
+
+#[test]
+fn a_registry_older_than_this_build_is_migrated_by_the_library_read_as_it_is_by_the_command() {
+    let world = World::new();
+    inhabit(&world);
+    let origin = world.bare_origin("v2");
+    let checkout = world.clone_of(&origin, "v2");
+    let key = std::fs::canonicalize(&origin)
+        .expect("the origin exists")
+        .to_string_lossy()
+        .trim_end_matches(".git")
+        .to_owned();
+    // A document at the oldest version this build still migrates, and one identity
+    // whose two inferred fields version 6 took away: unread until something reads
+    // it, which here is the library rather than the command.
+    crate::registry::write_registry(
+        &world,
+        &serde_json::json!({
+            "version": 2,
+            "identities": {&key: {"origin": &key, "workflow": "local"}},
+            "checkouts": {"v2": {"path": checkout.to_string_lossy(), "identity": &key}},
+        }),
+    );
+
+    assert_eq!(
+        onevcs::registered_identities().expect("the unmigrated document reads"),
+        vec![key.clone()],
+        "the library read migrates the document exactly as the command does"
+    );
+    assert_eq!(
+        std::fs::read_to_string(world.home().join("registry.json"))
+            .expect("a registry")
+            .contains("\"version\": 6"),
+        true,
+        "and leaves it at the version this build writes"
+    );
+
+    // The same answer once the document has been migrated, and the command's own
+    // listing of it agrees — over the migrated registry as over the one it was.
+    let listed = identities_printed_by(&repos_listing());
+    assert_eq!(listed, vec![key.clone()]);
+    assert_eq!(
+        onevcs::registered_identities().expect("the migrated document reads"),
+        listed,
+    );
+}
+
+#[test]
+fn a_registry_this_build_cannot_read_refuses_the_identity_read_rather_than_answering_none() {
+    let world = World::new();
+    inhabit(&world);
+    // Below the oldest version this build migrates: there is no shape to read it
+    // into. An empty list here would be read as a host that has registered nothing,
+    // which is the opposite fact.
+    crate::registry::write_registry(
+        &world,
+        &serde_json::json!({"version": 1, "identities": {}, "checkouts": {}}),
+    );
+    let refused = onevcs::registered_identities()
+        .expect_err("a document this build cannot read is refused, never answered empty");
+    let reason = refused.to_string();
+    assert!(
+        reason.contains("declares version 1"),
+        "the refusal names what could not be read: {reason}"
+    );
+    assert_eq!(
+        stderr_of(|| assert_eq!(run(&["onevcs", "repos"], Providers::real()), 2)).trim(),
+        format!("onevcs: {reason}"),
+        "and the command refuses the same read with the same words"
+    );
+}
