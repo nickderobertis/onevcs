@@ -140,6 +140,18 @@ different sessions still read as two different sessions and a placeholder is the
 shape and length as what it stands in for. The world's own commits are made with a
 pinned name, email and both dates, which leaves the normalizer far less to do.
 
+**The clock is the one family numbered per occurrence rather than per distinct value**,
+and the difference is what makes a shot gateable at all. How many distinct session
+tokens a capture holds is a property of the scenes; how many distinct *clock readings*
+it holds is a property of how fast the machine ran, because `ids::timestamp` writes
+milliseconds and two events emitted inside one carry one string. Counting distinct
+readings therefore let the hero transcript — normalized in the same shared pass, ahead
+of the scenes — move a scene's rendered clock by a second whenever a collision landed
+differently, which is what failed `visual-docs` on `main` from the day it was adopted:
+screencomp's "verify the capture is reproducible" step saw `pool-status` differ and the
+job ended before the drift gate. So the Nth timestamp *written* is the Nth placeholder,
+and nothing about the machine reaches the bytes.
+
 `awk` must support POSIX interval expressions (`{40}`); the normalizer checks that
 first and refuses rather than silently normalizing nothing. The capture is Unix-only —
 real POSIX hooks and a POSIX `gh` stand-in, the same gate `world.rs` states with
