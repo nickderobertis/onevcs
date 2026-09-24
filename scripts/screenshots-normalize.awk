@@ -15,6 +15,10 @@
 # different sessions and a shot keeps saying what it said. That is why every scene
 # file is passed to one invocation: the map has to be shared across them.
 #
+# The clock is the one exception, and it is the whole reason this file can be gated
+# at all: a timestamp is numbered per OCCURRENCE rather than per distinct value. See
+# `by_occurrence` for what counting distinct clock readings did to CI.
+#
 # Usage: awk -f screenshots-normalize.awk -v root=<scratch host> <file>...
 #        each <file> is rewritten to <file>.norm
 
@@ -57,8 +61,9 @@ function literal(s, from, to,   out, at) {
   return out s
 }
 
-# Map every match of `pattern` onto a stable per-family placeholder, minting a new
-# one the first time a value is seen anywhere in the capture.
+# Map every match of `pattern` onto a stable per-family placeholder: a new one the
+# first time a value is seen anywhere in the capture, or a new one per occurrence for
+# a family `by_occurrence` names.
 function map_family(s, pattern, family,   out, found, prefix, value, key) {
   out = ""
   while (match(s, pattern)) {
@@ -73,16 +78,48 @@ function map_family(s, pattern, family,   out, found, prefix, value, key) {
       prefix = (found ~ /^pid=/) ? "pid=" : "pid "
       found = substr(found, length(prefix) + 1)
     }
-    key = family SUBSEP found
-    if (!(key in seen)) seen[key] = ++minted[family]
-    value = placeholder(family, seen[key])
+    if (by_occurrence(family)) {
+      value = placeholder(family, ++minted[family])
+    } else {
+      key = family SUBSEP found
+      if (!(key in seen)) seen[key] = ++minted[family]
+      value = placeholder(family, seen[key])
+    }
     out = out substr(s, 1, RSTART - 1) prefix value
     s = substr(s, RSTART + RLENGTH)
   }
   return out s
 }
 
-# What each family's Nth distinct value becomes. Shaped like the real thing — a
+# Whether a family is numbered per occurrence rather than per distinct value.
+#
+# The clock is, and nothing else is. A session token, an artifact id and a commit
+# hash are *minted identities*: how many distinct ones a capture contains is a
+# property of the scenes, so counting them is stable and mapping them per value is
+# what lets one token read as one token in every shot that shows it. A timestamp is
+# a *reading of the clock*, and how many distinct readings a capture contains is a
+# property of how fast the machine ran: `ids::timestamp` writes milliseconds, so two
+# events emitted inside one millisecond carry one string and collapse into one
+# ordinal, while on a slower host the same two events carry two. Every later
+# timestamp in the capture then shifts by a second — including the one in a *scene*,
+# because the hero's `events --follow` transcript is normalized in the same shared
+# pass ahead of it.
+#
+# That is not a hypothetical. It is why `.github/workflows/visual-docs.yml` failed on
+# `main` from its adoption: screencomp's "Verify capture is reproducible" step
+# compares two captures of one build, the hero's 15 event envelopes yielded 11
+# distinct millisecond strings in the first and 12 in the second, and `pool status`'s
+# "last maintained" line — the one scene line carrying a clock reading — rendered one
+# second apart. `screencomp verify` exited 3 and the job ended before the drift gate
+# it exists to run. Numbering by occurrence takes the collision pattern out of the
+# answer entirely: the Nth timestamp *written* is always the Nth placeholder, so the
+# rendered clock depends on the scenes alone.
+function by_occurrence(family) {
+  return family == "stamp"
+}
+
+# What each family's Nth value becomes — Nth distinct value, or Nth occurrence for a
+# family `by_occurrence` names. Shaped like the real thing — a
 # token still looks like a token and a hash like a hash — so the README shows the
 # report `onevcs` actually prints rather than a redacted one.
 function placeholder(family, n) {

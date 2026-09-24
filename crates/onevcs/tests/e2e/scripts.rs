@@ -24,7 +24,14 @@
 //! — a second issue nobody reads, or a comment on somebody else's — so both are
 //! driven below against a stubbed `gh`.
 //!
-//! In all five, what the script printed *is* the behaviour — a run that widened
+//! `scripts/screenshots-normalize.awk` is the odd one out, and it is here because
+//! its deliverable is the files it writes rather than what it printed: it rewrites
+//! every per-run value in a screenshot capture to a fixed placeholder, and the
+//! property screencomp gates is that two captures of one build come out
+//! byte-identical. So its journeys compare the normalized bytes of two captures
+//! that differ only in what a re-capture differs in.
+//!
+//! In those five, what the script printed *is* the behaviour — a run that widened
 //! its scope, retried an install, skipped a version already live, found no
 //! release, or filed a failure is indistinguishable from one that did not, except
 //! for what it printed and, for the reporter, the argv it invoked. So these
@@ -1981,4 +1988,233 @@ fn a_gh_that_will_not_answer_names_the_call_that_failed_and_what_to_do_about_it(
         // lost — the reader is pointed at the red run itself.
         reported.said(FAILING_RUN_URL);
     }
+}
+
+// --- scripts/screenshots-normalize.awk ---------------------------------------
+
+/// One raw capture, normalized the way `scripts/screenshots-capture.sh` normalizes
+/// one: every file of the capture handed to a SINGLE `awk` invocation, in the order
+/// the shell's glob hands them over, because the placeholder map is shared across
+/// them.
+struct Capture {
+    dir: tempfile::TempDir,
+}
+
+impl Capture {
+    /// `files` is `(name, raw text)`, named the way the capture names them —
+    /// `hero-*` for the transcript the animated hero is rendered from, everything
+    /// else for a gated scene.
+    fn of(files: &[(&str, &str)]) -> Self {
+        let dir = tempfile::tempdir().expect("a temporary directory for the capture");
+        for (name, text) in files {
+            std::fs::write(dir.path().join(format!("{name}.txt")), text).expect("a raw scene");
+        }
+        Self { dir }
+    }
+
+    /// What the normalizer wrote, per scene. `root` stands in for the scratch host
+    /// the capture was driven against, exactly as the capture passes its own.
+    fn normalized(&self, root: &str) -> std::collections::BTreeMap<String, String> {
+        self.run(&["-v".into(), format!("root={root}")]).succeeded();
+
+        let mut written = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(self.dir.path()).expect("the capture directory") {
+            let path = entry.expect("a readable directory entry").path();
+            let Some(name) = path.file_name().and_then(|it| it.to_str()) else {
+                continue;
+            };
+            let Some(scene) = name.strip_suffix(".txt.norm") else {
+                continue;
+            };
+            let text = std::fs::read_to_string(&path).expect("a normalized scene");
+            written.insert(scene.to_owned(), text);
+        }
+        assert!(!written.is_empty(), "the normalizer wrote no scene at all");
+        written
+    }
+
+    fn run(&self, options: &[String]) -> Reported {
+        let mut raw: Vec<PathBuf> = std::fs::read_dir(self.dir.path())
+            .expect("the capture directory")
+            .map(|entry| entry.expect("a readable directory entry").path())
+            .filter(|path| path.extension().is_some_and(|it| it == "txt"))
+            .collect();
+        raw.sort(); // the glob order `screenshots-capture.sh` passes them in
+
+        let output = Command::new("awk")
+            .arg("-f")
+            .arg(workspace_root().join("scripts/screenshots-normalize.awk"))
+            .args(options)
+            .args(&raw)
+            .output()
+            .expect("awk must be available: the capture's normalizer is written in it");
+        Reported::from(output)
+    }
+}
+
+/// The hero transcript, with `spacing` deciding which envelopes share a millisecond.
+///
+/// A real one is a run of `onevcs events --follow` draining the stream a publication
+/// writes, and `ids::timestamp` writes milliseconds — so whether two of its
+/// envelopes carry one timestamp string or two is decided by how fast the machine
+/// ran, and by nothing else.
+fn transcript(spacing: [&str; 3]) -> String {
+    spacing
+        .iter()
+        .enumerate()
+        .map(|(index, at)| {
+            format!(
+                "{{\"v\":1,\"ts\":\"2026-03-02T11:04:07.{at}Z\",\
+                 \"stream\":\"s-8f21a0c41d55\",\"seq\":{},\"source\":\"vcs\",\
+                 \"payload\":{{\"elapsed\":0.0031}}}}\n",
+                index + 1
+            )
+        })
+        .collect()
+}
+
+/// `onevcs pool status`, whose "last maintained" line is the one *scene* line in the
+/// whole capture carrying a reading of the clock.
+fn pool_status(maintained_at: &str) -> String {
+    format!(
+        "identity: github.com/acme-corp/widgets\n\
+         pool: 2 (slots: 2 created, 1 idle, 1 in use, 0 maintaining)\n\
+         slot 1: in use by s-8f21a0c41d55\n  \
+           path: /scratch/home/.onevcs/workspaces/pool/1\n  \
+           last maintained: never\n\
+         slot 2: idle\n  \
+           path: /scratch/home/.onevcs/workspaces/pool/2\n  \
+           last maintained: {maintained_at}\n  \
+           last outcome: succeeded\n"
+    )
+}
+
+#[test]
+fn a_scene_normalizes_the_same_however_many_events_shared_a_millisecond() {
+    // The defect that kept `.github/workflows/visual-docs.yml` red on `main` from
+    // the day it was adopted. screencomp's report job compares two captures of one
+    // build before it runs the drift gate, and the two differed in a single line of
+    // a single scene: `pool status`'s "last maintained", one second apart. Nothing
+    // `onevcs` printed had changed — the normalizer numbered each timestamp by its
+    // ordinal among the DISTINCT clock readings seen so far, the hero transcript is
+    // normalized ahead of the scenes in the same shared pass, and two envelopes
+    // emitted inside one millisecond carry one reading instead of two. So the
+    // scene's placeholder moved with the machine's speed, `screencomp verify` exited
+    // 3, and the gate it exists to run never executed.
+    //
+    // Both captures below are of one build. They differ only in what a faster
+    // machine does to the transcript, plus the instant the second capture's
+    // maintenance actually ran at — which is every difference a re-capture has.
+    let collided = Capture::of(&[
+        ("hero-events", &transcript(["881", "881", "882"])),
+        ("pool-status", &pool_status("2026-03-02T11:04:09.114Z")),
+    ]);
+    let spread = Capture::of(&[
+        ("hero-events", &transcript(["881", "882", "884"])),
+        ("pool-status", &pool_status("2026-03-02T11:21:44.907Z")),
+    ]);
+
+    let first = collided.normalized("/scratch/home");
+    let second = spread.normalized("/scratch/home");
+
+    assert_eq!(
+        first, second,
+        "two captures of one build must normalize byte-identically, or screencomp's \
+         verify step fails before the drift gate ever runs"
+    );
+
+    // And the scene really did get its clock rewritten, rather than passing through
+    // unread — which would make the equality above a green test of nothing.
+    let scene = &first["pool-status"];
+    assert!(
+        scene.contains("last maintained: 2026-03-02T09:15:"),
+        "the scene's clock reading is not normalized at all:\n{scene}"
+    );
+    assert!(
+        !scene.contains("11:04:09") && !scene.contains("11:21:44"),
+        "the scene still carries the instant it was captured at:\n{scene}"
+    );
+}
+
+#[test]
+fn two_captures_whose_minted_ids_differ_still_read_as_one_capture() {
+    // The other half of the contract, and the reason the identity families are NOT
+    // numbered per occurrence the way the clock is: a session token is minted fresh
+    // every run, so two captures of one build never share one — but each must still
+    // read as the same token wherever the capture shows it, and two tokens must
+    // still read as two.
+    let scenes = |session: &str, other: &str| {
+        [
+            (
+                "hero-events",
+                format!(
+                    "{{\"v\":1,\"ts\":\"2026-03-02T11:04:07.881Z\",\"stream\":\"{session}\",\
+                     \"seq\":1,\"labels\":{{\"session\":\"{session}\"}}}}\n"
+                ),
+            ),
+            (
+                "pool-status",
+                format!("slot 1: in use by {session}\nslot 2: in use by {other}\n"),
+            ),
+        ]
+    };
+
+    let first = scenes("s-8f21a0c41d55", "s-0b73ee9142af");
+    let second = scenes("s-c410d9b27e60", "s-7a51fb3c08d2");
+    fn as_pairs<'a>(owned: &'a [(&'a str, String); 2]) -> Vec<(&'a str, &'a str)> {
+        owned
+            .iter()
+            .map(|(name, text)| (*name, text.as_str()))
+            .collect()
+    }
+
+    let first = Capture::of(&as_pairs(&first)).normalized("/scratch/home");
+    let second = Capture::of(&as_pairs(&second)).normalized("/scratch/home");
+    assert_eq!(
+        first, second,
+        "a freshly minted token must not move the bytes of a shot"
+    );
+
+    // One token, one placeholder, in both files that name it…
+    let token = first["pool-status"]
+        .split_whitespace()
+        .find(|word| word.starts_with("s-"))
+        .expect("the scene names the session holding slot 1")
+        .to_owned();
+    assert!(
+        first["hero-events"].contains(&token),
+        "the same session reads as two different ones across the capture:\n{:?}",
+        first
+    );
+    // …and the second slot's holder is still somebody else.
+    assert_eq!(
+        first["pool-status"].matches(&token).count(),
+        1,
+        "two different sessions collapsed onto one placeholder:\n{}",
+        first["pool-status"]
+    );
+}
+
+#[test]
+fn a_normalizer_run_without_the_scratch_host_refuses_rather_than_writing_a_shot() {
+    // Without `root` the scratch host's own absolute path — a `/tmp/tmp.XXXX` that
+    // is different on every run and on every machine — would be written straight
+    // into a gated shot. Refuse, rather than produce a capture that can never match
+    // a baseline.
+    let capture = Capture::of(&[("pool-status", &pool_status("2026-03-02T11:04:09.114Z"))]);
+    capture
+        .run(&[])
+        .failed()
+        .said("-v root=<scratch host path> is required");
+
+    assert!(
+        std::fs::read_dir(capture.dir.path())
+            .expect("the capture directory")
+            .all(|entry| !entry
+                .expect("a readable directory entry")
+                .path()
+                .to_string_lossy()
+                .ends_with(".norm")),
+        "a refused run still wrote a normalized scene"
+    );
 }
