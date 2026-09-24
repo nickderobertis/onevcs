@@ -2136,6 +2136,88 @@ fn a_scene_normalizes_the_same_however_many_events_shared_a_millisecond() {
     );
 }
 
+/// The one line of the whole capture that a scene shows a clock reading on, pulled
+/// out of a normalized `pool-status` the way a reader of the shot meets it.
+fn scene_clock(normalized: &str) -> String {
+    normalized
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("last maintained: "))
+        .find(|clock| *clock != "never") // the slot in use has never been maintained
+        .map(str::to_owned)
+        .unwrap_or_else(|| panic!("the scene shows no maintenance clock:\n{normalized}"))
+}
+
+#[test]
+fn the_scene_clock_renders_the_second_the_committed_shot_carries() {
+    use sha2::{Digest, Sha256};
+
+    // The committed shot and the committed baseline are not re-blessed to follow a
+    // change to this renderer: `scene_clock_base` in the normalizer is pinned to the
+    // second they already carry, and this is what holds the three together. Read the
+    // clock the normalizer renders, then find it in the shot a reader sees and in the
+    // digest the drift gate classifies against.
+    //
+    // The transcript's LENGTH is varied here rather than its collisions, because that
+    // is the other way one shared sequence coupled a gated shot to an ungated
+    // transcript: under the old numbering an event added to the hero moved
+    // `pool-status` too, and the gate reported drift in a scene nothing had touched.
+    let of_transcript = |envelopes: u32| {
+        let transcript: String = (1..=envelopes)
+            .map(|seq| {
+                format!(
+                    "{{\"v\":1,\"ts\":\"2026-03-02T11:04:{:02}.{:03}Z\",\"seq\":{seq}}}\n",
+                    seq / 10,
+                    seq % 1000
+                )
+            })
+            .collect();
+        let capture = Capture::of(&[
+            ("hero-events", &transcript),
+            ("pool-status", &pool_status("2026-03-02T11:04:09.114Z")),
+        ]);
+        scene_clock(&capture.normalized("/scratch/home")["pool-status"])
+    };
+
+    let clock = of_transcript(3);
+    assert_eq!(
+        clock,
+        of_transcript(21),
+        "a scene's clock moved with the length of a transcript no shot is taken of"
+    );
+
+    // The shot a reader meets in the README and the gallery.
+    let shot = workspace_root().join("docs/screenshots/pool-status.svg");
+    let bytes = std::fs::read(&shot).expect("the committed pool-status shot");
+    let rendered = String::from_utf8_lossy(&bytes);
+    assert!(
+        rendered.contains(&format!("last maintained: {clock}")),
+        "the committed shot does not carry the clock this normalizer renders \
+         ({clock}). Either `scene_clock_base` in scripts/screenshots-normalize.awk \
+         moved, or the shot did — and a shot is not re-blessed to follow the renderer."
+    );
+
+    // …and the digest `screencomp classify` gates that shot on, so a renderer change
+    // that moved the bytes would be caught here rather than on `main`.
+    let manifest = std::fs::read_to_string(workspace_root().join("shots/baseline/x86_64.json"))
+        .expect("the committed baseline manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest).expect("the baseline manifest is JSON");
+    let recorded = manifest["shots"]
+        .as_array()
+        .expect("the manifest lists its shots")
+        .iter()
+        .find(|shot| shot["name"] == "pool-status")
+        .and_then(|shot| shot["hash"].as_str())
+        .expect("the baseline records the pool-status shot")
+        .to_owned();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        recorded,
+        "the committed shot and the baseline the drift gate classifies against have \
+         parted; `screencomp classify` would report drift on `main`"
+    );
+}
+
 #[test]
 fn two_captures_whose_minted_ids_differ_still_read_as_one_capture() {
     // The other half of the contract, and the reason the identity families are NOT
