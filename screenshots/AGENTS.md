@@ -140,6 +140,28 @@ different sessions still read as two different sessions and a placeholder is the
 shape and length as what it stands in for. The world's own commits are made with a
 pinned name, email and both dates, which leaves the normalizer far less to do.
 
+**The clock is the exception, twice over**, and both exceptions are what make a shot
+gateable at all. How many distinct session tokens a capture holds is a property of the
+scenes; how many distinct *clock readings* it holds is a property of how fast the
+machine ran, because `ids::timestamp` writes milliseconds and two events emitted inside
+one carry one string. So the clock is numbered **per occurrence** — the Nth timestamp
+written is the Nth placeholder — and the **scenes are numbered apart from the hero
+transcript**, because a gated shot's bytes must not be a function of how long an
+ungated transcript is or how its envelopes landed on the millisecond. Counting one
+shared sequence of distinct readings is what failed `visual-docs` on `main` from the
+day it was adopted: screencomp's "verify the capture is reproducible" step saw
+`pool-status` differ by one second between two captures of one build, and the job ended
+before the drift gate.
+
+A scene's clock starts at `09:15:11` rather than at the pinned `09:15:00`, and
+`scene_clock_base` in the normalizer says why: that is the second
+`docs/screenshots/pool-status.svg` already carries, and a shot whose content did not
+change is not re-blessed to follow a change to the renderer. The two are held together
+by `the_scene_clock_renders_the_second_the_committed_shot_carries` in
+`crates/onevcs/tests/e2e/scripts.rs`, which also checks that shot against the digest in
+`shots/baseline/x86_64.json` — so moving the base, or the shot, fails the suite here
+rather than the drift gate on `main`.
+
 `awk` must support POSIX interval expressions (`{40}`); the normalizer checks that
 first and refuses rather than silently normalizing nothing. The capture is Unix-only —
 real POSIX hooks and a POSIX `gh` stand-in, the same gate `world.rs` states with
