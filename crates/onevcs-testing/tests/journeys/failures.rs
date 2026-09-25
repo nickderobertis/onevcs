@@ -64,6 +64,8 @@ fn a_state_root_that_cannot_hold_a_stream_does_not_fail_the_operation() {
         .open_session(onevcs::SessionRequest {
             repo: "widgets".to_owned(),
             branch: Some("feature/unrecorded".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -149,6 +151,8 @@ fn an_unusable_state_root_is_refused_by_name() {
         .open_session(onevcs::SessionRequest {
             repo: "widgets".to_owned(),
             branch: None,
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -305,6 +309,8 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             .open_session(onevcs::SessionRequest {
                 repo: "widgets".to_owned(),
                 branch: Some(name.to_owned()),
+                branch_name: None,
+                branch_prefix: None,
                 base: None,
                 execution_checkout: None,
                 pool: None,
@@ -323,6 +329,8 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
         .open_session(onevcs::SessionRequest {
             repo: "widgets".to_owned(),
             branch: None,
+            branch_name: None,
+            branch_prefix: None,
             base: Some("release branch".to_owned()),
             execution_checkout: None,
             pool: None,
@@ -341,6 +349,8 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
         vcs.open_session(onevcs::SessionRequest {
             repo: "widgets".to_owned(),
             branch: Some(name.to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -393,6 +403,8 @@ fn a_file_backed_session_needs_somewhere_to_put_its_worktree() {
         .open_session(onevcs::SessionRequest {
             repo: "widgets".to_owned(),
             branch: None,
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,

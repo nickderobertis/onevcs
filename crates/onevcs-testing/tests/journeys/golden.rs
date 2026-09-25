@@ -245,6 +245,8 @@ fn a_document_at_the_previous_version_reads_its_rows_as_unlabelled_and_is_writte
     vcs.open_session(SessionRequest {
         repo: "widgets".to_owned(),
         branch: Some("feature/after-the-bump".to_owned()),
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,
@@ -313,6 +315,8 @@ fn a_version_10_document_reads_its_rows_with_no_origin_and_is_written_back_at_th
     vcs.open_session(SessionRequest {
         repo: "widgets".to_owned(),
         branch: Some("feature/after-the-bump".to_owned()),
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,
@@ -392,6 +396,8 @@ fn a_version_9_document_keeps_its_failures_and_is_written_back_at_this_one() {
     vcs.open_session(SessionRequest {
         repo: "widgets".to_owned(),
         branch: Some("feature/after-the-bump".to_owned()),
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,
@@ -513,6 +519,8 @@ fn a_version_8_document_is_read_and_written_back_at_this_one() {
     vcs.open_session(SessionRequest {
         repo: "widgets".to_owned(),
         branch: Some("feature/after-the-bump".to_owned()),
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,

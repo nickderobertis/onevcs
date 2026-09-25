@@ -2647,7 +2647,7 @@ answer to act on.
 ```
 
 ```
-onevcs session open REPO [--branch B] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]...
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]...
 onevcs session holders REPO [--label KEY=VALUE]... [--json]
 ```
 
@@ -2947,6 +2947,114 @@ to be read to be judged: a line that is not this session's envelope is refused t
 and a kind this build has no word for is left out.
 
 Event kinds added: none.
+
+### A branch this crate cuts takes the host's prefix, and a caller may name the rest
+
+**The user ruled that this surface be added, and the manager of the run
+`human-readable-branches` relayed that ruling and authorized this record.** In the
+user's own words: *"I have noticed we have branch names from onevcs that are just
+based on the session ID and are not human readable and I want to get the branches to
+human readable"*, and *"so for me a branch in total would be something like
+nick/ENG-123/aio-adopt-op"*. `onevcs/s-8e46468e4147` tells a person reading `git
+branch`, a change request's header, or the host's branch list nothing at all. Two
+things follow, and both reach only a branch this crate **cuts** — no verb that reads,
+publishes, preserves, imports or lands an existing branch prefixes, suffixes or
+sanitizes anything, and a publication comparing a branch against its base is
+untouched.
+
+**The prefix is one host setting, resolved in three layers.** One string put in front
+of every branch this crate cuts — `nick/` — host-wide, with no per-identity rule: it
+is a namespace belonging to the person using the host rather than to any repository,
+so a fourth matcher vocabulary over identities would be a matcher for a value that
+does not vary by identity. The layers are the order `workspaces.yml`'s own settings
+resolve in: **a request's own override** — `--branch-prefix P` on the verb that cuts a
+branch, `SessionRequest::branch_prefix` on the seam — beats **`ONEVCS_BRANCH_PREFIX`
+in the environment**, which beats **the host file**, which beats the shipped default
+of *no prefix*. The resolved value names the layer that decided it, the way the pool's
+`Sourced { value, from }` already does. **Unset at every layer adds nothing**: the
+branch is byte for byte the name it was before this amendment. An empty value at any
+layer is that layer saying it wants none, and the environment's is trimmed, because no
+ref name can carry whitespace and a variable a shell script exported arrives with
+whatever that script left on it. A prefix no branch name can be built on — one git
+would refuse at the head of a ref — is refused where it arrives, naming the layer that
+set it and the name it would have cut.
+
+**The file is `$ONEVCS_HOME/branches.yml`**, a `version: 1` document beside
+`rules.yml`, `releases.yml` and `workspaces.yml`, carrying this one key. A separate
+file for the reason those three are separate, which is this crate's own convention for
+a host setting: an older `onevcs` sharing the host reads byte-identical siblings and
+simply goes on cutting unprefixed branches. It is read the way the other host files
+are — a version *below* this build's is refused by number, a later one is read as this
+shape with what it names beyond it ignored, and no `deny_unknown_fields`, because an
+older build refusing an operator's whole file would stop every session on the host.
+Absent, the prefix is empty and a host that never writes it is unchanged.
+
+```yaml
+version: 1
+prefix: nick/
+```
+
+**`SessionRequest` gains a name to cut, distinct from `branch`.** `branch` already
+means *continue this branch if anything carries it, else cut it at exactly this name*,
+so a rendered name cannot arrive there: a collision would silently continue somebody
+else's branch instead of taking a suffix. `branch_name` is a *proposal*, and this
+crate does all four things a proposal needs, in this order — **sanitize, prefix,
+first-free numeric suffix**:
+
+- *sanitize*: the proposal is made a name git accepts. Every character outside
+  `A-Za-z0-9`, `-`, `_`, `.` and `/` becomes `-`, runs of `-` and of `.` collapse, each
+  slash-separated component is trimmed of the leading and trailing `-` and `.` git
+  refuses there and of a `.lock` suffix, and a component left empty is dropped.
+- *prefix*: the resolved prefix is put in front of the **sanitized** name, and the
+  whole result is validated again as one ref — so a prefix and a name each usable alone
+  cannot compose into one that is not.
+- *suffix*: the first free of `<name>`, `<name>-2`, `<name>-3`, … , searched against
+  both the identity's local branches — every registered checkout and run clone of it —
+  and its origin's, because a name taken on either is a name this session cannot have.
+
+Three things are refused rather than silently replaced by the derived default, each
+naming the proposal: one that sanitizes to nothing, one whose sanitized and prefixed
+form git still would not accept, and one no suffix within the search can make free. A
+request naming **both** `branch` and `branch_name` is refused naming both: they are two
+answers to one question.
+
+**`branch` is untouched.** It is matched, resumed and cut exactly as before, is never
+prefixed, never suffixed and never sanitized beyond the validation it always had, and
+still takes the `resumable` and `continuation` paths — so every pinned resume, every
+retry naming a branch, every publication-retry re-dispatch and every stacked dependent
+keeps the branch it had. The derived `onevcs/<token>` default is prefixed and takes no
+suffix search: it is that token's own and can stand for nothing that already exists.
+
+The testing crate's implementations accept `branch_name` and cut at it, and
+deliberately do not approximate the rest: the prefix is read out of a state root no
+provider has and the suffix is searched over checkouts and an origin no provider has,
+so a name a provider is given is taken as proposed and refused where git would refuse
+it. A consumer proving the prefix, the sanitizer or the collision suffix drives the
+real `onevcs`.
+
+```rust
+// One declared type gains two fields, and nothing else about it moves:
+//   SessionRequest  pub branch_name: Option<String>     // a name to cut; sanitized, prefixed, suffixed
+//   SessionRequest  pub branch_prefix: Option<String>   // this open's own prefix, over every layer
+
+pub mod branches {                                       // the host setting, beside `workspaces`
+    pub const VERSION: u32 = 1;                          // the branches file this build writes
+    pub const PREFIX_ENV: &str = "ONEVCS_BRANCH_PREFIX"; // the environment layer
+    pub struct BranchesFile { pub version: u32, pub prefix: String }   // empty adds nothing
+    pub fn default_path() -> Result<PathBuf>;            // $ONEVCS_HOME/branches.yml
+}
+```
+
+```
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]...
+```
+
+Event kinds added: none.
+
+One existing kind gains a field: `session-opened` gains `branch_prefix` — `{"prefix":
+…, "from": …}`, the prefix and the layer that decided it — written **only** where one
+was put in front of the branch that session cut, so a host that configures none, and a
+session that continued a pinned branch, write the payload they always wrote.
 
 ---
 

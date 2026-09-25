@@ -1690,6 +1690,28 @@ pub fn branches(cwd: &Path) -> Result<Vec<String>> {
     .collect())
 }
 
+/// The branch names a remote's tracking refs carry, in git's deterministic ref
+/// order.
+///
+/// `HEAD` is dropped: `refs/remotes/<remote>/HEAD` is the symbolic ref naming which
+/// branch the remote's default is, not a branch of its own, and a caller asking
+/// which names are taken there would otherwise be told one that is not.
+pub fn remote_branches(cwd: &Path, remote: &str) -> Result<Vec<String>> {
+    Ok(checked(
+        &[
+            "for-each-ref",
+            "--format=%(refname:lstrip=3)",
+            &format!("refs/remotes/{remote}"),
+        ],
+        Some(cwd),
+    )?
+    .stdout
+    .lines()
+    .filter(|line| !line.is_empty() && *line != "HEAD")
+    .map(str::to_owned)
+    .collect())
+}
+
 /// Local branches holding commits no `origin` remote-tracking ref has.
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
     Ok(unpublished_branches_among(cwd, |_| true, &BTreeSet::new())?

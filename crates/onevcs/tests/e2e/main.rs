@@ -24,6 +24,13 @@ mod accounting;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod change;
+// Unix only: the prefix a host configures and the name a caller proposes, driven
+// against real branches in real clones. Mostly the compiled binary; three journeys
+// drive the library seam in process, for the reason `library.rs` gives. Its own
+// header carries the rest.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod branches;
 mod cli;
 // The producer's own release declaration. It drives the binary and, for the half of
 // the promise a binary cannot show, the library beside it — see its own header.

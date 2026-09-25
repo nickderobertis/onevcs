@@ -115,6 +115,8 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
         .open_session(SessionRequest {
             repo: format!("github.com/{slug}"),
             branch: Some(branch.clone()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,

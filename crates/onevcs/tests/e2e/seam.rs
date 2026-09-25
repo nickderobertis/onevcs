@@ -105,6 +105,8 @@ fn session_adopt_hands_back_the_supplied_repository_sides_session() {
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
             branch: Some("feature/adopted".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -160,6 +162,8 @@ fn publishing_goes_through_the_supplied_repository_side() {
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
             branch: Some("feature/provided".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("main".to_owned()),
             execution_checkout: None,
             pool: None,
@@ -218,6 +222,8 @@ fn closing_a_session_goes_through_the_supplied_repository_side() {
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
             branch: Some("feature/closed".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("main".to_owned()),
             execution_checkout: None,
             pool: None,
@@ -270,6 +276,8 @@ fn recovering_a_branch_opens_its_change_on_the_supplied_host() {
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
             branch: Some("feature/interrupted".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -341,6 +349,8 @@ fn the_change_verbs_go_through_the_supplied_repository_side_and_host() {
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
             branch: Some("feature/described".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("main".to_owned()),
             execution_checkout: None,
             pool: None,

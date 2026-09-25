@@ -121,6 +121,8 @@ fn ready_to_publish(world: &World, vcs: &dyn Vcs) -> (PathBuf, String) {
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
             branch: Some("feature/dual".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -252,6 +254,8 @@ fn the_real_commands_read_what_a_provider_wrote() {
         .open_session(SessionRequest {
             repo: "hosted".to_owned(),
             branch: Some("feature/written".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -434,6 +438,8 @@ fn preserved_journey(
         .open_session(SessionRequest {
             repo: identity.to_owned(),
             branch: Some(branch.to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             // Named, because a repository with no origin has no default branch to
             // ask for — which is the same answer both backends give.
             base: Some("main".to_owned()),

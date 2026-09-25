@@ -119,6 +119,8 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
         .open_session(SessionRequest {
             repo: "project".to_owned(),
             branch: Some("feature/embedded".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -226,6 +228,8 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
         .open_session(SessionRequest {
             repo: "project".to_owned(),
             branch: Some("feature/closed".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -240,6 +244,8 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
         .open_session(SessionRequest {
             repo: "project".to_owned(),
             branch: Some("feature/live".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -960,6 +966,8 @@ fn launch(repo: &str, branch: &str, acknowledged: &[&str]) -> std::result::Resul
     Git.open_session(SessionRequest {
         repo: repo.to_owned(),
         branch: Some(branch.to_owned()),
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,

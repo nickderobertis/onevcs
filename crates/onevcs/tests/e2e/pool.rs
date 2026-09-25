@@ -1608,6 +1608,8 @@ fn workspace_capacity_answers_every_field_and_agrees_with_what_open_then_does() 
         onevcs::workspace_capacity(&SessionRequest {
             repo: "project".to_owned(),
             branch: branch.map(str::to_owned),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool,

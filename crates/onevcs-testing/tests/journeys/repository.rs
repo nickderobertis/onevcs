@@ -106,6 +106,8 @@ fn preserved_work_is_what_recoverable_reports() {
         .open_session(SessionRequest {
             repo: "widgets".to_owned(),
             branch: Some("feature/interrupted".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -198,6 +200,8 @@ fn preserving_the_same_branch_twice_reports_it_once() {
         .open_session(SessionRequest {
             repo: "github.com/acme-corp/widgets".to_owned(),
             branch: Some("feature/twice".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("release".to_owned()),
             execution_checkout: None,
             pool: None,
@@ -251,6 +255,8 @@ fn a_session_is_adopted_back_out_of_the_state_that_recorded_it() {
         .open_session(SessionRequest {
             repo: "widgets".to_owned(),
             branch: None,
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -308,4 +314,79 @@ fn a_file_backed_provider_carries_a_session_from_one_invocation_to_the_next() {
         .preserve(&session, Provenance::Complete)
         .expect("preserved");
     assert_eq!(first.state().expect("readable").preserved.len(), 1);
+}
+
+#[test]
+fn a_name_to_cut_is_taken_as_the_branch_and_naming_both_is_refused() {
+    let home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+
+    // A caller that proposes a name gets a session on it, through the same command
+    // line the binary takes. What the real implementation does to a proposal beyond
+    // this — the host's prefix, and the first free of `-2`, `-3`, … — is read out of
+    // a state root and searched over checkouts and an origin no provider has, so it
+    // is left to the real `onevcs` rather than approximated here.
+    let code = run(
+        &vcs,
+        &[
+            "onevcs",
+            "session",
+            "open",
+            "widgets",
+            "--branch-name",
+            "feature/proposed",
+        ],
+    );
+    assert_eq!(code, 0, "a proposal over a known repository opens");
+    let state = vcs.state();
+    assert_eq!(state.sessions.len(), 1);
+    assert_eq!(state.sessions[0].branch, "feature/proposed");
+    let events = home.events(&state.sessions[0].token.0);
+    assert_eq!(events[0]["payload"]["branch"], "feature/proposed");
+
+    // A name git would refuse is refused here naming it, rather than being
+    // sanitized by a second copy of a grammar this crate would then have to hold to
+    // the first.
+    assert_ne!(
+        run(
+            &vcs,
+            &[
+                "onevcs",
+                "session",
+                "open",
+                "widgets",
+                "--branch-name",
+                "feature/..slip",
+            ],
+        ),
+        0,
+        "a proposal git would refuse is refused"
+    );
+
+    // And a request naming a branch to continue *and* a name to cut is refused, as
+    // the real implementation refuses it: that is about the shape of the request
+    // rather than about anything a repository does, so a consumer proving it meets
+    // the same answer on either side.
+    let refused = vcs
+        .open_session(SessionRequest {
+            repo: "widgets".to_owned(),
+            branch: Some("feature/pinned".to_owned()),
+            branch_name: Some("feature/proposed".to_owned()),
+            branch_prefix: None,
+            base: None,
+            execution_checkout: None,
+            pool: None,
+            overflow: None,
+            labels: Default::default(),
+        })
+        .expect_err("a request naming both is refused");
+    let said = refused.to_string();
+    assert!(said.contains("feature/pinned"), "{said}");
+    assert!(said.contains("feature/proposed"), "{said}");
+    assert!(said.contains("two answers to one question"), "{said}");
+    assert_eq!(
+        vcs.state().sessions.len(),
+        1,
+        "nothing was opened for either refusal"
+    );
 }

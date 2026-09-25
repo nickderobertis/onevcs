@@ -2119,6 +2119,8 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
     let request = SessionRequest {
         repo: "nickderobertis/onevcs".to_owned(),
         branch: None,
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,
@@ -2451,6 +2453,8 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         serde_json::to_value(SessionRequest {
             repo: "onevcs".to_owned(),
             branch: Some("feature".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("main".to_owned()),
             execution_checkout: Some("isolated".to_owned()),
             pool: None,
@@ -6096,6 +6100,8 @@ fn the_amendment_declares_the_pool_surface_it_added() {
     let request = SessionRequest {
         repo: "onevcs".to_owned(),
         branch: None,
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: Some(0),
@@ -6727,4 +6733,148 @@ fn the_amendment_states_that_unreadable_session_state_is_refused_rather_than_rea
         2,
         "the amendment names the code a refused listing exits with"
     );
+}
+
+/// The `branches.yml` example the branch-prefix amendment spells, as its own
+/// document.
+fn documented_branches() -> String {
+    amendment_yaml_spelling("prefix: nick/")
+}
+
+#[test]
+fn the_branch_prefix_fixture_parses_and_an_absent_key_is_the_shipped_default() {
+    let file: onevcs::branches::BranchesFile =
+        serde_yaml_ng::from_str(&documented_branches()).expect("the contract's branches file");
+    assert_eq!(file.version, onevcs::branches::VERSION);
+    assert_eq!(
+        file.prefix, "nick/",
+        "the example is the prefix the amendment's own words name"
+    );
+    // A document naming only its version is a host that adds nothing, which is the
+    // whole of the shipped default — and what every host that never writes the file
+    // resolves to.
+    let bare: onevcs::branches::BranchesFile =
+        serde_yaml_ng::from_str("version: 1\n").expect("a document naming only its version");
+    assert_eq!(bare, onevcs::branches::BranchesFile::default());
+    assert!(bare.prefix.is_empty());
+    // And it round-trips as the operator wrote it, which is what keeps a build that
+    // rewrote the file from putting a prefix into one that had none.
+    assert_eq!(
+        serde_yaml_ng::to_string(&bare).expect("the shipped default serializes"),
+        "version: 1\n"
+    );
+}
+
+#[test]
+fn the_branch_prefix_amendment_names_the_environment_layer_and_the_file_it_reads() {
+    let amendments = regions().0;
+    assert!(
+        amendments.contains(onevcs::branches::PREFIX_ENV),
+        "the amendment must name the environment variable this build reads, which is {}",
+        onevcs::branches::PREFIX_ENV
+    );
+    let path = onevcs::branches::default_path().expect("this host resolves a state root");
+    let spelled = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("the branches file has a name");
+    assert!(
+        amendments.contains(&format!("$ONEVCS_HOME/{spelled}")),
+        "the amendment must name where this build reads the file, which is \
+         $ONEVCS_HOME/{spelled}"
+    );
+    // The file is read by its own loader, beside the other host files rather than
+    // inside one of them — which is the placement the amendment states the reason
+    // for, and the reason an older build sharing the host is unaffected.
+    for sibling in ["rules.yml", "releases.yml", "workspaces.yml"] {
+        assert!(
+            amendments.contains(sibling),
+            "the amendment must say which siblings the branches file sits beside; \
+             {sibling} is missing"
+        );
+    }
+}
+
+#[test]
+fn the_branch_prefix_amendment_declares_the_surface_it_added() {
+    let declarations = amendment_declaring("SessionRequest  pub branch_name");
+    for declared in [
+        "SessionRequest  pub branch_name: Option<String>",
+        "SessionRequest  pub branch_prefix: Option<String>",
+        "pub const VERSION: u32 = 1;",
+        "pub const PREFIX_ENV: &str = \"ONEVCS_BRANCH_PREFIX\";",
+        "pub struct BranchesFile { pub version: u32, pub prefix: String }",
+        "pub fn default_path() -> Result<PathBuf>;",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+}
+
+#[test]
+fn the_branch_prefix_amendment_spells_exactly_the_flags_session_open_takes() {
+    // `every_flag_the_contract_spells_exists_on_the_command_that_takes_it` asks
+    // whether a documented flag exists on *some* command, and `--branch` exists on
+    // several — so this block is held to `session open`'s own parser in both
+    // directions, the way the labels amendment's is.
+    // The block that spells `session open` and nothing else: the labels amendment's
+    // block also opens with that verb, and carries `session holders` beside it.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|body| {
+            body.contains("--branch-name")
+                && body
+                    .lines()
+                    .all(|line| line.starts_with("onevcs session open "))
+        })
+        .expect("the branch-prefix amendment spells the `session open` usage on its own");
+    assert_eq!(
+        spelled_flags(&usage),
+        parser_flags(&["session", "open"]),
+        "the amendment's `session open` usage and the parser disagree about its flags"
+    );
+}
+
+#[test]
+fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
+    // What makes this additive for a consumer already reading a serialized request:
+    // a request that names neither is byte for byte the object it always was.
+    assert_eq!(
+        serde_json::to_value(SessionRequest {
+            repo: "onevcs".to_owned(),
+            branch: None,
+            branch_name: None,
+            branch_prefix: None,
+            base: None,
+            execution_checkout: None,
+            pool: None,
+            overflow: None,
+            labels: Default::default(),
+        })
+        .expect("a session request serializes"),
+        json!({"repo": "onevcs", "branch": null, "base": null, "execution_checkout": null})
+    );
+    // And both are carried when they are named, under the keys the amendment spells.
+    let named = serde_json::to_value(SessionRequest {
+        repo: "onevcs".to_owned(),
+        branch: None,
+        branch_name: Some("ENG-123/aio-adopt-op".to_owned()),
+        branch_prefix: Some("nick/".to_owned()),
+        base: None,
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+    })
+    .expect("a session request serializes");
+    assert_eq!(named["branch_name"], json!("ENG-123/aio-adopt-op"));
+    assert_eq!(named["branch_prefix"], json!("nick/"));
+    // A document an older build wrote, and one a caller wrote naming neither, both
+    // read back as a request asking for neither.
+    let read: SessionRequest =
+        serde_json::from_value(json!({"repo": "onevcs"})).expect("an older request reads");
+    assert_eq!(read.branch_name, None);
+    assert_eq!(read.branch_prefix, None);
 }

@@ -24,6 +24,45 @@ pub struct SessionRequest {
     /// [`base`](Self::base). Absent means one is derived, which is always a fresh
     /// cut.
     pub branch: Option<String>,
+    /// A name the caller wants a branch **cut** at, which is a different question
+    /// from [`branch`](Self::branch).
+    ///
+    /// `branch` names a branch to *continue* — anything already carrying that name
+    /// is opened at its tip — so a rendered name cannot arrive there: a collision
+    /// would silently continue somebody else's branch. This one is a *proposal*, and
+    /// this crate does all of the work of turning it into a branch: it is sanitized
+    /// into a name git accepts, the host's [branch prefix](crate::branches) is put
+    /// in front of it, and the first free of `<name>`, `<name>-2`, `<name>-3`, … is
+    /// taken — searched against this identity's local branches and its origin's. A
+    /// proposal nothing usable is left of, and one no suffix can make free, are
+    /// refused naming the proposal rather than silently replaced by a derived name.
+    ///
+    /// Absent means a name is derived from the session's own token, exactly as
+    /// before. Naming this **and** `branch` is refused: they are two answers to one
+    /// question.
+    // llmlint: ignore[invalid_states_unrepresentable] a proposal is arbitrary text by
+    // design, for the reason `SessionOpenArgs::branch_name` states: there is no
+    // invalid value here to make unrepresentable, only one this crate sanitizes. The
+    // amendment in docs/contract.md also fixes the declared shape as
+    // `Option<String>`, and two consuming repositories build against that spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
+    /// The branch prefix this one open cuts against, over everything the host
+    /// configures — the highest of the three layers [`branches`](crate::branches)
+    /// resolves. Absent means the host's resolution; `Some("")` is this open saying
+    /// it wants none.
+    ///
+    /// It reaches only branches this open **cuts**: a branch named by
+    /// [`branch`](Self::branch) is continued or cut at exactly that name, prefixed
+    /// by nothing.
+    // llmlint: ignore[invalid_states_unrepresentable] a newtype here would have to
+    // ask git whether a ref may start with the value, and the answer has to name the
+    // layer that set it — which a `TryFrom` cannot, because the same value reaches
+    // this field from a flag, from the environment and from the host's file.
+    // `branches::resolve` is that one boundary, and `branch` beside this field is an
+    // `Option<String>` for the same contract reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_prefix: Option<String>,
     /// The branch this session's work is merged with and published into.
     ///
     /// For a branch cut fresh it is also the point the branch starts from. For a

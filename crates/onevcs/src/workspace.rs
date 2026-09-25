@@ -42,7 +42,8 @@ use crate::remainder::Remainder;
 use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
-use crate::{git, guidance, home, ids, label, lock, pool, processes, workspaces};
+use crate::workspaces::Sourced;
+use crate::{branches, git, guidance, home, ids, label, lock, pool, processes, workspaces};
 
 /// How many dead run roots still holding unpublished work are retained.
 ///
@@ -1009,6 +1010,25 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     // a command line could not spell back is the request being wrong, not the host.
     label::validate(&request.labels)?;
 
+    // Two answers to one question, so a request giving both has not said which it
+    // wants — and guessing would either continue a branch the caller asked to have
+    // cut, or cut one it asked to continue.
+    if let (Some(pinned), Some(proposed)) = (&request.branch, &request.branch_name) {
+        return Err(both_named(pinned, proposed));
+    }
+    // Resolved and checked here, above every layer of the host's file, so an
+    // unusable prefix is answered before a token is minted for a session that
+    // cannot be given a name.
+    let prefix = branches::resolve_for(request.branch_prefix.as_deref())?;
+    // Sanitized here for the same reason: a proposal nothing usable is left of is
+    // the request being wrong, and it is refused naming what was proposed rather
+    // than quietly cut at the derived default instead.
+    let proposed = request
+        .branch_name
+        .as_deref()
+        .map(|name| stem(name, &prefix.value))
+        .transpose()?;
+
     // Both names go through the one conversion git's own parser decides, so an
     // unusable one is refused here rather than by whichever git command met it first.
     let named = |value: String| -> Result<Ref> {
@@ -1053,9 +1073,19 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     stream.label("identity", &resolution.key);
     refresh(&execution, &mut stream)?;
 
-    let branch = match pinned {
-        Some(branch) => branch,
-        None => named(format!("onevcs/{token}"))?,
+    // Only a branch this open **cuts** is prefixed, and only a caller's proposal is
+    // given a suffix: a pin is continued or cut at exactly the name it spells, and
+    // the derived default is this token's own, so nothing already carries it.
+    let branch = match (pinned, &proposed) {
+        (Some(branch), _) => branch,
+        (None, Some(composed)) => first_free(
+            registry,
+            &resolution,
+            &execution,
+            request.branch_name.as_deref().unwrap_or(composed),
+            composed,
+        )?,
+        (None, None) => named(format!("{}onevcs/{token}", prefix.value))?,
     };
     // Only for a pin: a generated name is this token's own and can stand for nothing
     // that already exists, and asking the question anyway would put a search of every
@@ -1217,7 +1247,16 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         &record.worktree,
         &record.execution_checkout,
     );
-    stream.emit(EventKind::SessionOpened, opened(&record, reuse, created));
+    // Reported only where it decided this session's name: a pin is prefixed by
+    // nothing, and a host that configures no prefix writes the event it always did.
+    let applied = match request.branch.is_none() && !prefix.value.is_empty() {
+        true => Some(&prefix),
+        false => None,
+    };
+    stream.emit(
+        EventKind::SessionOpened,
+        opened(&record, reuse, created, applied),
+    );
     drop(lease);
     Ok((record, stream))
 }
@@ -1366,7 +1405,18 @@ enum Reuse {
 /// that keeps no run roots can do, so an event that says neither is one such an
 /// implementation still emits unchanged. A reader tells them apart by the field
 /// being there.
-fn opened(record: &Record, reuse: Reuse, created: bool) -> Map<String, Value> {
+///
+/// `branch_prefix` is written the same way and for the same reason: only where one
+/// was put in front of the branch this session cut, so a host that configures none
+/// writes the payload it always wrote. It carries the prefix and the layer that
+/// decided it, because an operator meeting an unexpected namespace on a branch has
+/// to be able to find which of the three set it.
+fn opened(
+    record: &Record,
+    reuse: Reuse,
+    created: bool,
+    prefix: Option<&Sourced<String>>,
+) -> Map<String, Value> {
     // Where the session was placed, always: a slot it took or was cut, or a run root
     // of its own. A resumed session reports the slot it already held, taken warm.
     let placement = match record.slot {
@@ -1392,6 +1442,15 @@ fn opened(record: &Record, reuse: Reuse, created: bool) -> Map<String, Value> {
         Reuse::Resumed => {
             payload.insert("reused".to_owned(), Value::Bool(true));
         }
+    }
+    // Written only where a prefix was put in front of this branch, and carrying the
+    // layer that decided it: an operator reading an unexpected namespace off a
+    // branch has to be able to find which of the three set it.
+    if let Some(prefix) = prefix {
+        payload.insert(
+            "branch_prefix".to_owned(),
+            json!({"prefix": prefix.value, "from": prefix.from}),
+        );
     }
     payload
 }
@@ -1512,7 +1571,7 @@ fn resume(
     note_base(&carried, &record.base, &record.worktree, execution);
     stream.emit(
         EventKind::SessionOpened,
-        opened(&record, Reuse::Resumed, false),
+        opened(&record, Reuse::Resumed, false, None),
     );
     Ok((record, stream))
 }
@@ -1852,6 +1911,115 @@ fn same_branch_and_base(base: &Ref) -> Error {
              published into"
         ),
     }
+}
+
+/// How far the search for a free name goes before it gives up.
+///
+/// A bound rather than none, because the search asks git nothing per candidate — the
+/// names taken are listed once — but a caller in a loop proposing one name for every
+/// session it opens would otherwise walk further every time. A thousand branches of
+/// one name on one identity is a caller repeating itself, and that is what the
+/// refusal says.
+const SUFFIXES: u32 = 1_000;
+
+/// Why a request naming both a branch to continue and a name to cut is refused.
+fn both_named(pinned: &str, proposed: &str) -> Error {
+    Error::Invalid {
+        reason: format!(
+            "this request names both a branch to continue ({pinned:?}) and a name to cut \
+             ({proposed:?}), which are two answers to one question. Pass `--branch {pinned}` \
+             to continue that branch — one that already exists is opened at its own tip — or \
+             `--branch-name {proposed}` to have a fresh branch cut from that name, never both"
+        ),
+    }
+}
+
+/// The name a proposal becomes before a suffix is looked for: sanitized, then
+/// prefixed, then validated whole.
+///
+/// The order is the whole of it. Sanitizing first means the prefix is put in front of
+/// a name git already accepts; validating the composition afterwards means a prefix
+/// and a name that are each usable alone cannot compose into one that is not.
+fn stem(proposed: &str, prefix: &str) -> Result<String> {
+    let Some(sanitized) = branches::sanitize(proposed) else {
+        return Err(Error::Invalid {
+            reason: format!(
+                "the branch name {proposed:?} has nothing in it a branch name can be made \
+                 of: every character git would refuse is replaced, and what is left is \
+                 empty. Propose a name carrying at least one letter, digit or underscore"
+            ),
+        });
+    };
+    let composed = format!("{prefix}{sanitized}");
+    if !git::is_valid_branch_name(&composed) {
+        return Err(Error::Invalid {
+            reason: format!(
+                "the branch name {proposed:?} becomes {composed:?} once it is sanitized and \
+                 prefixed, and git would not accept that as a branch name"
+            ),
+        });
+    }
+    Ok(composed)
+}
+
+/// The first of `<stem>`, `<stem>-2`, `<stem>-3`, … that nothing carries.
+///
+/// Searched against both the identity's local branches — every checkout and run clone
+/// [`checkouts_of`] names — and its origin's, because a name taken on either is a
+/// name this session cannot have: cutting over the first would produce a second,
+/// empty branch of that name, and pushing the second would be refused or would
+/// overwrite work nobody asked about. The whole listing is taken once rather than
+/// asked per candidate, so a proposal that has to walk is no more subprocesses than
+/// one that does not.
+fn first_free(
+    registry: &Registry,
+    resolution: &Resolution,
+    execution: &Path,
+    proposed: &str,
+    stem: &str,
+) -> Result<Ref> {
+    let taken = taken_names(registry, resolution, execution)?;
+    for nth in 1..=SUFFIXES {
+        let candidate = match nth {
+            1 => stem.to_owned(),
+            nth => format!("{stem}-{nth}"),
+        };
+        if taken.contains(&candidate) {
+            continue;
+        }
+        return Ref::try_from(candidate).map_err(|reason| Error::Invalid {
+            reason: format!("{reason}: it is not a valid branch name"),
+        });
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "the branch name {proposed:?} is taken, and so is every name from {stem}-2 to \
+             {stem}-{SUFFIXES}: {identity} has a thousand branches of that name already. \
+             Propose a name that says which piece of work this is",
+            identity = resolution.key,
+        ),
+    })
+}
+
+/// Every branch name this identity already carries, locally or on its origin.
+///
+/// A checkout git will not list contributes nothing, which is the answer
+/// [`continuation`] takes from the same search: a torn run clone of a dead session
+/// must not stop a session being opened, and the copy that matters — the execution
+/// checkout and origin's own refs — is asked separately from it.
+fn taken_names(
+    registry: &Registry,
+    resolution: &Resolution,
+    execution: &Path,
+) -> Result<std::collections::BTreeSet<String>> {
+    let mut taken = std::collections::BTreeSet::new();
+    for repo in checkouts_of(registry, resolution)? {
+        if git::is_repo(&repo) {
+            taken.extend(git::branches(&repo).unwrap_or_default());
+        }
+    }
+    taken.extend(git::remote_branches(execution, "origin")?);
+    Ok(taken)
 }
 
 pub(crate) fn execution_checkout(

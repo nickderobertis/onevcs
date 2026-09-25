@@ -504,6 +504,45 @@ and what a name already means are each stated rather than left to be inferred.
   base, the same execution checkout, and a run root that is there and free. Closed is
   not one of them, because closing hands the branch back and means finished.
 
+## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
+
+`branches.rs` is the host setting — `$ONEVCS_HOME/branches.yml`, one key, read the
+way `workspaces.rs` reads its own file and resolved through the same
+`Sourced { value, from }` — and the sanitizer that turns a caller's proposed name
+into a ref. `SessionRequest::branch_name` is the proposal; `SessionRequest::branch`
+is unchanged. Five things are easy to undo.
+
+- **The two fields answer two questions, and the code asks about `branch` alone.**
+  `branch` means *continue this if anything carries it, else cut it at exactly this
+  name*, so the `continuation` read and `pool::place`'s `pinned` argument both ask
+  `request.branch.is_some()` and must keep asking about that field only. A rendered
+  name arriving as `branch` would silently continue somebody else's branch instead
+  of taking a suffix, which is the whole reason there are two fields. A request
+  naming both is refused before a token is minted.
+- **The order is sanitize, then prefix, then suffix, and it is not interchangeable.**
+  Sanitizing first means the prefix goes in front of a name git already accepts;
+  validating the composition afterwards catches a prefix and a name that are each
+  usable alone and are not together; suffixing last means the number lands on the
+  whole prefixed name rather than inside it.
+- **The suffix search is a listing, not a question per candidate.** `taken_names`
+  reads every local branch of `checkouts_of` — the run clones included — plus
+  origin's remote-tracking refs in the execution checkout, once, *after* the fetch
+  `refresh` makes. A checkout git will not list contributes nothing, which is the
+  same tolerance `continuation` takes from the same search. The derived
+  `onevcs/<token>` default is deliberately **not** searched: it is that token's own,
+  and asking would put a walk of every checkout in front of every session anybody
+  opens.
+- **Unset adds nothing, and that is a property to keep provable.** A host with no
+  file, no `ONEVCS_BRANCH_PREFIX` and no flag cuts byte-for-byte the names it cut
+  before the setting existed, and writes the `session-opened` payload it always
+  wrote — the `branch_prefix` field is written only where one was applied.
+  `tests/e2e/branches.rs` holds both halves.
+- **The testing crate cuts at a proposal and approximates nothing else.** The
+  prefix lives in a state root no provider has and the suffix is searched over
+  checkouts and an origin no provider has, so `onevcs-testing` takes the proposed
+  name as given and refuses one git would refuse, rather than carrying a second copy
+  of the sanitizer. That is the same rule its own AGENTS.md states for a `fetch`.
+
 ## Tests are journeys, and the four unit tests say why they are not
 
 Behaviour is a journey. `tests/contract.rs` holds the approved surface to the

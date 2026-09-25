@@ -6841,6 +6841,8 @@ fn opening_a_session_leaves_a_live_session_of_the_same_identity_alone() {
         .open_session(SessionRequest {
             repo: "project".to_owned(),
             branch: Some("feature/live".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,

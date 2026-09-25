@@ -187,6 +187,8 @@ fn ready_to_publish(
         .open_session(SessionRequest {
             repo: identity.to_owned(),
             branch: Some(branch.to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,

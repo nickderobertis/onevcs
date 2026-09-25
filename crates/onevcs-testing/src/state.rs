@@ -484,10 +484,34 @@ pub(crate) fn session_of<'a>(state: &'a VcsState, token: &SessionToken) -> Optio
 }
 
 /// The branch a request asks for, or the one that is derived from the token.
+///
+/// `branch` and `branch_name` are two answers to one question — *continue this* and
+/// *cut one at this* — so a request naming both is refused here as the real
+/// implementation refuses it: that refusal is about the shape of the request rather
+/// than about anything a repository does, and a consumer proving it must meet the
+/// same answer on either side.
+///
+/// **What a provider deliberately does not do to `branch_name` is the rest**, and it
+/// is not approximated: the host's branch prefix is read out of an `onevcs` state
+/// root no provider has, and the first-free suffix is searched against an identity's
+/// checkouts and its origin, which a provider has neither of. So the name is taken as
+/// it was proposed and refused — naming it — where git would refuse it, rather than
+/// being sanitized by a second copy of a grammar that would then have to be held to
+/// the first. A consumer proving what the prefix, the sanitizer and the collision
+/// suffix do drives the real `onevcs`, which is where all three live.
 pub(crate) fn requested_branch(req: &SessionRequest, token: &SessionToken) -> Result<String> {
+    if let (Some(pinned), Some(proposed)) = (&req.branch, &req.branch_name) {
+        return Err(Error::Invalid {
+            reason: format!(
+                "this request names both a branch to continue ({pinned:?}) and a name to cut \
+                 ({proposed:?}), which are two answers to one question"
+            ),
+        });
+    }
     let name = req
         .branch
         .clone()
+        .or_else(|| req.branch_name.clone())
         .unwrap_or_else(|| format!("onevcs/{}", token.0));
     named_branch(&name, "the branch")?;
     Ok(name)
