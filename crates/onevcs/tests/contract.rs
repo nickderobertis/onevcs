@@ -6819,10 +6819,17 @@ fn the_branch_prefix_amendment_spells_exactly_the_flags_session_open_takes() {
     // whether a documented flag exists on *some* command, and `--branch` exists on
     // several — so this block is held to `session open`'s own parser in both
     // directions, the way the labels amendment's is.
+    // The block that spells `session open` and nothing else: the labels amendment's
+    // block also opens with that verb, and carries `session holders` beside it.
     let usage = usage_in(&regions().0)
         .into_iter()
-        .find(|body| body.starts_with("onevcs session open ") && body.contains("--branch-name"))
-        .expect("the branch-prefix amendment spells the `session open` usage");
+        .find(|body| {
+            body.contains("--branch-name")
+                && body
+                    .lines()
+                    .all(|line| line.starts_with("onevcs session open "))
+        })
+        .expect("the branch-prefix amendment spells the `session open` usage on its own");
     assert_eq!(
         spelled_flags(&usage),
         parser_flags(&["session", "open"]),

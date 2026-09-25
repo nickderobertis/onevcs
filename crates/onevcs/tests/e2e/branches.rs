@@ -97,9 +97,7 @@ fn local_branch(fixture: &Fixture, branch: &str) -> String {
     fixture
         .world
         .git(&fixture.checkout, &["branch", branch, "main"]);
-    fixture
-        .world
-        .git(&fixture.checkout, &["rev-parse", branch])
+    fixture.world.git(&fixture.checkout, &["rev-parse", branch])
 }
 
 /// Create `branch` on the origin and nowhere else, so nothing local carries it.
@@ -586,10 +584,7 @@ fn the_seam_gives_a_taken_name_the_first_free_suffix() {
         second.branch, "shared-name-2",
         "the second proposal takes a suffix rather than the first session's branch"
     );
-    assert_eq!(
-        branch_on(&fixture.world, &second.worktree),
-        "shared-name-2"
-    );
+    assert_eq!(branch_on(&fixture.world, &second.worktree), "shared-name-2");
 }
 
 #[test]
@@ -611,5 +606,8 @@ fn the_seam_refuses_a_request_that_names_both_and_leaves_branch_alone() {
         .open_session(request(Some("feature/pinned"), None, None))
         .expect("a session over the registered repository");
     assert_eq!(pinned.branch, "feature/pinned");
-    assert_eq!(branch_on(&fixture.world, &pinned.worktree), "feature/pinned");
+    assert_eq!(
+        branch_on(&fixture.world, &pinned.worktree),
+        "feature/pinned"
+    );
 }
