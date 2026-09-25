@@ -50,6 +50,7 @@ use std::path::Path;
 
 mod app;
 mod branch;
+pub mod branches;
 mod change;
 pub mod cli;
 mod closing;

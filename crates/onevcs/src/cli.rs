@@ -192,6 +192,15 @@ pub struct SessionOpenArgs {
     /// tip; one that does not is cut from the base. Omitted, one is derived.
     #[arg(long, value_name = "B")]
     pub branch: Option<String>,
+    /// A name to cut a branch at, which --branch is not: this one is sanitized,
+    /// prefixed, and given the first free of -2, -3, … where something already
+    /// carries it. Refused together with --branch.
+    #[arg(long, value_name = "N")]
+    pub branch_name: Option<String>,
+    /// The prefix every branch this open cuts is put in front of, over the host's
+    /// configuration and ONEVCS_BRANCH_PREFIX. An empty value cuts unprefixed.
+    #[arg(long, value_name = "P")]
+    pub branch_prefix: Option<String>,
     /// The branch this work is merged with and published into, and the one a new
     /// branch is cut from. Omitted, the identity's registered base is used.
     #[arg(long, value_name = "B")]

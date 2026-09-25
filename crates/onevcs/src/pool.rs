@@ -1145,6 +1145,8 @@ pub fn pool_status(repo: &str) -> Result<PoolStatus> {
     let request = SessionRequest {
         repo: repo.to_owned(),
         branch: None,
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,
@@ -1169,6 +1171,8 @@ pub fn pool_prune(repo: &str) -> Result<PruneReport> {
     let request = SessionRequest {
         repo: repo.to_owned(),
         branch: None,
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,

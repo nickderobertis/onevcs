@@ -76,6 +76,8 @@ fn a_session_opens_preserves_publishes_and_the_change_lands_on_the_real_reposito
         .open_session(SessionRequest {
             repo: identity.origin.clone(),
             branch: Some(branch.clone()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,

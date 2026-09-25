@@ -106,6 +106,8 @@ fn preserved_work_is_what_recoverable_reports() {
         .open_session(SessionRequest {
             repo: "widgets".to_owned(),
             branch: Some("feature/interrupted".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -198,6 +200,8 @@ fn preserving_the_same_branch_twice_reports_it_once() {
         .open_session(SessionRequest {
             repo: "github.com/acme-corp/widgets".to_owned(),
             branch: Some("feature/twice".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("release".to_owned()),
             execution_checkout: None,
             pool: None,
@@ -251,6 +255,8 @@ fn a_session_is_adopted_back_out_of_the_state_that_recorded_it() {
         .open_session(SessionRequest {
             repo: "widgets".to_owned(),
             branch: None,
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,

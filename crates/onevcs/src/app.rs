@@ -456,6 +456,10 @@ fn session_open(args: &SessionOpenArgs, providers: &Providers<'_>) -> Result<u8>
     let request = SessionRequest {
         repo: args.repo.clone(),
         branch: args.branch.clone(),
+        branch_name: None,
+        branch_prefix: None,
+        branch_name: args.branch_name.clone(),
+        branch_prefix: args.branch_prefix.clone(),
         base: args.base.clone(),
         execution_checkout: args.execution_checkout.clone(),
         pool: args.pool,

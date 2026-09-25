@@ -141,6 +141,8 @@ fn open(vcs: &dyn Vcs, branch: &str) -> Session {
     vcs.open_session(SessionRequest {
         repo: "hosted".to_owned(),
         branch: Some(branch.to_owned()),
+        branch_name: None,
+        branch_prefix: None,
         base: Some("main".to_owned()),
         execution_checkout: None,
         pool: None,
@@ -249,6 +251,8 @@ fn a_publication_through_the_providers_reports_a_failure_as_an_outcome() {
         .open_session(SessionRequest {
             repo: "widgets".to_owned(),
             branch: Some("feature/elsewhere".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("main".to_owned()),
             execution_checkout: None,
             pool: None,
@@ -297,6 +301,8 @@ fn the_command_says_nothing_about_a_branch_the_repository_side_never_held() {
         .open_session(SessionRequest {
             repo: "widgets".to_owned(),
             branch: Some("feature/unretained".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: Some("main".to_owned()),
             execution_checkout: None,
             pool: None,
@@ -2040,6 +2046,8 @@ fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_throug
         .open_session(SessionRequest {
             repo: "released".to_owned(),
             branch: Some("feature/one".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,
@@ -6253,6 +6261,8 @@ fn the_branch_operations_answer_values_where_their_commands_print_prose() {
         .open_session(SessionRequest {
             repo: "project".to_owned(),
             branch: Some("feature/stranded".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
             base: None,
             execution_checkout: None,
             pool: None,

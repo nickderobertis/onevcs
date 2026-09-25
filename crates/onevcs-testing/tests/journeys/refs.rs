@@ -71,6 +71,8 @@ fn provider_accepts(vcs: &MemoryVcs, name: &str) -> bool {
     vcs.open_session(SessionRequest {
         repo: "widgets".to_owned(),
         branch: Some(name.to_owned()),
+        branch_name: None,
+        branch_prefix: None,
         base: None,
         execution_checkout: None,
         pool: None,
