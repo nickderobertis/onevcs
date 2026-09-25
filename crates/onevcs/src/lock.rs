@@ -77,6 +77,17 @@ pub fn exclusive(identity: &str) -> Result<Guard> {
     acquire(identity, timeout_seconds()?)
 }
 
+/// Take the lock file at `path` exclusively, queueing for it under the configured
+/// bound.
+///
+/// For a lock that belongs to the resource it guards rather than to this state root:
+/// every process reaching that resource takes turns on the one file, whichever
+/// `ONEVCS_HOME` it runs under. The file's directory must already exist.
+pub fn exclusive_at(path: &Path) -> Result<Guard> {
+    let file = open_at(path)?;
+    wait_for(path, file, &path.display().to_string(), timeout_seconds()?)
+}
+
 /// Take an identity's shared occupancy lease if it is free *right now*.
 ///
 /// The lease mode: "somebody else is in here" is the answer, not something to wait
@@ -140,14 +151,18 @@ pub fn try_exclusive(identity: &str) -> Result<Option<Guard>> {
 fn open(identity: &str) -> Result<(PathBuf, File)> {
     let path = path_for(identity)?;
     home::ensure_dir(path.parent().unwrap_or(Path::new(".")))?;
-    let file = OpenOptions::new()
+    let file = open_at(&path)?;
+    Ok((path, file))
+}
+
+fn open_at(path: &Path) -> Result<File> {
+    OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&path)
-        .map_err(error::at("open the lock at", &path))?;
-    Ok((path, file))
+        .open(path)
+        .map_err(error::at("open the lock at", path))
 }
 
 fn try_acquire(identity: &str, is_shared: bool) -> Result<Option<Guard>> {
@@ -177,6 +192,11 @@ fn try_acquire(identity: &str, is_shared: bool) -> Result<Option<Guard>> {
 /// served rather than deadlocked behind a caller that already gave up.
 fn acquire(identity: &str, bound: f64) -> Result<Guard> {
     let (path, file) = open(identity)?;
+    wait_for(&path, file, identity, bound)
+}
+
+/// [`acquire`]'s wait, for a lock file already open; `what` names it in a refusal.
+fn wait_for(path: &Path, file: File, what: &str, bound: f64) -> Result<Guard> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         if FileExt::lock_exclusive(&file).is_ok() {
@@ -190,9 +210,9 @@ fn acquire(identity: &str, bound: f64) -> Result<Guard> {
         }
         Err(_) => Err(Error::Invalid {
             reason: format!(
-                "timed out after {bound}s waiting for {identity}; owner: {} \
+                "timed out after {bound}s waiting for {what}; owner: {} \
                  (raise {TIMEOUT_ENV} if this wait is legitimate)",
-                recorded_owner(&path)
+                recorded_owner(path)
             ),
         }),
     }

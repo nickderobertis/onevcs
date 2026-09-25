@@ -50,6 +50,11 @@ mod comparison;
 mod cost;
 #[cfg(unix)]
 mod edges;
+// Linux only: it lets a held fetch go once the kernel's lock table shows the second
+// fetch queued behind it, and `/proc/locks` is the only place an outside process can
+// read that. Its own header carries the reason in full.
+#[cfg(target_os = "linux")]
+mod fetch_turns;
 // Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
 // own header carries the reason in full.
 #[cfg(unix)]
