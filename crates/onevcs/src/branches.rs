@@ -187,11 +187,27 @@ pub(crate) fn resolve_for(over: Option<&str>) -> Result<Sourced<String>> {
 /// Trimmed, the way every other value this crate reads out of the environment is: a
 /// variable exported by a shell script arrives with whatever that script left on it,
 /// and no ref name can carry whitespace anyway.
+///
+/// Bytes that are not text are **refused** rather than read lossily. A lossy read
+/// would put `U+FFFD` where each unreadable byte was and go on — and git accepts a
+/// ref name carrying one, so every branch of this host would quietly be cut under a
+/// namespace nobody typed and nobody could type back. The two settings beside this
+/// one read lossily and are safe to: what they parse is a number or the word
+/// `unlimited`, so a replaced byte is refused by the grammar a line later.
 fn environment_prefix() -> Result<Option<String>> {
     let Some(raw) = std::env::var_os(PREFIX_ENV) else {
         return Ok(None);
     };
-    Ok(Some(raw.to_string_lossy().trim().to_owned()))
+    let Some(text) = raw.to_str() else {
+        return Err(Error::Invalid {
+            reason: format!(
+                "{PREFIX_ENV} is set to bytes that are not text: a branch prefix is the \
+                 namespace every branch of this host is cut under, so it has to be \
+                 something a person can type back. Unset it, or set it to that namespace"
+            ),
+        });
+    };
+    Ok(Some(text.trim().to_owned()))
 }
 
 /// Refuse a prefix no branch name can be built on, naming the layer that set it.

@@ -26,6 +26,7 @@
 // because supplying an implementation is something the binary has no way to do.
 
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 use onevcs::{Git, SessionRequest, Vcs};
@@ -538,6 +539,24 @@ fn a_prefix_no_branch_name_can_be_built_on_is_refused_naming_the_layer_that_set_
         .stderr(predicate::str::contains("\"-oops/\""))
         .stderr(predicate::str::contains(
             "ONEVCS_BRANCH_PREFIX in the environment",
+        ));
+
+    // Bytes that are not text are refused rather than read lossily: a lossy read
+    // would put a replacement character where each unreadable byte was, git accepts
+    // a ref carrying one, and this host would then cut every branch under a
+    // namespace nobody typed and nobody could type back.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project"])
+        .env(
+            "ONEVCS_BRANCH_PREFIX",
+            std::ffi::OsString::from_vec(vec![b'n', 0xff, b'/']),
+        )
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "ONEVCS_BRANCH_PREFIX is set to bytes that are not text",
         ));
 
     configure_prefix(&fixture.world, "version: 1\nprefix: \"bad..prefix/\"\n");
