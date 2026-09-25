@@ -192,11 +192,24 @@ pub struct SessionOpenArgs {
     /// tip; one that does not is cut from the base. Omitted, one is derived.
     #[arg(long, value_name = "B")]
     pub branch: Option<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] a proposal is arbitrary text by
+    // design — it is rendered by something that knows about tickets and plans rather
+    // than about git, and making it a name git accepts is this crate's half of that
+    // division of labour (`branches::sanitize`). There is no invalid value to make
+    // unrepresentable: every string is a proposal this crate can answer for, and the
+    // only one it refuses is the one nothing usable is left of, which is a property
+    // of the sanitized result rather than of the input.
     /// A name to cut a branch at, which --branch is not: this one is sanitized,
     /// prefixed, and given the first free of -2, -3, … where something already
     /// carries it. Refused together with --branch.
     #[arg(long, value_name = "N")]
     pub branch_name: Option<String>,
+    // llmlint: ignore[invalid_states_unrepresentable] what makes a prefix usable is
+    // whether git accepts a ref starting with it, and deciding that runs `git
+    // check-ref-format` — a subprocess, which argument parsing must not run, for the
+    // reason `PublishBranchArgs::branch` gives. `branches::resolve` is the one
+    // boundary that decides it, and it is also the only place that can name *which*
+    // of the three layers set the value, which is what the refusal owes an operator.
     /// The prefix every branch this open cuts is put in front of, over the host's
     /// configuration and ONEVCS_BRANCH_PREFIX. An empty value cuts unprefixed.
     #[arg(long, value_name = "P")]

@@ -40,6 +40,11 @@ pub struct SessionRequest {
     /// Absent means a name is derived from the session's own token, exactly as
     /// before. Naming this **and** `branch` is refused: they are two answers to one
     /// question.
+    // llmlint: ignore[invalid_states_unrepresentable] a proposal is arbitrary text by
+    // design, for the reason `SessionOpenArgs::branch_name` states: there is no
+    // invalid value here to make unrepresentable, only one this crate sanitizes. The
+    // amendment in docs/contract.md also fixes the declared shape as
+    // `Option<String>`, and two consuming repositories build against that spelling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<String>,
     /// The branch prefix this one open cuts against, over everything the host
@@ -50,6 +55,12 @@ pub struct SessionRequest {
     /// It reaches only branches this open **cuts**: a branch named by
     /// [`branch`](Self::branch) is continued or cut at exactly that name, prefixed
     /// by nothing.
+    // llmlint: ignore[invalid_states_unrepresentable] a newtype here would have to
+    // ask git whether a ref may start with the value, and the answer has to name the
+    // layer that set it — which a `TryFrom` cannot, because the same value reaches
+    // this field from a flag, from the environment and from the host's file.
+    // `branches::resolve` is that one boundary, and `branch` beside this field is an
+    // `Option<String>` for the same contract reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_prefix: Option<String>,
     /// The branch this session's work is merged with and published into.

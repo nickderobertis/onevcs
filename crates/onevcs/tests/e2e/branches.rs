@@ -373,6 +373,66 @@ fn a_taken_proposal_takes_the_first_free_suffix_and_leaves_every_branch_alone() 
     );
 }
 
+/// Create every one of `names` in the execution checkout, pointing at `main`.
+///
+/// One `git update-ref --stdin` rather than one `git branch` per name: the journey
+/// below needs a thousand of them, which is the same state either way and a second
+/// of wall clock instead of a minute.
+fn local_branches(fixture: &Fixture, names: impl IntoIterator<Item = String>) {
+    use std::io::Write;
+
+    let tip = fixture.world.git(&fixture.checkout, &["rev-parse", "main"]);
+    let batch: String = names
+        .into_iter()
+        .map(|name| format!("create refs/heads/{name} {tip}\n"))
+        .collect();
+    let mut git = std::process::Command::new("git")
+        .args([
+            "-C",
+            &fixture.checkout.to_string_lossy(),
+            "update-ref",
+            "--stdin",
+        ])
+        .env("HOME", fixture.world.path(""))
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("git must be on PATH");
+    git.stdin
+        .take()
+        .expect("the batch is written to git's own input")
+        .write_all(batch.as_bytes())
+        .expect("git reads the batch");
+    assert!(
+        git.wait().expect("git runs to completion").success(),
+        "the batch of branches is created"
+    );
+}
+
+#[test]
+fn a_proposal_no_suffix_can_free_is_refused_naming_it_rather_than_cut_somewhere_else() {
+    let fixture = Fixture::local(&local_direct());
+
+    // Every name the search would try, already carried.
+    local_branches(
+        &fixture,
+        std::iter::once("crowded".to_owned()).chain((2..=1000).map(|nth| format!("crowded-{nth}"))),
+    );
+    let before = records(&fixture.world);
+
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project", "--branch-name", "crowded"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("\"crowded\""))
+        .stderr(predicate::str::contains("crowded-2 to crowded-1000"));
+
+    // Refused naming the proposal, rather than cut at a name nobody asked for.
+    assert_eq!(records(&fixture.world), before, "no session is opened");
+    assert!(run_roots(&fixture.world).is_empty(), "and nothing is cut");
+}
+
 #[test]
 fn a_pinned_branch_is_continued_or_cut_at_exactly_its_name_while_a_prefix_is_configured() {
     let fixture = Fixture::local(&local_direct());
@@ -514,10 +574,6 @@ fn a_branches_file_this_build_will_not_read_is_refused_naming_it() {
     let (_, branch) = opened(&fixture, &[], &["--branch-name", "later"]);
     assert_eq!(branch, "nick/later");
 }
-
-// ---------------------------------------------------------------------------
-// The library seam, in process: what a consumer embedding this crate reaches.
-// ---------------------------------------------------------------------------
 
 /// A request over the registered repository, with everything a journey does not
 /// care about left unasked.

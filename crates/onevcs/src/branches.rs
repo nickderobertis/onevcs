@@ -66,6 +66,12 @@ pub struct BranchesFile {
     // as this shape. The one value the shape carries is checked by `resolve`, which is
     // where the layer that set it can be named.
     pub version: u32,
+    // llmlint: ignore[invalid_states_unrepresentable] the file is one of three layers
+    // that set this value, and only the resolution sees all three — so refusing an
+    // unusable one in a `Deserialize`, or in a newtype's `TryFrom`, could name the
+    // document but never the layer that actually decided this open's prefix, and
+    // would answer nothing at all for the two layers no deserializer meets. `resolve`
+    // is the one boundary that checks it, through git's own parser, naming its layer.
     /// What every branch this host cuts is prefixed with — `nick/`. Absent or empty
     /// adds nothing.
     #[serde(default, skip_serializing_if = "String::is_empty")]
