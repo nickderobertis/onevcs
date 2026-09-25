@@ -110,15 +110,30 @@ fn origin_branch(fixture: &Fixture, branch: &str) -> String {
     fixture.world.git(&fixture.origin, &["rev-parse", branch])
 }
 
-/// Every session record this host holds, by token.
-fn records(world: &World) -> Vec<PathBuf> {
-    std::fs::read_dir(world.sessions_dir())
+/// The paths directly under `directory`, in a stable order, or none where it is not
+/// there.
+fn entries(directory: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(directory)
         .into_iter()
         .flatten()
         .flatten()
         .map(|entry| entry.path())
         .collect::<std::collections::BTreeSet<PathBuf>>()
         .into_iter()
+        .collect()
+}
+
+/// Every session record this host holds.
+fn records(world: &World) -> Vec<PathBuf> {
+    entries(&world.sessions_dir())
+}
+
+/// Every run root this host has cut, across every identity — which is where a
+/// session's clone and worktree live.
+fn run_roots(world: &World) -> Vec<PathBuf> {
+    entries(&world.home().join("workspaces"))
+        .into_iter()
+        .flat_map(|identity| entries(&identity.join("runs")))
         .collect()
 }
 
@@ -302,19 +317,8 @@ fn a_proposal_that_sanitizes_to_nothing_is_refused_naming_it_and_cuts_nothing() 
         "no branch is left behind"
     );
     assert!(
-        !fixture.world.home().join("workspaces").exists()
-            || std::fs::read_dir(fixture.world.home().join("workspaces"))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .all(|identity| !identity.path().join("runs").exists()
-                    || std::fs::read_dir(identity.path().join("runs"))
-                        .into_iter()
-                        .flatten()
-                        .flatten()
-                        .next()
-                        .is_none()),
-        "no worktree is left behind"
+        run_roots(&fixture.world).is_empty(),
+        "no clone or worktree is left behind"
     );
 }
 
@@ -452,6 +456,10 @@ fn a_request_naming_both_a_branch_and_a_name_to_cut_is_refused_naming_both() {
         records(&fixture.world),
         before,
         "no session is opened for a request that says two things"
+    );
+    assert!(
+        run_roots(&fixture.world).is_empty(),
+        "and nothing is cut for it"
     );
 }
 

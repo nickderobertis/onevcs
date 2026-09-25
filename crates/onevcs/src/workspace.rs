@@ -1078,7 +1078,13 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     // the derived default is this token's own, so nothing already carries it.
     let branch = match (pinned, &proposed) {
         (Some(branch), _) => branch,
-        (None, Some(stem)) => first_free(registry, &resolution, &execution, request, stem)?,
+        (None, Some(composed)) => first_free(
+            registry,
+            &resolution,
+            &execution,
+            request.branch_name.as_deref().unwrap_or(composed),
+            composed,
+        )?,
         (None, None) => named(format!("{}onevcs/{token}", prefix.value))?,
     };
     // Only for a pin: a generated name is this token's own and can stand for nothing
@@ -1969,7 +1975,7 @@ fn first_free(
     registry: &Registry,
     resolution: &Resolution,
     execution: &Path,
-    request: &SessionRequest,
+    proposed: &str,
     stem: &str,
 ) -> Result<Ref> {
     let taken = taken_names(registry, resolution, execution)?;
@@ -1985,7 +1991,6 @@ fn first_free(
             reason: format!("{reason}: it is not a valid branch name"),
         });
     }
-    let proposed = request.branch_name.as_deref().unwrap_or(stem);
     Err(Error::Invalid {
         reason: format!(
             "the branch name {proposed:?} is taken, and so is every name from {stem}-2 to \
