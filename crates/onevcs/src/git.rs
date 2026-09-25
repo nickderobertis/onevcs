@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::{self, Error, Result};
 use crate::host::Sha;
-use crate::ids;
+use crate::{ids, lock};
 
 /// Bound, in seconds, on a command that runs no repository hook.
 pub const TIMEOUT_ENV: &str = "ONEVCS_GIT_TIMEOUT";
@@ -1508,9 +1508,26 @@ fn unaskable(path: &Path, error: &std::io::Error) -> Error {
     ))
 }
 
+/// The file in a checkout's common directory that fetches into it take turns under.
+pub const FETCH_LOCK: &str = "onevcs-fetch.lock";
+
 /// Update remote-tracking refs. Deliberately performed outside every exclusive
 /// section, so one slow origin cannot hold another session out.
+///
+/// Fetches into one checkout still take turns, under a lock of their own held for
+/// the fetch and nothing else. Two of them update the same `refs/remotes/<remote>/*`,
+/// and git's ref transaction fails the second with `cannot lock ref` even where the
+/// ref already holds the value it wanted: a session opening while a landing
+/// fast-forwards the same registered checkout would fail on a spurious conflict.
+///
+/// The lock is [`FETCH_LOCK`] in the checkout's common directory, so fetches into two
+/// checkouts never wait on each other, and every process fetching into this one takes
+/// turns whichever state root it runs under. It is not the checkout's publication
+/// lock, which is held across whole publications — exactly the section fetches are
+/// kept outside of. And it is dropped on every return: a fetch git failed, or whose
+/// process was killed, leaves the next one free to run.
 pub fn fetch(cwd: &Path, remote: &str) -> Result<()> {
+    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
     checked(&["fetch", remote, "--prune"], Some(cwd)).map(|_| ())
 }
 
@@ -2991,6 +3008,248 @@ mod ref_name_tests {
                 "{name:?}: this build and git disagree about whether it is a ref name"
             );
         }
+    }
+}
+
+/// Fetches into one checkout take turns, and a turn ends however its fetch did.
+///
+/// In this crate because a library caller is the one that can tell: `onepipeline`
+/// links it and keeps one process alive across many fetches, so a turn a failed or
+/// killed fetch did not hand back would wedge every later fetch into that checkout in
+/// that process — and a process that exits releases its locks whatever it leaked,
+/// which is all a journey through the binary could show. The overlap itself, a
+/// session opening that meets a fetch mid-way through its ref update, is driven
+/// through the binary in `tests/e2e/fetch_turns.rs`.
+///
+/// Every fetch here is held, refused, or killed by a real `reference-transaction`
+/// hook in the checkout, at `prepared` — its ref locks taken and its update not yet
+/// written, which is the point two fetches collide at.
+#[cfg(all(test, unix))]
+mod fetch_turns {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A scratch directory, and a lock bound short enough that a turn nobody handed
+    /// back fails the test rather than hanging it.
+    ///
+    /// The bound is this process's own environment, which is safe because nextest
+    /// runs each test in a process of its own — the same footing `stream.rs` stands on.
+    fn scratch() -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let root = directory
+            .path()
+            .canonicalize()
+            .expect("a canonical scratch root");
+        std::env::set_var(lock::TIMEOUT_ENV, "10");
+        (directory, root)
+    }
+
+    fn git(cwd: &Path, args: &[&str]) {
+        checked(args, Some(cwd)).expect("the fixture's git succeeds");
+    }
+
+    /// A bare origin with one commit on `main`, and the clone that writes to it.
+    fn origin(root: &Path) -> (PathBuf, PathBuf) {
+        let origin = root.join("origin.git");
+        git(
+            root,
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                &origin.to_string_lossy(),
+            ],
+        );
+        let writer = root.join("writer");
+        git(
+            root,
+            &[
+                "clone",
+                "-q",
+                &origin.to_string_lossy(),
+                &writer.to_string_lossy(),
+            ],
+        );
+        advance(&writer);
+        (origin, writer)
+    }
+
+    /// Move origin's `main` on, so the next fetch has a ref to update.
+    fn advance(writer: &Path) {
+        git(
+            writer,
+            &[
+                "-c",
+                "user.name=Fetch",
+                "-c",
+                "user.email=fetch@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "move main on",
+            ],
+        );
+        git(writer, &["push", "-q", "origin", "HEAD:main"]);
+    }
+
+    fn checkout(root: &Path, origin: &Path, name: &str) -> PathBuf {
+        let checkout = root.join(name);
+        git(
+            root,
+            &[
+                "clone",
+                "-q",
+                &origin.to_string_lossy(),
+                &checkout.to_string_lossy(),
+            ],
+        );
+        checkout
+    }
+
+    /// Hold the first fetch into `checkout` at `prepared` until `<gate>/release`
+    /// exists, recording the git being held as `<gate>/held/git`; while
+    /// `<gate>/refuse` exists, refuse every update instead.
+    fn gate(root: &Path, checkout: &Path) -> PathBuf {
+        let gate = root.join(format!(
+            "gate-{}",
+            checkout.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let hooks = gate.join("hooks");
+        std::fs::create_dir_all(&hooks).expect("a hooks directory");
+        let hook = hooks.join("reference-transaction");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\n\
+                 [ \"$1\" = prepared ] || exit 0\n\
+                 grep -q ' refs/remotes/origin/main$' || exit 0\n\
+                 [ -e {gate}/refuse ] && exit 1\n\
+                 mkdir {gate}/held 2>/dev/null || exit 0\n\
+                 echo \"$PPID\" > {gate}/held/git\n\
+                 until [ -e {gate}/release ]; do sleep 0.02; done\n",
+                gate = gate.display()
+            ),
+        )
+        .expect("the hook is written");
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("the hook is executable");
+        git(
+            checkout,
+            &["config", "core.hooksPath", &hooks.to_string_lossy()],
+        );
+        gate
+    }
+
+    /// Start a fetch into `checkout` and return once its hook is holding it.
+    fn held_fetch(checkout: &Path, gate: &Path) -> std::thread::JoinHandle<Result<()>> {
+        let at = checkout.to_path_buf();
+        let fetching = std::thread::spawn(move || fetch(&at, "origin"));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !gate.join("held/git").is_file() {
+            assert!(
+                !fetching.is_finished(),
+                "the fetch ended before its hook held it"
+            );
+            assert!(Instant::now() < deadline, "the fetch was never held");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        fetching
+    }
+
+    fn tracked_main(checkout: &Path) -> String {
+        checked(&["rev-parse", "refs/remotes/origin/main"], Some(checkout))
+            .expect("the checkout tracks origin's main")
+            .trimmed()
+    }
+
+    fn origin_main(origin: &Path) -> String {
+        checked(&["rev-parse", "main"], Some(origin))
+            .expect("origin has a main")
+            .trimmed()
+    }
+
+    #[test]
+    fn a_fetch_git_failed_hands_the_checkout_to_the_next_fetch() {
+        let (_directory, root) = scratch();
+        let (origin, writer) = origin(&root);
+        let checkout = checkout(&root, &origin, "checkout");
+        let gate = gate(&root, &checkout);
+        advance(&writer);
+
+        std::fs::write(gate.join("refuse"), "").expect("the hook refuses");
+        let refused = fetch(&checkout, "origin").expect_err("the hook refused the update");
+        assert!(
+            refused
+                .to_string()
+                .contains("git fetch origin --prune failed"),
+            "git's own failure is what is reported: {refused}"
+        );
+
+        std::fs::remove_file(gate.join("refuse")).expect("the hook stops refusing");
+        std::fs::write(gate.join("release"), "").expect("nothing is held");
+        fetch(&checkout, "origin").expect("the next fetch takes its turn");
+        assert_eq!(tracked_main(&checkout), origin_main(&origin));
+    }
+
+    #[test]
+    fn a_fetch_whose_git_was_killed_hands_the_checkout_to_the_next_fetch() {
+        let (_directory, root) = scratch();
+        let (origin, writer) = origin(&root);
+        let checkout = checkout(&root, &origin, "checkout");
+        let gate = gate(&root, &checkout);
+        advance(&writer);
+
+        let killed = held_fetch(&checkout, &gate);
+        let pid: libc::pid_t = std::fs::read_to_string(gate.join("held/git"))
+            .expect("the held git's pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        // SAFETY: `kill` on the one git this test started, named by its own hook.
+        // TERM rather than KILL: git takes its ref locks away with it on TERM, and a
+        // `.lock` file KILL left behind would refuse the next fetch for a reason of
+        // git's rather than this crate's.
+        assert_eq!(
+            unsafe { libc::kill(pid, libc::SIGTERM) },
+            0,
+            "the git is signalled"
+        );
+        let ended = killed.join().expect("the fetching thread returns");
+        assert!(ended.is_err(), "a killed fetch is a failed one");
+        // The hook git was waiting on outlives it; let it go.
+        std::fs::write(gate.join("release"), "").expect("the orphaned hook ends");
+
+        fetch(&checkout, "origin").expect("the next fetch takes its turn");
+        assert_eq!(tracked_main(&checkout), origin_main(&origin));
+    }
+
+    #[test]
+    fn fetches_into_two_checkouts_do_not_wait_on_each_other() {
+        let (_directory, root) = scratch();
+        let (origin, writer) = origin(&root);
+        let held = checkout(&root, &origin, "held");
+        let free = checkout(&root, &origin, "free");
+        let gate = gate(&root, &held);
+        advance(&writer);
+
+        let holding = held_fetch(&held, &gate);
+        fetch(&free, "origin").expect("a fetch into another checkout runs meanwhile");
+        assert_eq!(tracked_main(&free), origin_main(&origin));
+        assert!(
+            !holding.is_finished(),
+            "the other checkout's fetch is still held while this one completed"
+        );
+
+        std::fs::write(gate.join("release"), "").expect("the held fetch is let go");
+        holding
+            .join()
+            .expect("the fetching thread returns")
+            .expect("the held fetch completes");
+        assert_eq!(tracked_main(&held), origin_main(&origin));
     }
 }
 

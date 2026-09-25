@@ -516,8 +516,10 @@ The `#[cfg(test)]` modules in `src/` are the exceptions to that, and each one is
 there because what it holds is reachable no other way: a process's creation
 identity (`workspace.rs`), a reader overlapping an atomic replace (`home.rs`),
 Windows' verbatim paths crossing every git boundary, a captured command's
-collector meeting its pipe empty at the instant the command exits, and whether a
-name is a ref name decided in process rather than by a subprocess (`git.rs`),
+collector meeting its pipe empty at the instant the command exits, whether a
+name is a ref name decided in process rather than by a subprocess, and whether a
+fetch hands its checkout's turn back when git fails or is killed — which only a
+process outliving the fetch, as a linking consumer's does, can see (`git.rs`),
 the *type* side of the status report's serialized contract (`status.rs`), and a
 credential nested in an object reaching `Stream`'s own record call (`stream.rs`) —
 `Stream` is private and no kind nests an object in its payload, so no verb can be
