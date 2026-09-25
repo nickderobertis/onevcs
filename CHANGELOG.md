@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.2](https://github.com/nickderobertis/onevcs/compare/v0.32.1...v0.32.2) - 2026-09-25
+
+### Fixed
+
+- *(git)* serialize fetches into one checkout so concurrent sessions and landings stop racing for a ref lock ([#223](https://github.com/nickderobertis/onevcs/pull/223))
+
 ## [0.32.1](https://github.com/nickderobertis/onevcs/compare/v0.32.0...v0.32.1) - 2026-09-24
 
 ### Fixed
