@@ -19,6 +19,26 @@ than on a copy of it.
 Pin the version **exactly**. What is proved is a property of *that* build, and a
 range that quietly moved would change what was proved without anyone deciding to.
 
+It makes two claims now, against two released builds, and each is the build the
+claim is about:
+
+- `tests/released.rs` holds **0.13.0** — a build from before an envelope carried
+  `phase` — to reading the envelope this build stamps one on. It is linked as
+  `onevcs-envelope-era`, because only a build that old can make that claim.
+- `tests/retired.rs` holds **0.32.2** — the release `ai-orchestrator`'s
+  `config/onevcs.version` names, which is the build a consumer shares a host's
+  `$ONEVCS_HOME` with — to reading the state this build leaves after retiring a
+  branch: the registry, every session record, every stream (the `branch-superseded`
+  and `branch-retired` kinds it has no word for included), and its own `recoverable`
+  and `status` answers about a branch nothing retired, unchanged. It is the plain
+  `onevcs` dependency. When that file moves to another release, move this pin with it.
+
+The second claim needs this build to *write* the state, so this build is linked too,
+from the path beside it, as `onevcs-current`: one journey writes a real scratch host
+with it and reads the host back with the release, both through their libraries, in
+one process — which is why the journey sets `HOME` and `ONEVCS_HOME` in its own
+process and relies on nextest's process per test.
+
 ## Why it is not a workspace member, and why that must not change
 
 Two packages named `onevcs` in one resolve graph make `--package onevcs`

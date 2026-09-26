@@ -14,7 +14,7 @@
 name = "onevcs-envelope-compat"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 publish = false
 description = "Holds a released onevcs to reading the envelopes this build writes."
@@ -23,9 +23,17 @@ description = "Holds a released onevcs to reading the envelopes this build write
 [workspace]
 
 [dev-dependencies]
-# The newest build that shipped. Pinned exactly: what this proves is a property of
-# *that* build, so a range that quietly moved would change what was proved.
-onevcs = "=0.13.0"
+# The build a consumer pins: the release named in `ai-orchestrator`'s
+# `config/onevcs.version`. Pinned exactly: what this proves is a property of *that*
+# build, so a range that quietly moved would change what was proved.
+onevcs = "=0.32.2"
+# A build from before an envelope carried `phase`, which is the one claim
+# `tests/released.rs` makes and only a build that old can make it for.
+onevcs-envelope-era = { package = "onevcs", version = "=0.13.0" }
+# This build, linked beside the release so one journey writes a host's state with it
+# and reads that state back with the release. A path rather than a version, because
+# what writes the records has to be the tree under review.
+onevcs-current = { package = "onevcs", path = "../crates/onevcs" }
 # `preserve_order`, as the workspace's own copy declares, so a round trip through
 # the fixture compares field for field rather than reordering it.
 serde_json = { version = "1", features = ["preserve_order"] }
