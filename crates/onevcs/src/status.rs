@@ -36,7 +36,7 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
-use crate::host::{CheckSource, Hosting};
+use crate::host::{ChangeId, CheckSource, Hosting};
 use crate::landed::{self, Landed};
 use crate::preserve::{ALREADY_ON_ORIGIN, PUSHED};
 use crate::publish::{self, DraftReason};
@@ -2522,11 +2522,16 @@ fn retired_under(streams: &[Recorded], branch: &Ref, within: Option<&str>) -> Ve
 /// The change request this host's streams record opening for one branch, whole
 /// enough to address the host about it: its URL, the host's identifier, the branch it
 /// targets, and the stream that recorded it.
+///
+/// Each is read out of a stream anybody on this host could have written, so each is
+/// checked as it is read: an identifier that is blank, a base git would not accept as
+/// a branch, or a stream that is not a plain name is absent rather than carried on to
+/// the host or into a path.
 pub(crate) struct OpenedChange {
     pub url: Url,
-    pub id: Option<String>,
-    pub base: Option<String>,
-    pub stream: Option<String>,
+    pub id: Option<ChangeId>,
+    pub base: Option<Ref>,
+    pub stream: Option<Token>,
 }
 
 /// The newest change request recorded for one branch, where one is.
@@ -2547,9 +2552,11 @@ pub(crate) fn opened_change(
     let opened = told.opened?;
     Some(OpenedChange {
         url: Url::parse(&opened.url).ok()?,
-        id: opened.id,
-        base: opened.base,
-        stream: told.change_stream,
+        id: opened.id.filter(|id| !id.trim().is_empty()).map(ChangeId),
+        base: opened.base.and_then(|base| Ref::try_from(base).ok()),
+        stream: told
+            .change_stream
+            .and_then(|stream| Token::try_from(stream).ok()),
     })
 }
 

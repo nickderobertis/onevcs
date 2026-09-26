@@ -1488,7 +1488,7 @@ impl<'a> Census<'a> {
                 branch,
                 session.as_deref(),
             ) {
-                if let (Some(id), Some(target)) = (opened.id.as_deref(), opened.base.as_deref()) {
+                if let (Some(id), Some(target)) = (&opened.id, &opened.base) {
                     let head = judged
                         .first()
                         .map(|(copy, _)| copy.tip.clone())
@@ -1499,7 +1499,7 @@ impl<'a> Census<'a> {
                             identity: &self.resolution.key,
                             branch,
                             url: &opened.url,
-                            id,
+                            id: &id.0,
                             base: target,
                             head: &head,
                             stream: opened.stream.as_deref(),
@@ -1541,7 +1541,7 @@ impl<'a> Census<'a> {
         ) else {
             return Ok(Some(KeepReason::OpenChangeRequest));
         };
-        let (Some(id), Some(target)) = (opened.id.as_deref(), opened.base.as_deref()) else {
+        let (Some(id), Some(target)) = (&opened.id, &opened.base) else {
             return Ok(Some(KeepReason::Unknown));
         };
         let head = judged
@@ -1691,15 +1691,15 @@ impl Evidence {
 
 fn change_request(
     opened: &status::OpenedChange,
-    id: &str,
-    base: &str,
+    id: &ChangeId,
+    base: &Ref,
     head: &str,
 ) -> ChangeRequest {
     ChangeRequest {
-        id: ChangeId(id.to_owned()),
+        id: id.clone(),
         url: opened.url.clone(),
         head_sha: Sha(head.to_owned()),
-        base: base.to_owned(),
+        base: base.to_string(),
     }
 }
 

@@ -1065,6 +1065,50 @@ fn a_branch_with_an_open_change_request_is_refused_and_nothing_is_deleted() {
 }
 
 #[test]
+fn a_change_request_recorded_against_a_base_git_would_not_accept_keeps_the_branch_as_unknown() {
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted.change("feature/mangled", "feat: recorded badly");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let opened = hosted.world.events_of(&token, "change-opened");
+    let base = opened[0]["payload"]["base"]
+        .as_str()
+        .expect("the base the change request targets")
+        .to_owned();
+    // The stream is a file anybody on this host can write; one whose record names a
+    // base git would refuse is not carried on to the host as one.
+    let stream = hosted
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let text = std::fs::read_to_string(&stream).expect("the session's stream");
+    let recorded = format!("\"base\":\"{base}\"");
+    assert!(text.contains(&recorded), "{text}");
+    std::fs::write(&stream, text.replace(&recorded, "\"base\":\"main..bad\""))
+        .expect("the stream rewritten");
+    let before = hosted.branch_on_origin("feature/mangled");
+    let asked = hosted.world.host_calls().len();
+
+    let (code, kept) = verb(&hosted.world, &["retire", "feature/mangled", "--dry-run"]);
+    assert_eq!(code, 4, "{kept}");
+    assert_eq!(kept["reason"], "unknown", "{kept}");
+    let (code, kept) = verb(&hosted.world, &["retire", "feature/mangled"]);
+    assert_eq!(code, 4, "{kept}");
+    assert_eq!(kept["reason"], "unknown", "{kept}");
+    assert_eq!(
+        hosted.world.host_calls()[asked..],
+        [] as [String; 0],
+        "the host was asked about a change request against a base git would refuse"
+    );
+    assert_eq!(hosted.branch_on_origin("feature/mangled"), before);
+}
+
+#[test]
 fn an_excluded_branch_is_left_alone_by_the_pass() {
     let yard = Yard::new();
     yard.landed("feature/excluded", "excluded.txt");
