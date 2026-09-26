@@ -462,6 +462,18 @@ fn a_change_request_that_merged_after_its_watch_ended_is_retired_once_the_pass_r
     assert_eq!(entry["sessions_closed"], serde_json::json!([token]));
     // The merge the pass reconciled is recorded where a late merge always is.
     assert_eq!(hosted.world.events_of(&token, "change-merged").len(), 1);
+    // …and the branch reads as landed on the base, through the retirement's proof.
+    let report = status(&hosted.world, "feature/case-one");
+    assert_eq!(report["retired"]["class"], "retirable", "{report}");
+    assert_eq!(
+        report["retired"]["proof"]["kind"], "merged-change-request",
+        "{report}"
+    );
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "retired",
+        "{report}"
+    );
 }
 
 #[test]
@@ -1779,40 +1791,167 @@ fn the_library_classifies_a_held_branch_a_retired_one_and_refuses_one_nothing_ho
 }
 
 #[test]
-fn a_branch_a_registered_linked_worktree_has_checked_out_is_refused() {
-    // A checkout registered from a linked worktree has a `.git` file rather than a
+fn a_branch_checked_out_in_a_checkout_with_a_separate_git_directory_is_refused() {
+    // A checkout cloned with `--separate-git-dir` has a `.git` file rather than a
     // directory, so what it has checked out is asked of git rather than read off disk.
     let yard = Yard::new();
     let world = yard.world();
-    yard.landed("feature/linked", "linked.txt");
-    let linked = world.path("linked");
+    yard.landed("feature/apart", "apart.txt");
+    let apart = world.path("apart");
     world.git(
-        yard.checkout(),
+        &world.path(""),
         &[
-            "worktree",
-            "add",
+            "clone",
             "-q",
-            &linked.to_string_lossy(),
-            "feature/linked",
+            "--separate-git-dir",
+            &world.path("apart.git").to_string_lossy(),
+            &yard.fixture.origin.to_string_lossy(),
+            &apart.to_string_lossy(),
         ],
     );
     assert!(
-        linked.join(".git").is_file(),
-        "the premise: a linked worktree"
+        apart.join(".git").is_file(),
+        "the premise: a separate git directory"
     );
     world
         .onevcs()
-        .args(["register", &linked.to_string_lossy()])
+        .args(["register", &apart.to_string_lossy()])
         .assert()
         .success();
-    let before = yard.held("feature/linked");
+    yard.run(&[
+        "import",
+        "feature/apart",
+        "--repo",
+        &apart.to_string_lossy(),
+    ])
+    .success();
+    world.git(&apart, &["checkout", "-q", "feature/apart"]);
+    let before = holding(
+        &[yard.checkout().to_path_buf(), apart.clone()],
+        "feature/apart",
+    );
+    assert_eq!(before.len(), 2, "the premise: {before:?}");
 
-    let (code, refused) = yard.verb(&["retire", "feature/linked", "--repo", "project"]);
+    let (code, refused) = yard.verb(&["retire", "feature/apart", "--repo", "project"]);
     assert_eq!(code, 4, "{refused}");
     assert_eq!(refused["reason"], "checked-out", "{refused}");
-    assert_eq!(yard.held("feature/linked"), before);
     assert_eq!(
-        world.git(&linked, &["branch", "--show-current"]).trim(),
-        "feature/linked"
+        holding(
+            &[yard.checkout().to_path_buf(), apart.clone()],
+            "feature/apart"
+        ),
+        before
     );
+    assert_eq!(
+        world.git(&apart, &["branch", "--show-current"]).trim(),
+        "feature/apart"
+    );
+}
+
+#[test]
+fn a_session_close_whose_retirement_is_stopped_part_way_says_how_to_finish_it() {
+    let yard = Yard::new();
+    let world = yard.world();
+    let (token, worktree) = yard.fixture.open(&["--branch", "feature/half-closed"]);
+    world.commit_file(&worktree, "half.txt", "h\n", "feat: land and close");
+    yard.run(&["publish", &token]).success();
+    yard.run(&[
+        "import",
+        "feature/half-closed",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    let refs = yard.worker.join(".git/refs/heads/feature");
+    let original = std::fs::metadata(&refs)
+        .expect("a loose ref directory")
+        .permissions();
+    // llmlint: ignore-block[tests_mirror_real_usage] a ref directory git may not write is
+    // a fact about the host, reachable by no verb of this crate; the real binary meets it.
+    std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o555))
+        .expect("the worker's refs are read-only");
+    let (code, closed) = said(world, &["session", "close", &token]);
+    std::fs::set_permissions(&refs, original).expect("and writable again");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    assert_eq!(
+        code, 0,
+        "the session closes whatever became of its branch: {closed}"
+    );
+    says(
+        &closed,
+        "onevcs: warning: feature/half-closed was retired in part; `onevcs retire \
+         feature/half-closed --repo ",
+    );
+    says(
+        &closed,
+        &format!("finishes it: {} (", yard.worker.display()),
+    );
+    assert!(tip(world, &yard.worker, "feature/half-closed").is_some());
+    let retired = events(world, "branch-retired");
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0]["payload"]["trigger"], "session-close");
+    assert_eq!(
+        retired[0]["payload"]["failed"][0]["location"],
+        yard.worker.display().to_string()
+    );
+
+    let (code, finished) = yard.verb(&["retire", "feature/half-closed"]);
+    assert_eq!(
+        (code, &finished["outcome"]),
+        (0, &Value::from("retired")),
+        "{finished}"
+    );
+    assert!(yard.held("feature/half-closed").is_empty());
+}
+
+#[test]
+fn a_branch_landed_in_part_whose_rest_the_base_carries_is_listed_as_retirable() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/in-part", "first.txt");
+    // One more commit after the landing, whose change reached the base another way.
+    world.git(yard.checkout(), &["checkout", "-q", "feature/in-part"]);
+    world.commit_file(
+        yard.checkout(),
+        "later.txt",
+        "later\n",
+        "feat: more after it",
+    );
+    world.git(yard.checkout(), &["checkout", "-q", "main"]);
+    let elsewhere = world.clone_of(&yard.fixture.origin, "elsewhere");
+    world.commit_file(
+        &elsewhere,
+        "later.txt",
+        "later\n",
+        "feat: the same, elsewhere",
+    );
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    world.git(
+        yard.checkout(),
+        &["pull", "-q", "--ff-only", "origin", "main"],
+    );
+
+    let (code, listed) = said(world, &["recoverable", "--all"]);
+    assert_eq!(code, 0, "{listed}");
+    says(&listed, "    Landed in part: ");
+    says(
+        &listed,
+        "    Retirable: it holds nothing beyond main (content-identical — ",
+    );
+    says(
+        &listed,
+        &format!(
+            "`onevcs retire feature/in-part --repo {}` deletes it everywhere this host holds it",
+            yard.checkout().display()
+        ),
+    );
+    let (code, default) = said(world, &["recoverable"]);
+    assert_eq!(code, 0, "{default}");
+    assert!(!default.contains("feature/in-part"), "{default}");
+
+    let (code, retired) = yard.verb(&["retire", "feature/in-part"]);
+    assert_eq!(code, 0, "{retired}");
+    assert_eq!(retired["proof"]["kind"], "content-identical", "{retired}");
+    assert!(yard.held("feature/in-part").is_empty());
 }
