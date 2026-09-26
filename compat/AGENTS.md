@@ -6,8 +6,9 @@ Instructions that are true of `compat/` and nowhere else.
 
 ## What it is for
 
-One claim, which the crate next door cannot make about itself: that a build of
-`onevcs` **already in the field** goes on reading the streams this build writes.
+A claim the crate next door cannot make about itself: that a build of `onevcs`
+**already in the field** goes on reading what this build writes — its streams, and
+the state it leaves on a host they share.
 A released build carries its own copy of the envelope types, from before they were
 `onemessagebus`'s, so asserting that from the current sources would only ask this
 build about itself. So the dependency here
