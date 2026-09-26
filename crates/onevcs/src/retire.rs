@@ -50,6 +50,13 @@ use crate::stream::Stream;
 use crate::workspace::{self, Record, Ref};
 use crate::{ids, label, landed, lock, policy, pool, processes, status, workspaces};
 
+// llmlint: ignore-block[invalid_states_unrepresentable] the four request types below are
+// the retirement amendment's in `docs/contract.md`, field for field, and two other
+// repositories link them as declared — an identity key and a branch name are `String`
+// everywhere this crate's contract spells one, and a repository is the widest of the four
+// forms every `--repo` takes. Each is decided where it arrives: a repository by
+// `store::resolve`, a branch by `check-ref-format`, a landing by `SupersedingLanding::parse`,
+// and labels by `label::validate`, each refusing by name.
 /// One branch of one identity: the pair a pass is told to leave alone by.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BranchRef {
@@ -122,6 +129,7 @@ pub struct Supersession {
     /// What the caller says about the supersession, as `--label KEY=VALUE` spells it.
     pub labels: BTreeMap<String, String>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// What a branch is, for the question of whether it may be deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1760,6 +1768,11 @@ impl SupersessionRecord {
 
 /// The payload a `branch-retired` event carries, which is also what it is read back
 /// as.
+// llmlint: ignore[invalid_states_unrepresentable] the amendment fixes this payload field
+// for field, and a stream is a file whichever process wrote it — so what is typed is what
+// a reader routes on (the class, reason, proof, mode and trigger), and the rest is checked
+// where a record is read: `RetiredRecord::read` refuses a branch git would not accept, a
+// tip that is not a commit id, and fields that contradict each other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RetiredPayload {
     identity: String,

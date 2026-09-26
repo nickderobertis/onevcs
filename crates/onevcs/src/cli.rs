@@ -113,6 +113,9 @@ pub struct RetireArgs {
     pub branch: String,
     /// The repository it belongs to: an identity key, a registered alias, an origin
     /// URL, or a path. Omitted, the one identity anything on this host holds it in.
+    // llmlint: ignore[invalid_states_unrepresentable] the four forms cannot be told apart
+    // by a parser — an alias and a key are registry lookups and a path is `canonicalize`
+    // — so `store::resolve` is the one boundary that decides, as `PreserveArgs::repo` says.
     #[arg(long)]
     pub repo: Option<String>,
     /// Report what would be retired, and change nothing.
@@ -130,6 +133,9 @@ pub struct RetireFinishedArgs {
     #[arg(long)]
     pub repo: Option<String>,
     /// A branch to leave alone, whatever it is; repeatable.
+    // llmlint: ignore[invalid_states_unrepresentable] a branch name is valid when `git
+    // check-ref-format` says so, a subprocess argument parsing must not run; the pass
+    // refuses an exclusion naming no valid branch where it arrives, by name.
     #[arg(long, value_name = "BRANCH")]
     pub exclude: Vec<String>,
     /// Report what would be retired, and change nothing.
@@ -143,6 +149,11 @@ pub struct RetireFinishedArgs {
 /// Arguments for `onevcs supersede`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct SupersedeArgs {
+    // llmlint: ignore-block[invalid_states_unrepresentable] this module is the parser only,
+    // and every field here is decided by a check it must not run: a branch name by `git
+    // check-ref-format`, a repository by the registry, a landing by whether it is a full
+    // commit id or an http(s) URL. `record_supersession` is the boundary that refuses each
+    // by name, and the command renders exactly the request that operation takes.
     /// The branch that was superseded.
     pub branch: String,
     /// The repository it belongs to: an identity key, a registered alias, an origin
@@ -158,6 +169,7 @@ pub struct SupersedeArgs {
     /// A label to record with it, as KEY=VALUE; repeatable, one value per key.
     #[arg(long, value_name = "KEY=VALUE")]
     pub label: Vec<String>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
 }
 
 /// The `onevcs pool` subcommands.
