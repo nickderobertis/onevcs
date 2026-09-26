@@ -795,7 +795,7 @@ pub fn all() -> Result<Vec<Record>> {
 /// and not removed** — see [`spent`]. Nobody holds a repository through it, so it is
 /// not a holder; but this is a read, and a caller asking who is here is not asking
 /// for anything to be destroyed. Removing it is `onevcs sweep`, over the candidates
-/// [`spent_records`] names. A record whose owner is still running is always reported,
+/// [`spent_among`] names. A record whose owner is still running is always reported,
 /// closed or open, live or stale; so is one a dispatch is still working in, and so
 /// is one whose branch still carries work nobody has published.
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
@@ -827,14 +827,16 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// Host-wide rather than per identity, because that is the question the verb that
 /// asks it is about: the sweep answers for this host's state root rather than for
 /// one repository.
-pub(crate) fn spent_records() -> Result<Vec<Record>> {
-    // One listing for the whole scan, for [`holders`]'s reason.
-    let listed = all()?;
-    let open = OpenRoots::of(&listed);
+///
+/// Asked of a listing the caller made, for [`holders`]'s reason: one listing for the
+/// whole scan — and the sweep goes on to read the same records for the finished
+/// branches, so it lists the directory once for both.
+pub(crate) fn spent_among(listed: &[Record]) -> Result<Vec<Record>> {
+    let open = OpenRoots::of(listed);
     let mut records = Vec::new();
     for record in listed {
-        if spent(&record, &open)? {
-            records.push(record);
+        if spent(record, &open)? {
+            records.push(record.clone());
         }
     }
     Ok(records)

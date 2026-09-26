@@ -149,6 +149,21 @@ impl Vcs for Git {
             true => record.clone.clone(),
             false => record.execution_checkout.clone(),
         };
+        // A branch retired since the session closed is held nowhere, and what it
+        // carried was proved to be on the base before it was deleted: there is no
+        // marker left for anything to act on.
+        if !git::branch_exists(&held_in, &record.branch) && crate::retire::retired(&record) {
+            return Ok(SessionRecord {
+                session: record.session(),
+                identity: record.identity.clone(),
+                lifecycle: record.state,
+                provenance: Provenance::Complete,
+                retried_by: record
+                    .retried_by
+                    .as_ref()
+                    .map(|token| SessionToken(token.to_string())),
+            });
+        }
         let target = publish::standing_target(&record)?;
         let base = base_ref(&held_in, target.base());
         Ok(SessionRecord {

@@ -6891,8 +6891,11 @@ fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
 
 /// The retirement amendment's `Retirement` fixture, as the document it spells.
 fn documented_retirement() -> Value {
-    serde_json::from_str(&amendment_block_declaring("json", "\"superseded_by\": {\"branch\""))
-        .expect("the retirement amendment's fixture is JSON")
+    serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"superseded_by\": {\"branch\"",
+    ))
+    .expect("the retirement amendment's fixture is JSON")
 }
 
 #[test]
@@ -6900,8 +6903,10 @@ fn the_retirement_amendment_declares_the_surface_it_added() {
     // Built from outside with every field named, which is the half the compiler checks:
     // a field added, removed or renamed stops this compiling. The functions are named
     // as values of the declared types, so a signature that moved does too.
-    let classify: fn(&Providers<'_>, &onevcs::RetirementQuery) -> onevcs::Result<onevcs::Retirement> =
-        onevcs::classify_retirement;
+    let classify: fn(
+        &Providers<'_>,
+        &onevcs::RetirementQuery,
+    ) -> onevcs::Result<onevcs::Retirement> = onevcs::classify_retirement;
     let retire: fn(&Providers<'_>, &onevcs::RetireRequest) -> onevcs::Result<onevcs::Retired> =
         onevcs::retire;
     let pass: fn(
@@ -6963,12 +6968,18 @@ fn the_retirement_amendment_declares_the_surface_it_added() {
     }
     // Every word a reason or a class travels as is the one the amendment spells.
     for (reason, word) in [
-        (onevcs::KeepReason::HeldByLiveSession, "held-by-live-session"),
+        (
+            onevcs::KeepReason::HeldByLiveSession,
+            "held-by-live-session",
+        ),
         (onevcs::KeepReason::Excluded, "excluded"),
         (onevcs::KeepReason::OpenChangeRequest, "open-change-request"),
         (onevcs::KeepReason::CheckedOut, "checked-out"),
         (onevcs::KeepReason::DirtyWorktree, "dirty-worktree"),
-        (onevcs::KeepReason::UnmergedUniqueCommits, "unmerged-unique-commits"),
+        (
+            onevcs::KeepReason::UnmergedUniqueCommits,
+            "unmerged-unique-commits",
+        ),
         (onevcs::KeepReason::Unknown, "unknown"),
         (onevcs::KeepReason::IsBase, "is-base"),
     ] {
@@ -7007,7 +7018,12 @@ fn the_retirement_json_the_amendment_spells_is_what_a_retirement_is_read_and_wri
     };
     let written = serde_json::to_value(&kept).expect("a retirement serializes");
     let keys = |value: &Value| -> BTreeSet<String> {
-        value.as_object().expect("an object").keys().cloned().collect()
+        value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect()
     };
     assert_eq!(keys(&written), keys(&documented));
     assert_eq!(written["reason"], "unknown");
@@ -7038,7 +7054,9 @@ fn the_retirement_json_the_amendment_spells_is_what_a_retirement_is_read_and_wri
     ] {
         assert_eq!(serde_json::to_value(&proof).expect("a proof"), spelled);
         assert!(
-            regions().0.contains(&format!("\"kind\": \"{}\"", proof.kind())),
+            regions()
+                .0
+                .contains(&format!("\"kind\": \"{}\"", proof.kind())),
             "the amendment does not spell the proof {}",
             proof.kind()
         );

@@ -2335,10 +2335,10 @@ onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]
     "roots": null, "unreadable": []}],
  "not_examined": [
    {"family": "lifecycle-runs", "path": "/home/me/.onevcs/workspaces/<identity>/runs",
-    "reason": "the per-run lifecycle clone root, which `onevcs session open` keeps as a bounded recovery history so a dead run's branch stays reachable; this verb does not reach into it",
+    "reason": "the per-run lifecycle clone root, which `onevcs session open` keeps as a bounded recovery history so a dead run's branch stays reachable; this verb reaps nothing in it as a workspace, and removes a run root only with a branch the finished-branches family retires",
     "owner": "`onevcs recoverable --repo project` names the branch each retained run left and the verb that lands or discards it; the next `onevcs session open` of this repository reclaims a run root once nothing holds it"},
    {"family": "pool", "path": "/home/me/.onevcs/workspaces/<identity>/pool",
-    "reason": "the pool of warm slots a session of this repository may be placed on next; this verb does not reach into it",
+    "reason": "the pool of warm slots a session of this repository may be placed on next; this verb removes no slot, and returns one only where the finished-branches family retires a branch it held",
     "owner": "`onevcs pool status project` reads the slots; `onevcs pool prune project` empties the idle ones"},
    {"family": "preserved-branches", "path": "/home/me/src/project",
     "reason": "the unpublished branches sessions of this repository left behind — handed back into this checkout, or still only in a run clone under runs/ — each of which holds its run root from reclamation; this verb lands and discards none of them",
@@ -3090,7 +3090,7 @@ identity's base on its origin is not a finished branch at all: it is `keep` with
     to it. A commit that changes no content is one whose tree equals its parent's, such
     as the `chore: record the landing of <branch>` commit a publication writes.
   - **`recorded-landing`**: a landing is recorded for the branch — a recorded landing
-    commit, or a `<prefix>Landed-Commit` trailer on the base — naming the branch commit
+    commit, or a `<prefix>Landed-Commit:` trailer on the base — naming the branch commit
     that landed (the *landed point*). The record alone never makes a branch retirable:
     the proof holds only where the landed point is an ancestor of, or equal to, the
     branch's **current** tip and every commit after it up to that tip changes no

@@ -142,9 +142,9 @@ pub use releases::{
     SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
 pub use retire::{
-    BranchHolder, BranchHolderKind, BranchRef, FailedHolder, KeepReason, RetireMode,
-    RetireOutcome, RetirePass, RetireRequest, Retired, Retirement, RetirementClass,
-    RetirementPassReport, RetirementProof, RetirementQuery, SupersededBy, Supersession,
+    BranchHolder, BranchHolderKind, BranchRef, FailedHolder, KeepReason, RetireMode, RetireOutcome,
+    RetirePass, RetireRequest, Retired, Retirement, RetirementClass, RetirementPassReport,
+    RetirementProof, RetirementQuery, SupersededBy, Supersession,
 };
 pub use rules::MergePolicy;
 pub use session::{

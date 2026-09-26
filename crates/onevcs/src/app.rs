@@ -14,10 +14,11 @@ use crate::cli::{
     ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
     EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
     PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, RecoverArgs, RecoverableArgs,
-    RegisterArgs, ReleaseAcknowledgeArgs, RetireArgs, RetireFinishedArgs, SupersedeArgs, ReleaseCommand, ReleaseDeclarationArgs,
+    RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
     ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StatusArgs, SweepArgs, SweepFormat, SyncArgs,
+    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesCheckArgs, RulesCommand, SessionCommand,
+    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SupersedeArgs, SweepArgs,
+    SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -137,7 +138,10 @@ pub const RETIREMENT_REFUSED_EXIT: u8 = 4;
 /// Render what `onevcs retire` did, which is [`crate::retire`]'s answer under
 /// [`crate::RetireMode::Lossless`].
 fn retire_branch(args: &RetireArgs, providers: &Providers<'_>) -> Result<u8> {
-    let retired = crate::retire(providers, &retire_request(args, crate::RetireMode::Lossless))?;
+    let retired = crate::retire(
+        providers,
+        &retire_request(args, crate::RetireMode::Lossless),
+    )?;
     render_retired(args, &retired, "retire")
 }
 

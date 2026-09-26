@@ -238,9 +238,9 @@ impl RetirementProof {
             RetirementProof::RecordedLanding { commit } => {
                 format!("recorded-landing — {commit} landed, and nothing after it changes content")
             }
-            RetirementProof::ContentIdentical { base_commit } => format!(
-                "content-identical — every path it changed reads the same on {base_commit}"
-            ),
+            RetirementProof::ContentIdentical { base_commit } => {
+                format!("content-identical — every path it changed reads the same on {base_commit}")
+            }
         }
     }
 }
@@ -432,7 +432,11 @@ impl Retirement {
             ));
         }
         for holder in &self.holders {
-            lines.push(format!("held in {} {}", holder.kind.as_str(), holder.location));
+            lines.push(format!(
+                "held in {} {}",
+                holder.kind.as_str(),
+                holder.location
+            ));
         }
         lines
     }
@@ -571,14 +575,24 @@ pub(crate) fn describe_retired(retired: &Retired, verb: &str) -> Vec<String> {
             retired
                 .failed
                 .iter()
-                .map(|failed| format!("{} {} ({})", failed.kind.as_str(), failed.location, failed.error))
+                .map(|failed| format!(
+                    "{} {} ({})",
+                    failed.kind.as_str(),
+                    failed.location,
+                    failed.error
+                ))
                 .collect::<Vec<_>>()
                 .join("; "),
             retirement.branch,
             retirement.identity,
         ),
     }];
-    lines.extend(retirement.evidence().into_iter().map(|line| format!("  {line}")));
+    lines.extend(
+        retirement
+            .evidence()
+            .into_iter()
+            .map(|line| format!("  {line}")),
+    );
     if retired.outcome == RetireOutcome::Kept
         && retirement.class == RetirementClass::SupersededWithChanges
     {
@@ -598,6 +612,33 @@ pub(crate) fn describe_retired(retired: &Retired, verb: &str) -> Vec<String> {
         lines.push(format!("  closed session {}", token.0));
     }
     lines
+}
+
+/// One examined branch in one line: what was done, and what decided it.
+pub(crate) fn describe_line(retired: &Retired) -> String {
+    let retirement = &retired.retirement;
+    let decided = match &retirement.proof {
+        Some(proof) => proof.describe(),
+        None => retirement.verdict(),
+    };
+    let failed = match retired.failed.is_empty() {
+        true => String::new(),
+        false => format!(
+            "; not deleted from {}",
+            retired
+                .failed
+                .iter()
+                .map(|failed| format!("{} ({})", failed.location, failed.error))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    };
+    format!(
+        "{branch} [{identity}] — {outcome}: {decided}{failed}",
+        branch = retirement.branch,
+        identity = retirement.identity,
+        outcome = retired.outcome.as_str(),
+    )
 }
 
 /// A pass in the lines a person reads.
@@ -980,7 +1021,11 @@ impl<'a> Census<'a> {
     }
 
     fn holders_of(&self, copies: &Copies) -> Vec<BranchHolder> {
-        copies.copies.iter().map(|copy| self.holder(copy.at)).collect()
+        copies
+            .copies
+            .iter()
+            .map(|copy| self.holder(copy.at))
+            .collect()
     }
 
     /// The newest session record of this branch, whose stream is the branch's own.
@@ -1028,7 +1073,7 @@ impl<'a> Census<'a> {
             if place.kind != BranchHolderKind::Checkout {
                 continue;
             }
-            for (worktree, on) in git::worktrees(&place.repo)? {
+            for (worktree, on) in git::worktree_heads(&place.repo)? {
                 if on.as_deref() == Some(branch) {
                     return Ok(Some(worktree));
                 }
@@ -1044,7 +1089,7 @@ impl<'a> Census<'a> {
             if place.kind == BranchHolderKind::Checkout {
                 continue;
             }
-            for (worktree, on) in git::worktrees(&place.repo)? {
+            for (worktree, on) in git::worktree_heads(&place.repo)? {
                 // A clone's own tree is cut `--no-checkout` and never populated, so its
                 // status is every file missing rather than anybody's work.
                 if on.as_deref() != Some(branch) || worktree == place.repo {
@@ -1077,9 +1122,11 @@ impl<'a> Census<'a> {
             Ok(None) => {}
             Err(_) => return Ok(keep(KeepReason::Unknown)),
         }
-        if ask.exclude.iter().any(|excluded| {
-            excluded.identity == self.resolution.key && excluded.branch == branch
-        }) {
+        if ask
+            .exclude
+            .iter()
+            .any(|excluded| excluded.identity == self.resolution.key && excluded.branch == branch)
+        {
             return Ok(keep(KeepReason::Excluded));
         }
         if !copies.unreadable.is_empty() {
@@ -1095,17 +1142,28 @@ impl<'a> Census<'a> {
     }
 
     /// Everything past the reads that decide nothing on their own.
-    fn judge(&self, branch: &str, base_tip: &str, copies: &Copies, ask: &Ask<'_>) -> Result<Retirement> {
+    fn judge(
+        &self,
+        branch: &str,
+        base_tip: &str,
+        copies: &Copies,
+        ask: &Ask<'_>,
+    ) -> Result<Retirement> {
         let kept = |reason| Retirement::kept(self, branch, reason, copies);
         let mut judged: Vec<(Copy, Judged)> = Vec::new();
-        let session = self.session_of(branch).map(|record| record.token.to_string());
+        let session = self
+            .session_of(branch)
+            .map(|record| record.token.to_string());
         let mut evidence = Evidence::of(self, branch, session.as_deref());
         for copy in &copies.copies {
             let Some(repo) = self.readable(copy, branch, ask) else {
                 return Ok(kept(KeepReason::Unknown));
             };
             let asked = git::Asked::borrowing(&repo, self.lent.as_deref());
-            judged.push((copy.clone(), self.judge_copy(asked, &copy.tip, base_tip, &evidence)?));
+            judged.push((
+                copy.clone(),
+                self.judge_copy(asked, &copy.tip, base_tip, &evidence)?,
+            ));
         }
         if judged.iter().all(|(_, one)| one.at_base) {
             return Ok(kept(KeepReason::IsBase));
@@ -1128,7 +1186,10 @@ impl<'a> Census<'a> {
                     return Ok(kept(KeepReason::Unknown));
                 };
                 let asked = git::Asked::borrowing(&repo, self.lent.as_deref());
-                judged.push((copy.clone(), self.judge_copy(asked, &copy.tip, base_tip, &evidence)?));
+                judged.push((
+                    copy.clone(),
+                    self.judge_copy(asked, &copy.tip, base_tip, &evidence)?,
+                ));
             }
         }
         let mut free: Vec<String> = Vec::new();
@@ -1204,7 +1265,10 @@ impl<'a> Census<'a> {
             .iter()
             .find(|place| {
                 place.repo.exists()
-                    && git::has_commit(git::Asked::borrowing(&place.repo, self.lent.as_deref()), &wanted)
+                    && git::has_commit(
+                        git::Asked::borrowing(&place.repo, self.lent.as_deref()),
+                        &wanted,
+                    )
             })
             .map(|place| place.repo.clone());
         if found.is_some() || !ask.fetch {
@@ -1225,10 +1289,12 @@ impl<'a> Census<'a> {
         base_tip: &str,
         evidence: &Evidence,
     ) -> Result<Judged> {
-        if git::known_to_reach(asked, tip, base_tip)? {
+        // The fork point answers both questions: a tip the base already carries is its
+        // own merge base with the base.
+        let fork = git::merge_base(asked, base_tip, tip)?;
+        if fork.as_deref() == Some(tip) {
             return Ok(Judged::at_base());
         }
-        let fork = git::merge_base(asked, base_tip, tip)?;
         let (content_free, content_tip) =
             git::content_free_tail(asked, tip, fork.as_deref().unwrap_or(""))?;
         let history = match &fork {
@@ -1250,26 +1316,28 @@ impl<'a> Census<'a> {
         if proof.is_none() {
             proof = self.recorded_landing(asked, tip, base_tip, &history, evidence)?;
         }
-        let differing = match &fork {
-            Some(fork) => {
-                let paths = git::changed_paths(asked, fork, tip)?;
-                git::differing_among(asked, tip, base_tip, &paths)?
+        // The comparison of content last, and only where no record already proved the
+        // branch: it is the expensive question, and a proof that held needs no paths.
+        let mut differing = Vec::new();
+        if proof.is_none() {
+            differing = match &fork {
+                Some(fork) => {
+                    let paths = git::changed_paths(asked, fork, tip)?;
+                    git::differing_among(asked, tip, base_tip, &paths)?
+                }
+                None => git::changed_paths(asked, base_tip, tip)?,
+            };
+            if differing.is_empty() {
+                proof = Some(RetirementProof::ContentIdentical {
+                    base_commit: base_tip.to_owned(),
+                });
             }
-            None => git::changed_paths(asked, base_tip, tip)?,
-        };
-        if proof.is_none() && differing.is_empty() {
-            proof = Some(RetirementProof::ContentIdentical {
-                base_commit: base_tip.to_owned(),
-            });
         }
         Ok(Judged {
             at_base: false,
             fork,
             content_free,
-            differing: match proof {
-                Some(_) => Vec::new(),
-                None => differing,
-            },
+            differing,
             proof,
         })
     }
@@ -1352,10 +1420,15 @@ impl<'a> Census<'a> {
         let Some(hosting) = ask.host else {
             return Ok(Some(KeepReason::OpenChangeRequest));
         };
-        let session = self.session_of(branch).map(|record| record.token.to_string());
-        let Some(opened) =
-            status::opened_change(self.streams, &self.resolution.key, branch, session.as_deref())
-        else {
+        let session = self
+            .session_of(branch)
+            .map(|record| record.token.to_string());
+        let Some(opened) = status::opened_change(
+            self.streams,
+            &self.resolution.key,
+            branch,
+            session.as_deref(),
+        ) else {
             return Ok(Some(KeepReason::OpenChangeRequest));
         };
         let (Some(id), Some(target)) = (opened.id.as_deref(), opened.base.as_deref()) else {
@@ -1492,7 +1565,8 @@ struct Evidence {
 
 impl Evidence {
     fn of(census: &Census<'_>, branch: &str, session: Option<&str>) -> Self {
-        let recorded = status::recorded_for(census.streams, &census.resolution.key, branch, session);
+        let recorded =
+            status::recorded_for(census.streams, &census.resolution.key, branch, session);
         Evidence {
             change: recorded.change,
             landing: recorded.landing,
@@ -1510,7 +1584,12 @@ impl Evidence {
     }
 }
 
-fn change_request(opened: &status::OpenedChange, id: &str, base: &str, head: &str) -> ChangeRequest {
+fn change_request(
+    opened: &status::OpenedChange,
+    id: &str,
+    base: &str,
+    head: &str,
+) -> ChangeRequest {
     ChangeRequest {
         id: ChangeId(id.to_owned()),
         url: opened.url.clone(),
@@ -1542,7 +1621,12 @@ fn listed(directory: &Path) -> Vec<(PathBuf, String)> {
     let mut found: Vec<(PathBuf, String)> = entries
         .flatten()
         .filter(|entry| entry.path().is_dir())
-        .map(|entry| (entry.path(), entry.file_name().to_string_lossy().into_owned()))
+        .map(|entry| {
+            (
+                entry.path(),
+                entry.file_name().to_string_lossy().into_owned(),
+            )
+        })
         .collect();
     found.sort();
     found
@@ -1743,10 +1827,19 @@ struct Host {
 
 impl Host {
     fn read() -> Result<Self> {
+        Self::with(None)
+    }
+
+    /// The same, over a listing of the session records a caller already made.
+    fn with(sessions: Option<Vec<Record>>) -> Result<Self> {
         let registry = store::load()?;
         let (rules, _) = crate::policy::load(&registry)?;
+        let sessions = match sessions {
+            Some(listed) => listed,
+            None => workspace::all()?,
+        };
         Ok(Host {
-            sessions: workspace::all()?,
+            sessions,
             streams: status::recorded_streams(&mut Vec::new())?,
             trailers: provenance::from_rules(&rules),
             registry,
@@ -1874,7 +1967,14 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
             None => Err(nowhere(&identity, &request.branch)),
         };
     }
-    act(&census, &request.branch, acting, Trigger::Verb, request.dry_run, &ask)
+    act(
+        &census,
+        &request.branch,
+        acting,
+        Trigger::Verb,
+        request.dry_run,
+        &ask,
+    )
 }
 
 /// The automatic pass.
@@ -1883,7 +1983,18 @@ pub(crate) fn pass(
     request: &RetirePass,
     trigger: Trigger,
 ) -> Result<RetirementPassReport> {
-    let host = Host::read()?;
+    pass_over(hosting, request, trigger, None)
+}
+
+/// The automatic pass over a listing of the session records the caller already made,
+/// or over a fresh one.
+pub(crate) fn pass_over(
+    hosting: Option<&dyn Hosting>,
+    request: &RetirePass,
+    trigger: Trigger,
+    sessions: Option<Vec<Record>>,
+) -> Result<RetirementPassReport> {
+    let host = Host::with(sessions)?;
     let identities = match &request.scope {
         Scope::All => host.identities(),
         Scope::Repo(repo) => vec![store::resolve(&host.registry, repo)?.key],
@@ -1926,7 +2037,10 @@ fn candidates(census: &Census<'_>, host: &Host) -> Result<Vec<String>> {
         .filter(|record| record.identity == census.resolution.key)
         .map(|record| record.branch.to_string())
         .collect();
-    named.extend(status::recorded_branches(&host.streams, &census.resolution.key));
+    named.extend(status::recorded_branches(
+        &host.streams,
+        &census.resolution.key,
+    ));
     let mut found: BTreeSet<String> = BTreeSet::new();
     for place in &census.places {
         if !git::is_repo(&place.repo) {
@@ -1949,6 +2063,13 @@ fn candidates(census: &Census<'_>, host: &Host) -> Result<Vec<String>> {
         found.remove(base);
     }
     Ok(found.into_iter().collect())
+}
+
+/// Whether a retirement of this session's branch is recorded.
+pub(crate) fn retired(record: &Record) -> bool {
+    status::recorded_streams(&mut Vec::new())
+        .map(|streams| status::retirement_of(&streams, &record.identity, &record.branch).is_some())
+        .unwrap_or(false)
 }
 
 /// Retire the branch a session that just closed worked on, where its landing is
@@ -2044,7 +2165,11 @@ fn act(
                 failed: Vec::new(),
                 slots_returned: plan.slots,
                 run_roots_removed: plan.run_roots,
-                sessions_closed: plan.sessions.iter().map(|record| session_token(record)).collect(),
+                sessions_closed: plan
+                    .sessions
+                    .iter()
+                    .map(|record| session_token(record))
+                    .collect(),
             });
         }
         // Immediately before anything is deleted, where every copy stands now: a copy
@@ -2056,7 +2181,9 @@ fn act(
             match census.delete(branch, &classified.copies) {
                 Deletion::Moved => {}
                 Deletion::Done { deleted, failed } => {
-                    return Ok(census.finish(branch, classified, plan, deleted, failed, acting, trigger));
+                    return Ok(
+                        census.finish(branch, classified, plan, deleted, failed, acting, trigger)
+                    );
                 }
             }
         }
@@ -2117,7 +2244,9 @@ impl Census<'_> {
             .filter(|record| {
                 record.slot.is_none()
                     && record.run_root.is_dir()
-                    && runs.as_ref().is_some_and(|runs| record.run_root.starts_with(runs))
+                    && runs
+                        .as_ref()
+                        .is_some_and(|runs| record.run_root.starts_with(runs))
             })
             .map(|record| record.run_root.clone())
             .collect();
@@ -2133,8 +2262,8 @@ impl Census<'_> {
         }
         for place in &self.places {
             let Some(slot) = &place.slot else { continue };
-            let on_branch = git::current_branch(&slot.join("worktree"))
-                .is_ok_and(|current| current == branch);
+            let on_branch =
+                git::current_branch(&slot.join("worktree")).is_ok_and(|current| current == branch);
             if on_branch && !slots.contains(slot) {
                 slots.push(slot.clone());
             }
@@ -2199,7 +2328,8 @@ impl Census<'_> {
         }
         if let Some(origin) = copies.copies.iter().find(|copy| copy.at == Holding::Origin) {
             let holder = self.holder(Holding::Origin);
-            let answered = git::delete_remote_branch(self.publication(), "origin", branch, &origin.tip);
+            let answered =
+                git::delete_remote_branch(self.publication(), "origin", branch, &origin.tip);
             let refused = match answered {
                 Ok(pushed) if pushed.accepted() => None,
                 Ok(pushed) => Some(
@@ -2258,7 +2388,10 @@ impl Census<'_> {
                         None => BranchHolderKind::RunClone,
                     },
                     location: record.run_root.display().to_string(),
-                    error: format!("its session record {} could not be closed: {failure}", record.token),
+                    error: format!(
+                        "its session record {} could not be closed: {failure}",
+                        record.token
+                    ),
                 });
                 continue;
             }
@@ -2319,12 +2452,13 @@ impl Census<'_> {
         let pool = slot
             .parent()
             .ok_or_else(|| format!("{} has no pool above it", slot.display()))?;
-        let _serial = lock::exclusive(&pool::placement_identity(pool)).map_err(|e| e.to_string())?;
+        let _serial =
+            lock::exclusive(&pool::placement_identity(pool)).map_err(|e| e.to_string())?;
         if !pool::is_idle(&self.resolution.key, slot).map_err(|e| e.to_string())? {
             return Ok(false);
         }
-        let Some(_inside) = lock::try_exclusive(&workspace::occupancy_identity(slot))
-            .map_err(|e| e.to_string())?
+        let Some(_inside) =
+            lock::try_exclusive(&workspace::occupancy_identity(slot)).map_err(|e| e.to_string())?
         else {
             return Err("a command is working in it right now".to_owned());
         };
@@ -2334,8 +2468,12 @@ impl Census<'_> {
         let delete = workspaces::resolve_for(&self.resolution, workspaces::Overrides::default())
             .map(|resolved| resolved.delete)
             .map_err(|e| e.to_string())?;
-        workspace::reset_onto_base(&worktree, &workspace::integrated_base(&clone, &base), &delete)
-            .map_err(|e| e.to_string())?;
+        workspace::reset_onto_base(
+            &worktree,
+            &workspace::integrated_base(&clone, &base),
+            &delete,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(true)
     }
 }
@@ -2343,7 +2481,7 @@ impl Census<'_> {
 /// Stand every worktree of `repo` that has the branch checked out — the repository's
 /// own `HEAD` included — off it, at the commit it is on.
 fn stand_off(repo: &Path, branch: &str) -> Result<()> {
-    for (worktree, on) in git::worktrees(repo)? {
+    for (worktree, on) in git::worktree_heads(repo)? {
         if on.as_deref() == Some(branch) {
             git::detach_head(&worktree)?;
         }
@@ -2357,13 +2495,17 @@ fn remove_run_root(run_root: &Path) -> std::result::Result<bool, String> {
     if !processes::holding(run_root).is_empty() {
         return Err("a process is working inside it".to_owned());
     }
-    let Some(_exclusive) = lock::try_exclusive(&workspace::occupancy_identity(run_root))
-        .map_err(|e| e.to_string())?
+    let Some(_exclusive) =
+        lock::try_exclusive(&workspace::occupancy_identity(run_root)).map_err(|e| e.to_string())?
     else {
         return Err("a command is working in it right now".to_owned());
     };
     let clone = run_root.join("clone");
-    if git::is_repo(&clone) && !git::unpublished_branches(&clone).unwrap_or_default().is_empty() {
+    if git::is_repo(&clone)
+        && !git::unpublished_branches(&clone)
+            .unwrap_or_default()
+            .is_empty()
+    {
         return Ok(false);
     }
     std::fs::remove_dir_all(run_root)

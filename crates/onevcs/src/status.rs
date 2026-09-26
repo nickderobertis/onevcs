@@ -418,14 +418,52 @@ impl RetiredReport {
     /// The landing a retirement answers with: landed, on the evidence of its proof,
     /// for a branch retired as holding nothing beyond its base; nothing for one
     /// reclaimed, whose differences were discarded rather than landed.
-    fn landed(&self) -> Option<Landed> {
+    ///
+    /// The commit it names is the one on the base the work reached — what a release is
+    /// compared against — found by [`landed_on_base`], and the proof's own commit only
+    /// where nothing on the base can be found for it.
+    fn landed(&self, on_base: Option<String>) -> Option<Landed> {
         let proof = self.proof.clone()?;
         (self.class == crate::retire::RetirementClass::Retirable).then(|| Landed::Yes {
             evidence: landed::LandingEvidence::Retired {
-                commit: crate::host::Sha(proof.commit().to_owned()),
+                commit: crate::host::Sha(on_base.unwrap_or_else(|| proof.commit().to_owned())),
                 proof,
             },
         })
+    }
+}
+
+/// The commit on the base a retired branch's work reached, read from what this host
+/// recorded and from the base's own history in the checkout every publication
+/// fast-forwards: a landing recorded for it, the base commit naming the branch commit
+/// its recorded landing proof names, the base commit naming its merged change request,
+/// or — for content the base already carried — the base commit it was compared against.
+fn landed_on_base(
+    resolution: &Resolution,
+    base: &Ref,
+    streams: &[Recorded],
+    work: &Work,
+    session: Option<&str>,
+    proof: Option<&crate::retire::RetirementProof>,
+) -> Option<String> {
+    let publication = resolution.publication.as_path();
+    let tip = vcs::base_ref(publication, base);
+    let recorded = recorded_for(streams, &work.identity, &work.branch, session);
+    if let Some(landing) = recorded.landing {
+        if git::known_to_reach(publication, landing.as_str(), &tip).unwrap_or(false) {
+            return Some(landing.as_str().to_owned());
+        }
+    }
+    let mentioning = |needle: &str| git::first_commit_mentioning(publication, &tip, needle);
+    match proof? {
+        crate::retire::RetirementProof::RecordedLanding { commit } => mentioning(commit),
+        crate::retire::RetirementProof::MergedChangeRequest { change_url, .. } => {
+            let number = change_url.trim_end_matches('/').rsplit('/').next()?;
+            mentioning(&format!("(#{number})")).or_else(|| mentioning(change_url))
+        }
+        crate::retire::RetirementProof::ContentIdentical { base_commit } => {
+            Some(base_commit.clone())
+        }
     }
 }
 
@@ -1125,7 +1163,30 @@ pub(crate) fn landing_of_within(
     );
     unreadable.extend(unread);
     let carrier = carrier_of(&judged);
-    let retired = retired_now(&streams, &work, &holders).and_then(|report| report.landed());
+    let retired = retired_now(&streams, &work, &holders).and_then(|report| {
+        let session = answering
+            .session
+            .as_ref()
+            .map(|record| record.token.to_string());
+        let on_base = landed_on_base(
+            &resolution,
+            &base,
+            &streams,
+            &work,
+            session.as_deref(),
+            report.proof.as_ref(),
+        );
+        report.landed(on_base)
+    });
+    // A retired branch has no copy left to read its landing commit out of, and the one
+    // repository that holds that commit is the checkout every publication
+    // fast-forwards — so that is the copy that answers for it.
+    let decided = carrier.map(|(_, _, verdict)| verdict.clone());
+    let carrier = match (carrier, &retired) {
+        (Some((repo, _, _)), _) => Some(repo.clone()),
+        (None, Some(_)) => Some(resolution.publication.clone()),
+        (None, None) => None,
+    };
     Ok(LandingOf {
         reference: reference.to_owned(),
         identity: work.identity.clone(),
@@ -1136,12 +1197,9 @@ pub(crate) fn landing_of_within(
         // behind a release of work that may never have landed.
         landed: match answering.broken.is_some() {
             true => Landed::Unknown,
-            false => carrier
-                .map(|(_, _, verdict)| verdict.clone())
-                .or(retired)
-                .unwrap_or(Landed::Unknown),
+            false => decided.or(retired).unwrap_or(Landed::Unknown),
         },
-        carrier: carrier.map(|(repo, _, _)| repo.clone()),
+        carrier,
         lent,
         change_stream,
         unreadable,
@@ -1244,7 +1302,20 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     // A branch nothing holds any more has no copy to decide it from, and one retired
     // as holding nothing beyond its base is answered by the proof it was retired on.
     if verdict.is_none() {
-        verdict = retired.as_ref().and_then(RetiredReport::landed);
+        verdict = retired.as_ref().and_then(|report| {
+            let session = answering
+                .session
+                .as_ref()
+                .map(|record| record.token.to_string());
+            report.landed(landed_on_base(
+                &resolution,
+                &base,
+                &streams,
+                &work,
+                session.as_deref(),
+                report.proof.as_ref(),
+            ))
+        });
     }
     // …and a chain of retries this host cannot follow overrides whatever a copy of
     // the branch said. Undecidable rather than decided, in both directions: a `no`
@@ -2398,13 +2469,12 @@ pub(crate) fn supersessions(
     identity: &str,
     branch: &str,
 ) -> Vec<crate::retire::SupersessionRecord> {
-    let mut found: Vec<Stamped<crate::retire::SupersessionRecord>> = relevant_streams(
-        streams, identity, branch, None,
-    )
-    .into_iter()
-    .flat_map(|record| record.superseded.iter().cloned())
-    .filter(|stamped| stamped.value.names(identity, branch))
-    .collect();
+    let mut found: Vec<Stamped<crate::retire::SupersessionRecord>> =
+        relevant_streams(streams, identity, branch, None)
+            .into_iter()
+            .flat_map(|record| record.superseded.iter().cloned())
+            .filter(|stamped| stamped.value.names(identity, branch))
+            .collect();
     found.sort_by(|left, right| left.at.cmp(&right.at));
     found.into_iter().map(|stamped| stamped.value).collect()
 }

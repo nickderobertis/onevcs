@@ -327,19 +327,27 @@ fn a_branch_this_host_landed_with_no_change_request_reads_as_landed_by_the_landi
     fixture
         .world
         .commit_file(&worktree, "a.txt", "a\n", "feat: land this locally");
-    fixture
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("merged at"));
+    // Handed back and then landed by name, so no session close follows the landing:
+    // a close retires a branch that provably holds nothing beyond its base, and this
+    // journey is about how the landing is read rather than about that.
     fixture
         .world
         .onevcs()
         .args(["session", "close", &token])
         .assert()
         .success();
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/landed-locally",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
 
     let elsewhere = fixture.world.clone_of(&fixture.origin, "after");
     fixture.world.commit_file(
@@ -414,19 +422,27 @@ fn a_landing_this_host_kept_no_record_of_is_read_off_the_trailer_it_left_on_the_
     fixture
         .world
         .commit_file(&worktree, "d.txt", "d\n", "feat: land this under a name");
-    fixture
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("merged at"));
+    // Handed back and then landed by name, so no session close follows the landing:
+    // a close retires a branch that provably holds nothing beyond its base, and this
+    // journey is about how the landing is read rather than about that.
     fixture
         .world
         .onevcs()
         .args(["session", "close", &token])
         .assert()
         .success();
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/spent-name",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
     fixture
         .world
         .onevcs()
@@ -876,19 +892,27 @@ fn a_landing_never_answers_for_work_the_branch_gained_after_it() {
     fixture
         .world
         .commit_file(&worktree, "e.txt", "e\n", "feat: land the first half");
-    fixture
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("merged at"));
+    // Handed back and then landed by name, so no session close follows the landing:
+    // a close retires a branch that provably holds nothing beyond its base, and this
+    // journey is about how the landing is read rather than about that.
     fixture
         .world
         .onevcs()
         .args(["session", "close", &token])
         .assert()
         .success();
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/landed-then-more",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
 
     // …and then the name is picked up again and carries something the landing above
     // never saw.
@@ -1046,16 +1070,14 @@ fn a_landing_the_publication_checkout_can_see_answers_for_a_holder_that_never_fe
         .assert()
         .success();
 
+    // Left unclosed, as the publication leaves it: its branch stays in the run clone
+    // cut from the worker, which is the copy that never fetched. A close would retire
+    // a branch that provably holds nothing beyond its base, and what this journey is
+    // about is how the copy that is still here reads the landing.
     hosted
         .world
         .onevcs()
         .args(["publish", &token])
-        .assert()
-        .success();
-    hosted
-        .world
-        .onevcs()
-        .args(["session", "close", &token])
         .assert()
         .success();
 
@@ -1532,19 +1554,27 @@ fn a_landing_read_off_the_bases_trailer_answers_in_part_for_a_name_that_kept_com
     fixture
         .world
         .commit_file(&worktree, "g.txt", "g\n", "feat: land this under a name");
-    fixture
-        .world
-        .onevcs()
-        .args(["publish", &token])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("merged at"));
+    // Handed back and then landed by name, so no session close follows the landing:
+    // a close retires a branch that provably holds nothing beyond its base, and this
+    // journey is about how the landing is read rather than about that.
     fixture
         .world
         .onevcs()
         .args(["session", "close", &token])
         .assert()
         .success();
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/kept-committing",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
     fixture
         .world
         .onevcs()

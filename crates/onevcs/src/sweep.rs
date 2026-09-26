@@ -207,7 +207,8 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     // to reclaim would have removed workspaces on the strength of a question it never
     // got an answer to. The report's own sections are ordered by its rendering, not
     // by this.
-    records(&mut report, dry_run, min_age)?;
+    let listed = workspace::all()?;
+    records(&mut report, dry_run, min_age, &listed)?;
 
     let mut families: Vec<Verb> = Verb::ALL.to_vec();
     // By the directory's own name rather than by the enum's order, so the report
@@ -216,7 +217,20 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     for verb in families {
         family(&mut report, verb, min_age, &landings)?;
     }
-    finished_branches(&mut report, dry_run);
+    // The one listing of the session records this verb makes, less the records it has
+    // just forgotten: a record gone from disk is not one the pass may write back.
+    let forgotten: Vec<&workspace::Token> = report
+        .records
+        .iter()
+        .filter(|record| !dry_run && matches!(record.outcome, Forgetting::Forgotten))
+        .map(|record| &record.token)
+        .collect();
+    let remaining: Vec<workspace::Record> = listed
+        .iter()
+        .filter(|record| !forgotten.contains(&&record.token))
+        .cloned()
+        .collect();
+    finished_branches(&mut report, dry_run, remaining);
     Ok(report)
 }
 
@@ -227,16 +241,17 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
 /// aged into being safe — and the live-holder refusals do: a branch a live session
 /// holds is kept whatever else is true of it. A pass that could not run is a family
 /// this verb did not examine, owned by the verb that runs the same pass by name.
-fn finished_branches(report: &mut Report, dry_run: bool) {
+fn finished_branches(report: &mut Report, dry_run: bool, sessions: Vec<workspace::Record>) {
     let pass = crate::retire::RetirePass {
         scope: crate::session::Scope::All,
         exclude: Vec::new(),
         dry_run,
     };
-    match crate::retire::pass(
+    match crate::retire::pass_over(
         Some(crate::providers::Providers::real().hosting),
         &pass,
         crate::retire::Trigger::Sweep,
+        Some(sessions),
     ) {
         Ok(finished) => report.finished = Some(finished),
         Err(failure) => report.not_examined.push(NotExamined {
@@ -258,7 +273,7 @@ const FINISHED_BRANCHES: &str = "finished-branches";
 
 /// Forget every session record this host has nothing left to answer for.
 ///
-/// The candidates come from [`workspace::spent_records`], which asks the three
+/// The candidates come from [`workspace::spent_among`], which asks the three
 /// questions that decide it; what is asked *here* is the one question this verb owns,
 /// and it is the same one every directory above is asked: was it written inside the
 /// age floor. A record a minute old belongs to a session `onevcs session open` has
@@ -268,8 +283,13 @@ const FINISHED_BRANCHES: &str = "finished-branches";
 /// Every candidate is reported, kept or not. A record silently removed is a session
 /// an operator can no longer close, publish, or adopt, and this verb's whole promise
 /// is to say what it did.
-fn records(report: &mut Report, dry_run: bool, min_age: Duration) -> Result<()> {
-    for record in workspace::spent_records()? {
+fn records(
+    report: &mut Report,
+    dry_run: bool,
+    min_age: Duration,
+    listed: &[workspace::Record],
+) -> Result<()> {
+    for record in workspace::spent_among(listed)? {
         let path = workspace::record_path(&record.token)?;
         let age = SystemTime::now()
             .duration_since(last_written(&path))
@@ -645,7 +665,8 @@ fn outside_this_verb(
             path: runs,
             reason: "the per-run lifecycle clone root, which `onevcs session open` keeps as a \
                      bounded recovery history so a dead run's branch stays reachable; this \
-                     verb does not reach into it"
+                     verb reaps nothing in it as a workspace, and removes a run root only with \
+                     a branch the finished-branches family retires"
                 .to_owned(),
             owner: format!(
                 "`onevcs recoverable --repo {repo}` names the branch each retained run left \
@@ -662,7 +683,8 @@ fn outside_this_verb(
             family: POOL,
             path: pool,
             reason: "the pool of warm slots a session of this repository may be placed on \
-                     next; this verb does not reach into it"
+                     next; this verb removes no slot, and returns one only where the \
+                     finished-branches family retires a branch it held"
                 .to_owned(),
             owner: format!(
                 "`onevcs pool status {repo}` reads the slots; `onevcs pool prune {repo}` \
@@ -1474,13 +1496,14 @@ impl fmt::Display for Report {
             )?;
         }
 
-        // Every branch the pass examined, retired or kept, in the lines `onevcs
-        // retire-finished` prints them in: the JSON carries the same entries.
+        // Every branch the pass examined, retired or kept, one line each — what was
+        // done and the class or proof that decided it. The JSON carries the same
+        // entries with their evidence and every place each one was held in.
         writeln!(f, "Finished branches:")?;
         match &self.finished {
             Some(finished) if !finished.examined.is_empty() => {
-                for line in crate::retire::describe_pass(finished) {
-                    writeln!(f, "  {line}")?;
+                for entry in &finished.examined {
+                    writeln!(f, "  {}", crate::retire::describe_line(entry))?;
                 }
             }
             Some(_) => writeln!(f, "  none")?,

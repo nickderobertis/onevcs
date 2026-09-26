@@ -205,8 +205,8 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 #[test]
-fn a_document_at_the_previous_version_reads_its_rows_as_unclassified_and_is_written_back_at_this_one()
-{
+fn a_document_at_the_previous_version_reads_its_rows_as_unclassified_and_is_written_back_at_this_one(
+) {
     // A consumer's checked-in scenario, written by the build before this one: the
     // version went up because a preserved row may now carry its retirement
     // classification, and a version 12 document's rows carry none — which is what they

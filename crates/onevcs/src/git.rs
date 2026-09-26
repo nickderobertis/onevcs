@@ -3055,38 +3055,93 @@ pub fn worktrees(cwd: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
 /// What a landing record leaves behind: `publish` writes the landing of a branch onto
 /// it as an otherwise empty commit, and such a commit adds nothing a base could lack.
 /// Answered with the commit the walk stopped at, which is the branch's content tip.
+///
+/// One `log` along the first-parent chain, bounded at [`CONTENT_FREE_WALK`] commits:
+/// a walk that runs out of it stops where it is, which is the conservative end — a
+/// content tip no further back than the truth only ever makes a proof harder to meet.
 pub fn content_free_tail<'a>(
     cwd: impl Into<Asked<'a>>,
     commit: &str,
     stop: &str,
 ) -> Result<(Vec<String>, String)> {
-    let cwd = cwd.into();
+    let listed = checked_in(
+        cwd.into(),
+        &[
+            "log",
+            "--first-parent",
+            &format!("-n{}", CONTENT_FREE_WALK + 1),
+            "--format=%H%x00%T",
+            commit,
+        ],
+    )?;
+    let chain: Vec<(&str, &str)> = listed
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once('\0'))
+        .collect();
     let mut skipped = Vec::new();
-    let mut at = commit.to_owned();
-    loop {
-        if at == stop {
-            return Ok((skipped, at));
+    for pair in chain.windows(2) {
+        let ((at, tree), (_, parent_tree)) = (pair[0], pair[1]);
+        if at == stop || tree != parent_tree {
+            return Ok((skipped, at.to_owned()));
         }
-        let parent = run_in(cwd, &["rev-parse", "--verify", &format!("{at}^1^{{commit}}")])?;
-        if !parent.ok() {
-            return Ok((skipped, at));
-        }
-        let parent = parent.trimmed();
-        let trees = checked_in(
-            cwd,
-            &[
-                "rev-parse",
-                &format!("{at}^{{tree}}"),
-                &format!("{parent}^{{tree}}"),
-            ],
-        )?;
-        let mut lines = trees.stdout.lines();
-        if lines.next() != lines.next() {
-            return Ok((skipped, at));
-        }
-        skipped.push(at);
-        at = parent;
+        skipped.push(at.to_owned());
     }
+    let at = chain
+        .get(skipped.len())
+        .map(|(at, _)| (*at).to_owned())
+        .unwrap_or_else(|| commit.to_owned());
+    Ok((skipped, at))
+}
+
+/// How far back [`content_free_tail`] walks.
+const CONTENT_FREE_WALK: usize = 64;
+
+/// Every worktree of a repository with the branch each has checked out, read from the
+/// repository's own `HEAD` files where the layout is the one git writes, and from `git
+/// worktree list` where it is anything else.
+///
+/// Read off the files first because the question is asked of every place a branch is
+/// held on every classification, and a process per place per branch is the whole cost
+/// of a read a hook makes under a bound — and because `worktree list` is not a read the
+/// per-invocation memo can hold, so asking it would throw away every fact remembered so
+/// far.
+pub fn worktree_heads(cwd: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+    match worktree_heads_on_disk(cwd) {
+        Some(found) => Ok(found),
+        None => worktrees(cwd),
+    }
+}
+
+fn worktree_heads_on_disk(cwd: &Path) -> Option<Vec<(PathBuf, Option<String>)>> {
+    let dot_git = cwd.join(".git");
+    if !dot_git.is_dir() {
+        return None;
+    }
+    // A symbolic `HEAD` names the branch checked out, and a detached one is a commit;
+    // anything else is a layout this does not know, and the process is asked instead.
+    let branch_of = |head: &Path| -> Option<Option<String>> {
+        let text = std::fs::read_to_string(head).ok()?;
+        let text = text.trim();
+        if let Some(named) = text.strip_prefix("ref: ") {
+            return Some(named.strip_prefix("refs/heads/").map(str::to_owned));
+        }
+        ObjectId::parse(text).map(|_| None)
+    };
+    let mut found = vec![(cwd.to_path_buf(), branch_of(&dot_git.join("HEAD"))?)];
+    let linked = dot_git.join("worktrees");
+    let entries = match std::fs::read_dir(&linked) {
+        Ok(entries) => entries,
+        Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => return Some(found),
+        Err(_) => return None,
+    };
+    for entry in entries {
+        let admin = entry.ok()?.path();
+        let gitdir = std::fs::read_to_string(admin.join("gitdir")).ok()?;
+        let worktree = Path::new(gitdir.trim()).parent()?.to_path_buf();
+        found.push((worktree, branch_of(&admin.join("HEAD"))?));
+    }
+    Some(found)
 }
 
 /// One commit's whole message, or `None` where the repository does not hold it.
@@ -3103,16 +3158,35 @@ pub fn commit_message<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result<Opt
     ))
 }
 
+/// The newest commit `rev` reaches whose message carries `needle` verbatim, where
+/// one does.
+pub fn first_commit_mentioning(cwd: &Path, rev: &str, needle: &str) -> Option<String> {
+    run(
+        &[
+            "log",
+            "-n",
+            "1",
+            "--format=%H",
+            "--fixed-strings",
+            &format!("--grep={needle}"),
+            rev,
+        ],
+        Some(cwd),
+    )
+    .ok()
+    .filter(Output::ok)
+    .map(|out| out.trimmed())
+    .filter(|found| !found.is_empty())
+}
+
 /// Every commit `range` names — `A..B` — oldest first.
 pub fn commits_in<'a>(cwd: impl Into<Asked<'a>>, range: &str) -> Result<Vec<String>> {
-    Ok(
-        checked_in(cwd.into(), &["rev-list", "--reverse", range])?
-            .stdout
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect(),
-    )
+    Ok(checked_in(cwd.into(), &["rev-list", "--reverse", range])?
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// Whether one commit changes no content: its tree is its first parent's.
@@ -3149,7 +3223,10 @@ pub fn changes_no_content<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result
 /// carries the branch when it does not.
 pub fn changed_paths<'a>(cwd: impl Into<Asked<'a>>, from: &str, to: &str) -> Result<Vec<String>> {
     let cwd = cwd.into();
-    let listed = checked_in(cwd, &["diff", "--name-only", "--no-renames", "-z", from, to])?;
+    let listed = checked_in(
+        cwd,
+        &["diff", "--name-only", "--no-renames", "-z", from, to],
+    )?;
     let paths: Vec<String> = listed
         .stdout
         .split('\0')
@@ -3265,7 +3342,12 @@ pub fn delete_remote_branch(
 pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
     let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
     Ok(run(
-        &["fetch", "--no-tags", remote, &format!("refs/heads/{branch}")],
+        &[
+            "fetch",
+            "--no-tags",
+            remote,
+            &format!("refs/heads/{branch}"),
+        ],
         Some(cwd),
     )?
     .ok())

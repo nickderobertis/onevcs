@@ -100,16 +100,15 @@ impl Retried {
         hosted
             .world
             .commit_file(&worktree, "two.txt", "two\n", "feat: the retry");
+        // Published and left as the publication leaves it — the record closed, the
+        // retry's clone in place. A `session close` would retire the branch everywhere,
+        // superseded clone included, since the change request that merged carries every
+        // copy's commits; what these journeys are about is how the copies left behind
+        // are read while they are still there.
         hosted
             .world
             .onevcs()
             .args(["publish", &second])
-            .assert()
-            .success();
-        hosted
-            .world
-            .onevcs()
-            .args(["session", "close", &second])
             .assert()
             .success();
 

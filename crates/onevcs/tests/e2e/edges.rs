@@ -1436,16 +1436,31 @@ fn a_safety_clone_executes_the_work_while_the_canonical_checkout_publishes_it() 
         "",
         "the publication checkout never receives the branch itself"
     );
-    // Closing hands the branch back to the clone it was cut from, which is the
-    // durable record every later session reads.
+    // Closing hands the branch back to the clone it was cut from — and, its landing
+    // being recorded and the branch holding nothing beyond the base it reached, retires
+    // it there as everywhere else, leaving the record of why in its place.
     world
         .onevcs()
         .args(["session", "close", &token])
         .assert()
         .success();
-    assert!(world
-        .git(&isolated, &["branch", "--list", "feature/isolated"])
-        .contains("feature/isolated"));
+    assert_eq!(
+        world.git(&isolated, &["branch", "--list", "feature/isolated"]),
+        "",
+        "a landed branch that provably holds nothing more is not left behind"
+    );
+    let status: serde_json::Value = serde_json::from_slice(
+        &world
+            .onevcs()
+            .args(["status", "feature/isolated", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("a status report");
+    assert_eq!(status["retired"]["trigger"], "session-close", "{status}");
+    assert_eq!(status["publication"]["landed"]["state"], "yes", "{status}");
 }
 
 #[test]
