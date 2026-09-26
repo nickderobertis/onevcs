@@ -92,6 +92,10 @@ manifest="$repo/crates/onevcs/Cargo.toml"
 version_of() { sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$1" | head -n1; }
 before="$(version_of "$manifest")"
 released="$(version_of "$work/baseline/crates/onevcs/Cargo.toml")"
+[ -n "$before" ] || refuse "crates/onevcs/Cargo.toml at $ref declares no version" \
+    "give that manifest's [package] a version = \"X.Y.Z\" line"
+[ -n "$released" ] || refuse "crates/onevcs/Cargo.toml at the $baseline baseline declares no version" \
+    "check that $baseline is a release tag of this repository's crate"
 proved=""
 
 if [ "$before" != "$released" ]; then

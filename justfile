@@ -253,7 +253,7 @@ release-pr-check ref="HEAD":
 # The journeys that hold release-pr-check to what it proves, run against the real
 # `release-plz` at the version `release-plz.yml` pins — they refuse any other — so
 # outside `check` and `gate`, which do not install it. CI's `release-pr` job runs
-# this after `release-pr-check`. See crates/onevcs/tests/release_pr.rs.
+# this after `release-pr-check`. See crates/onevcs/tests/release_pr/main.rs.
 release-pr-journeys:
     @cargo nextest run --workspace --locked -E 'binary(release_pr)' --status-level fail
 
