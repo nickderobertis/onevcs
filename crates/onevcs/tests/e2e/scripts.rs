@@ -2911,6 +2911,7 @@ impl ReleaseCut {
         read_lines(&self.stubs.path().join("asked"))
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn release_pr_check_passes_a_tree_whose_lockfile_step_carries_the_compat_lock() {
