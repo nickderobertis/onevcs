@@ -53,45 +53,50 @@ fail() {
     refuse "$1" "$2"
 }
 
-# One step of the path, logged; a step that fails says which it was.
+# One step of the path, logged; a step that fails says which it was and what to do.
 step() {
-    local what="$1"
-    shift
-    "$@" >>"$log" 2>&1 || fail "$what failed on $ref" "read its output above"
+    local what="$1" action="$2"
+    shift 2
+    "$@" >>"$log" 2>&1 || fail "$what failed on $ref" "$action"
 }
 
-step "cloning this repository into a scratch directory" git clone --quiet --no-local "$root" "$repo"
-step "checking out $commit in the scratch clone" git -C "$repo" switch --quiet -c release-pr-check "$commit"
+scratch_full="the scratch copy lives under ${TMPDIR:-/tmp}; check its free space with df -h and re-run"
+
+step "cloning this repository into a scratch directory" "$scratch_full" git clone --quiet --no-local "$root" "$repo"
+step "checking out $commit in the scratch clone" "$scratch_full" git -C "$repo" switch --quiet -c release-pr-check "$commit"
 # The clone copies branches but not every tag an older ref needs; the baseline is
 # read from the source repository and made available here.
-step "fetching the release tags" git -C "$repo" fetch --quiet --tags "$root"
+step "fetching the release tags" "run 'git fetch --tags' in $root and re-run" git -C "$repo" fetch --quiet --tags "$root"
 
 baseline="$(git -C "$repo" for-each-ref --merged "$commit" --sort=-v:refname \
     --format='%(refname:short)' 'refs/tags/v*' | head -n1)"
 [ -n "$baseline" ] || refuse "no v* release tag is reachable from $ref" \
     "fetch the release tags (git fetch --tags) and re-run"
-step "checking out the $baseline baseline" git -C "$repo" worktree add --quiet --detach "$work/baseline" "$baseline"
+step "checking out the $baseline baseline" "$scratch_full" git -C "$repo" worktree add --quiet --detach "$work/baseline" "$baseline"
 
 manifest="$repo/crates/onevcs/Cargo.toml"
 version_of() { sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$1" | head -n1; }
 before="$(version_of "$manifest")"
 
 echo "// release-pr-check: a change for release-plz to release" >>"$repo/crates/onevcs/src/lib.rs"
-step "committing a change to release" git -C "$repo" -c user.name=release-pr-check \
+step "committing a change to release" \
+    "check that crates/onevcs/src/lib.rs exists at $ref; the check commits a change to it" git -C "$repo" -c user.name=release-pr-check \
     -c user.email=release-pr-check@invalid commit --quiet -am "fix: a change for release-plz to release"
 
 (cd "$repo" && release-plz update \
     --registry-manifest-path "$work/baseline/crates/onevcs/Cargo.toml" \
     --repo-url https://github.com/nickderobertis/onevcs) >>"$log" 2>&1 \
-    || fail "release-plz update failed on $ref" "read its output above"
+    || fail "release-plz update failed on $ref" \
+        "fix release-plz.toml or the crate manifest it names above; reproduce with 'release-plz update' in a clone of $ref"
 
 after="$(version_of "$manifest")"
 [ "$after" != "$before" ] || fail "release-plz update left crates/onevcs at $before, so nothing was proved" \
-    "read release-plz's output above for why it saw nothing to release"
+    "make release-plz.toml release onevcs again — no 'release = false' for it, and a commit_parsers entry that still turns 'fix:' into a release"
 
 if [ -f "$repo/scripts/release-pr-lockfiles.sh" ]; then
     (cd "$repo" && bash scripts/release-pr-lockfiles.sh) >>"$log" 2>&1 \
-        || fail "the release job's lockfile step failed on the bumped tree" "read its output above"
+        || fail "the release job's lockfile step failed on the bumped tree" \
+            "fix what scripts/release-pr-lockfiles.sh names above; it fails the same way in the release job"
 else
     echo "this tree has no scripts/release-pr-lockfiles.sh; the release job carries no other lockfile" >>"$log"
 fi

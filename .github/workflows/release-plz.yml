@@ -124,7 +124,18 @@ jobs:
           # read that as nothing to do.
           jq -e 'has("prs")' "$RUNNER_TEMP/release-pr.json" >/dev/null \
             || { echo "::error::release-plz release-pr -o json printed no 'prs' key"; exit 1; }
-          echo "branch=$(jq -r '.prs[0].head_branch // empty' "$RUNNER_TEMP/release-pr.json")" >> "$GITHUB_OUTPUT"
+          branch="$(jq -r '.prs[0].head_branch // empty' "$RUNNER_TEMP/release-pr.json")"
+          # The next step fetches and pushes this name, so only a release-plz branch
+          # that is a well-formed ref gets that far.
+          if [ -n "$branch" ]; then
+            case "$branch" in
+              release-plz-*) ;;
+              *) echo "::error::release-plz reported head branch '$branch', not a release-plz-* branch"; exit 1 ;;
+            esac
+            git check-ref-format --branch "$branch" >/dev/null \
+              || { echo "::error::release-plz reported head branch '$branch', which is not a valid branch name"; exit 1; }
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       # `compat/` is a cargo project outside the workspace that links crates/onevcs
       # by path, so its Cargo.lock records that crate's version — and release-plz,
