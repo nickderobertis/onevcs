@@ -55,6 +55,14 @@
 //! names is a run root whose session left nothing behind, which is one
 //! [`crate::workspace`]'s own reclamation removes on sight.
 //!
+//! **The finished branches are the one family that reaches into those three, and it
+//! does so only through a proof.** It is the automatic retirement pass
+//! (`crate::retire`), run with no age floor and every live-holder refusal: a branch
+//! that provably holds nothing beyond its base is deleted from each checkout, clone
+//! and the origin, the run root of a session over it is removed, and a slot that held
+//! it is *returned* rather than removed. Anything short of the proof is kept and said
+//! so, one line per branch.
+//!
 //! The report is one value rendered two ways — `--format text` is [`Report`]'s
 //! `Display`, `--format json` is its `Serialize` — so the two cannot disagree, and
 //! a consumer that reads the JSON reads the field names [`SCHEMA_VERSION`] fixes.
