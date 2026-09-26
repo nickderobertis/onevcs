@@ -278,6 +278,11 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 // answers what a scenario wrote down and nothing else. A hand-written
                 // state may still seed one, exactly as it seeds a hold.
                 on_origin: None,
+                // Whether a branch may be retired is decided from every copy of it this
+                // host holds, its base on the origin, and this host's records — none of
+                // which a provider has — so this provider classifies nothing, and a row
+                // it answers carries no classification rather than an invented one.
+                retirement: None,
             };
             // Preserving the same branch twice replaces its row rather than listing
             // it twice, which is what `recoverable` does across the checkouts a

@@ -18,7 +18,7 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
@@ -2999,6 +2999,26 @@ pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
     .lines()
     .filter_map(|line| line.split_once('\0'))
     .map(|(name, tip)| (name.to_owned(), tip.to_owned()))
+    .collect())
+}
+
+/// Every remote-tracking branch of one remote with the commit it stands at, by the
+/// name the remote gives it; `HEAD` is not a branch and is left out.
+pub fn remote_heads(cwd: &Path, remote: &str) -> Result<BTreeMap<String, String>> {
+    let prefix = format!("refs/remotes/{remote}/");
+    Ok(checked(
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)",
+            &prefix,
+        ],
+        Some(cwd),
+    )?
+    .stdout
+    .lines()
+    .filter_map(|line| line.split_once('\0'))
+    .filter_map(|(name, tip)| Some((name.strip_prefix(&prefix)?.to_owned(), tip.to_owned())))
+    .filter(|(name, _)| name != "HEAD")
     .collect())
 }
 

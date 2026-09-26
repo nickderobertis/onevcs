@@ -527,13 +527,111 @@ pub struct RetirementPassReport {
     pub examined: Vec<Retired>,
 }
 
-impl RetirementPassReport {
-    /// Whether any retirement this pass attempted stopped short.
-    pub fn complete(&self) -> bool {
-        self.examined
+/// One retirement in the lines a person reads: what it is, what was done, and what
+/// was not.
+pub(crate) fn describe_retired(retired: &Retired, verb: &str) -> Vec<String> {
+    let retirement = &retired.retirement;
+    let named = format!("{} of {}", retirement.branch, retirement.identity);
+    let places = |holders: &[BranchHolder]| {
+        holders
             .iter()
-            .all(|entry| entry.outcome != RetireOutcome::Incomplete)
+            .map(|holder| format!("{} {}", holder.kind.as_str(), holder.location))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let mut lines = vec![match retired.outcome {
+        RetireOutcome::Retired => format!(
+            "retired: {named} ({}) was deleted from {}",
+            retirement.verdict(),
+            places(&retired.deleted)
+        ),
+        RetireOutcome::WouldRetire => format!(
+            "would retire: {named} ({}) would be deleted from {}. Nothing was changed: this was \
+             a rehearsal",
+            retirement.verdict(),
+            places(&retired.deleted)
+        ),
+        RetireOutcome::AlreadyRetired => format!(
+            "already retired: nothing on this host holds {named} any more, and its retirement \
+             ({}) is recorded",
+            retirement.verdict()
+        ),
+        RetireOutcome::Kept => format!(
+            "refused: {named} is {}, which `onevcs {verb}` does not delete; nothing was deleted",
+            retirement.verdict()
+        ),
+        RetireOutcome::Incomplete => format!(
+            "retired in part: {named} ({}) was deleted from {} and not from {}. Re-run `onevcs \
+             {verb} {} --repo {}` once that is fixed",
+            retirement.verdict(),
+            match retired.deleted.is_empty() {
+                true => "nowhere".to_owned(),
+                false => places(&retired.deleted),
+            },
+            retired
+                .failed
+                .iter()
+                .map(|failed| format!("{} {} ({})", failed.kind.as_str(), failed.location, failed.error))
+                .collect::<Vec<_>>()
+                .join("; "),
+            retirement.branch,
+            retirement.identity,
+        ),
+    }];
+    lines.extend(retirement.evidence().into_iter().map(|line| format!("  {line}")));
+    if retired.outcome == RetireOutcome::Kept
+        && retirement.class == RetirementClass::SupersededWithChanges
+    {
+        lines.push(format!(
+            "  it differs from {} only in what the retry that superseded it replaced: `onevcs \
+             reclaim {} --repo {}` discards that and deletes it",
+            retirement.base, retirement.branch, retirement.identity
+        ));
     }
+    for slot in &retired.slots_returned {
+        lines.push(format!("  returned slot {}", slot.display()));
+    }
+    for run_root in &retired.run_roots_removed {
+        lines.push(format!("  removed run root {}", run_root.display()));
+    }
+    for token in &retired.sessions_closed {
+        lines.push(format!("  closed session {}", token.0));
+    }
+    lines
+}
+
+/// A pass in the lines a person reads.
+pub(crate) fn describe_pass(report: &RetirementPassReport) -> Vec<String> {
+    let counted = |outcome: RetireOutcome| {
+        report
+            .examined
+            .iter()
+            .filter(|entry| entry.outcome == outcome)
+            .count()
+    };
+    let retired = match report.dry_run {
+        true => counted(RetireOutcome::WouldRetire),
+        false => counted(RetireOutcome::Retired),
+    };
+    let mut lines = vec![format!(
+        "{} {retired} finished branch(es), kept {}{}.",
+        match report.dry_run {
+            true => "would retire",
+            false => "retired",
+        },
+        counted(RetireOutcome::Kept),
+        match counted(RetireOutcome::Incomplete) {
+            0 => String::new(),
+            partial => format!(", and retired {partial} in part"),
+        }
+    )];
+    if report.dry_run {
+        lines.push("Nothing was changed: this was a rehearsal.".to_owned());
+    }
+    for entry in &report.examined {
+        lines.extend(describe_retired(entry, "retire"));
+    }
+    lines
 }
 
 /// Which moment acted, as the event records it.
@@ -688,6 +786,13 @@ pub(crate) struct Census<'a> {
     lent: Option<PathBuf>,
     origin: Option<String>,
     places: Vec<Place>,
+    /// Every place's local branches with their tips, listed once where a read may
+    /// answer from a listing — which is every read but the one made immediately before
+    /// deleting, where a tip is asked of git again.
+    heads: Vec<std::cell::OnceCell<std::result::Result<BTreeMap<String, String>, String>>>,
+    /// The publication checkout's remote-tracking branches, for a read that does not
+    /// ask the origin itself.
+    tracked: std::cell::OnceCell<BTreeMap<String, String>>,
     sessions: &'a [Record],
     streams: &'a [status::Recorded],
     trailers: &'a Trailers,
@@ -704,6 +809,7 @@ impl<'a> Census<'a> {
         streams: &'a [status::Recorded],
         trailers: &'a Trailers,
         fetch: bool,
+        only: Option<&BTreeSet<PathBuf>>,
     ) -> Result<Self> {
         let resolution = store::resolve(registry, identity)?;
         let publication = resolution.publication.clone();
@@ -766,8 +872,15 @@ impl<'a> Census<'a> {
                 slot: record.slot.map(|_| record.run_root.clone()),
             });
         }
+        // A read narrowed to some sessions looks only where those sessions can hold a
+        // branch, which is the whole promise of the narrowing.
+        if let Some(only) = only {
+            places.retain(|place| only.contains(&place.repo));
+        }
         Ok(Census {
             registry,
+            heads: places.iter().map(|_| std::cell::OnceCell::new()).collect(),
+            tracked: std::cell::OnceCell::new(),
             lent: git::objects_dir(&publication).ok(),
             origin: git::remote_url(&publication, "origin").ok(),
             resolution,
@@ -784,11 +897,35 @@ impl<'a> Census<'a> {
         &self.resolution.publication
     }
 
+    /// Where one place has the branch: from the listing of its branches, or — asked
+    /// `fresh`, which is what a read immediately before deleting is — from git now.
+    fn local_tip(&self, index: usize, branch: &str, fresh: bool) -> LocalTip {
+        let place = &self.places[index];
+        if fresh {
+            return git::local_tip(&place.repo, branch);
+        }
+        if !place.repo.exists() {
+            return LocalTip::Absent;
+        }
+        let listed = self.heads[index].get_or_init(|| {
+            git::heads(&place.repo)
+                .map(|heads| heads.into_iter().collect())
+                .map_err(|failure| failure.to_string())
+        });
+        match listed {
+            Ok(heads) => match heads.get(branch).and_then(|tip| ObjectId::parse(tip)) {
+                Some(tip) => LocalTip::At(tip),
+                None => LocalTip::Absent,
+            },
+            Err(said) => LocalTip::Unreadable(said.clone()),
+        }
+    }
+
     /// Where each copy of the branch stands, read now.
     fn copies(&self, branch: &str, ask: &Ask<'_>) -> Copies {
         let mut read = Copies::default();
         for (index, place) in self.places.iter().enumerate() {
-            match git::local_tip(&place.repo, branch) {
+            match self.local_tip(index, branch, ask.remote) {
                 LocalTip::At(tip) => read.copies.push(Copy {
                     at: Holding::Local(index),
                     tip: tip.as_str().to_owned(),
@@ -815,12 +952,13 @@ impl<'a> Census<'a> {
                 Err(failure) => read.unreadable.push(format!("the origin: {failure}")),
             },
             false => {
-                if let Some(tip) =
-                    git::tip(self.publication(), &format!("refs/remotes/origin/{branch}"))
-                {
+                let tracked = self.tracked.get_or_init(|| {
+                    git::remote_heads(self.publication(), "origin").unwrap_or_default()
+                });
+                if let Some(tip) = tracked.get(branch) {
                     read.copies.push(Copy {
                         at: Holding::Origin,
-                        tip,
+                        tip: tip.clone(),
                     });
                 }
             }
@@ -854,7 +992,10 @@ impl<'a> Census<'a> {
     /// something is working in, where one does.
     fn live_holder(&self, branch: &str) -> Result<Option<String>> {
         for record in self.sessions {
-            if record.identity != self.resolution.key || record.state != Lifecycle::Open {
+            if record.identity != self.resolution.key
+                || record.state != Lifecycle::Open
+                || !self.places.iter().any(|place| place.repo == record.clone)
+            {
                 continue;
             }
             let over = *record.branch == *branch
@@ -872,10 +1013,19 @@ impl<'a> Census<'a> {
         Ok(None)
     }
 
+    /// The places holding a local copy — the only places a worktree can have the
+    /// branch checked out in, since a checked-out branch is a ref of its repository.
+    fn holding<'c>(&'c self, copies: &'c Copies) -> impl Iterator<Item = &'c Place> + 'c {
+        copies.copies.iter().filter_map(|copy| match copy.at {
+            Holding::Local(index) => Some(&self.places[index]),
+            Holding::Origin => None,
+        })
+    }
+
     /// A registered checkout with the branch checked out in one of its worktrees.
-    fn checked_out(&self, branch: &str) -> Result<Option<PathBuf>> {
-        for place in &self.places {
-            if place.kind != BranchHolderKind::Checkout || !place.repo.exists() {
+    fn checked_out(&self, branch: &str, copies: &Copies) -> Result<Option<PathBuf>> {
+        for place in self.holding(copies) {
+            if place.kind != BranchHolderKind::Checkout {
                 continue;
             }
             for (worktree, on) in git::worktrees(&place.repo)? {
@@ -889,9 +1039,9 @@ impl<'a> Census<'a> {
 
     /// A worktree over the branch — a session's, a slot's, a run's — holding changes
     /// nobody committed.
-    fn dirty(&self, branch: &str) -> Result<Option<PathBuf>> {
-        for place in &self.places {
-            if place.kind == BranchHolderKind::Checkout || !git::is_repo(&place.repo) {
+    fn dirty(&self, branch: &str, copies: &Copies) -> Result<Option<PathBuf>> {
+        for place in self.holding(copies) {
+            if place.kind == BranchHolderKind::Checkout {
                 continue;
             }
             for (worktree, on) in git::worktrees(&place.repo)? {
@@ -963,10 +1113,10 @@ impl<'a> Census<'a> {
         if let Some(open) = self.open_change(branch, &mut evidence, &judged, ask)? {
             return Ok(kept(open));
         }
-        if self.checked_out(branch)?.is_some() {
+        if self.checked_out(branch, copies)?.is_some() {
             return Ok(kept(KeepReason::CheckedOut));
         }
-        if self.dirty(branch)?.is_some() {
+        if self.dirty(branch, copies)?.is_some() {
             return Ok(kept(KeepReason::DirtyWorktree));
         }
         // The change request may have been found merged since the copies were judged,
@@ -1041,11 +1191,19 @@ impl<'a> Census<'a> {
             return Some(self.places[index].repo.clone());
         }
         let wanted = Sha(copy.tip.clone());
+        // A local copy at the same commit first, which asks git nothing; then the
+        // publication checkout, which a fetch of the origin fills; then every other.
+        let local_twin = self.places.iter().enumerate().find(|(index, _)| {
+            matches!(self.local_tip(*index, branch, false), LocalTip::At(tip) if tip.as_str() == copy.tip)
+        });
+        if let Some((_, place)) = local_twin {
+            return Some(place.repo.clone());
+        }
         let found = self
             .places
             .iter()
             .find(|place| {
-                git::is_repo(&place.repo)
+                place.repo.exists()
                     && git::has_commit(git::Asked::borrowing(&place.repo, self.lent.as_deref()), &wanted)
             })
             .map(|place| place.repo.clone());
@@ -1537,10 +1695,6 @@ impl RetiredRecord {
         &self.at
     }
 
-    pub(crate) fn complete(&self) -> bool {
-        self.payload.failed.is_empty()
-    }
-
     /// The classification the retirement acted on, as a caller asking about a branch
     /// nothing holds any more is answered with.
     fn retirement(&self, base: &str) -> Retirement {
@@ -1607,6 +1761,7 @@ impl Host {
             &self.streams,
             &self.trailers,
             fetch,
+            None,
         )
     }
 

@@ -107,10 +107,17 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// changes nothing about what `next` says lands the work: a preserved branch is kept,
 /// not published.
 ///
+/// `9` is `retired`: the readback of the `branch-retired` record of a branch nothing
+/// on this host holds any more — its class, the proof it was retired on, which verb
+/// or moment acted, and when. A branch retired `retirable` reads as landed, with the
+/// retirement as the evidence, because a proof that it held nothing beyond its base
+/// is the answer to whether its work is there. A branch nobody retired omits the
+/// field, as every absent field of this report is omitted.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 8;
+pub const REPORT_VERSION: u32 = 9;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -171,6 +178,10 @@ pub struct Report {
     pub branch: BranchReport,
     /// What was proposed for it, and whether that landed.
     pub publication: PublicationReport,
+    /// The retirement of a branch nothing on this host holds any more, as its record
+    /// says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired: Option<RetiredReport>,
     /// What the host says its checks are doing, or why it could not be asked.
     pub checks: ChecksReport,
     /// The last thing this work's merge path said about it.
@@ -369,6 +380,65 @@ pub struct PublicationReport {
     pub described: Option<DescribedReport>,
     /// The policy this identity's rules publish under.
     pub merge_policy: MergePolicy,
+}
+
+/// A branch's retirement, as the `branch-retired` record says it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetiredReport {
+    /// Which class it was retired as.
+    pub class: crate::retire::RetirementClass,
+    /// What proved it held nothing beyond its base; absent for a branch reclaimed as
+    /// superseded, which is the one class retired without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<crate::retire::RetirementProof>,
+    /// Which verb or moment acted: `verb`, `session-close`, `sweep` or `pass`.
+    pub trigger: String,
+    /// What it acted under: `retire`, `reclaim` or `automatic`.
+    pub mode: String,
+    /// When, as the event stream stamped it.
+    pub at: Stamp,
+    /// The commit the branch was deleted at.
+    pub tip: String,
+}
+
+impl RetiredReport {
+    /// The report of one record, where its stamp is one this report can carry.
+    fn of(record: &crate::retire::RetiredRecord) -> Option<Self> {
+        Some(RetiredReport {
+            class: record.class(),
+            proof: record.proof().cloned(),
+            trigger: record.trigger().to_owned(),
+            mode: record.mode().to_owned(),
+            at: Stamp::try_from(record.at().to_owned()).ok()?,
+            tip: record.tip().to_owned(),
+        })
+    }
+
+    /// The landing a retirement answers with: landed, on the evidence of its proof,
+    /// for a branch retired as holding nothing beyond its base; nothing for one
+    /// reclaimed, whose differences were discarded rather than landed.
+    fn landed(&self) -> Option<Landed> {
+        let proof = self.proof.clone()?;
+        (self.class == crate::retire::RetirementClass::Retirable).then(|| Landed::Yes {
+            evidence: landed::LandingEvidence::Retired {
+                commit: crate::host::Sha(proof.commit().to_owned()),
+                proof,
+            },
+        })
+    }
+}
+
+/// The retirement a report about this work carries: the newest one recorded, where
+/// nothing on this host holds the branch any more. A name re-cut since is new work,
+/// and its old retirement says nothing about it.
+fn retired_now(streams: &[Recorded], work: &Work, holders: &[Holder]) -> Option<RetiredReport> {
+    if !holders.is_empty() {
+        return None;
+    }
+    retirement_of(streams, &work.identity, &work.branch)
+        .as_ref()
+        .and_then(RetiredReport::of)
 }
 
 /// One description written to a change request after it was opened, as the stream
@@ -1055,6 +1125,7 @@ pub(crate) fn landing_of_within(
     );
     unreadable.extend(unread);
     let carrier = carrier_of(&judged);
+    let retired = retired_now(&streams, &work, &holders).and_then(|report| report.landed());
     Ok(LandingOf {
         reference: reference.to_owned(),
         identity: work.identity.clone(),
@@ -1067,6 +1138,7 @@ pub(crate) fn landing_of_within(
             true => Landed::Unknown,
             false => carrier
                 .map(|(_, _, verdict)| verdict.clone())
+                .or(retired)
                 .unwrap_or(Landed::Unknown),
         },
         carrier: carrier.map(|(repo, _, _)| repo.clone()),
@@ -1150,6 +1222,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     );
     notes.extend(unread);
     let carrier = carrier_of(&judged);
+    let retired = retired_now(&streams, &work, &holders);
 
     let mut ahead = None;
     let mut branch_provenance = None;
@@ -1167,6 +1240,11 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
             .and_then(|recorded| Ref::try_from(recorded).ok());
         verdict = Some(decided.clone());
+    }
+    // A branch nothing holds any more has no copy to decide it from, and one retired
+    // as holding nothing beyond its base is answered by the proof it was retired on.
+    if verdict.is_none() {
+        verdict = retired.as_ref().and_then(RetiredReport::landed);
     }
     // …and a chain of retries this host cannot follow overrides whatever a copy of
     // the branch said. Undecidable rather than decided, in both directions: a `no`
@@ -1271,6 +1349,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
             described,
             merge_policy: resolved.policy.publication,
         },
+        retired,
         checks,
         merge_path,
         next,
@@ -2462,6 +2541,12 @@ fn resolve(
         if !found.is_empty() {
             return one(found, reference, "branch").map(|work| (work, RefKind::Branch));
         }
+        // A branch nothing holds any more is still one this host knows, where it
+        // recorded retiring it: what became of the work is exactly what is asked.
+        let retired = retired_under(streams, &named, within);
+        if !retired.is_empty() {
+            return one(retired, reference, "branch").map(|work| (work, RefKind::Branch));
+        }
     }
     if reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit()) {
         let found = by_commit(registry, reference, within, notes)?;
@@ -2837,6 +2922,21 @@ impl Report {
                 out.push_str(&format!("    {} ({what})\n", holder.path.display()));
             }
         }
+        if let Some(retired) = &self.retired {
+            out.push_str(&format!(
+                "retired: {class} — {proof}; by {trigger} ({mode}) at {at}, from {tip}\n",
+                class = retired.class.as_str(),
+                proof = retired
+                    .proof
+                    .as_ref()
+                    .map(crate::retire::RetirementProof::describe)
+                    .unwrap_or_else(|| "reclaimed, its differences discarded".to_owned()),
+                trigger = retired.trigger,
+                mode = retired.mode,
+                at = String::from(retired.at.clone()),
+                tip = retired.tip,
+            ));
+        }
         out.push_str("publication:\n");
         out.push_str(&format!(
             "  state: {}\n",
@@ -3025,8 +3125,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v8.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v8-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v9.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v9-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {

@@ -158,6 +158,15 @@ pub enum LandingEvidence {
         /// The commit on the base that carries the trailer.
         commit: Sha,
     },
+    /// A retirement of this branch, recorded once a proof showed it held nothing
+    /// beyond its base and it was deleted everywhere this host held it. What decided
+    /// it is the proof the retirement acted on, which travels with it.
+    Retired {
+        /// The commit that is the proof's evidence.
+        commit: Sha,
+        /// What proved the branch held nothing beyond its base.
+        proof: crate::retire::RetirementProof,
+    },
 }
 
 impl LandingEvidence {
@@ -167,6 +176,7 @@ impl LandingEvidence {
             LandingEvidence::RecordedLanding { .. } => "a recorded landing",
             LandingEvidence::ChangeRequest { .. } => "the change request's number in the base",
             LandingEvidence::Trailer { .. } => "a landing trailer on the base",
+            LandingEvidence::Retired { .. } => "the branch's recorded retirement",
         }
     }
 
@@ -175,7 +185,8 @@ impl LandingEvidence {
         match self {
             LandingEvidence::RecordedLanding { commit }
             | LandingEvidence::ChangeRequest { commit, .. }
-            | LandingEvidence::Trailer { commit } => &commit.0,
+            | LandingEvidence::Trailer { commit }
+            | LandingEvidence::Retired { commit, .. } => &commit.0,
         }
     }
 }

@@ -247,7 +247,8 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
     assert!(
         report.contains(&format!(
             "This answers for the publication and recovery workspaces onevcs owns under {}, \
-             for the session records beside them, and for nothing else on this host.",
+             for the session records beside them, for the finished branches of the \
+             registered identities, and for nothing else on this host.",
             fixture.world.home().join("workspaces").display()
         )),
         "the report states the scope it answered under:\n{report}"

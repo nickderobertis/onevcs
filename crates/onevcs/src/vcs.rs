@@ -1,6 +1,6 @@
 //! The repository side of the seam.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::error::{self, Error, Result};
@@ -168,6 +168,10 @@ impl Vcs for Git {
 
     fn close_session(&self, token: &SessionToken) -> Result<Session> {
         let record = workspace::close(&token.0)?;
+        // The moment the facts about this branch are known: its session is done with
+        // it, and where its landing is recorded and it provably holds nothing beyond
+        // its base, it is retired here rather than left for somebody to find.
+        crate::retire::after_close(&record);
         Ok(record.session())
     }
 
@@ -613,6 +617,19 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
     // once per identity: see `reported_branches` for why the listing below needs
     // them.
     let preserved_here = crate::status::preserved_branches(streams, identity);
+    // What each branch is for the question of whether it may be deleted, read from the
+    // same records and local refs this report reads and nothing else — no host, no
+    // fetch — and decided once per branch, since the answer is about every copy of it.
+    let census = crate::retire::Census::read(
+        registry,
+        identity,
+        sessions,
+        streams,
+        trailers,
+        false,
+        narrowed.as_ref().map(|only| &only.checkouts),
+    )?;
+    let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
     for repo in workspace::checkouts_of(registry, &resolution)? {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the
@@ -712,6 +729,19 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             if withheld && reporting == Reporting::UnpublishedOnly {
                 continue;
             }
+            let retirement = classified
+                .entry(branch.clone())
+                .or_insert_with(|| crate::retire::classify_offline(&census, &branch))
+                .clone();
+            // A branch that provably holds nothing beyond its base is finished work
+            // exactly as a landed one is, and is left out of the default report for
+            // the same reason: its row would be read as work left to publish.
+            let retirable = retirement
+                .as_ref()
+                .is_some_and(|found| found.class == crate::retire::RetirementClass::Retirable);
+            if retirable && reporting == Reporting::UnpublishedOnly {
+                continue;
+            }
             // Marked seen only once it is a row this report is answering with, so
             // that one repository's spent copy of a name cannot answer for
             // another's: a branch published out of the checkout and re-cut in a
@@ -738,6 +768,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                         &branch,
                         session_holding(sessions, identity, &branch),
                     ),
+                    retirement,
                 },
                 sessions,
                 trailers,
@@ -816,6 +847,7 @@ struct Preserved<'a> {
     change_url: Option<Url>,
     verdict: Landed,
     on_origin: Option<OnOrigin>,
+    retirement: Option<crate::retire::Retirement>,
 }
 
 /// The row one preserved branch answers with.
@@ -834,6 +866,7 @@ fn preserved_row(
         ref change_url,
         ref verdict,
         ref on_origin,
+        ref retirement,
     } = *preserved;
     // A marker under a prefix this host does not read is still a marker:
     // reporting the branch as complete is what would let somebody hand
@@ -953,6 +986,7 @@ fn preserved_row(
                 .map(|record| record.labels.clone())
                 .unwrap_or_default(),
             on_origin: on_origin.clone(),
+            retirement: retirement.clone(),
         },
     ))
 }

@@ -337,7 +337,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `8`, and it is deliberately not a migration boundary
+The report's schema version is `9`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -371,6 +371,13 @@ a preserved branch is unpublished, and `publication.state` says so beside it —
 human rendering names it either way, because the question a reader of a shutting-down
 host asks is whether the work would survive the machine going away, and silence reads as
 "yes" as readily as "no".
+Version 9 is `retired`: the readback of the `branch-retired` record of a branch nothing on
+this host holds any more — its class, the proof it was retired on, which verb or moment
+acted, the mode, when, and the tip it was deleted at. A branch retired `retirable` reads
+as landed, with `landed.evidence.tier` `retired` naming that proof, because a proof that
+it held nothing beyond its base answers whether its work is there; the human rendering
+prints a `retired:` line. Omitted for a branch nobody retired, and for a name re-cut
+since, whose old retirement says nothing about the work it holds now.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -386,8 +393,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v8.json` and
-`status-report-v8-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v9.json` and
+`status-report-v9-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
@@ -395,10 +402,13 @@ against the real CLI's own output by
 same two files, held from both sides, so the bytes a consumer meets and the shape it
 parses them into cannot drift apart. That is also why a golden's stand-in for a
 session token is a token (`s-000000000000`) rather than a placeholder shaped like
-one: a golden nothing can parse is the opposite of what a golden is for. Two fields cannot share a golden with the rest and are
+one: a golden nothing can parse is the opposite of what a golden is for. Three fields cannot share a golden with the rest and are
 covered by name elsewhere: `next.command`, which no report carrying an open change
-request has (there is nothing to advance), and `notes`, which reports a gap in what
-could be *read* rather than anything about the work.
+request has (there is nothing to advance), `notes`, which reports a gap in what
+could be *read* rather than anything about the work, and `retired`, which only a
+branch nothing holds carries — the opposite of the golden's branch, held in a checkout
+and a run clone with an open change request — and which `tests/e2e/retire.rs` holds
+by name.
 
 **Recorded contract conflict: the approved draft amendment says "`just work-status`
 renders it", and this repository has no such recipe and cannot have one.** The
