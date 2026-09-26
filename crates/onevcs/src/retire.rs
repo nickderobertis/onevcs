@@ -520,6 +520,13 @@ impl RetireOutcome {
 }
 
 /// One branch's retirement: its classification, and what was done about it.
+// llmlint: ignore[invalid_states_unrepresentable] the retirement amendment in
+// `docs/contract.md` fixes this public type field for field — `onepipeline` links it and
+// `ai-orchestrator` reads its JSON — so folding the outcome and the lists into one enum
+// would change a shared interface this crate may not change alone. What holds them
+// together is construction: nothing else in this crate builds one, and each place here
+// (`Retired::nothing`, the dry runs in `act` and `retire_named`, `Census::finish`) derives
+// the outcome from the lists it fills.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retired {
     /// What the branch is.
@@ -755,7 +762,7 @@ impl Acting {
 
     /// Whether a branch of this class may be deleted. Only a person, through
     /// `reclaim`, ever discards a difference from the base.
-    fn permits(self, class: RetirementClass) -> bool {
+    pub(crate) fn permits(self, class: RetirementClass) -> bool {
         match class {
             RetirementClass::Retirable => true,
             RetirementClass::SupersededWithChanges => self == Acting::Reclaim,

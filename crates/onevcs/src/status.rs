@@ -383,23 +383,72 @@ pub struct PublicationReport {
 }
 
 /// A branch's retirement, as the `branch-retired` record says it.
+///
+/// Its fields are private and it is made in two places, both of which hold the one
+/// rule between them: [`RetiredReport::of`], from a record `RetiredRecord::read`
+/// already refused unless the class, the proof and the mode agree, and the conversion
+/// below, which refuses a document where they do not. So a report of a branch retired
+/// as holding nothing beyond its base always names its proof, and one reclaimed as
+/// superseded never does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "AnyRetired")]
 pub struct RetiredReport {
     /// Which class it was retired as.
-    pub class: crate::retire::RetirementClass,
+    class: crate::retire::RetirementClass,
     /// What proved it held nothing beyond its base; absent for a branch reclaimed as
     /// superseded, which is the one class retired without one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proof: Option<crate::retire::RetirementProof>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof: Option<crate::retire::RetirementProof>,
     /// Which verb or moment acted: `verb`, `session-close`, `sweep` or `pass`.
-    pub trigger: crate::retire::Trigger,
+    trigger: crate::retire::Trigger,
     /// What it acted under: `retire`, `reclaim` or `automatic`.
-    pub mode: crate::retire::Acting,
+    mode: crate::retire::Acting,
     /// When, as the event stream stamped it.
-    pub at: Stamp,
+    at: Stamp,
     /// The commit the branch was deleted at.
-    pub tip: crate::host::Sha,
+    tip: crate::host::Sha,
+}
+
+/// A retirement report as a document spells it, before its fields are held to each
+/// other.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnyRetired {
+    class: crate::retire::RetirementClass,
+    #[serde(default)]
+    proof: Option<crate::retire::RetirementProof>,
+    trigger: crate::retire::Trigger,
+    mode: crate::retire::Acting,
+    at: Stamp,
+    tip: crate::host::Sha,
+}
+
+impl TryFrom<AnyRetired> for RetiredReport {
+    type Error = String;
+
+    fn try_from(any: AnyRetired) -> std::result::Result<Self, Self::Error> {
+        let retirable = any.class == crate::retire::RetirementClass::Retirable;
+        if !any.mode.permits(any.class) || retirable != any.proof.is_some() {
+            return Err(format!(
+                "a retirement as {} under {} {} a proof, which no retirement is",
+                any.class.as_str(),
+                any.mode.as_str(),
+                if any.proof.is_some() {
+                    "with"
+                } else {
+                    "without"
+                },
+            ));
+        }
+        Ok(RetiredReport {
+            class: any.class,
+            proof: any.proof,
+            trigger: any.trigger,
+            mode: any.mode,
+            at: any.at,
+            tip: any.tip,
+        })
+    }
 }
 
 impl RetiredReport {
@@ -3403,5 +3452,52 @@ mod round_trip {
         let mut document = parsed(FULL);
         document["landed"] = Value::Bool(true);
         assert!(serde_json::from_value::<Report>(document).is_err());
+    }
+
+    #[test]
+    fn a_retirement_reads_back_only_where_its_class_its_proof_and_its_mode_agree() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let proof = json!({"kind": "recorded-landing", "commit": sha});
+        let retired = |class: &str, proof: Option<&Value>, mode: &str| {
+            let mut document = parsed(FULL);
+            document["retired"] = json!({
+                "class": class,
+                "trigger": "verb",
+                "mode": mode,
+                "at": "2026-01-01T00:00:00.000Z",
+                "tip": sha,
+            });
+            if let Some(proof) = proof {
+                document["retired"]["proof"] = proof.clone();
+            }
+            document
+        };
+
+        // The two shapes a retirement is written in read back and write themselves again.
+        for document in [
+            retired("retirable", Some(&proof), "retire"),
+            retired("superseded-with-changes", None, "reclaim"),
+        ] {
+            let report: Report =
+                serde_json::from_value(document.clone()).expect("an agreeing retirement reads");
+            assert_eq!(
+                serde_json::to_value(&report).expect("a report serializes"),
+                document
+            );
+        }
+
+        // Every other combination is one no retirement is, and is refused where it is
+        // read rather than handed on as a landing with no proof behind it.
+        for document in [
+            retired("retirable", None, "retire"),
+            retired("superseded-with-changes", Some(&proof), "reclaim"),
+            retired("superseded-with-changes", None, "retire"),
+            retired("keep", None, "reclaim"),
+        ] {
+            let refusal = serde_json::from_value::<Report>(document)
+                .expect_err("a retirement whose fields disagree is refused")
+                .to_string();
+            assert!(refusal.contains("which no retirement is"), "{refusal}");
+        }
     }
 }
