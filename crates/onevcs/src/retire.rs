@@ -945,7 +945,7 @@ impl<'a> Census<'a> {
         }
         for (run_root, _) in listed(&root.join("runs"), &mut unlisted) {
             let clone = run_root.join("clone");
-            if clone.exists() {
+            if clone.exists() && !emptied(&clone) {
                 places.push(Place {
                     kind: BranchHolderKind::RunClone,
                     repo: clone,
@@ -957,6 +957,7 @@ impl<'a> Census<'a> {
             if record.identity != resolution.key
                 || places.iter().any(|place| place.repo == record.clone)
                 || !record.clone.exists()
+                || (record.slot.is_none() && emptied(&record.clone))
             {
                 continue;
             }
@@ -2105,13 +2106,49 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
     };
     let copies = census.copies(&request.branch, &ask);
     if copies.copies.is_empty() && copies.unreadable.is_empty() {
-        return match status::retirement_of(&host.streams, &identity, &request.branch) {
-            Some(record) => Ok(Retired::nothing(
-                record.retirement(census.base.as_deref().unwrap_or_default()),
-                RetireOutcome::AlreadyRetired,
-            )),
-            None => Err(nowhere(&identity, &request.branch)),
+        let Some(record) = status::retirement_of(&host.streams, &identity, &request.branch) else {
+            return Err(nowhere(&identity, &request.branch));
         };
+        let classified = Classified {
+            retirement: record.retirement(census.base.as_deref().unwrap_or_default()),
+            copies,
+        };
+        // Every copy is gone, and what a retirement stopped part way can still have left
+        // is beside them: a run root it could not remove, or a session record it could
+        // not close. Those hold no copy of the branch, so the re-run finishes them.
+        let plan = census.plan(&request.branch, &classified);
+        let unfinished = !plan.run_roots.is_empty()
+            || plan
+                .sessions
+                .iter()
+                .any(|record| record.state == Lifecycle::Open);
+        return Ok(match (unfinished, request.dry_run) {
+            (false, _) => Retired::nothing(classified.retirement, RetireOutcome::AlreadyRetired),
+            (true, true) => Retired {
+                retirement: classified.retirement,
+                outcome: RetireOutcome::WouldRetire,
+                deleted: Vec::new(),
+                failed: Vec::new(),
+                slots_returned: Vec::new(),
+                run_roots_removed: plan.run_roots,
+                sessions_closed: plan
+                    .sessions
+                    .iter()
+                    .filter(|record| record.state == Lifecycle::Open)
+                    .map(session_token)
+                    .collect(),
+            },
+            (true, false) => census.finish(
+                &request.branch,
+                classified,
+                plan,
+                Done {
+                    deleted: Vec::new(),
+                    failed: Vec::new(),
+                },
+                (acting, Trigger::Verb),
+            ),
+        });
     }
     act(
         &census,
@@ -2657,6 +2694,13 @@ fn stand_off(repo: &Path, branch: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A directory that can be listed and holds nothing — what a run root's removal that
+/// stopped part way leaves of its clone. It holds no ref, so it holds no copy; a clone
+/// that cannot be listed is not this, and stays a place nobody could read.
+fn emptied(path: &Path) -> bool {
+    std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none())
 }
 
 /// Remove one run root whose clone holds nothing else nobody has published, under

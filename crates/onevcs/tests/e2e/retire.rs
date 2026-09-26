@@ -2009,3 +2009,64 @@ fn a_branch_another_machine_landed_reads_as_landed_at_the_base_commit_its_traile
         "the base commit the trailer is on, not the branch commit it names: {report}"
     );
 }
+
+#[test]
+fn a_run_root_that_could_not_be_removed_is_removed_by_the_rerun() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/rooted", "rooted.txt");
+    let (stale, stale_tree) = yard.stale_session("feature/rooted");
+    let run_root = stale_tree.parent().expect("a run root").to_path_buf();
+    let original = std::fs::metadata(&run_root)
+        .expect("a run root")
+        .permissions();
+    // llmlint: ignore-block[tests_mirror_real_usage] a directory this user may not remove
+    // entries from is a fact about the host, reachable by no verb of this crate; the real
+    // binary meets it, and removing everything beneath it first is what a removal does.
+    std::fs::set_permissions(&run_root, std::fs::Permissions::from_mode(0o555))
+        .expect("the run root is read-only");
+    let (code, partial) = yard.verb(&["retire", "feature/rooted"]);
+    let (_, rehearsed) = yard.verb(&["retire", "feature/rooted", "--dry-run"]);
+    std::fs::set_permissions(&run_root, original).expect("and writable again");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    assert_eq!(code, 1, "{partial}");
+    assert_eq!(partial["outcome"], "incomplete", "{partial}");
+    assert_eq!(
+        partial["failed"][0]["location"],
+        run_root.display().to_string(),
+        "{partial}"
+    );
+    assert_eq!(partial["sessions_closed"], serde_json::json!([stale]));
+    assert!(yard.held("feature/rooted").is_empty(), "every copy went");
+    assert!(run_root.exists(), "the premise: the run root stayed");
+    // What the removal left of it holds no copy, so the rehearsal names only the root.
+    assert_eq!(rehearsed["outcome"], "would-retire", "{rehearsed}");
+    assert_eq!(
+        rehearsed["run_roots_removed"],
+        serde_json::json!([run_root.display().to_string()])
+    );
+    assert_eq!(rehearsed["sessions_closed"], serde_json::json!([]));
+
+    let (code, finished) = yard.verb(&["retire", "feature/rooted"]);
+    assert_eq!(
+        (code, &finished["outcome"]),
+        (0, &Value::from("retired")),
+        "{finished}"
+    );
+    assert_eq!(
+        finished["run_roots_removed"],
+        serde_json::json!([run_root.display().to_string()])
+    );
+    assert!(!run_root.exists(), "the re-run removed it");
+    let (code, again) = yard.verb(&["retire", "feature/rooted"]);
+    assert_eq!(
+        (code, &again["outcome"]),
+        (0, &Value::from("already-retired")),
+        "{again}"
+    );
+    assert_eq!(
+        status(world, "feature/rooted")["retired"]["class"],
+        "retirable"
+    );
+}
