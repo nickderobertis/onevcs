@@ -1755,7 +1755,7 @@ enum Placed {
 
 /// The base as a clone can name it: its remote-tracking copy where there is one, and
 /// a local branch of that name otherwise.
-fn integrated_base(clone: &Path, base: &Ref) -> String {
+pub(crate) fn integrated_base(clone: &Path, base: &Ref) -> String {
     let remote = format!("origin/{base}");
     match git::ref_exists(clone, &format!("refs/remotes/{remote}")) {
         true => remote,
@@ -2390,7 +2390,7 @@ fn return_tree(record: &Record, delete: &[PathBuf], copied: bool) -> Result<()> 
 /// `base` is spelled as the clone names it — `origin/main`, or a bare `main` where the
 /// clone has no remote-tracking copy — and a name that resolves to nothing is git's
 /// refusal rather than a tree left half reset.
-fn reset_onto_base(worktree: &Path, base: &str, delete: &[PathBuf]) -> Result<()> {
+pub(crate) fn reset_onto_base(worktree: &Path, base: &str, delete: &[PathBuf]) -> Result<()> {
     if !git::is_repo(worktree) {
         return Err(error::invalid(format!(
             "the slot worktree at {} is not a repository, so it cannot be returned; the next \

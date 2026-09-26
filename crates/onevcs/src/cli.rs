@@ -91,6 +91,73 @@ pub enum Command {
         #[command(subcommand)]
         command: PoolCommand,
     },
+    /// Delete a branch everywhere this host holds it, where it provably holds no
+    /// work beyond its base.
+    Retire(RetireArgs),
+    /// Delete a branch a retry superseded and landed, discarding what it still
+    /// differs from the base in.
+    Reclaim(RetireArgs),
+    /// Retire every branch in scope that provably holds no work beyond its base.
+    RetireFinished(RetireFinishedArgs),
+    /// Record that a branch was superseded by a retry that landed.
+    Supersede(SupersedeArgs),
+}
+
+/// Arguments for `onevcs retire` and `onevcs reclaim`, which take the same ones.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct RetireArgs {
+    /// The branch to retire.
+    // llmlint: ignore[invalid_states_unrepresentable] a branch name is valid when `git
+    // check-ref-format` says so, which is a subprocess argument parsing must not run;
+    // `retire` is the boundary that refuses one, as `PreserveArgs::branch` says.
+    pub branch: String,
+    /// The repository it belongs to: an identity key, a registered alias, an origin
+    /// URL, or a path. Omitted, the one identity anything on this host holds it in.
+    #[arg(long)]
+    pub repo: Option<String>,
+    /// Report what would be retired, and change nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Report as JSON rather than as prose.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs retire-finished`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct RetireFinishedArgs {
+    /// The repository to examine. Omitted, every registered identity.
+    #[arg(long)]
+    pub repo: Option<String>,
+    /// A branch to leave alone, whatever it is; repeatable.
+    #[arg(long, value_name = "BRANCH")]
+    pub exclude: Vec<String>,
+    /// Report what would be retired, and change nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Report as JSON rather than as prose.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs supersede`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct SupersedeArgs {
+    /// The branch that was superseded.
+    pub branch: String,
+    /// The repository it belongs to: an identity key, a registered alias, an origin
+    /// URL, or a path.
+    #[arg(long)]
+    pub repo: String,
+    /// The branch that superseded it.
+    #[arg(long, value_name = "BRANCH")]
+    pub by: String,
+    /// Where that branch landed: a full commit id, or a change request's URL.
+    #[arg(long, value_name = "SHA-OR-URL")]
+    pub landing: String,
+    /// A label to record with it, as KEY=VALUE; repeatable, one value per key.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
 }
 
 /// The `onevcs pool` subcommands.

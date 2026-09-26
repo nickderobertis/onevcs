@@ -14,7 +14,7 @@ use crate::cli::{
     ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
     EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
     PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, RecoverArgs, RecoverableArgs,
-    RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
+    RegisterArgs, ReleaseAcknowledgeArgs, RetireArgs, RetireFinishedArgs, SupersedeArgs, ReleaseCommand, ReleaseDeclarationArgs,
     ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
     ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
     SessionTokenArgs, StatusArgs, SweepArgs, SweepFormat, SyncArgs,
@@ -118,7 +118,232 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             PoolCommand::Prune(args) => pool_prune(args),
             PoolCommand::Maintain(args) => pool_maintain(args),
         },
+        Command::Retire(args) => retire_branch(args, providers),
+        Command::Reclaim(args) => reclaim_branch(args, providers),
+        Command::RetireFinished(args) => retire_finished(args, providers),
+        Command::Supersede(args) => supersede(args),
     }
+}
+
+/// The exit code `onevcs retire` and `onevcs reclaim` answer a branch whose class
+/// does not permit what was asked with: nothing was deleted, and the class, reason and
+/// evidence are printed.
+///
+/// Its own code for the reason [`POOL_EXHAUSTED_EXIT`] has one: a caller wrapping the
+/// verb routes a refusal to decide differently from a failure to run, by `$?` alone.
+// llmlint: ignore[cli_output_contract] the retirement amendment in docs/contract.md fixes this code.
+pub const RETIREMENT_REFUSED_EXIT: u8 = 4;
+
+/// Render what `onevcs retire` did, which is [`crate::retire`]'s answer under
+/// [`crate::RetireMode::Lossless`].
+fn retire_branch(args: &RetireArgs, providers: &Providers<'_>) -> Result<u8> {
+    let retired = crate::retire(providers, &retire_request(args, crate::RetireMode::Lossless))?;
+    render_retired(args, &retired, "retire")
+}
+
+/// Render what `onevcs reclaim` did, which is [`crate::retire`]'s answer under
+/// [`crate::RetireMode::Reclaim`].
+fn reclaim_branch(args: &RetireArgs, providers: &Providers<'_>) -> Result<u8> {
+    let retired = crate::retire(providers, &retire_request(args, crate::RetireMode::Reclaim))?;
+    render_retired(args, &retired, "reclaim")
+}
+
+fn retire_request(args: &RetireArgs, mode: crate::RetireMode) -> crate::RetireRequest {
+    crate::RetireRequest {
+        repo: args.repo.clone(),
+        branch: args.branch.clone(),
+        mode,
+        dry_run: args.dry_run,
+    }
+}
+
+/// The exit code a retirement answers with, and its rendering.
+fn render_retired(args: &RetireArgs, retired: &crate::Retired, verb: &str) -> Result<u8> {
+    let code = match retired.outcome {
+        crate::RetireOutcome::Kept => RETIREMENT_REFUSED_EXIT,
+        crate::RetireOutcome::Incomplete => 1,
+        _ => 0,
+    };
+    if args.json {
+        print_json(retired)?;
+        return Ok(code);
+    }
+    for line in describe_retired(retired, verb) {
+        println!("{line}");
+    }
+    Ok(code)
+}
+
+/// One retirement in the lines a person reads: what it is, what was done, and what
+/// was not.
+fn describe_retired(retired: &crate::Retired, verb: &str) -> Vec<String> {
+    let retirement = &retired.retirement;
+    let named = format!("{} of {}", retirement.branch, retirement.identity);
+    let places = |holders: &[crate::BranchHolder]| {
+        holders
+            .iter()
+            .map(|holder| format!("{} {}", holder.kind.as_str(), holder.location))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let mut lines = vec![match retired.outcome {
+        crate::RetireOutcome::Retired => format!(
+            "retired: {named} ({}) was deleted from {}",
+            retirement.verdict(),
+            places(&retired.deleted)
+        ),
+        crate::RetireOutcome::WouldRetire => format!(
+            "would retire: {named} ({}) would be deleted from {}. Nothing was changed: this was \
+             a rehearsal",
+            retirement.verdict(),
+            places(&retired.deleted)
+        ),
+        crate::RetireOutcome::AlreadyRetired => format!(
+            "already retired: nothing on this host holds {named} any more, and its retirement \
+             ({}) is recorded",
+            retirement.verdict()
+        ),
+        crate::RetireOutcome::Kept => format!(
+            "refused: {named} is {}, which `onevcs {verb}` does not delete; nothing was deleted",
+            retirement.verdict()
+        ),
+        crate::RetireOutcome::Incomplete => format!(
+            "retired in part: {named} ({}) was deleted from {} and not from {}. Re-run `onevcs \
+             {verb} {} --repo {}` once that is fixed",
+            retirement.verdict(),
+            match retired.deleted.is_empty() {
+                true => "nowhere".to_owned(),
+                false => places(&retired.deleted),
+            },
+            retired
+                .failed
+                .iter()
+                .map(|failed| format!("{} {} ({})", failed.kind.as_str(), failed.location, failed.error))
+                .collect::<Vec<_>>()
+                .join("; "),
+            retirement.branch,
+            retirement.identity,
+        ),
+    }];
+    lines.extend(retirement.evidence().into_iter().map(|line| format!("  {line}")));
+    if retired.outcome == crate::RetireOutcome::Kept
+        && retirement.class == crate::RetirementClass::SupersededWithChanges
+    {
+        lines.push(format!(
+            "  it differs from {} only in what the retry that superseded it replaced: `onevcs \
+             reclaim {} --repo {}` discards that and deletes it",
+            retirement.base, retirement.branch, retirement.identity
+        ));
+    }
+    for slot in &retired.slots_returned {
+        lines.push(format!("  returned slot {}", slot.display()));
+    }
+    for run_root in &retired.run_roots_removed {
+        lines.push(format!("  removed run root {}", run_root.display()));
+    }
+    for token in &retired.sessions_closed {
+        lines.push(format!("  closed session {}", token.0));
+    }
+    lines
+}
+
+/// Render what `onevcs retire-finished` did, which is [`crate::retire_finished`]'s
+/// answer.
+fn retire_finished(args: &RetireFinishedArgs, providers: &Providers<'_>) -> Result<u8> {
+    let registry = store::load()?;
+    let identities: Vec<String> = match &args.repo {
+        Some(repo) => vec![store::resolve(&registry, repo)?.key],
+        None => {
+            let mut keys: Vec<String> = registry
+                .checkouts
+                .values()
+                .map(|checkout| checkout.identity.clone())
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        }
+    };
+    // A branch is excluded in every identity in scope, because the flag names a
+    // branch and the scope says which identities that means.
+    let exclude = identities
+        .iter()
+        .flat_map(|identity| {
+            args.exclude.iter().map(move |branch| crate::BranchRef {
+                identity: identity.clone(),
+                branch: branch.clone(),
+            })
+        })
+        .collect();
+    let report = crate::retire_finished(
+        providers,
+        &crate::RetirePass {
+            scope: match &args.repo {
+                Some(repo) => Scope::Repo(repo.clone()),
+                None => Scope::All,
+            },
+            exclude,
+            dry_run: args.dry_run,
+        },
+    )?;
+    if args.json {
+        return print_json(&report);
+    }
+    for line in describe_pass(&report) {
+        println!("{line}");
+    }
+    Ok(0)
+}
+
+/// A pass in the lines a person reads.
+pub(crate) fn describe_pass(report: &crate::RetirementPassReport) -> Vec<String> {
+    let counted = |outcome: crate::RetireOutcome| {
+        report
+            .examined
+            .iter()
+            .filter(|entry| entry.outcome == outcome)
+            .count()
+    };
+    let retired = match report.dry_run {
+        true => counted(crate::RetireOutcome::WouldRetire),
+        false => counted(crate::RetireOutcome::Retired),
+    };
+    let mut lines = vec![format!(
+        "{} {retired} finished branch(es), kept {}{}.",
+        match report.dry_run {
+            true => "would retire",
+            false => "retired",
+        },
+        counted(crate::RetireOutcome::Kept),
+        match counted(crate::RetireOutcome::Incomplete) {
+            0 => String::new(),
+            partial => format!(", and retired {partial} in part"),
+        }
+    )];
+    if report.dry_run {
+        lines.push("Nothing was changed: this was a rehearsal.".to_owned());
+    }
+    for entry in &report.examined {
+        lines.extend(describe_retired(entry, "retire"));
+    }
+    lines
+}
+
+/// Render what `onevcs supersede` recorded, which is [`crate::record_supersession`].
+fn supersede(args: &SupersedeArgs) -> Result<u8> {
+    let labels = label::parse_all(&args.label)?;
+    crate::record_supersession(&crate::Supersession {
+        repo: args.repo.clone(),
+        branch: args.branch.clone(),
+        superseded_by: args.by.clone(),
+        landing: args.landing.clone(),
+        labels,
+    })?;
+    println!(
+        "recorded: {} is superseded by {}, which landed at {}",
+        args.branch, args.by, args.landing
+    );
+    Ok(0)
 }
 
 /// Render a repository's pool the way `onevcs pool status` reports it.

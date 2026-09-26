@@ -85,6 +85,7 @@ pub mod registry;
 mod release;
 pub mod releases;
 mod remainder;
+mod retire;
 pub mod rules;
 mod session;
 mod status;
@@ -139,6 +140,11 @@ pub use releases::{
     Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseSource,
     ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases,
     SupersededRelease, TargetName, TargetRelease, TargetSource,
+};
+pub use retire::{
+    BranchHolder, BranchHolderKind, BranchRef, FailedHolder, KeepReason, RetireMode,
+    RetireOutcome, RetirePass, RetireRequest, Retired, Retirement, RetirementClass,
+    RetirementPassReport, RetirementProof, RetirementQuery, SupersededBy, Supersession,
 };
 pub use rules::MergePolicy;
 pub use session::{
@@ -316,6 +322,68 @@ pub fn recoverable(scope: &Scope) -> Result<Vec<Recoverable>> {
 /// carries an incomplete-step marker.
 pub fn session(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionRecord> {
     providers.vcs.session(token)
+}
+
+/// What one branch is, for the question of whether it may be deleted: `retirable`,
+/// `superseded-with-changes`, or `keep` with the one reason it is kept.
+///
+/// The library form of the classification `onevcs retire`, `onevcs reclaim` and
+/// `onevcs retire-finished` act on and `onevcs recoverable` reports per row. It
+/// deletes nothing and writes nothing: it reads every place this host keeps a copy of
+/// the branch, asks the origin where its copy is, and asks the host about a change
+/// request only where this host's own records do not decide it.
+///
+/// With [`RetirementQuery::repo`] `None` the branch is resolved across every
+/// registered identity, and refused, naming the candidates, where more than one holds
+/// it. A branch nothing holds any more is answered with the retirement recorded for
+/// it, and refused where none is.
+pub fn classify_retirement(
+    providers: &Providers<'_>,
+    query: &RetirementQuery,
+) -> Result<Retirement> {
+    retire::classify(providers.hosting, query)
+}
+
+/// Delete one branch everywhere this host holds it, where its class permits.
+///
+/// The library form of `onevcs retire` ([`RetireMode::Lossless`]) and `onevcs
+/// reclaim` ([`RetireMode::Reclaim`]). A class the mode does not permit deletes
+/// nothing and answers [`RetireOutcome::Kept`]; a branch nothing holds and whose
+/// retirement is recorded answers [`RetireOutcome::AlreadyRetired`]; a copy that could
+/// not be deleted answers [`RetireOutcome::Incomplete`], naming it, and a re-run
+/// finishes the job. A pool slot is returned and never removed.
+pub fn retire(providers: &Providers<'_>, request: &RetireRequest) -> Result<Retired> {
+    retire::retire_named(providers.hosting, request)
+}
+
+/// Retire every branch in scope that provably holds no work beyond its base.
+///
+/// The automatic pass: `onevcs retire-finished`, and what an engine calls from its
+/// idle maintenance. A change request opened from a branch whose landing is not
+/// recorded is asked about once first, through the same reconciliation a `status`
+/// read that meets a late merge makes. It acts on [`RetirementClass::Retirable`]
+/// alone — never on a branch superseded with changes — and the report lists every
+/// branch examined with its classification and what became of it.
+pub fn retire_finished(
+    providers: &Providers<'_>,
+    pass: &RetirePass,
+) -> Result<RetirementPassReport> {
+    retire::pass(Some(providers.hosting), pass, retire::Trigger::Pass)
+}
+
+/// Record that a branch was superseded by a retry that landed.
+///
+/// The library form of `onevcs supersede`. Idempotent: the same identity, branch,
+/// superseding branch and landing are recorded once. The record changes nothing
+/// about the branch itself; it is what makes one that still differs from its base
+/// `superseded-with-changes`, which `onevcs reclaim` acts on and nothing automatic
+/// does.
+///
+/// It takes no [`Providers`] for the reason [`preserve`] does not: it writes this
+/// host's own record, and there is nothing here for an implementation of either
+/// interface to answer.
+pub fn record_supersession(supersession: &Supersession) -> Result<()> {
+    retire::supersede(supersession)
 }
 
 /// What one repository releases, and what it adopts.

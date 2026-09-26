@@ -1735,6 +1735,14 @@ pub(crate) struct Recorded {
     on_origin: Option<Stamped<PreservedRecord>>,
     asked_the_host_to_land: bool,
     merge_path: Option<Stamped<MergePathReport>>,
+    /// Every head this stream recorded pushing for a branch: the commit a publishing
+    /// push of the branch's own name put on the origin, which is what a change request
+    /// opened from it carries as its head.
+    pushed_heads: Vec<(Ref, ObjectId)>,
+    /// Every `branch-superseded` this stream recorded.
+    superseded: Vec<Stamped<crate::retire::SupersessionRecord>>,
+    /// The newest `branch-retired` this stream recorded.
+    retired: Option<Stamped<crate::retire::RetiredRecord>>,
 }
 
 /// The reason a `change-drafted` payload records, read back field by field.
@@ -1927,6 +1935,9 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         on_origin: None,
         asked_the_host_to_land: false,
         merge_path: None,
+        pushed_heads: Vec::new(),
+        superseded: Vec::new(),
+        retired: None,
     };
     let path = directory.join(format!("{token}.ndjson"));
     let raw = match std::fs::read_to_string(&path) {
@@ -2125,6 +2136,17 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // push's output, so `accepted` is what it ruled. A push that recorded no
             // such field said nothing, which is not the same as saying no.
             EventKind::Push => {
+                // The head a publishing push of the branch's own name put on the
+                // origin, where the push recorded one: each value through the check
+                // its kind meets, because both go on to be handed to git.
+                if let (Some(branch), Some(head)) = (
+                    field("branch").and_then(|name| Ref::try_from(name).ok()),
+                    field("head").as_deref().and_then(ObjectId::parse),
+                ) {
+                    if event.payload.get("accepted").and_then(Value::as_bool) == Some(true) {
+                        record.pushed_heads.push((branch, head));
+                    }
+                }
                 record.merge_path = Some(Stamped {
                     at,
                     value: MergePathReport {
@@ -2137,6 +2159,20 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                         recorded_by: token.to_owned(),
                     },
                 });
+            }
+            // A retry's landing superseding this branch, and the branch's own
+            // retirement: both read through the one reader of their payloads, which
+            // holds each value to the check its kind meets and records nothing for a
+            // payload it cannot read whole.
+            EventKind::BranchSuperseded => {
+                if let Some(read) = crate::retire::SupersessionRecord::read(&event.payload) {
+                    record.superseded.push(Stamped { at, value: read });
+                }
+            }
+            EventKind::BranchRetired => {
+                if let Some(read) = crate::retire::RetiredRecord::read(&event.payload, &at) {
+                    record.retired = Some(Stamped { at, value: read });
+                }
             }
             _ => {}
         }
@@ -2252,6 +2288,135 @@ pub(crate) fn preserved_branches(streams: &[Recorded], identity: &str) -> BTreeS
         .filter_map(|record| record.on_origin.as_ref())
         .map(|stamped| stamped.value.branch.to_string())
         .collect()
+}
+
+/// Every head this host's own streams record pushing for one branch, newest first.
+///
+/// What a change request opened from the branch carries as its head: the publishing
+/// push of the branch's own name is what puts one there. A retirement asks whether the
+/// branch's content is contained in one of these, which is how a change request that
+/// merged is known to have merged *this* work rather than an earlier copy of it.
+pub(crate) fn pushed_heads(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> Vec<ObjectId> {
+    let mut heads: Vec<ObjectId> = Vec::new();
+    for record in relevant_streams(streams, identity, branch, session) {
+        for (pushed, head) in &record.pushed_heads {
+            if **pushed == *branch && !heads.contains(head) {
+                heads.push(head.clone());
+            }
+        }
+    }
+    heads
+}
+
+/// Every supersession of one branch this host's streams record, oldest first.
+pub(crate) fn supersessions(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+) -> Vec<crate::retire::SupersessionRecord> {
+    let mut found: Vec<Stamped<crate::retire::SupersessionRecord>> = relevant_streams(
+        streams, identity, branch, None,
+    )
+    .into_iter()
+    .flat_map(|record| record.superseded.iter().cloned())
+    .filter(|stamped| stamped.value.names(identity, branch))
+    .collect();
+    found.sort_by(|left, right| left.at.cmp(&right.at));
+    found.into_iter().map(|stamped| stamped.value).collect()
+}
+
+/// The newest retirement of one branch this host's streams record.
+pub(crate) fn retirement_of(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+) -> Option<crate::retire::RetiredRecord> {
+    latest(
+        relevant_streams(streams, identity, branch, None)
+            .into_iter()
+            .filter_map(|record| record.retired.clone())
+            .filter(|stamped| stamped.value.names(identity, branch)),
+    )
+}
+
+/// Every identity whose streams record a retirement of a branch of this name, for
+/// resolving a branch nothing holds any more.
+fn retired_under(streams: &[Recorded], branch: &Ref, within: Option<&str>) -> Vec<Work> {
+    let mut found: Vec<Work> = Vec::new();
+    for record in streams {
+        let Some(retired) = &record.retired else {
+            continue;
+        };
+        let identity = retired.value.identity();
+        if retired.value.branch() != &**branch || within.is_some_and(|key| key != identity) {
+            continue;
+        }
+        if !found.iter().any(|work| work.identity == identity) {
+            found.push(Work {
+                identity: identity.to_owned(),
+                branch: branch.clone(),
+            });
+        }
+    }
+    found
+}
+
+/// The change request this host's streams record opening for one branch, whole
+/// enough to address the host about it: its URL, the host's identifier, the branch it
+/// targets, and the stream that recorded it.
+pub(crate) struct OpenedChange {
+    pub url: Url,
+    pub id: Option<String>,
+    pub base: Option<String>,
+    pub stream: Option<String>,
+}
+
+/// The newest change request recorded for one branch, where one is.
+pub(crate) fn opened_change(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> Option<OpenedChange> {
+    let told = from_streams(
+        streams,
+        &Work {
+            identity: identity.to_owned(),
+            branch: Ref::from_git(branch),
+        },
+        session,
+    );
+    let opened = told.opened?;
+    Some(OpenedChange {
+        url: Url::parse(&opened.url).ok()?,
+        id: opened.id,
+        base: opened.base,
+        stream: told.change_stream,
+    })
+}
+
+/// Every branch of one identity this host's streams name, which is where a pass over
+/// finished branches looks beside the session records.
+pub(crate) fn recorded_branches(streams: &[Recorded], identity: &str) -> BTreeSet<String> {
+    let mut named = BTreeSet::new();
+    for record in streams {
+        if record.identity.as_deref() != Some(identity) {
+            continue;
+        }
+        named.extend(record.branch.clone());
+        named.extend(
+            record
+                .superseded
+                .iter()
+                .map(|stamped| stamped.value.branch().to_owned()),
+        );
+    }
+    named
 }
 
 /// Read one reference as the work it names.

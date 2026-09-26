@@ -442,7 +442,7 @@ fn inferred(
 /// its number in the subject, the host's merge commit spells it out, and anything
 /// that quoted the change request itself carries its URL. A number is matched with
 /// its own punctuation around it so that `#1` cannot answer for `#12`.
-fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String> {
+pub(crate) fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String> {
     let number = url
         .trim_end_matches('/')
         .rsplit('/')
@@ -470,7 +470,7 @@ fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String>
 /// line of prose — or a value shaped like an option — is not one. Read through the
 /// conversion that decides what an object id is, so a trailer nobody meant as one
 /// names no landing rather than becoming an argument.
-fn trailer_values(message: &str, key: &str) -> Vec<ObjectId> {
+pub(crate) fn trailer_values(message: &str, key: &str) -> Vec<ObjectId> {
     message
         .lines()
         .filter_map(|line| line.trim().strip_prefix(key))
