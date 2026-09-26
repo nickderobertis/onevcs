@@ -341,6 +341,8 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ReleaseProbed,
         EventKind::ReleaseAcknowledged,
         EventKind::ReleaseObserved,
+        EventKind::BranchSuperseded,
+        EventKind::BranchRetired,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -365,7 +367,9 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::SessionClosed
             | EventKind::ReleaseProbed
             | EventKind::ReleaseAcknowledged
-            | EventKind::ReleaseObserved => {}
+            | EventKind::ReleaseObserved
+            | EventKind::BranchSuperseded
+            | EventKind::BranchRetired => {}
         }
     }
     kinds
@@ -2267,6 +2271,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         session: None,
         labels: BTreeMap::new(),
         on_origin: None,
+        retirement: None,
     };
     let value = serde_json::to_value(&recoverable).expect("a recoverable serializes");
     assert_eq!(value["branch"]["provenance"], json!("complete"));
@@ -2745,6 +2750,7 @@ fn the_labels_amendment_spells_exactly_the_flags_recoverable_takes_and_the_field
         session: None,
         labels: BTreeMap::new(),
         on_origin: None,
+        retirement: None,
     })
     .expect("a recoverable serializes");
     assert_eq!(value["session"], Value::Null);
@@ -3517,6 +3523,10 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("pool status", operation!(onevcs::pool_status)),
         ("pool prune", operation!(onevcs::pool_prune)),
         ("pool maintain", operation!(onevcs::pool_maintain)),
+        ("retire", operation!(onevcs::retire)),
+        ("reclaim", operation!(onevcs::retire)),
+        ("retire-finished", operation!(onevcs::retire_finished)),
+        ("supersede", operation!(onevcs::record_supersession)),
     ]
 }
 
@@ -6877,4 +6887,235 @@ fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
         serde_json::from_value(json!({"repo": "onevcs"})).expect("an older request reads");
     assert_eq!(read.branch_name, None);
     assert_eq!(read.branch_prefix, None);
+}
+
+/// The retirement amendment's `Retirement` fixture, as the document it spells.
+fn documented_retirement() -> Value {
+    serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"superseded_by\": {\"branch\"",
+    ))
+    .expect("the retirement amendment's fixture is JSON")
+}
+
+#[test]
+fn the_retirement_amendment_declares_the_surface_it_added() {
+    // Built from outside with every field named, which is the half the compiler checks:
+    // a field added, removed or renamed stops this compiling. The functions are named
+    // as values of the declared types, so a signature that moved does too.
+    let classify: fn(
+        &Providers<'_>,
+        &onevcs::RetirementQuery,
+    ) -> onevcs::Result<onevcs::Retirement> = onevcs::classify_retirement;
+    let retire: fn(&Providers<'_>, &onevcs::RetireRequest) -> onevcs::Result<onevcs::Retired> =
+        onevcs::retire;
+    let pass: fn(
+        &Providers<'_>,
+        &onevcs::RetirePass,
+    ) -> onevcs::Result<onevcs::RetirementPassReport> = onevcs::retire_finished;
+    let supersede: fn(&onevcs::Supersession) -> onevcs::Result<()> = onevcs::record_supersession;
+    let _ = (classify, retire, pass, supersede);
+    let _ = onevcs::RetirePass {
+        scope: Scope::All,
+        exclude: vec![onevcs::BranchRef {
+            identity: "github.com/acme/project".to_owned(),
+            branch: "feature/x".to_owned(),
+        }],
+        dry_run: true,
+    };
+    let _ = onevcs::RetireRequest {
+        repo: None,
+        branch: "feature/x".to_owned(),
+        mode: onevcs::RetireMode::Reclaim,
+        dry_run: false,
+    };
+    let _ = onevcs::RetirementQuery {
+        repo: Some("project".to_owned()),
+        branch: "feature/x".to_owned(),
+    };
+    let _ = onevcs::Supersession {
+        repo: "project".to_owned(),
+        branch: "feature/x".to_owned(),
+        superseded_by: "feature/y".to_owned(),
+        landing: "https://github.com/acme/project/pull/12".to_owned(),
+        labels: BTreeMap::new(),
+    };
+
+    // …and the text is held to declaring each of them, which is what keeps it from
+    // being a description of a surface that has since moved.
+    let declarations = amendment_declaring("pub fn classify_retirement");
+    for declared in [
+        "pub struct BranchRef { pub identity: String, pub branch: String }",
+        "pub struct RetirementQuery { pub repo: Option<String>, pub branch: String }",
+        "pub enum RetireMode { Lossless, Reclaim }",
+        "pub struct RetirePass { pub scope: Scope, pub exclude: Vec<BranchRef>, pub dry_run: bool }",
+        "pub fn classify_retirement(providers: &Providers<'_>, query: &RetirementQuery) -> Result<Retirement>;",
+        "pub fn retire(providers: &Providers<'_>, request: &RetireRequest) -> Result<Retired>;",
+        "pub fn retire_finished(providers: &Providers<'_>, pass: &RetirePass) -> Result<RetirementPassReport>;",
+        "pub fn record_supersession(supersession: &Supersession) -> Result<()>;",
+        "pub enum RetirementClass { Retirable, SupersededWithChanges, Keep }",
+        "pub enum BranchHolderKind { Checkout, Slot, RunClone, Origin }",
+        "pub enum RetireOutcome { Retired, WouldRetire, AlreadyRetired, Kept, Incomplete }",
+        "pub struct FailedHolder { pub kind: BranchHolderKind, pub location: String, pub error: String }",
+        "pub struct RetirementPassReport { pub dry_run: bool, pub examined: Vec<Retired> }",
+        "Recoverable      pub retirement: Option<Retirement>",
+        "LandingEvidence  Retired { commit: Sha, proof: RetirementProof }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the retirement amendment no longer declares: {declared}"
+        );
+    }
+    // Every word a reason or a class travels as is the one the amendment spells.
+    for (reason, word) in [
+        (
+            onevcs::KeepReason::HeldByLiveSession,
+            "held-by-live-session",
+        ),
+        (onevcs::KeepReason::Excluded, "excluded"),
+        (onevcs::KeepReason::OpenChangeRequest, "open-change-request"),
+        (onevcs::KeepReason::CheckedOut, "checked-out"),
+        (onevcs::KeepReason::DirtyWorktree, "dirty-worktree"),
+        (
+            onevcs::KeepReason::UnmergedUniqueCommits,
+            "unmerged-unique-commits",
+        ),
+        (onevcs::KeepReason::Unknown, "unknown"),
+        (onevcs::KeepReason::IsBase, "is-base"),
+    ] {
+        assert_eq!(reason.as_str(), word);
+        assert_eq!(serde_json::to_value(reason).expect("a reason"), json!(word));
+        assert!(
+            regions().0.contains(&format!("`{word}`")),
+            "the amendment does not spell the reason {word}"
+        );
+    }
+}
+
+#[test]
+fn the_retirement_json_the_amendment_spells_is_what_a_retirement_is_read_and_written_as() {
+    // Two repositories read this object field by field, so the one the amendment spells
+    // is read into the type and written back byte for byte — a field renamed on either
+    // side, or one the type added without the text, fails here.
+    let documented = documented_retirement();
+    let read: onevcs::Retirement =
+        serde_json::from_value(documented.clone()).expect("the amendment's retirement reads");
+    assert_eq!(read.class, onevcs::RetirementClass::SupersededWithChanges);
+    assert_eq!(
+        serde_json::to_value(&read).expect("a retirement serializes"),
+        documented
+    );
+    // Every key is written whatever it holds, `null` and `[]` included.
+    let kept = onevcs::Retirement {
+        class: onevcs::RetirementClass::Keep,
+        reason: Some(onevcs::KeepReason::Unknown),
+        proof: None,
+        superseded_by: None,
+        differing_paths: Vec::new(),
+        content_free_commits: Vec::new(),
+        holders: Vec::new(),
+        ..read.clone()
+    };
+    let written = serde_json::to_value(&kept).expect("a retirement serializes");
+    let keys = |value: &Value| -> BTreeSet<String> {
+        value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    assert_eq!(keys(&written), keys(&documented));
+    assert_eq!(written["reason"], "unknown");
+    assert_eq!(written["proof"], Value::Null);
+    assert_eq!(written["superseded_by"], Value::Null);
+    // The three proofs, in the shapes the amendment lists.
+    for (proof, spelled) in [
+        (
+            onevcs::RetirementProof::MergedChangeRequest {
+                change_url: Url::parse("https://github.com/acme/project/pull/12").expect("a URL"),
+                head: Sha("0f1e2d3c".to_owned()),
+            },
+            json!({"kind": "merged-change-request",
+                   "change_url": "https://github.com/acme/project/pull/12", "head": "0f1e2d3c"}),
+        ),
+        (
+            onevcs::RetirementProof::RecordedLanding {
+                commit: Sha("0f1e2d3c".to_owned()),
+            },
+            json!({"kind": "recorded-landing", "commit": "0f1e2d3c"}),
+        ),
+        (
+            onevcs::RetirementProof::ContentIdentical {
+                base_commit: Sha("0f1e2d3c".to_owned()),
+            },
+            json!({"kind": "content-identical", "base_commit": "0f1e2d3c"}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(&proof).expect("a proof"), spelled);
+        assert!(
+            regions()
+                .0
+                .contains(&format!("\"kind\": \"{}\"", proof.kind())),
+            "the amendment does not spell the proof {}",
+            proof.kind()
+        );
+    }
+    // A document whose fields contradict each other is refused where it is read.
+    for contradiction in [
+        json!({"class": "keep", "reason": null}),
+        json!({"class": "retirable", "reason": null, "proof": null}),
+        json!({"class": "superseded-with-changes", "reason": null, "superseded_by": null}),
+    ] {
+        let mut document = documented.clone();
+        for (key, value) in contradiction.as_object().expect("an object") {
+            document[key] = value.clone();
+        }
+        assert!(
+            serde_json::from_value::<onevcs::Retirement>(document.clone()).is_err(),
+            "a contradictory retirement read: {document}"
+        );
+    }
+    // …and a row of `recoverable` carries it under the name the amendment gives it.
+    let row: Value = json!({
+        "identity": "github.com/acme/project",
+        "branch": {"branch": "feature/first-try", "base": "main", "provenance": "complete"},
+        "checkout": "/home/me/src/project",
+        "stopped_because": "session s-1 closed without publishing",
+        "recover_command": [],
+        "retirement": documented,
+    });
+    let row: Recoverable = serde_json::from_value(row).expect("a row carrying a retirement reads");
+    assert_eq!(row.retirement, Some(read));
+}
+
+#[test]
+fn the_retirement_amendment_spells_exactly_the_flags_its_verbs_take() {
+    // The gate above asks whether a documented flag exists on *some* command, and
+    // `--repo` exists on many. Each of the four verbs is held to its own line here, in
+    // both directions.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|body| body.starts_with("onevcs retire "))
+        .expect("the retirement amendment spells its verbs' usage");
+    let mut held = BTreeSet::new();
+    for line in usage.lines() {
+        let verb = line
+            .strip_prefix("onevcs ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("a verb");
+        assert_eq!(
+            spelled_flags(line),
+            parser_flags(&[verb]),
+            "the amendment's `{verb}` usage and the parser disagree about its flags"
+        );
+        held.insert(verb.to_owned());
+    }
+    assert_eq!(
+        held,
+        ["reclaim", "retire", "retire-finished", "supersede"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
 }

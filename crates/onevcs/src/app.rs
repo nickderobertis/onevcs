@@ -16,8 +16,9 @@ use crate::cli::{
     PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, RecoverArgs, RecoverableArgs,
     RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
     ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StatusArgs, SweepArgs, SweepFormat, SyncArgs,
+    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesCheckArgs, RulesCommand, SessionCommand,
+    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SupersedeArgs, SweepArgs,
+    SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -118,7 +119,128 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             PoolCommand::Prune(args) => pool_prune(args),
             PoolCommand::Maintain(args) => pool_maintain(args),
         },
+        Command::Retire(args) => retire_branch(args, providers),
+        Command::Reclaim(args) => reclaim_branch(args, providers),
+        Command::RetireFinished(args) => retire_finished(args, providers),
+        Command::Supersede(args) => supersede(args),
     }
+}
+
+/// The exit code `onevcs retire` and `onevcs reclaim` answer a branch whose class
+/// does not permit what was asked with: nothing was deleted, and the class, reason and
+/// evidence are printed.
+///
+/// Its own code for the reason [`POOL_EXHAUSTED_EXIT`] has one: a caller wrapping the
+/// verb routes a refusal to decide differently from a failure to run, by `$?` alone.
+// llmlint: ignore[cli_output_contract] the retirement amendment in docs/contract.md fixes this code.
+pub const RETIREMENT_REFUSED_EXIT: u8 = 4;
+
+/// Render what `onevcs retire` did, which is [`crate::retire`]'s answer under
+/// [`crate::RetireMode::Lossless`].
+fn retire_branch(args: &RetireArgs, providers: &Providers<'_>) -> Result<u8> {
+    let retired = crate::retire(
+        providers,
+        &retire_request(args, crate::RetireMode::Lossless),
+    )?;
+    render_retired(args, &retired, "retire")
+}
+
+/// Render what `onevcs reclaim` did, which is [`crate::retire`]'s answer under
+/// [`crate::RetireMode::Reclaim`].
+fn reclaim_branch(args: &RetireArgs, providers: &Providers<'_>) -> Result<u8> {
+    let retired = crate::retire(providers, &retire_request(args, crate::RetireMode::Reclaim))?;
+    render_retired(args, &retired, "reclaim")
+}
+
+fn retire_request(args: &RetireArgs, mode: crate::RetireMode) -> crate::RetireRequest {
+    crate::RetireRequest {
+        repo: args.repo.clone(),
+        branch: args.branch.clone(),
+        mode,
+        dry_run: args.dry_run,
+    }
+}
+
+/// The exit code a retirement answers with, and its rendering.
+fn render_retired(args: &RetireArgs, retired: &crate::Retired, verb: &str) -> Result<u8> {
+    let code = match retired.outcome {
+        crate::RetireOutcome::Kept => RETIREMENT_REFUSED_EXIT,
+        crate::RetireOutcome::Incomplete => 1,
+        _ => 0,
+    };
+    if args.json {
+        print_json(retired)?;
+        return Ok(code);
+    }
+    for line in crate::retire::describe_retired(retired, verb) {
+        println!("{line}");
+    }
+    Ok(code)
+}
+
+/// Render what `onevcs retire-finished` did, which is [`crate::retire_finished`]'s
+/// answer.
+fn retire_finished(args: &RetireFinishedArgs, providers: &Providers<'_>) -> Result<u8> {
+    let registry = store::load()?;
+    let identities: Vec<String> = match &args.repo {
+        Some(repo) => vec![store::resolve(&registry, repo)?.key],
+        None => {
+            let mut keys: Vec<String> = registry
+                .checkouts
+                .values()
+                .map(|checkout| checkout.identity.clone())
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        }
+    };
+    // A branch is excluded in every identity in scope, because the flag names a
+    // branch and the scope says which identities that means.
+    let exclude = identities
+        .iter()
+        .flat_map(|identity| {
+            args.exclude.iter().map(move |branch| crate::BranchRef {
+                identity: identity.clone(),
+                branch: branch.clone(),
+            })
+        })
+        .collect();
+    let report = crate::retire_finished(
+        providers,
+        &crate::RetirePass {
+            scope: match &args.repo {
+                Some(repo) => Scope::Repo(repo.clone()),
+                None => Scope::All,
+            },
+            exclude,
+            dry_run: args.dry_run,
+        },
+    )?;
+    if args.json {
+        return print_json(&report);
+    }
+    for line in crate::retire::describe_pass(&report) {
+        println!("{line}");
+    }
+    Ok(0)
+}
+
+/// Render what `onevcs supersede` recorded, which is [`crate::record_supersession`].
+fn supersede(args: &SupersedeArgs) -> Result<u8> {
+    let labels = label::parse_all(&args.label)?;
+    crate::record_supersession(&crate::Supersession {
+        repo: args.repo.clone(),
+        branch: args.branch.clone(),
+        superseded_by: args.by.clone(),
+        landing: args.landing.clone(),
+        labels,
+    })?;
+    println!(
+        "recorded: {} is superseded by {}, which landed at {}",
+        args.branch, args.by, args.landing
+    );
+    Ok(0)
 }
 
 /// Render a repository's pool the way `onevcs pool status` reports it.
@@ -1014,9 +1136,10 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // is exactly what nobody can see it left out: this answer is about work that has
     // *not* reached its base, and a branch missing from it because it landed reads
     // identically to one missing because nothing found it at all.
-    let withheld = "Branches whose work reached their base are not listed; \
-                    `onevcs recoverable --all` lists every preserved branch, each saying what \
-                    became of its work and what says so.";
+    let withheld = "Branches whose work reached their base are not listed, nor are branches \
+                    that provably hold nothing beyond it; `onevcs recoverable --all` lists \
+                    every preserved branch, each saying what became of its work and what says \
+                    so.";
     // What a filter left out is the hazard the note above names, met one step
     // earlier: a read narrowed to one run's sessions says nothing about anybody
     // else's work, and its empty answer reads exactly like an empty host. So the
@@ -1199,8 +1322,10 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
                     &format!("{}...{}", row.branch.base, row.branch.branch),
                 ]),
             );
+            render_reclaim(&registry, &row);
             continue;
         }
+        render_retirement(&registry, &row);
         match &row.held_by {
             // Deliberately not spelled `Resume:` — the one label on this report that
             // is read as "paste this" belongs to a row whose work has stopped, and
@@ -1216,6 +1341,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             ),
             None => println!("    Resume: {command}"),
         }
+        render_reclaim(&registry, &row);
     }
     if !args.all {
         println!("{withheld}");
@@ -1226,6 +1352,87 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         println!("{widen}");
     }
     Ok(0)
+}
+
+/// The classification a row carries, where it says something the rest of the row
+/// does not: a branch kept for a reason other than the work it holds, or one a pass
+/// would retire, which only `--all` lists.
+fn render_retirement(registry: &crate::registry::Registry, row: &crate::Recoverable) {
+    let Some(retirement) = &row.retirement else {
+        return;
+    };
+    match (retirement.class, retirement.reason) {
+        (crate::RetirementClass::Retirable, _) => println!(
+            "    Retirable: it holds nothing beyond {base} ({proof}); `{command}` deletes it \
+             everywhere this host holds it",
+            base = row.branch.base,
+            proof = retirement
+                .proof
+                .as_ref()
+                .map(crate::RetirementProof::describe)
+                .unwrap_or_default(),
+            command = guidance::command([
+                "onevcs",
+                "retire",
+                &row.branch.branch,
+                "--repo",
+                &publication_of(registry, row),
+            ]),
+        ),
+        (crate::RetirementClass::Keep, Some(reason))
+            if reason != crate::KeepReason::UnmergedUniqueCommits =>
+        {
+            println!("    Kept: {}", retirement.verdict())
+        }
+        _ => {}
+    }
+}
+
+/// A superseded branch's `Reclaim:` line and the evidence a person decides it on:
+/// what superseded it and where that landed, the labels its recorder stamped, and the
+/// paths it still differs from the base in.
+fn render_reclaim(registry: &crate::registry::Registry, row: &crate::Recoverable) {
+    let Some(retirement) = &row.retirement else {
+        return;
+    };
+    if retirement.class != crate::RetirementClass::SupersededWithChanges {
+        return;
+    }
+    println!(
+        "    Reclaim: {}",
+        guidance::command([
+            "onevcs",
+            "reclaim",
+            &row.branch.branch,
+            "--repo",
+            &publication_of(registry, row),
+        ])
+    );
+    if let Some(by) = &retirement.superseded_by {
+        println!(
+            "      Superseded by: {} (landed at {})",
+            by.branch, by.landing
+        );
+        if !by.labels.is_empty() {
+            println!(
+                "      Labels: {}",
+                crate::retire::spelled_labels(&by.labels)
+            );
+        }
+    }
+    println!(
+        "      Differs from {} in: {}",
+        retirement.base,
+        retirement.differing_paths.join(", ")
+    );
+}
+
+/// The publication checkout a row's identity lands through, which is what every
+/// command this report prints takes as `--repo`.
+fn publication_of(registry: &crate::registry::Registry, row: &crate::Recoverable) -> String {
+    store::resolve(registry, &row.identity)
+        .map(|resolution| resolution.publication.display().to_string())
+        .unwrap_or_else(|_| row.identity.clone())
 }
 
 /// Render everything this host knows about one piece of work.

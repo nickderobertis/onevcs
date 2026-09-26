@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use onevcs::{Envelope, EventKind, Source};
+use onevcs_envelope_era::{Envelope, EventKind, Source};
 use serde_json::{json, Value};
 
 /// The contract's own envelope fixture, as the amendment that added `phase` spells

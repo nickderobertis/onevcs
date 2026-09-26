@@ -245,15 +245,18 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
         .assert()
         .success();
 
-    // Tier 1: a landing this host performed and recorded.
+    // Tier 1: a landing this host performed and recorded — by the branch-keyed verb,
+    // over a branch its session handed back, so no session close follows the landing:
+    // a close retires a branch that provably holds nothing beyond its base, and this
+    // row is about the landing tier rather than about that.
     let (token, worktree) = fixture.open(&["--branch", "feature/recorded"]);
     world.commit_file(&worktree, "recorded.txt", "r\n", "feat: land this locally");
-    world.onevcs().args(["publish", &token]).assert().success();
     world
         .onevcs()
         .args(["session", "close", &token])
         .assert()
         .success();
+    publish_branch(fixture, "feature/recorded");
 
     // Tier 3: the same landing read off the base's own trailer, under a name this
     // host has no record for at all. `import --as` is how a spent name is moved
@@ -265,12 +268,12 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
         "s\n",
         "feat: land this under a name",
     );
-    world.onevcs().args(["publish", &token]).assert().success();
     world
         .onevcs()
         .args(["session", "close", &token])
         .assert()
         .success();
+    publish_branch(fixture, "feature/spent");
     world
         .onevcs()
         .args([
@@ -467,6 +470,21 @@ fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
     ])
 }
 
+/// Land a branch a session handed back, by the verb that lands a branch by name.
+fn publish_branch(fixture: &Fixture, branch: &str) {
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+}
+
 fn row<'a>(rows: &'a [Value], branch: &str) -> &'a Value {
     rows.iter()
         .find(|row| row["branch"]["branch"] == branch)
@@ -572,7 +590,14 @@ fn the_verdict_of_every_tier_survives_the_reads_being_made_once() {
     );
 
     // And the default view is this one without the branches whose work reached the
-    // base — which is the only difference between them.
+    // base, and without the one that provably holds nothing beyond it — the branch
+    // whose change the base took from somebody else, which a landing tier cannot
+    // decide and the content comparison of its retirement can.
+    assert_eq!(
+        row(&rows, "feature/undecidable")["retirement"]["class"],
+        "retirable",
+        "the base carries every path it changed, so it is finished work"
+    );
     let assert = fixture
         .world
         .onevcs()
@@ -594,7 +619,7 @@ fn the_verdict_of_every_tier_survives_the_reads_being_made_once() {
         left,
         expected
             .iter()
-            .filter(|(_, want)| want.state != "yes")
+            .filter(|(branch, want)| want.state != "yes" && **branch != "feature/undecidable")
             .map(|(branch, _)| (*branch).to_owned())
             .collect::<BTreeSet<String>>()
     );

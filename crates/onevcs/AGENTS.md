@@ -936,6 +936,38 @@ Five things are easy to undo.
   resolved repository. Restoring the load-time check for every rule would refuse
   correct documents.
 
+## A finished branch is retired only on a proof, and the default is keep
+
+`retire.rs` is `onevcs retire`, `reclaim`, `retire-finished` and `supersede`, and the
+automatic moments that run the same pass — `session close` (after `workspace::close`,
+in `Git::close_session`), `onevcs sweep`'s `finished-branches` family, and
+`retire_finished`. The shapes are the retirement amendment's in `docs/contract.md`,
+which two other repositories restate, so a field or a word here is not this crate's to
+rename. Six things are easy to undo.
+
+- **Every automatic path acts host-wide, so every automatic retirement is lossless.**
+  Only `reclaim`, asked by a person, deletes a branch that still differs from its base.
+  A read that fails anywhere is `keep` / `unknown`, never a proof that did not need it.
+- **A census lists the pool directory and `runs/` itself**, not only what a session
+  record names: a slot clone whose record was forgotten still holds branches, and
+  `workspace::checkouts_of` does not see it.
+- **What is deleted is exactly what was classified.** The tips are read again right
+  before deleting, every local deletion is `update-ref -d <ref> <old>`, the origin's is
+  `push --delete --no-verify` under `--force-with-lease`, and a copy that moved puts
+  every deleted copy back before the branch is classified again. `--no-verify` because a
+  deletion lands nothing and must not run a merge-path gate.
+- **A slot is returned, never removed** — under the placement lock and its own
+  occupancy lease, after fetching its clone so it lands on the base's current tip.
+- **`Reach` is how far a census may go, and a dry run never moves a ref.** `Offline`
+  is `recoverable` (records and local refs; it never asks a host and stays inside the
+  cost journeys' process budgets and the `--session`/`--label` narrowing); `Remote`
+  asks the origin and fetches objects with `--refmap=`; `Fetch` is a retirement that is
+  going to act.
+- **A retired branch still answers `status`, `landing_status` and `release status`.**
+  It resolves through its `branch-retired` record, reads as landed where it was retired
+  `retirable`, and names the commit on the base its work reached — which is what a
+  release is compared against — found by `status::landed_on_base`.
+
 ## The disk is a resource, and one retention rule frees it
 
 Every branch-keyed landing cuts a run root, and `sweep.rs` holds the only rule that

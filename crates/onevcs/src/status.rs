@@ -36,7 +36,7 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
-use crate::host::{CheckSource, Hosting};
+use crate::host::{ChangeId, CheckSource, Hosting};
 use crate::landed::{self, Landed};
 use crate::preserve::{ALREADY_ON_ORIGIN, PUSHED};
 use crate::publish::{self, DraftReason};
@@ -107,10 +107,17 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// changes nothing about what `next` says lands the work: a preserved branch is kept,
 /// not published.
 ///
+/// `9` is `retired`: the readback of the `branch-retired` record of a branch nothing
+/// on this host holds any more — its class, the proof it was retired on, which verb
+/// or moment acted, and when. A branch retired `retirable` reads as landed, with the
+/// retirement as the evidence, because a proof that it held nothing beyond its base
+/// is the answer to whether its work is there. A branch nobody retired omits the
+/// field, as every absent field of this report is omitted.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 8;
+pub const REPORT_VERSION: u32 = 9;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -171,6 +178,10 @@ pub struct Report {
     pub branch: BranchReport,
     /// What was proposed for it, and whether that landed.
     pub publication: PublicationReport,
+    /// The retirement of a branch nothing on this host holds any more, as its record
+    /// says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired: Option<RetiredReport>,
     /// What the host says its checks are doing, or why it could not be asked.
     pub checks: ChecksReport,
     /// The last thing this work's merge path said about it.
@@ -369,6 +380,156 @@ pub struct PublicationReport {
     pub described: Option<DescribedReport>,
     /// The policy this identity's rules publish under.
     pub merge_policy: MergePolicy,
+}
+
+/// A branch's retirement, as the `branch-retired` record says it.
+///
+/// Its fields are private and it is made in two places, both of which hold the one
+/// rule between them: [`RetiredReport::of`], from a record `RetiredRecord::read`
+/// already refused unless the class, the proof and the mode agree, and the conversion
+/// below, which refuses a document where they do not. So a report of a branch retired
+/// as holding nothing beyond its base always names its proof, and one reclaimed as
+/// superseded never does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "AnyRetired")]
+pub struct RetiredReport {
+    /// Which class it was retired as.
+    class: crate::retire::RetirementClass,
+    /// What proved it held nothing beyond its base; absent for a branch reclaimed as
+    /// superseded, which is the one class retired without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof: Option<crate::retire::RetirementProof>,
+    /// Which verb or moment acted: `verb`, `session-close`, `sweep` or `pass`.
+    trigger: crate::retire::Trigger,
+    /// What it acted under: `retire`, `reclaim` or `automatic`.
+    mode: crate::retire::Acting,
+    /// When, as the event stream stamped it.
+    at: Stamp,
+    /// The commit the branch was deleted at.
+    tip: crate::host::Sha,
+}
+
+/// A retirement report as a document spells it, before its fields are held to each
+/// other.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnyRetired {
+    class: crate::retire::RetirementClass,
+    #[serde(default)]
+    proof: Option<crate::retire::RetirementProof>,
+    trigger: crate::retire::Trigger,
+    mode: crate::retire::Acting,
+    at: Stamp,
+    tip: crate::host::Sha,
+}
+
+impl TryFrom<AnyRetired> for RetiredReport {
+    type Error = String;
+
+    fn try_from(any: AnyRetired) -> std::result::Result<Self, Self::Error> {
+        let retirable = any.class == crate::retire::RetirementClass::Retirable;
+        if !any.mode.permits(any.class) || retirable != any.proof.is_some() {
+            return Err(format!(
+                "a retirement as {} under {} {} a proof, which no retirement is",
+                any.class.as_str(),
+                any.mode.as_str(),
+                if any.proof.is_some() {
+                    "with"
+                } else {
+                    "without"
+                },
+            ));
+        }
+        Ok(RetiredReport {
+            class: any.class,
+            proof: any.proof,
+            trigger: any.trigger,
+            mode: any.mode,
+            at: any.at,
+            tip: any.tip,
+        })
+    }
+}
+
+impl RetiredReport {
+    /// The report of one record, where its stamp is one this report can carry.
+    fn of(record: &crate::retire::RetiredRecord) -> Option<Self> {
+        Some(RetiredReport {
+            class: record.class(),
+            proof: record.proof().cloned(),
+            trigger: record.trigger(),
+            mode: record.mode(),
+            at: Stamp::try_from(record.at().to_owned()).ok()?,
+            tip: record.tip().clone(),
+        })
+    }
+
+    /// The landing a retirement answers with: landed, on the evidence of its proof,
+    /// for a branch retired as holding nothing beyond its base; nothing for one
+    /// reclaimed, whose differences were discarded rather than landed.
+    ///
+    /// The commit it names is the one on the base the work reached — what a release is
+    /// compared against — found by [`landed_on_base`], and the proof's own commit only
+    /// where nothing on the base can be found for it.
+    fn landed(&self, on_base: Option<String>) -> Option<Landed> {
+        let proof = self.proof.clone()?;
+        (self.class == crate::retire::RetirementClass::Retirable).then(|| Landed::Yes {
+            evidence: landed::LandingEvidence::Retired {
+                commit: crate::host::Sha(on_base.unwrap_or_else(|| proof.commit().to_owned())),
+                proof,
+            },
+        })
+    }
+}
+
+/// The commit on the base a retired branch's work reached, read from what this host
+/// recorded and from the base's own history in the checkout every publication
+/// fast-forwards: a landing recorded for it, the base commit naming the branch commit
+/// its recorded landing proof names, the base commit naming its merged change request,
+/// or — for content the base already carried — the base commit it was compared against.
+fn landed_on_base(
+    resolution: &Resolution,
+    base: &Ref,
+    streams: &[Recorded],
+    work: &Work,
+    session: Option<&str>,
+    proof: Option<&crate::retire::RetirementProof>,
+) -> Option<String> {
+    let publication = resolution.publication.as_path();
+    let tip = vcs::base_ref(publication, base);
+    let recorded = recorded_for(streams, &work.identity, &work.branch, session);
+    if let Some(landing) = recorded.landing {
+        if git::known_to_reach(publication, landing.as_str(), &tip).unwrap_or(false) {
+            return Some(landing.as_str().to_owned());
+        }
+    }
+    let mentioning = |needle: &str| git::first_commit_mentioning(publication, &tip, needle);
+    match proof? {
+        crate::retire::RetirementProof::RecordedLanding { commit } => mentioning(&commit.0),
+        crate::retire::RetirementProof::MergedChangeRequest { change_url, .. } => {
+            let number = change_url
+                .as_str()
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()?;
+            mentioning(&format!("(#{number})")).or_else(|| mentioning(change_url.as_str()))
+        }
+        crate::retire::RetirementProof::ContentIdentical { base_commit } => {
+            Some(base_commit.0.clone())
+        }
+    }
+}
+
+/// The retirement a report about this work carries: the newest one recorded, where
+/// nothing on this host holds the branch any more. A name re-cut since is new work,
+/// and its old retirement says nothing about it.
+fn retired_now(streams: &[Recorded], work: &Work, holders: &[Holder]) -> Option<RetiredReport> {
+    if !holders.is_empty() {
+        return None;
+    }
+    retirement_of(streams, &work.identity, &work.branch)
+        .as_ref()
+        .and_then(RetiredReport::of)
 }
 
 /// One description written to a change request after it was opened, as the stream
@@ -1055,6 +1216,30 @@ pub(crate) fn landing_of_within(
     );
     unreadable.extend(unread);
     let carrier = carrier_of(&judged);
+    let retired = retired_now(&streams, &work, &holders).and_then(|report| {
+        let session = answering
+            .session
+            .as_ref()
+            .map(|record| record.token.to_string());
+        let on_base = landed_on_base(
+            &resolution,
+            &base,
+            &streams,
+            &work,
+            session.as_deref(),
+            report.proof.as_ref(),
+        );
+        report.landed(on_base)
+    });
+    // A retired branch has no copy left to read its landing commit out of, and the one
+    // repository that holds that commit is the checkout every publication
+    // fast-forwards — so that is the copy that answers for it.
+    let decided = carrier.map(|(_, _, verdict)| verdict.clone());
+    let carrier = match (carrier, &retired) {
+        (Some((repo, _, _)), _) => Some(repo.clone()),
+        (None, Some(_)) => Some(resolution.publication.clone()),
+        (None, None) => None,
+    };
     Ok(LandingOf {
         reference: reference.to_owned(),
         identity: work.identity.clone(),
@@ -1065,11 +1250,9 @@ pub(crate) fn landing_of_within(
         // behind a release of work that may never have landed.
         landed: match answering.broken.is_some() {
             true => Landed::Unknown,
-            false => carrier
-                .map(|(_, _, verdict)| verdict.clone())
-                .unwrap_or(Landed::Unknown),
+            false => decided.or(retired).unwrap_or(Landed::Unknown),
         },
-        carrier: carrier.map(|(repo, _, _)| repo.clone()),
+        carrier,
         lent,
         change_stream,
         unreadable,
@@ -1150,6 +1333,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     );
     notes.extend(unread);
     let carrier = carrier_of(&judged);
+    let retired = retired_now(&streams, &work, &holders);
 
     let mut ahead = None;
     let mut branch_provenance = None;
@@ -1167,6 +1351,24 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
             .and_then(|recorded| Ref::try_from(recorded).ok());
         verdict = Some(decided.clone());
+    }
+    // A branch nothing holds any more has no copy to decide it from, and one retired
+    // as holding nothing beyond its base is answered by the proof it was retired on.
+    if verdict.is_none() {
+        verdict = retired.as_ref().and_then(|report| {
+            let session = answering
+                .session
+                .as_ref()
+                .map(|record| record.token.to_string());
+            report.landed(landed_on_base(
+                &resolution,
+                &base,
+                &streams,
+                &work,
+                session.as_deref(),
+                report.proof.as_ref(),
+            ))
+        });
     }
     // …and a chain of retries this host cannot follow overrides whatever a copy of
     // the branch said. Undecidable rather than decided, in both directions: a `no`
@@ -1271,6 +1473,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
             described,
             merge_policy: resolved.policy.publication,
         },
+        retired,
         checks,
         merge_path,
         next,
@@ -1735,6 +1938,14 @@ pub(crate) struct Recorded {
     on_origin: Option<Stamped<PreservedRecord>>,
     asked_the_host_to_land: bool,
     merge_path: Option<Stamped<MergePathReport>>,
+    /// Every head this stream recorded pushing for a branch: the commit a publishing
+    /// push of the branch's own name put on the origin, which is what a change request
+    /// opened from it carries as its head.
+    pushed_heads: Vec<(Ref, ObjectId)>,
+    /// Every `branch-superseded` this stream recorded.
+    superseded: Vec<Stamped<crate::retire::SupersessionRecord>>,
+    /// The newest `branch-retired` this stream recorded.
+    retired: Option<Stamped<crate::retire::RetiredRecord>>,
 }
 
 /// The reason a `change-drafted` payload records, read back field by field.
@@ -1927,6 +2138,9 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         on_origin: None,
         asked_the_host_to_land: false,
         merge_path: None,
+        pushed_heads: Vec::new(),
+        superseded: Vec::new(),
+        retired: None,
     };
     let path = directory.join(format!("{token}.ndjson"));
     let raw = match std::fs::read_to_string(&path) {
@@ -2125,6 +2339,17 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // push's output, so `accepted` is what it ruled. A push that recorded no
             // such field said nothing, which is not the same as saying no.
             EventKind::Push => {
+                // The head a publishing push of the branch's own name put on the
+                // origin, where the push recorded one: each value through the check
+                // its kind meets, because both go on to be handed to git.
+                if let (Some(branch), Some(head)) = (
+                    field("branch").and_then(|name| Ref::try_from(name).ok()),
+                    field("head").as_deref().and_then(ObjectId::parse),
+                ) {
+                    if event.payload.get("accepted").and_then(Value::as_bool) == Some(true) {
+                        record.pushed_heads.push((branch, head));
+                    }
+                }
                 record.merge_path = Some(Stamped {
                     at,
                     value: MergePathReport {
@@ -2137,6 +2362,20 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                         recorded_by: token.to_owned(),
                     },
                 });
+            }
+            // A retry's landing superseding this branch, and the branch's own
+            // retirement: both read through the one reader of their payloads, which
+            // holds each value to the check its kind meets and records nothing for a
+            // payload it cannot read whole.
+            EventKind::BranchSuperseded => {
+                if let Some(read) = crate::retire::SupersessionRecord::read(&event.payload) {
+                    record.superseded.push(Stamped { at, value: read });
+                }
+            }
+            EventKind::BranchRetired => {
+                if let Some(read) = crate::retire::RetiredRecord::read(&event.payload, &at) {
+                    record.retired = Some(Stamped { at, value: read });
+                }
             }
             _ => {}
         }
@@ -2254,6 +2493,141 @@ pub(crate) fn preserved_branches(streams: &[Recorded], identity: &str) -> BTreeS
         .collect()
 }
 
+/// Every head this host's own streams record pushing for one branch, newest first.
+///
+/// What a change request opened from the branch carries as its head: the publishing
+/// push of the branch's own name is what puts one there. A retirement asks whether the
+/// branch's content is contained in one of these, which is how a change request that
+/// merged is known to have merged *this* work rather than an earlier copy of it.
+pub(crate) fn pushed_heads(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> Vec<ObjectId> {
+    let mut heads: Vec<ObjectId> = Vec::new();
+    for record in relevant_streams(streams, identity, branch, session) {
+        for (pushed, head) in &record.pushed_heads {
+            if **pushed == *branch && !heads.contains(head) {
+                heads.push(head.clone());
+            }
+        }
+    }
+    heads
+}
+
+/// Every supersession of one branch this host's streams record, oldest first.
+pub(crate) fn supersessions(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+) -> Vec<crate::retire::SupersessionRecord> {
+    let mut found: Vec<Stamped<crate::retire::SupersessionRecord>> =
+        relevant_streams(streams, identity, branch, None)
+            .into_iter()
+            .flat_map(|record| record.superseded.iter().cloned())
+            .filter(|stamped| stamped.value.names(identity, branch))
+            .collect();
+    found.sort_by(|left, right| left.at.cmp(&right.at));
+    found.into_iter().map(|stamped| stamped.value).collect()
+}
+
+/// The newest retirement of one branch this host's streams record.
+pub(crate) fn retirement_of(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+) -> Option<crate::retire::RetiredRecord> {
+    latest(
+        relevant_streams(streams, identity, branch, None)
+            .into_iter()
+            .filter_map(|record| record.retired.clone())
+            .filter(|stamped| stamped.value.names(identity, branch)),
+    )
+}
+
+/// Every identity whose streams record a retirement of a branch of this name, for
+/// resolving a branch nothing holds any more.
+fn retired_under(streams: &[Recorded], branch: &Ref, within: Option<&str>) -> Vec<Work> {
+    let mut found: Vec<Work> = Vec::new();
+    for record in streams {
+        let Some(retired) = &record.retired else {
+            continue;
+        };
+        let identity = retired.value.identity();
+        if retired.value.branch() != &**branch || within.is_some_and(|key| key != identity) {
+            continue;
+        }
+        if !found.iter().any(|work| work.identity == identity) {
+            found.push(Work {
+                identity: identity.to_owned(),
+                branch: branch.clone(),
+            });
+        }
+    }
+    found
+}
+
+/// The change request this host's streams record opening for one branch, whole
+/// enough to address the host about it: its URL, the host's identifier, the branch it
+/// targets, and the stream that recorded it.
+///
+/// Each is read out of a stream anybody on this host could have written, so each is
+/// checked as it is read: an identifier that is blank, a base git would not accept as
+/// a branch, or a stream that is not a plain name is absent rather than carried on to
+/// the host or into a path.
+pub(crate) struct OpenedChange {
+    pub url: Url,
+    pub id: Option<ChangeId>,
+    pub base: Option<Ref>,
+    pub stream: Option<Token>,
+}
+
+/// The newest change request recorded for one branch, where one is.
+pub(crate) fn opened_change(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> Option<OpenedChange> {
+    let told = from_streams(
+        streams,
+        &Work {
+            identity: identity.to_owned(),
+            branch: Ref::from_git(branch),
+        },
+        session,
+    );
+    let opened = told.opened?;
+    Some(OpenedChange {
+        url: Url::parse(&opened.url).ok()?,
+        id: opened.id.filter(|id| !id.trim().is_empty()).map(ChangeId),
+        base: opened.base.and_then(|base| Ref::try_from(base).ok()),
+        stream: told
+            .change_stream
+            .and_then(|stream| Token::try_from(stream).ok()),
+    })
+}
+
+/// Every branch of one identity this host's streams name, which is where a pass over
+/// finished branches looks beside the session records.
+pub(crate) fn recorded_branches(streams: &[Recorded], identity: &str) -> BTreeSet<String> {
+    let mut named = BTreeSet::new();
+    for record in streams {
+        if record.identity.as_deref() != Some(identity) {
+            continue;
+        }
+        named.extend(record.branch.clone());
+        named.extend(
+            record
+                .superseded
+                .iter()
+                .map(|stamped| stamped.value.branch().to_owned()),
+        );
+    }
+    named
+}
+
 /// Read one reference as the work it names.
 ///
 /// The four spellings are tried in the order the surface documents them, and the
@@ -2296,6 +2670,12 @@ fn resolve(
         let found = by_branch(registry, &named, within)?;
         if !found.is_empty() {
             return one(found, reference, "branch").map(|work| (work, RefKind::Branch));
+        }
+        // A branch nothing holds any more is still one this host knows, where it
+        // recorded retiring it: what became of the work is exactly what is asked.
+        let retired = retired_under(streams, &named, within);
+        if !retired.is_empty() {
+            return one(retired, reference, "branch").map(|work| (work, RefKind::Branch));
         }
     }
     if reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -2672,6 +3052,21 @@ impl Report {
                 out.push_str(&format!("    {} ({what})\n", holder.path.display()));
             }
         }
+        if let Some(retired) = &self.retired {
+            out.push_str(&format!(
+                "retired: {class} — {proof}; by {trigger} ({mode}) at {at}, from {tip}\n",
+                class = retired.class.as_str(),
+                proof = retired
+                    .proof
+                    .as_ref()
+                    .map(crate::retire::RetirementProof::describe)
+                    .unwrap_or_else(|| "reclaimed, its differences discarded".to_owned()),
+                trigger = retired.trigger.as_str(),
+                mode = retired.mode.as_str(),
+                at = String::from(retired.at.clone()),
+                tip = retired.tip.0,
+            ));
+        }
         out.push_str("publication:\n");
         out.push_str(&format!(
             "  state: {}\n",
@@ -2860,8 +3255,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v8.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v8-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v9.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v9-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -3057,5 +3452,52 @@ mod round_trip {
         let mut document = parsed(FULL);
         document["landed"] = Value::Bool(true);
         assert!(serde_json::from_value::<Report>(document).is_err());
+    }
+
+    #[test]
+    fn a_retirement_reads_back_only_where_its_class_its_proof_and_its_mode_agree() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let proof = json!({"kind": "recorded-landing", "commit": sha});
+        let retired = |class: &str, proof: Option<&Value>, mode: &str| {
+            let mut document = parsed(FULL);
+            document["retired"] = json!({
+                "class": class,
+                "trigger": "verb",
+                "mode": mode,
+                "at": "2026-01-01T00:00:00.000Z",
+                "tip": sha,
+            });
+            if let Some(proof) = proof {
+                document["retired"]["proof"] = proof.clone();
+            }
+            document
+        };
+
+        // The two shapes a retirement is written in read back and write themselves again.
+        for document in [
+            retired("retirable", Some(&proof), "retire"),
+            retired("superseded-with-changes", None, "reclaim"),
+        ] {
+            let report: Report =
+                serde_json::from_value(document.clone()).expect("an agreeing retirement reads");
+            assert_eq!(
+                serde_json::to_value(&report).expect("a report serializes"),
+                document
+            );
+        }
+
+        // Every other combination is one no retirement is, and is refused where it is
+        // read rather than handed on as a landing with no proof behind it.
+        for document in [
+            retired("retirable", None, "retire"),
+            retired("superseded-with-changes", Some(&proof), "reclaim"),
+            retired("superseded-with-changes", None, "retire"),
+            retired("keep", None, "reclaim"),
+        ] {
+            let refusal = serde_json::from_value::<Report>(document)
+                .expect_err("a retirement whose fields disagree is refused")
+                .to_string();
+            assert!(refusal.contains("which no retirement is"), "{refusal}");
+        }
     }
 }

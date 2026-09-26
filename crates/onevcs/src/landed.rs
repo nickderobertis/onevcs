@@ -158,6 +158,15 @@ pub enum LandingEvidence {
         /// The commit on the base that carries the trailer.
         commit: Sha,
     },
+    /// A retirement of this branch, recorded once a proof showed it held nothing
+    /// beyond its base and it was deleted everywhere this host held it. What decided
+    /// it is the proof the retirement acted on, which travels with it.
+    Retired {
+        /// The commit that is the proof's evidence.
+        commit: Sha,
+        /// What proved the branch held nothing beyond its base.
+        proof: crate::retire::RetirementProof,
+    },
 }
 
 impl LandingEvidence {
@@ -167,6 +176,7 @@ impl LandingEvidence {
             LandingEvidence::RecordedLanding { .. } => "a recorded landing",
             LandingEvidence::ChangeRequest { .. } => "the change request's number in the base",
             LandingEvidence::Trailer { .. } => "a landing trailer on the base",
+            LandingEvidence::Retired { .. } => "the branch's recorded retirement",
         }
     }
 
@@ -175,7 +185,8 @@ impl LandingEvidence {
         match self {
             LandingEvidence::RecordedLanding { commit }
             | LandingEvidence::ChangeRequest { commit, .. }
-            | LandingEvidence::Trailer { commit } => &commit.0,
+            | LandingEvidence::Trailer { commit }
+            | LandingEvidence::Retired { commit, .. } => &commit.0,
         }
     }
 }
@@ -442,7 +453,7 @@ fn inferred(
 /// its number in the subject, the host's merge commit spells it out, and anything
 /// that quoted the change request itself carries its URL. A number is matched with
 /// its own punctuation around it so that `#1` cannot answer for `#12`.
-fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String> {
+pub(crate) fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String> {
     let number = url
         .trim_end_matches('/')
         .rsplit('/')
@@ -470,7 +481,7 @@ fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String>
 /// line of prose — or a value shaped like an option — is not one. Read through the
 /// conversion that decides what an object id is, so a trailer nobody meant as one
 /// names no landing rather than becoming an argument.
-fn trailer_values(message: &str, key: &str) -> Vec<ObjectId> {
+pub(crate) fn trailer_values(message: &str, key: &str) -> Vec<ObjectId> {
     message
         .lines()
         .filter_map(|line| line.trim().strip_prefix(key))

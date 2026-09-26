@@ -131,6 +131,20 @@ pub enum EventKind {
     /// A landing was released, the first time it was: its baseline passed for an
     /// automated target, its acknowledgement recorded for a human-step one.
     ReleaseObserved,
+    /// A branch was recorded as superseded by a retry whose landing reached the base;
+    /// carries the identity, the branch, the branch that superseded it, that
+    /// branch's landing — a commit or a change request's URL — and the labels its
+    /// caller stamped.
+    ///
+    /// A record and nothing else: the superseded branch is left exactly where it is.
+    /// What it changes is how the branch is *classified* — `superseded-with-changes`
+    /// where it still differs from the base, which only `onevcs reclaim` acts on.
+    BranchSuperseded,
+    /// A finished branch was deleted everywhere this host holds it; carries the
+    /// identity, the branch, the tip it was deleted at, the class and proof that
+    /// permitted it, which verb or moment acted, and what was deleted and what was
+    /// not — so a partial retirement names the holder a re-run still has to reach.
+    BranchRetired,
 }
 
 impl EventKind {
@@ -164,6 +178,8 @@ impl EventKind {
             EventKind::ReleaseProbed => "release-probed",
             EventKind::ReleaseAcknowledged => "release-acknowledged",
             EventKind::ReleaseObserved => "release-observed",
+            EventKind::BranchSuperseded => "branch-superseded",
+            EventKind::BranchRetired => "branch-retired",
         }
     }
 
@@ -227,6 +243,10 @@ impl PhaseOf for Phase {
             EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict => {
                 Phase::Integrate
             }
+            // What became of a branch once its work reached the base, or once a retry
+            // of it did: the base is what decides both, so both are that work being
+            // integrated rather than made or proposed.
+            EventKind::BranchSuperseded | EventKind::BranchRetired => Phase::Integrate,
             EventKind::ChangeOpened
             | EventKind::ChangeDrafted
             | EventKind::DraftLifted

@@ -382,6 +382,16 @@ pub struct Recoverable {
     /// landed it before. That is the whole point of the verb being called *preserve*.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_origin: Option<OnOrigin>,
+    /// What the branch is for the question of whether it may be deleted — the
+    /// classification `onevcs retire` and `onevcs reclaim` act on, made here from this
+    /// host's records and local refs alone, since this report never asks the host.
+    ///
+    /// Additive: every row `onevcs` answers carries it, and a row an implementation
+    /// that does not classify answered omits it, as a consumer that predates the field
+    /// never meets it. A row whose class is `retirable` is not in the default report,
+    /// as a row whose work landed is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement: Option<crate::retire::Retirement>,
 }
 
 /// A row as a document spells it, before the answer on it and the command beside it
@@ -408,6 +418,8 @@ struct AnyRecoverable {
     #[serde(default)]
     labels: BTreeMap<String, String>,
     on_origin: Option<OnOrigin>,
+    #[serde(default)]
+    retirement: Option<crate::retire::Retirement>,
 }
 
 impl TryFrom<AnyRecoverable> for Recoverable {
@@ -435,6 +447,7 @@ impl TryFrom<AnyRecoverable> for Recoverable {
             session: value.session,
             labels: value.labels,
             on_origin: value.on_origin,
+            retirement: value.retirement,
         })
     }
 }

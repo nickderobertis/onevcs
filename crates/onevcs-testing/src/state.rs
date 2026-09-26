@@ -52,7 +52,11 @@ use crate::store::Checked;
 /// and the commit the origin carries it at. `12` is the labels a session is opened
 /// with — [`VcsState::session_labels`], keyed by token the way its identity is — and
 /// the two fields a `Recoverable` gained inside [`VcsState::preserved`] to carry them:
-/// the session that answers for the row, and that session's labels.
+/// the session that answers for the row, and that session's labels. `13` is one more
+/// field a `Recoverable` gained there: the branch's retirement classification — whether
+/// it provably holds nothing beyond its base, was superseded by a retry that landed, or
+/// is kept, and the evidence for it. No provider here classifies a row, so a row this
+/// crate writes carries none; a scenario may seed one.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -62,7 +66,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 12;
+pub const STATE_VERSION: u32 = 13;
 
 /// The oldest document version this build reads.
 ///
@@ -99,7 +103,9 @@ pub const STATE_VERSION: u32 = 12;
 /// labels, which appear only where a session was opened with some, and the two row
 /// fields that carry them, which a version 11 row reads as absent: a session nobody
 /// labelled, and a row that names no session — which is what that build's rows said,
-/// since it recorded neither.
+/// since it recorded neither. `12` to `13` added the row's retirement, which appears only
+/// where a row holds one, so a version 12 row reads as one nothing classified — which
+/// is what it was, since that build had no classification to record.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
