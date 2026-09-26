@@ -876,13 +876,16 @@ pub(crate) struct Census<'a> {
     lent: Option<PathBuf>,
     origin: Option<String>,
     places: Vec<Place>,
+    /// Every directory a place could be in that could not be listed, so a copy there
+    /// is one no read of this identity can rule out.
+    unlisted: Vec<String>,
     /// Every place's local branches with their tips, listed once where a read may
     /// answer from a listing — which is every read but the one made immediately before
     /// deleting, where a tip is asked of git again.
     heads: Vec<std::cell::OnceCell<std::result::Result<BTreeMap<String, String>, String>>>,
     /// The publication checkout's remote-tracking branches, for a read that does not
     /// ask the origin itself.
-    tracked: std::cell::OnceCell<BTreeMap<String, String>>,
+    tracked: std::cell::OnceCell<std::result::Result<BTreeMap<String, String>, String>>,
     sessions: &'a [Record],
     streams: &'a [status::Recorded],
     trailers: &'a Trailers,
@@ -932,14 +935,15 @@ impl<'a> Census<'a> {
             }
         }
         let root = workspace::identity_dir(&resolution.key)?;
-        for (slot, _) in numbered(&pool::pool_dir(&root)) {
+        let mut unlisted = Vec::new();
+        for (slot, _) in numbered(&pool::pool_dir(&root), &mut unlisted) {
             places.push(Place {
                 kind: BranchHolderKind::Slot,
                 repo: slot.join("clone"),
                 slot: Some(slot),
             });
         }
-        for (run_root, _) in listed(&root.join("runs")) {
+        for (run_root, _) in listed(&root.join("runs"), &mut unlisted) {
             let clone = run_root.join("clone");
             if clone.exists() {
                 places.push(Place {
@@ -980,6 +984,7 @@ impl<'a> Census<'a> {
             base,
             base_tip,
             places,
+            unlisted,
             sessions,
             streams,
             trailers,
@@ -1016,7 +1021,10 @@ impl<'a> Census<'a> {
 
     /// Where each copy of the branch stands, read now.
     fn copies(&self, branch: &str, ask: &Ask<'_>) -> Copies {
-        let mut read = Copies::default();
+        let mut read = Copies {
+            unreadable: self.unlisted.clone(),
+            ..Copies::default()
+        };
         for (index, place) in self.places.iter().enumerate() {
             match self.local_tip(index, branch, ask.remote) {
                 LocalTip::At(tip) => read.copies.push(Copy {
@@ -1045,14 +1053,24 @@ impl<'a> Census<'a> {
                 Err(failure) => read.unreadable.push(format!("the origin: {failure}")),
             },
             false => {
+                // A listing that failed says nothing about where the origin has the
+                // branch, so it is a place this read could not see rather than absence.
                 let tracked = self.tracked.get_or_init(|| {
-                    git::remote_heads(self.publication(), "origin").unwrap_or_default()
+                    git::remote_heads(self.publication(), "origin")
+                        .map_err(|failure| failure.to_string())
                 });
-                if let Some(tip) = tracked.get(branch) {
-                    read.copies.push(Copy {
-                        at: Holding::Origin,
-                        tip: tip.clone(),
-                    });
+                match tracked {
+                    Ok(tracked) => {
+                        if let Some(tip) = tracked.get(branch) {
+                            read.copies.push(Copy {
+                                at: Holding::Origin,
+                                tip: tip.clone(),
+                            });
+                        }
+                    }
+                    Err(said) => read
+                        .unreadable
+                        .push(format!("the origin's remote-tracking branches: {said}")),
                 }
             }
         }
@@ -1685,8 +1703,8 @@ fn change_request(
 }
 
 /// The numbered directories under one directory, in number order.
-fn numbered(directory: &Path) -> Vec<(PathBuf, u32)> {
-    let mut found: Vec<(PathBuf, u32)> = listed(directory)
+fn numbered(directory: &Path, unlisted: &mut Vec<String>) -> Vec<(PathBuf, u32)> {
+    let mut found: Vec<(PathBuf, u32)> = listed(directory, unlisted)
         .into_iter()
         .filter_map(|(path, name)| {
             name.parse::<u32>()
@@ -1699,23 +1717,45 @@ fn numbered(directory: &Path) -> Vec<(PathBuf, u32)> {
     found
 }
 
-/// The directories under one directory, by name.
-fn listed(directory: &Path) -> Vec<(PathBuf, String)> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Vec::new();
+/// The directories under one directory, by name. A directory that is not there holds
+/// nothing; one that is there and cannot be listed, or an entry of it that cannot be
+/// read, is said in `unlisted`, because what it holds is unknown rather than nothing.
+fn listed(directory: &Path, unlisted: &mut Vec<String>) -> Vec<(PathBuf, String)> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(failure) => {
+            unlisted.push(format!("{}: {failure}", directory.display()));
+            return Vec::new();
+        }
     };
-    let mut found: Vec<(PathBuf, String)> = entries
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| {
-            (
+    let mut found = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) if entry.path().is_dir() => found.push((
                 entry.path(),
                 entry.file_name().to_string_lossy().into_owned(),
-            )
-        })
-        .collect();
+            )),
+            Ok(_) => {}
+            Err(failure) => unlisted.push(format!("{}: {failure}", directory.display())),
+        }
+    }
     found.sort();
     found
+}
+
+/// Whether `identity` is spelled the way a registry keys one: `host/owner/name` for a
+/// hosted origin, or an absolute path for a local one. A record read back from a
+/// stream is matched against those keys, so one naming anything else names nothing.
+fn is_identity_key(identity: &str) -> bool {
+    if identity.trim() != identity || identity.chars().any(char::is_control) {
+        return false;
+    }
+    let normalized = store::normalize(identity);
+    match normalized.hosted {
+        Some(_) => normalized.key == identity,
+        None => Path::new(identity).is_absolute(),
+    }
 }
 
 /// A retry's landing, as a supersession records it.
@@ -1772,7 +1812,7 @@ impl SupersessionRecord {
         };
         label::validate(&labels).ok()?;
         Some(SupersessionRecord {
-            identity: text("identity")?,
+            identity: text("identity").filter(|identity| is_identity_key(identity))?,
             branch: Ref::try_from(text("branch")?).ok()?,
             superseded_by: Ref::try_from(text("superseded_by")?).ok()?,
             landing: SupersedingLanding::parse(&text("landing")?)?,
@@ -1829,6 +1869,9 @@ impl RetiredRecord {
             serde_json::from_value(Value::Object(payload.clone())).ok()?;
         Ref::try_from(payload.branch.clone()).ok()?;
         ObjectId::parse(&payload.tip.0)?;
+        if !is_identity_key(&payload.identity) {
+            return None;
+        }
         // A retirement acts only on a class its mode permits, and the class decides
         // which of the reason, the proof and the supersession it carries — so a record
         // whose fields contradict each other is one nothing wrote, and is no record.

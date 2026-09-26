@@ -1282,6 +1282,81 @@ fn a_holder_git_will_not_read_keeps_the_branch_as_unknown() {
 }
 
 #[test]
+fn a_run_directory_that_cannot_be_listed_keeps_the_branch_as_unknown() {
+    let yard = Yard::new();
+    yard.landed("feature/unlisted", "unlisted.txt");
+    let (_token, _worktree) = yard.stale_session("feature/unlisted");
+    let runs = identity_root(yard.world()).join("runs");
+    let before = yard.held("feature/unlisted");
+    let original = std::fs::metadata(&runs).expect("run roots").permissions();
+    // llmlint: ignore-block[tests_mirror_real_usage] a directory this user cannot list is a
+    // fact about the host — an operator or a container closed it — reachable by no verb
+    // of this crate; what runs over it is the real binary. With it closed, the run clone
+    // under it is a copy no read can see, so treating the listing as empty would retire
+    // the branch everywhere else and leave that copy behind.
+    std::fs::set_permissions(&runs, std::fs::Permissions::from_mode(0o000))
+        .expect("the run roots are closed");
+    assert!(
+        std::fs::read_dir(&runs).is_err(),
+        "the premise: this suite runs as a user the mode binds"
+    );
+    let outcomes: Vec<(i32, Value)> = ["retire", "reclaim"]
+        .iter()
+        .map(|verb| yard.verb(&[verb, "feature/unlisted"]))
+        .collect();
+    let (_, pass) = yard.verb(&["retire-finished"]);
+    std::fs::set_permissions(&runs, original).expect("the run roots are open again");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    for (code, refused) in outcomes {
+        assert_eq!(code, 4, "{refused}");
+        assert_eq!(refused["reason"], "unknown", "{refused}");
+    }
+    assert!(pass["examined"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .all(|entry| entry["outcome"] != "retired"));
+    assert!(events(yard.world(), "branch-retired").is_empty());
+    assert_eq!(yard.held("feature/unlisted"), before);
+}
+
+#[test]
+fn a_retirement_record_naming_no_identity_is_not_read_as_one() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/recorded", "recorded.txt");
+    let (code, retired) = yard.verb(&["retire", "feature/recorded"]);
+    assert_eq!(code, 0, "{retired}");
+    // A stream is a file whichever process wrote it. One more `branch-retired` line over
+    // the same branch, naming something no registry keys an identity by, is what a
+    // foreign or damaged writer leaves; it names no repository, so it is no second
+    // candidate for the one a branch nothing holds any more resolves to.
+    let streams = world.home().join("streams");
+    let stream = std::fs::read_dir(&streams)
+        .expect("streams")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            std::fs::read_to_string(path).is_ok_and(|text| text.contains("\"branch-retired\""))
+        })
+        .expect("the stream the retirement was written to");
+    let text = std::fs::read_to_string(&stream).expect("the stream");
+    let line = text
+        .lines()
+        .find(|line| line.contains("\"branch-retired\""))
+        .expect("the retirement");
+    let mut forged: Value = serde_json::from_str(line).expect("an event");
+    forged["payload"]["identity"] = Value::from("not an identity");
+    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate writes a record naming
+    // no identity, which is the point: the input under test is a stream line some other
+    // writer left, and the real binary is what reads it.
+    std::fs::write(&stream, format!("{text}{forged}\n")).expect("the stream is appended to");
+
+    let report = status(world, "feature/recorded");
+    assert_eq!(report["retired"]["class"], "retirable", "{report}");
+}
+
+#[test]
 fn copies_that_disagree_keep_the_branch_and_the_commit_only_one_holds() {
     let yard = Yard::new();
     yard.landed("feature/split", "split.txt");
