@@ -210,6 +210,8 @@ jobs:
           tool: release-plz@${{ steps.pin.outputs.version }},nextest,cargo-llvm-cov
       - uses: ./.github/actions/setup-just
       - run: just release-pr-check
+      # What release-pr-check proves, held by journeys against the same release-plz.
+      - run: just release-pr-journeys
 
   # Advisory + license audit and unused-dependency check. Its own Linux-only job:
   # it needs a network advisory DB and must not be duplicated across the matrix.

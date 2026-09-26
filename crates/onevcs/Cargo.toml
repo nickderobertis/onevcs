@@ -124,3 +124,11 @@ path = "tests/e2e/main.rs"
 [[test]]
 name = "smoke"
 path = "tests/smoke/main.rs"
+
+# `just release-pr-check` against the real `release-plz` at the version
+# `release-plz.yml` pins. Its own binary for the reason `smoke` is: the gate does not
+# install that tool, so `just test` and `just gate` exclude it by name and CI's
+# `release-pr` job runs it (`just release-pr-journeys`) after installing it.
+[[test]]
+name = "release_pr"
+path = "tests/release_pr/main.rs"

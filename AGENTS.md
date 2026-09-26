@@ -189,7 +189,13 @@ not tell you:
   changes; release-plz has no hook in between. `just
   release-pr-check` (CI's `release-pr` job) cuts a release PR's tree offline with
   `release-plz update` and runs the `--locked` bootstrap on it — a new path
-  dependency from outside the workspace belongs in that script.
+  dependency from outside the workspace belongs in that script. On the release PR
+  itself the tree is already cut, so the check bootstraps it as it stands and then
+  cuts the release after it, with that tree as the baseline; it tells the two apart
+  by release-plz's own rule (a version that differs from the baseline tag's is a
+  bump already made). `just release-pr-journeys` holds both to the real pinned
+  `release-plz`, and like `smoke` it is its own test binary outside `check` and
+  `gate`, run by that same CI job.
 - **`onevcs-testing` versions and tags on its own.** It is its own deliverable, so
   a change to a test provider must not bump the CLI everyone installs. Its tag is
   `onevcs-testing-vX.Y.Z` (one `git_tag_name` template for two packages would

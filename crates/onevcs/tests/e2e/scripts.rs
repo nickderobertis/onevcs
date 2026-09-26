@@ -45,7 +45,8 @@
 //! scripts for real against a scratch `origin`, because the branch it pushed and
 //! what that branch then locks are the behaviour; `scripts/release-pr-check.sh`,
 //! which cuts a release PR's tree with the real `release-plz`, is driven here only
-//! up to its refusals, and in full by CI's `release-pr` job, which installs it.
+//! up to its refusals, and in full by `tests/release_pr/` — its own binary, run with
+//! the pinned `release-plz` by CI's `release-pr` job, which installs it.
 //!
 //! Unix only, like `smoke.rs` beside it: `nx-affected.sh` runs on the Linux
 //! `changes` and `gate` jobs alone, and the platform-specific half of
