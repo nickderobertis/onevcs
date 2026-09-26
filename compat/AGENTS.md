@@ -35,7 +35,12 @@ claim is about:
   is the plain `onevcs` dependency. The version is a decision recorded here, not a
   mirror of any other repository's file: this project is offline and cannot read one,
   and the claim stays true of 0.32.2 whatever a consumer later pins. Moving it to a
-  newer release is a new claim someone decides on, never a sync.
+  newer release is a new claim someone decides on, never a sync. It is **Unix only**,
+  as every retirement journey in `crates/onevcs/tests/e2e` is: on Windows this build's
+  `retire` keeps the landed branch as `unknown` rather than retiring it, so the
+  journey's premise never holds there. The file's head says where that was observed,
+  and its `diagnosis` is what a failed retirement prints, so the day it is re-enabled
+  on Windows it names the read that failed.
 
 The second claim needs this build to *write* the state, so this build is linked too,
 from the path beside it, as `onevcs-current`: one journey writes a real scratch host

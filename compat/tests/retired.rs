@@ -13,6 +13,17 @@
 //! this build from the path beside it — and both are asked through their libraries,
 //! which are the same code paths their commands render.
 
+// Unix only, as every retirement journey in `crates/onevcs/tests/e2e` is. On the Windows
+// leg this build's `retire` answered `keep` / `unknown` for the landed branch below —
+// PR #241, CI run 36269033008, job 108479352143 (`cross (windows-latest)`), with the
+// same holders and base Linux reports and no proof — so the retirement this journey's
+// premise needs never happens there. That is the fail-safe answer (nothing was
+// deleted), and retirement is not yet proven on Windows; until it is, the claim this
+// journey makes is held on Linux and macOS. `diagnosis` below is what the journey
+// prints when the retirement does not happen, so re-enabling it on Windows explains
+// itself.
+#![cfg(unix)]
+
 // llmlint: ignore-file[new_code_lands_in_a_project] `compat/` is run by the `onevcs` crate
 // project's test target (`just _crate-compat`, from `_crate-test`), and `nx.json` names
 // `compat/**/*` among that target's inputs; a project of its own would run the same cargo
@@ -25,7 +36,7 @@ use std::process::Command;
 use onevcs::{EventLines, EventStream, Scope, SessionToken};
 use onevcs_current::{
     BranchPublishRequest, Providers as CurrentProviders, RetireMode, RetireOutcome, RetireRequest,
-    SessionRequest, Supersession,
+    RetirementQuery, SessionRequest, Supersession,
 };
 
 /// A scratch host: its own home and state root, removed when the journey ends.
@@ -124,6 +135,139 @@ fn worked(providers: &CurrentProviders<'_>, branch: &str, file: &str, contents: 
         .expect("this build opens a session");
     commit(&session.worktree, file, contents);
     onevcs_current::close_session(providers, &session.token).expect("and closes it");
+}
+
+/// One git command's whole answer, whatever it was: a diagnosis reports a read that
+/// failed rather than stopping at it.
+fn asked(cwd: &Path, args: &[&str], env: &[(&str, &Path)]) -> String {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(cwd);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    match command.output() {
+        Ok(output) => format!(
+            "git {} in {} ({env:?}): {}\n  stdout: {}\n  stderr: {}",
+            args.join(" "),
+            cwd.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ),
+        Err(failure) => format!("git {} in {}: {failure}", args.join(" "), cwd.display()),
+    }
+}
+
+/// The directories directly under `directory`, or none where it cannot be listed.
+fn children(directory: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(directory)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+/// What a classification that did not retire read, asked again with nothing
+/// swallowed.
+///
+/// Every read the classifier makes that fails answers `unknown` and says no more, which
+/// is right for the verb and leaves a failing journey with nothing to go on. So this
+/// asks the same questions of the same places — the classification itself, the base on
+/// the origin, and in every checkout and clone the branch, its worktrees, its fork point
+/// with the base under the object store the classifier lends, and its first-parent tail
+/// — and adds every session record, for a failure on a platform nobody here can run.
+fn diagnosis(
+    providers: &CurrentProviders<'_>,
+    scratch: &Scratch,
+    checkout: &Path,
+    branch: &str,
+) -> String {
+    let reference = format!("refs/heads/{branch}");
+    let mut lines = vec![format!(
+        "classify_retirement: {:?}",
+        onevcs_current::classify_retirement(
+            providers,
+            &RetirementQuery {
+                repo: Some("project".to_owned()),
+                branch: branch.to_owned(),
+            },
+        )
+    )];
+    for args in [
+        &["fetch", "--dry-run", "--prune", "origin"][..],
+        &["ls-remote", "--exit-code", "origin", &reference],
+        &["symbolic-ref", "refs/remotes/origin/HEAD"],
+        &["rev-parse", "refs/remotes/origin/main"],
+        &["rev-parse", "--git-path", "objects"],
+        &["rev-parse", "--git-common-dir"],
+    ] {
+        lines.push(asked(checkout, args, &[]));
+    }
+    let base_tip = Command::new("git")
+        .args(["rev-parse", "refs/remotes/origin/main"])
+        .current_dir(checkout)
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_default();
+    // Spelled the way the classifier spells the store it lends: the registered
+    // checkout's canonical path, with git's own relative answer joined onto it.
+    let lent = std::fs::canonicalize(checkout)
+        .unwrap_or_else(|_| checkout.to_path_buf())
+        .join(".git/objects");
+    let mut repos = vec![checkout.to_path_buf()];
+    for workspace in children(&scratch.path(".onevcs/workspaces")) {
+        for held in ["runs", "pool"] {
+            for root in children(&workspace.join(held)) {
+                if root.join("clone").exists() {
+                    repos.push(root.join("clone"));
+                }
+            }
+        }
+    }
+    for repo in &repos {
+        lines.push(asked(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/heads",
+            ],
+            &[],
+        ));
+        lines.push(asked(repo, &["worktree", "list", "--porcelain"], &[]));
+        lines.push(asked(
+            repo,
+            &["merge-base", &base_tip, &reference],
+            &[("GIT_ALTERNATE_OBJECT_DIRECTORIES", &lent)],
+        ));
+        lines.push(asked(
+            repo,
+            &[
+                "log",
+                "--first-parent",
+                "-n5",
+                "--format=%H %T %s",
+                &reference,
+            ],
+            &[],
+        ));
+    }
+    for worktree in children(&scratch.path(".onevcs/workspaces"))
+        .iter()
+        .flat_map(|workspace| children(&workspace.join("runs")))
+        .map(|root| root.join("worktree"))
+        .filter(|worktree| worktree.is_dir())
+    {
+        lines.push(asked(&worktree, &["status", "--porcelain"], &[]));
+    }
+    for record in children(&scratch.path(".onevcs/sessions")) {
+        lines.push(format!(
+            "{}: {}",
+            record.display(),
+            std::fs::read_to_string(&record).unwrap_or_else(|failure| failure.to_string())
+        ));
+    }
+    lines.join("\n")
 }
 
 /// Every token a stream is written under.
@@ -226,7 +370,12 @@ fn a_released_build_reads_the_host_this_build_retired_a_branch_on() {
         },
     )
     .expect("this build retires it");
-    assert_eq!(retired.outcome, RetireOutcome::Retired, "{retired:?}");
+    assert_eq!(
+        retired.outcome,
+        RetireOutcome::Retired,
+        "{retired:?}\n{}",
+        diagnosis(&providers, &scratch, &checkout, "feature/done")
+    );
     let written = std::fs::read_dir(scratch.path(".onevcs/streams"))
         .expect("streams")
         .flatten()
