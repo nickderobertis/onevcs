@@ -42,7 +42,10 @@ impl Scratch {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("a scratch directory");
-        let root = root.canonicalize().expect("a canonical scratch root");
+        // Plain, never verbatim: Windows' `canonicalize` answers `\\?\C:\...`, and git
+        // cannot read its configuration under a `HOME` spelled that way ("unknown error
+        // occurred while reading the configuration files").
+        let root = plain_path(root.canonicalize().expect("a canonical scratch root"));
         std::fs::write(
             root.join(".gitconfig"),
             "[user]\n\tname = Compat\n\temail = compat@example.invalid\n[init]\n\t\
@@ -64,6 +67,14 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `path` without Windows' verbatim `\\?\` prefix, which git and a `HOME` cannot take.
+fn plain_path(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(plain) => PathBuf::from(plain),
+        None => path,
     }
 }
 
