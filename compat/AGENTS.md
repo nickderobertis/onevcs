@@ -51,8 +51,11 @@ twice. Moving this directory into `crates/` is therefore not a tidy-up.
 
 The cost of being outside is exact and worth stating: `cargo deny` and `cargo
 machete` are `--workspace`, so nothing here is licence-audited, advisory-audited,
-or checked for unused dependencies. Its dependencies are this crate's own published
-build and `serde_json`, and adding a third means saying so here.
+or checked for unused dependencies. Its dependencies are two published builds of
+this crate (0.32.2 and 0.13.0), this crate itself by path, and `serde_json`; adding
+another means saying so here. Three packages named `onevcs` resolve in this graph,
+which is harmless *here* — nothing runs `--package onevcs` against this manifest —
+and is one more reason it stays out of the workspace next door.
 
 ## How it is run
 

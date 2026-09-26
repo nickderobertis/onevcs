@@ -80,7 +80,10 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 fn commit(worktree: &Path, file: &str, contents: &str) {
     std::fs::write(worktree.join(file), contents).expect("a file to commit");
     git(worktree, &["add", "-A"]);
-    git(worktree, &["commit", "-q", "-m", &format!("feat: write {file}")]);
+    git(
+        worktree,
+        &["commit", "-q", "-m", &format!("feat: write {file}")],
+    );
 }
 
 /// Open a session with this build, commit in it, and close it.
@@ -210,7 +213,10 @@ fn a_released_build_reads_the_host_this_build_retired_a_branch_on() {
         .map(|entry| std::fs::read_to_string(entry.path()).expect("a stream"))
         .collect::<String>();
     for kind in ["\"branch-superseded\"", "\"branch-retired\""] {
-        assert!(written.contains(kind), "the premise: this build wrote {kind}");
+        assert!(
+            written.contains(kind),
+            "the premise: this build wrote {kind}"
+        );
     }
 
     // The released build loads the registry and every session record…
