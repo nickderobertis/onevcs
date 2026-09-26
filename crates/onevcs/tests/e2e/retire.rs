@@ -1955,3 +1955,57 @@ fn a_branch_landed_in_part_whose_rest_the_base_carries_is_listed_as_retirable() 
     assert_eq!(retired["proof"]["kind"], "content-identical", "{retired}");
     assert!(yard.held("feature/in-part").is_empty());
 }
+
+#[test]
+fn a_branch_another_machine_landed_reads_as_landed_at_the_base_commit_its_trailer_is_on() {
+    // Landed from another clone, so nothing this host recorded says where: the base's
+    // own history does, through the trailer naming the branch commit it landed.
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.worked("feature/landed-elsewhere", &[("away.txt", "away\n")]);
+    let landed_point = tip(world, yard.checkout(), "feature/landed-elsewhere").expect("a tip");
+    let elsewhere = world.clone_of(&yard.fixture.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &[
+            "fetch",
+            "-q",
+            &yard.checkout().to_string_lossy(),
+            "feature/landed-elsewhere",
+        ],
+    );
+    world.git(&elsewhere, &["merge", "-q", "--squash", "FETCH_HEAD"]);
+    world.git(
+        &elsewhere,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            &format!(
+                "feat: land it from elsewhere\n\n{}Landed-Commit: {landed_point}",
+                crate::support::documented_default_prefix()
+            ),
+        ],
+    );
+    let squash = world
+        .git(&elsewhere, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    world.git(
+        yard.checkout(),
+        &["pull", "-q", "--ff-only", "origin", "main"],
+    );
+
+    let (code, retired) = yard.verb(&["retire", "feature/landed-elsewhere"]);
+    assert_eq!(code, 0, "{retired}");
+    assert_eq!(retired["proof"]["kind"], "recorded-landing", "{retired}");
+    assert_eq!(retired["proof"]["commit"], landed_point.as_str());
+    let report = status(world, "feature/landed-elsewhere");
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["commit"],
+        squash.as_str(),
+        "the base commit the trailer is on, not the branch commit it names: {report}"
+    );
+}
