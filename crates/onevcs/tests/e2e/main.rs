@@ -154,6 +154,18 @@ mod registry;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod retries;
+// Unix only: its journeys cut real sessions on a real pool slot through `world.rs`'s
+// POSIX fixture, and the ones about a change request publish through the same
+// substituted `gh` as `host.rs`. Its own header carries the reason in full.
+#[cfg(unix)]
+// Every journey of this suite lives in the one `e2e` binary of the one crate project,
+// which `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same
+// `--workspace` commands twice, and the affected selection already fails closed to
+// everything on a base it cannot derive. The twenty-three journeys here run offline,
+// credential-free and in about six seconds, and the host decisioning they substitute is
+// the note above this module's.
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
+mod retire;
 // Unix only: its probes are real POSIX shell scripts and real `sh -c` one-liners,
 // and its landings are real local-direct publications. Its own header carries the
 // reason in full.

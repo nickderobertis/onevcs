@@ -247,7 +247,8 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
     assert!(
         report.contains(&format!(
             "This answers for the publication and recovery workspaces onevcs owns under {}, \
-             for the session records beside them, and for nothing else on this host.",
+             for the session records beside them, for the finished branches of the \
+             registered identities, and for nothing else on this host.",
             fixture.world.home().join("workspaces").display()
         )),
         "the report states the scope it answered under:\n{report}"
@@ -1165,6 +1166,17 @@ fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
         .args(["publish", &token])
         .assert()
         .success();
+    // …and then worked on past what it published, so its branch holds work nobody has
+    // published. A branch that provably held nothing beyond its base would be retired
+    // by the finished-branches family, run root and all — which `tests/e2e/retire.rs`
+    // holds — and what this journey is about is that a run root is never reaped *as a
+    // workspace* however reclaimable it looks.
+    fixture.world.commit_file(
+        &worktree,
+        "two.txt",
+        "two\n",
+        "feat: work nobody has published yet",
+    );
     let lifecycle_root = worktree.parent().expect("a run root").to_path_buf();
     assert!(
         lifecycle_root.join("gate-logs").is_dir() && lifecycle_root.join("clone").is_dir(),
@@ -1184,8 +1196,10 @@ fn the_per_run_lifecycle_clones_are_a_family_this_verb_does_not_reach_into() {
     assert!(
         report.contains(&format!(
             "  {} — the per-run lifecycle clone root, which `onevcs session open` keeps as a \
-             bounded recovery history so a dead run's branch stays reachable; this verb does \
-             not reach into it\n    lifecycle-runs, reached by `onevcs recoverable --repo project`",
+             bounded recovery history so a dead run's branch stays reachable; this verb reaps \
+             nothing in it as a workspace, and removes a run root only with a branch the \
+             finished-branches family retires\n    lifecycle-runs, reached by `onevcs \
+             recoverable --repo project`",
             runs.display()
         )),
         "the report names the family it did not examine, why, and who reaches it:\n{report}"
@@ -2998,6 +3012,7 @@ fn the_json_report_is_the_text_report_and_every_family_it_names_is_swept_or_owne
             "Reclaimed:",
             "Retained:",
             "Session records with nothing left behind them:",
+            "Finished branches:",
             sections[sections.len() - 1],
         ],
         "{text}"

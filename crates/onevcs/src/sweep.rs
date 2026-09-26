@@ -55,6 +55,14 @@
 //! names is a run root whose session left nothing behind, which is one
 //! [`crate::workspace`]'s own reclamation removes on sight.
 //!
+//! **The finished branches are the one family that reaches into those three, and it
+//! does so only through a proof.** It is the automatic retirement pass
+//! (`crate::retire`), run with no age floor and every live-holder refusal: a branch
+//! that provably holds nothing beyond its base is deleted from each checkout, clone
+//! and the origin, the run root of a session over it is removed, and a slot that held
+//! it is *returned* rather than removed. Anything short of the proof is kept and said
+//! so, one line per branch.
+//!
 //! The report is one value rendered two ways — `--format text` is [`Report`]'s
 //! `Display`, `--format json` is its `Serialize` — so the two cannot disagree, and
 //! a consumer that reads the JSON reads the field names [`SCHEMA_VERSION`] fixes.
@@ -139,6 +147,7 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
         reclaimed: Vec::new(),
         retained: Vec::new(),
         records: Vec::new(),
+        finished: None,
     };
 
     // Read once, before the first family, so every workspace this pass judges is
@@ -206,7 +215,8 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     // to reclaim would have removed workspaces on the strength of a question it never
     // got an answer to. The report's own sections are ordered by its rendering, not
     // by this.
-    records(&mut report, dry_run, min_age)?;
+    let listed = workspace::all()?;
+    records(&mut report, dry_run, min_age, &listed)?;
 
     let mut families: Vec<Verb> = Verb::ALL.to_vec();
     // By the directory's own name rather than by the enum's order, so the report
@@ -215,12 +225,63 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
     for verb in families {
         family(&mut report, verb, min_age, &landings)?;
     }
+    // The one listing of the session records this verb makes, less the records it has
+    // just forgotten: a record gone from disk is not one the pass may write back.
+    let forgotten: Vec<&workspace::Token> = report
+        .records
+        .iter()
+        .filter(|record| !dry_run && matches!(record.outcome, Forgetting::Forgotten))
+        .map(|record| &record.token)
+        .collect();
+    let remaining: Vec<workspace::Record> = listed
+        .iter()
+        .filter(|record| !forgotten.contains(&&record.token))
+        .cloned()
+        .collect();
+    finished_branches(&mut report, dry_run, remaining);
     Ok(report)
 }
 
+/// The family of finished branches: every branch of every registered identity that
+/// provably holds no work beyond its base, retired by the automatic pass.
+///
+/// The age floor does not apply to it — a retirement is proved lossless rather than
+/// aged into being safe — and the live-holder refusals do: a branch a live session
+/// holds is kept whatever else is true of it. A pass that could not run is a family
+/// this verb did not examine, owned by the verb that runs the same pass by name.
+fn finished_branches(report: &mut Report, dry_run: bool, sessions: Vec<workspace::Record>) {
+    let pass = crate::retire::RetirePass {
+        scope: crate::session::Scope::All,
+        exclude: Vec::new(),
+        dry_run,
+    };
+    match crate::retire::pass_over(
+        Some(crate::providers::Providers::real().hosting),
+        &pass,
+        crate::retire::Trigger::Sweep,
+        Some(sessions),
+    ) {
+        Ok(finished) => report.finished = Some(finished),
+        Err(failure) => report.not_examined.push(NotExamined {
+            family: FINISHED_BRANCHES,
+            path: report.root.clone(),
+            reason: format!(
+                "the finished branches of the registered identities could not be examined: \
+                 {failure}"
+            ),
+            owner: "`onevcs retire-finished`, which runs the same pass over every registered \
+                    identity and names what it retired and kept"
+                .to_owned(),
+        }),
+    }
+}
+
+/// The family word the finished branches are reported under.
+const FINISHED_BRANCHES: &str = "finished-branches";
+
 /// Forget every session record this host has nothing left to answer for.
 ///
-/// The candidates come from [`workspace::spent_records`], which asks the three
+/// The candidates come from [`workspace::spent_among`], which asks the three
 /// questions that decide it; what is asked *here* is the one question this verb owns,
 /// and it is the same one every directory above is asked: was it written inside the
 /// age floor. A record a minute old belongs to a session `onevcs session open` has
@@ -230,8 +291,13 @@ pub fn run(dry_run: bool, min_age: Duration) -> Result<Report> {
 /// Every candidate is reported, kept or not. A record silently removed is a session
 /// an operator can no longer close, publish, or adopt, and this verb's whole promise
 /// is to say what it did.
-fn records(report: &mut Report, dry_run: bool, min_age: Duration) -> Result<()> {
-    for record in workspace::spent_records()? {
+fn records(
+    report: &mut Report,
+    dry_run: bool,
+    min_age: Duration,
+    listed: &[workspace::Record],
+) -> Result<()> {
+    for record in workspace::spent_among(listed)? {
         let path = workspace::record_path(&record.token)?;
         let age = SystemTime::now()
             .duration_since(last_written(&path))
@@ -287,6 +353,9 @@ pub fn enforce(verb: Verb) -> Result<()> {
         // nothing here has a report to answer in: `onevcs sweep` is where they are
         // asked about and where what became of one is said.
         records: Vec::new(),
+        // The same for the finished branches: a landing is housekeeping for its own
+        // family, and retiring branches host-wide is the sweep's to do.
+        finished: None,
     };
     family(&mut report, verb, min_age, &landings()?)?;
     // A family this pass could not read is a pass that did not happen, and the caller
@@ -604,7 +673,8 @@ fn outside_this_verb(
             path: runs,
             reason: "the per-run lifecycle clone root, which `onevcs session open` keeps as a \
                      bounded recovery history so a dead run's branch stays reachable; this \
-                     verb does not reach into it"
+                     verb reaps nothing in it as a workspace, and removes a run root only with \
+                     a branch the finished-branches family retires"
                 .to_owned(),
             owner: format!(
                 "`onevcs recoverable --repo {repo}` names the branch each retained run left \
@@ -621,7 +691,8 @@ fn outside_this_verb(
             family: POOL,
             path: pool,
             reason: "the pool of warm slots a session of this repository may be placed on \
-                     next; this verb does not reach into it"
+                     next; this verb removes no slot, and returns one only where the \
+                     finished-branches family retires a branch it held"
                 .to_owned(),
             owner: format!(
                 "`onevcs pool status {repo}` reads the slots; `onevcs pool prune {repo}` \
@@ -1251,6 +1322,8 @@ pub struct Report {
     reclaimed: Vec<Reclaimed>,
     retained: Vec<Retained>,
     records: Vec<SessionRecord>,
+    /// What the pass over the finished branches examined and did, where it ran.
+    finished: Option<crate::retire::RetirementPassReport>,
 }
 
 impl Report {
@@ -1294,7 +1367,7 @@ struct Totals {
 /// surface nobody asked for.
 impl Serialize for Report {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut report = serializer.serialize_struct("Report", 11)?;
+        let mut report = serializer.serialize_struct("Report", 12)?;
         report.serialize_field("schema_version", &SCHEMA_VERSION)?;
         report.serialize_field("verb", VERB)?;
         report.serialize_field("dry_run", &self.dry_run)?;
@@ -1315,6 +1388,7 @@ impl Serialize for Report {
             })
             .collect();
         report.serialize_field("session_records", &records)?;
+        report.serialize_field("finished_branches", &self.finished)?;
         report.serialize_field(
             "totals",
             &Totals {
@@ -1430,6 +1504,20 @@ impl fmt::Display for Report {
             )?;
         }
 
+        // Every branch the pass examined, retired or kept, one line each — what was
+        // done and the class or proof that decided it. The JSON carries the same
+        // entries with their evidence and every place each one was held in.
+        writeln!(f, "Finished branches:")?;
+        match &self.finished {
+            Some(finished) if !finished.examined.is_empty() => {
+                for entry in &finished.examined {
+                    writeln!(f, "  {}", crate::retire::describe_line(entry))?;
+                }
+            }
+            Some(_) => writeln!(f, "  none")?,
+            None => writeln!(f, "  not examined")?,
+        }
+
         // The scope, said the way `recoverable` says its own: unstated, a report
         // about two families under one root reads as a report about the host, and a
         // caller composing this with another tool's sweep would believe the disk was
@@ -1437,7 +1525,8 @@ impl fmt::Display for Report {
         write!(
             f,
             "This answers for the publication and recovery workspaces onevcs owns under {}, \
-             for the session records beside them, and for nothing else on this host.",
+             for the session records beside them, for the finished branches of the \
+             registered identities, and for nothing else on this host.",
             self.root.display()
         )
     }

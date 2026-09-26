@@ -2908,9 +2908,15 @@ fn a_copy_the_base_already_carries_is_compared_like_any_other_and_refuses_a_land
     fixture
         .world
         .commit_file(&tree, "a.txt", "a\nand more\n", "fix: the rest of it");
-    for argv in [vec!["publish", &token], vec!["session", "close", &token]] {
-        fixture.world.onevcs().args(&argv).assert().success();
-    }
+    // Published and left unclosed, as the publication leaves it, so its run clone keeps
+    // the spent copy: a close would retire a branch that provably holds nothing beyond
+    // its base, run clone and all, and that copy is what this journey compares.
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
     let spent_clone = tree.parent().expect("a run root").join("clone");
     let spent = tip_of(&fixture, &spent_clone, "feature/spent-beside");
 
@@ -2984,9 +2990,26 @@ fn an_answer_read_out_of_a_spent_copy_still_names_the_other_copies_of_the_name()
     fixture
         .world
         .commit_file(&tree, "a.txt", "a\nand more\n", "fix: the rest of it");
-    for argv in [vec!["publish", &token], vec!["session", "close", &token]] {
-        fixture.world.onevcs().args(&argv).assert().success();
-    }
+    // Handed back and then landed by name, so no session close follows the landing: a
+    // close would retire a branch that provably holds nothing beyond its base, and the
+    // copies this journey compares are the ones a landing leaves in place.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/all-spent",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
     let clone = tree.parent().expect("a run root").join("clone");
     let handed_back = tip_of(&fixture, &clone, "feature/all-spent");
 
@@ -3065,16 +3088,24 @@ fn every_checkout_holding_the_branch_is_named_when_a_copy_is_chosen_between_them
     fixture
         .world
         .commit_file(&first_tree, "a.txt", "a\nand more\n", "fix: the rest of it");
+    // Handed back and then landed by name, so no session close follows the landing: a
+    // close would retire a branch that provably holds nothing beyond its base, and the
+    // copies this journey compares are the ones a landing leaves in place.
     fixture
         .world
         .onevcs()
-        .args(["publish", &first])
+        .args(["session", "close", &first])
         .assert()
         .success();
     fixture
         .world
         .onevcs()
-        .args(["session", "close", &first])
+        .args([
+            "publish-branch",
+            "feature/carried-on",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
         .assert()
         .success();
     let spent_clone = first_tree.parent().expect("a run root").join("clone");

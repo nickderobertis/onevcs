@@ -1361,6 +1361,7 @@ fn publish_locally(
                 &pushed,
                 Some(&context.run_root),
                 Phase::Integrate,
+                None,
             )?;
             if !pushed.accepted() {
                 // The tree this push was built in goes when this closure returns,
@@ -1693,6 +1694,7 @@ fn publish_as_change(
         &pushed,
         Some(&context.run_root),
         Phase::Development,
+        git::tip(&context.worktree, &format!("refs/heads/{}", context.branch)).as_deref(),
     )?;
     if !pushed.accepted() {
         // Which refusal this is depends on what git declined, and that is decided
@@ -2564,6 +2566,7 @@ pub(crate) fn record_push(
     pushed: &git::Pushed,
     preserve_under: Option<&Path>,
     phase: Phase,
+    head: Option<&str>,
 ) -> Result<Kept> {
     let output = pushed.output();
     let stored = stream::store_artifact("log", output);
@@ -2591,6 +2594,13 @@ pub(crate) fn record_push(
             "preserved_log".to_owned(),
             json!(preserved.display().to_string()),
         );
+    }
+    // The commit a push of the branch's own name put there, which is the head a change
+    // request opened from it carries — and what a retirement later asks the branch's
+    // content to be contained in. Only the push of the branch itself names one: a push
+    // of the base under it lands a commit no change request is opened from.
+    if let Some(head) = head {
+        payload.insert("head".to_owned(), json!(head));
     }
     let evidence = Kept {
         artifact: artifact

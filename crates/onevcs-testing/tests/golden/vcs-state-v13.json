@@ -1,0 +1,135 @@
+{
+  "version": 13,
+  "identities": [
+    {
+      "origin": "github.com/acme-corp/widgets",
+      "gate": "just check"
+    }
+  ],
+  "sessions": [
+    {
+      "token": "s-testing-1",
+      "worktree": "/scratch/s-testing-1/worktree",
+      "branch": "feature/seeded",
+      "base": "main"
+    }
+  ],
+  "session_identities": {
+    "s-testing-1": "github.com/acme-corp/widgets"
+  },
+  "session_labels": {
+    "s-testing-1": {
+      "launcher": "s-manager",
+      "run": "r-42"
+    }
+  },
+  "preserved": [
+    {
+      "identity": "github.com/acme-corp/widgets",
+      "branch": {
+        "branch": "feature/seeded",
+        "base": "main",
+        "provenance": "incomplete-step",
+        "change_url": "https://github.com/acme-corp/widgets/pull/7",
+        "change_base": "feature/below"
+      },
+      "checkout": "/scratch/widgets",
+      "stopped_because": "the run was interrupted",
+      "landed": {
+        "state": "no"
+      },
+      "recover_command": [
+        "onevcs",
+        "recover",
+        "feature/seeded"
+      ],
+      "held_by": {
+        "token": "s-testing-1",
+        "worktree": "/scratch/s-testing-1/worktree",
+        "holding": "owner-running"
+      },
+      "net_negative": {
+        "added": 3,
+        "removed": 481
+      },
+      "session": "s-testing-1",
+      "labels": {
+        "launcher": "s-manager",
+        "run": "r-42"
+      },
+      "on_origin": {
+        "remote": "https://github.com/acme-corp/widgets.git",
+        "commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
+      },
+      "retirement": {
+        "class": "superseded-with-changes",
+        "reason": null,
+        "identity": "github.com/acme-corp/widgets",
+        "branch": "feature/seeded",
+        "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+        "base": "main",
+        "proof": null,
+        "content_free_commits": [
+          "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+        ],
+        "superseded_by": {
+          "branch": "feature/seeded-retry",
+          "landing": "https://github.com/acme-corp/widgets/pull/8",
+          "labels": {
+            "node": "widgets-build"
+          }
+        },
+        "differing_paths": [
+          "src/lib.rs",
+          "src/main.rs"
+        ],
+        "holders": [
+          {
+            "kind": "checkout",
+            "location": "/scratch/widgets"
+          },
+          {
+            "kind": "origin",
+            "location": "https://github.com/acme-corp/widgets.git"
+          }
+        ]
+      }
+    }
+  ],
+  "closed_sessions": [
+    "s-testing-1"
+  ],
+  "policy": "change-auto",
+  "publications": [
+    {
+      "session": "s-testing-1",
+      "branch": "feature/seeded",
+      "policy": "change-auto",
+      "outcome": {
+        "merged": "abc123"
+      }
+    },
+    {
+      "session": "s-testing-1",
+      "branch": "feature/seeded",
+      "policy": "local-direct",
+      "outcome": {
+        "failed": {
+          "kind": "push-rejected",
+          "reason": "push rejected: the hook found a secret in the diff"
+        }
+      }
+    },
+    {
+      "session": "s-testing-1",
+      "branch": "feature/seeded",
+      "policy": "local-direct",
+      "outcome": {
+        "failed": {
+          "kind": "host-prerequisite",
+          "reason": "host prerequisite missing: gh is not installed; install it from https://cli.github.com"
+        }
+      }
+    }
+  ]
+}

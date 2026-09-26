@@ -337,6 +337,7 @@ fn train(
             &result,
             None,
             crate::event::Phase::Integrate,
+            None,
         )?;
         if !result.accepted() {
             // Through the one refusal builder every publishing push uses, for the

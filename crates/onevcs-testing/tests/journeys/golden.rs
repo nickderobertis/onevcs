@@ -30,19 +30,23 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v12-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v12-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v13-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v13-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v12.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v12.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v13.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v13.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v11.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v11.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v12.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v12.json");
+/// The same, as the build before that wrote them: the documents whose sessions carry
+/// no labels and whose rows name no session, which version 12 is the adding of.
+const VCS_V11: &str = include_str!("../golden/vcs-state-v11.json");
+const HOST_V11: &str = include_str!("../golden/host-state-v11.json");
 /// The same, as the build before that wrote them: the documents whose preserved rows
 /// name no origin, which version 11 is the adding of.
 const VCS_V10: &str = include_str!("../golden/vcs-state-v10.json");
@@ -201,9 +205,77 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 #[test]
-fn a_document_at_the_previous_version_reads_its_rows_as_unlabelled_and_is_written_back_at_this_one()
-{
+fn a_document_at_the_previous_version_reads_its_rows_as_unclassified_and_is_written_back_at_this_one(
+) {
     // A consumer's checked-in scenario, written by the build before this one: the
+    // version went up because a preserved row may now carry its retirement
+    // classification, and a version 12 document's rows carry none — which is what they
+    // said, since that build had none to record. So it reads, its rows read back with
+    // no classification rather than an invented one, and the next write declares this
+    // version and still writes none: no provider here classifies a row.
+    let home = Home::new();
+    let vcs_path = home.path("vcs.json");
+    let host_path = home.path("host.json");
+    let scenario: serde_json::Value =
+        serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
+    assert_eq!(scenario["version"], 12);
+    assert!(
+        !VCS_PREVIOUS.contains("retirement"),
+        "the previous document is the one whose rows carry no retirement, or it proves nothing"
+    );
+    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+
+    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
+    FileHost::create(&host_path).expect("the previous version reads");
+    let state = vcs.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert_eq!(state.preserved.len(), 1);
+    assert_eq!(state.preserved[0].retirement, None);
+    assert!(
+        state.preserved[0].session.is_some() && state.preserved[0].on_origin.is_some(),
+        "what version 12 recorded reads back beside what it did not: {:?}",
+        state.preserved[0]
+    );
+
+    vcs.open_session(SessionRequest {
+        repo: "widgets".to_owned(),
+        branch: Some("feature/after-the-bump".to_owned()),
+        branch_name: None,
+        branch_prefix: None,
+        base: None,
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+    })
+    .expect("a session over the seeded repository");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&vcs_path).expect("a document"))
+            .expect("JSON");
+    assert_eq!(written["version"], STATE_VERSION);
+    assert!(
+        written["preserved"][0].get("retirement").is_none(),
+        "a row nothing classified is written without a classification: {written}"
+    );
+    assert_eq!(
+        written["preserved"][0]["on_origin"],
+        scenario["preserved"][0]["on_origin"]
+    );
+
+    // …and the field this version added is what the writer spells when a row holds
+    // one, as the golden this build writes holds it.
+    assert!(
+        VCS_FULL.contains(r#""retirement""#)
+            && VCS_FULL.contains(r#""class": "superseded-with-changes""#)
+            && VCS_FULL.contains(&format!(r#""version": {STATE_VERSION}"#)),
+        "the golden holds a classified row at this version: {VCS_FULL}"
+    );
+}
+
+#[test]
+fn a_version_11_document_reads_its_rows_as_unlabelled_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written two builds back: the
     // version went up because a session may now be opened with labels, and a
     // preserved row names the session that answers for it and carries that session's
     // labels. A version 11 document recorded neither, so its rows read as rows that
@@ -214,17 +286,17 @@ fn a_document_at_the_previous_version_reads_its_rows_as_unlabelled_and_is_writte
     let vcs_path = home.path("vcs.json");
     let host_path = home.path("host.json");
     let scenario: serde_json::Value =
-        serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
+        serde_json::from_str(VCS_V11).expect("the previous document is JSON");
     assert_eq!(scenario["version"], 11);
     assert!(
-        !VCS_PREVIOUS.contains("session_labels")
+        !VCS_V11.contains("session_labels")
             && scenario["preserved"][0].get("session").is_none()
             && scenario["preserved"][0].get("labels").is_none(),
         "the previous document is the one whose rows name no session and carry no \
          labels, or it proves nothing"
     );
-    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
-    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&vcs_path, VCS_V11).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V11).expect("a document a previous build wrote");
 
     let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
     FileHost::create(&host_path).expect("the previous version reads");

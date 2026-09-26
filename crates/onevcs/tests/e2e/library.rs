@@ -2447,13 +2447,24 @@ fn a_session_whose_branch_kept_committing_after_it_landed_still_gains_that_landi
     let (_origin, _identity) = hosted(&world, LOCAL);
     releasing(&world);
 
-    let session = landed(&world, "feature/released-then-more", "one.txt");
-    // …and the name is picked up again, in the checkout the branch was preserved
-    // into, carrying something the landing above never saw.
-    let checkout = world.path("hosted");
-    world.git(&checkout, &["checkout", "-q", "feature/released-then-more"]);
-    world.commit_file(&checkout, "two.txt", "two\n", "feat: and then the rest");
-    world.git(&checkout, &["checkout", "-q", "main"]);
+    // Landed, and then the branch goes on past its landing before the session closes,
+    // carrying something the landing never saw — so the close hands it back rather than
+    // retiring it, since it holds work beyond its base.
+    let session = open(&Git, "feature/released-then-more");
+    world.commit_file(&session.worktree, "one.txt", "one\n", "feat: add one.txt");
+    onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    world.commit_file(
+        &session.worktree,
+        "two.txt",
+        "two\n",
+        "feat: and then the rest",
+    );
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
 
     let mut reader = EventStream::open(&session.token).expect("the session's stream");
     let opening = reader.read().expect("everything through the close");

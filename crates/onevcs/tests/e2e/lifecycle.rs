@@ -3412,16 +3412,24 @@ fn a_name_used_a_second_time_continues_the_copy_that_spent_it_rather_than_forkin
     fixture
         .world
         .commit_file(&first_tree, "a.txt", "a\nand more\n", "fix: the rest of it");
+    // Handed back and then landed by name, so no session close follows the landing: a
+    // close retires a branch that provably holds nothing beyond its base, and the copy
+    // this journey is about is the one a landing leaves in place.
     fixture
         .world
         .onevcs()
-        .args(["publish", &first])
+        .args(["session", "close", &first])
         .assert()
         .success();
     fixture
         .world
         .onevcs()
-        .args(["session", "close", &first])
+        .args([
+            "publish-branch",
+            "feature/reused",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
         .assert()
         .success();
     let spent = fixture
@@ -7191,10 +7199,21 @@ fn recoverable_answers_for_the_repository_repo_names_from_wherever_it_is_run() {
     // `--repo` composing with `--all` is a claim that can fail.
     let (landed, landed_tree) = fixture.open(&["--branch", "feature/landed"]);
     world.commit_file(&landed_tree, "b.txt", "b\n", "feat: work that landed");
-    world.onevcs().args(["publish", &landed]).assert().success();
+    // Handed back and then landed by name: a session close after the landing would
+    // retire the branch, and the copy moved aside below is the one a landing leaves.
     world
         .onevcs()
         .args(["session", "close", &landed])
+        .assert()
+        .success();
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/landed",
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
         .assert()
         .success();
     world

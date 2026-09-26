@@ -112,7 +112,7 @@ help="$(onevcs --help | strip_cr)" || fail "'onevcs --help' exited non-zero" \
 # repository beside it. It cannot drift from the parser:
 # tests/contract.rs::the_release_smoke_script_asserts_the_whole_command_surface
 # reconciles the two, and tests/contract.rs holds the parser to docs/contract.md.
-for command in register repos resolve session publish publish-branch change preserve recover recoverable status import integrate sync sweep events artifact rules release pool; do
+for command in register repos resolve session publish publish-branch change preserve recover recoverable status import integrate sync sweep events artifact rules release pool retire reclaim retire-finished supersede; do
   case "$help" in
     *"$command"*) ;;
     *) fail "--help does not list the '$command' command" \

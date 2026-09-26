@@ -1207,6 +1207,7 @@ base it is going onto, it is proposed and ruled on, and what carries it is relea
 development  session-opened fetch lock-wait lock-acquired commit-preserved
              branch-preserved recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
+             branch-superseded branch-retired
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged
 release      release-probed release-acknowledged release-observed
@@ -2334,10 +2335,10 @@ onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]
     "roots": null, "unreadable": []}],
  "not_examined": [
    {"family": "lifecycle-runs", "path": "/home/me/.onevcs/workspaces/<identity>/runs",
-    "reason": "the per-run lifecycle clone root, which `onevcs session open` keeps as a bounded recovery history so a dead run's branch stays reachable; this verb does not reach into it",
+    "reason": "the per-run lifecycle clone root, which `onevcs session open` keeps as a bounded recovery history so a dead run's branch stays reachable; this verb reaps nothing in it as a workspace, and removes a run root only with a branch the finished-branches family retires",
     "owner": "`onevcs recoverable --repo project` names the branch each retained run left and the verb that lands or discards it; the next `onevcs session open` of this repository reclaims a run root once nothing holds it"},
    {"family": "pool", "path": "/home/me/.onevcs/workspaces/<identity>/pool",
-    "reason": "the pool of warm slots a session of this repository may be placed on next; this verb does not reach into it",
+    "reason": "the pool of warm slots a session of this repository may be placed on next; this verb removes no slot, and returns one only where the finished-branches family retires a branch it held",
     "owner": "`onevcs pool status project` reads the slots; `onevcs pool prune project` empties the idle ones"},
    {"family": "preserved-branches", "path": "/home/me/src/project",
     "reason": "the unpublished branches sessions of this repository left behind — handed back into this checkout, or still only in a run clone under runs/ — each of which holds its run root from reclamation; this verb lands and discards none of them",
@@ -2348,6 +2349,14 @@ onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]
                "why": "a live session holds its occupancy lease; nothing was removed and nothing was terminated"}],
  "session_records": [{"path": "/home/me/.onevcs/sessions/s-abc.json", "session": "s-abc",
                       "branch": "feature/z", "why": "forgotten"}],
+ "finished_branches": {"dry_run": false, "examined": [
+   {"class": "retirable", "reason": null, "identity": "github.com/acme/project",
+    "branch": "feature/done", "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "base": "main",
+    "proof": {"kind": "content-identical", "base_commit": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"},
+    "content_free_commits": [], "superseded_by": null, "differing_paths": [],
+    "holders": [{"kind": "checkout", "location": "/home/me/src/project"}],
+    "outcome": "retired", "deleted": [{"kind": "checkout", "location": "/home/me/src/project"}],
+    "failed": [], "slots_returned": [], "run_roots_removed": [], "sessions_closed": []}]},
  "totals": {"examined_roots": 3, "reclaimed": 1, "reclaimed_bytes": 12345, "retained": 1}}
 ```
 
@@ -3055,6 +3064,257 @@ One existing kind gains a field: `session-opened` gains `branch_prefix` — `{"p
 …, "from": …}`, the prefix and the layer that decided it — written **only** where one
 was put in front of the branch that session cut, so a host that configures none, and a
 session that continued a pinned branch, write the payload they always wrote.
+
+### A finished branch is retired once it provably holds no work beyond its base
+
+Branches whose work already landed, or was replaced by a retry that landed, used to pile
+up on the host as "unpublished". Nothing retired them, so every stop check went on naming
+them, and the only ways out were to land such a branch again — duplicating merged work —
+or to acknowledge it, which left the branch, its origin copy and its row in place for
+ever. **Anything that provably holds no work beyond its base now disappears on its own,
+at the lifecycle moment the facts become known; a superseded attempt that still differs
+from the base is surfaced for a person to decide on; and a pool slot is never removed.**
+This amendment is the one source of the names, fields and statuses below, which the
+`onepipeline` and `ai-orchestrator` sides restate rather than decide again.
+
+**Classification.** `classify_retirement` answers one of three classes for an
+`(identity, branch)`. A branch whose tip equals, or is an ancestor of, the tip of the
+identity's base on its origin is not a finished branch at all: it is `keep` with reason
+`is-base`, and so is the base itself.
+
+- **`retirable`** — the branch holds no work beyond its base. At least one proof holds,
+  and a read that fails on the way means the proof did not hold:
+  - **`merged-change-request`**: a change request opened from the branch is recorded, or
+    reconciled with the host, as merged, and the branch's tip less any trailing commits
+    that change no content equals or is an ancestor of a head `onevcs` recorded pushing
+    to it. A commit that changes no content is one whose tree equals its parent's, such
+    as the `chore: record the landing of <branch>` commit a publication writes.
+  - **`recorded-landing`**: a landing is recorded for the branch — a recorded landing
+    commit, or a `<prefix>Landed-Commit:` trailer on the base — naming the branch commit
+    that landed (the *landed point*). The record alone never makes a branch retirable:
+    the proof holds only where the landed point is an ancestor of, or equal to, the
+    branch's **current** tip and every commit after it up to that tip changes no
+    content. A commit after the landed point that changes content fails this proof,
+    whatever else carries the same change. `Landed::InPart` never counts.
+  - **`content-identical`**: every path the branch changed between its fork point with
+    the base and its tip is byte-identical on the base's current origin tip, and a path
+    it deleted is absent there. Content-free trailing commits change no path.
+
+  Every proof is evaluated against the branch's current tip, read from each place that
+  holds it. Where the copies disagree, each copy's tip must be covered, or the branch is
+  `keep`. Immediately before anything is deleted the tips are read again; a tip that
+  moved is classified again from where it now stands, and nothing is deleted unless that
+  is still permitted. Every local deletion is a compare-and-delete against the tip that
+  was classified and the origin's is a push under a lease on it, so a copy that gains a
+  commit after the re-read is refused by git itself — and whatever was already deleted is
+  put back before it is classified again.
+- **`superseded-with-changes`** — a `branch-superseded` record names the branch, its
+  `landing` is reachable from the base's origin tip, and `content-identical` does not
+  hold. A superseded branch whose content is identical is `retirable`.
+- **`keep`** — everything else, with one reason word: `held-by-live-session` (an open
+  session record over the branch whose owner is running, whose run root something is
+  working in, or whose occupancy lease is held — or a pool slot such a session has it
+  checked out in), `excluded` (the caller excluded it), `open-change-request` (a change
+  request opened from it is neither merged nor closed; the host is asked once where the
+  records do not decide it, and a host that cannot be read is `unknown`), `checked-out`
+  (a registered checkout has it checked out), `dirty-worktree` (a worktree over it has
+  uncommitted changes), `unmerged-unique-commits` (none of the above, and no proof
+  holds), `unknown` (a read needed to decide failed), or `is-base`. Once any `keep`
+  reason applies, nothing is deleted.
+
+When unsure the answer is `keep`: a false retirement destroys work, and a false `keep`
+costs one row.
+
+**What retiring does, in this order, only after the class permits it.** (1) It deletes
+`refs/heads/<branch>` from every place that holds it — every registered checkout of the
+identity, the clone of every pool slot found by listing the pool directory itself rather
+than only the slots a session record names, and every run clone — standing a clean
+worktree that has it checked out off it first. (2) It deletes the origin's copy where
+`git ls-remote` shows one, with `git push --delete --no-verify`, because a deletion lands
+nothing and must not run a merge-path gate; a copy already absent is not an error.
+(3) It closes every session record over the branch whose owner is not running, and
+removes its run root under `runs/` where the clone there holds nothing else unpublished.
+(4) It **never removes a pool slot**: a slot that held the branch is returned the way a
+session close returns one — detached onto the integrated base, reset, cleaned of
+untracked files while keeping ignored ones, and cleared of the configured delete paths —
+keeping its directory, clone and `slot.json`, so it reads `Idle` in `pool status`.
+(5) It writes a `branch-retired` event. Afterwards `recoverable`, with or without
+`--all`, reports no row for the branch; `status <branch>` reports the retirement;
+`landing_status` and `status` answer a branch retired `retirable` as landed, with the
+retirement and its proof as the evidence; retiring an already-retired branch is a no-op
+that exits `0`; and where one place cannot be deleted from, the event names what was
+and was not done, the verb exits non-zero, and a re-run finishes the job.
+
+```rust
+pub struct BranchRef { pub identity: String, pub branch: String }
+pub struct RetirementQuery { pub repo: Option<String>, pub branch: String }
+pub enum RetireMode { Lossless, Reclaim }
+pub struct RetireRequest { pub repo: Option<String>, pub branch: String, pub mode: RetireMode,
+                           pub dry_run: bool }
+pub struct RetirePass { pub scope: Scope, pub exclude: Vec<BranchRef>, pub dry_run: bool }
+pub struct Supersession { pub repo: String, pub branch: String, pub superseded_by: String,
+                          pub landing: String, pub labels: BTreeMap<String, String> }
+
+pub fn classify_retirement(providers: &Providers<'_>, query: &RetirementQuery) -> Result<Retirement>;
+pub fn retire(providers: &Providers<'_>, request: &RetireRequest) -> Result<Retired>;
+pub fn retire_finished(providers: &Providers<'_>, pass: &RetirePass) -> Result<RetirementPassReport>;
+pub fn record_supersession(supersession: &Supersession) -> Result<()>;
+
+// The answers, field for field the JSON below:
+pub struct Retirement { pub class: RetirementClass, pub reason: Option<KeepReason>,
+                        pub identity: String, pub branch: String, pub tip: Sha,
+                        pub base: String, pub proof: Option<RetirementProof>,
+                        pub content_free_commits: Vec<Sha>,
+                        pub superseded_by: Option<SupersededBy>,
+                        pub differing_paths: Vec<String>, pub holders: Vec<BranchHolder> }
+pub enum RetirementClass { Retirable, SupersededWithChanges, Keep }
+pub enum KeepReason { HeldByLiveSession, Excluded, OpenChangeRequest, CheckedOut,
+                      DirtyWorktree, UnmergedUniqueCommits, Unknown, IsBase }
+pub enum RetirementProof { MergedChangeRequest { change_url: Url, head: Sha },
+                           RecordedLanding { commit: Sha },
+                           ContentIdentical { base_commit: Sha } }
+pub struct SupersededBy { pub branch: String, pub landing: String,
+                          pub labels: BTreeMap<String, String> }
+pub struct BranchHolder { pub kind: BranchHolderKind, pub location: String }
+pub enum BranchHolderKind { Checkout, Slot, RunClone, Origin }
+pub struct Retired { pub retirement: Retirement,   // flattened into the object below
+                     pub outcome: RetireOutcome, pub deleted: Vec<BranchHolder>,
+                     pub failed: Vec<FailedHolder>, pub slots_returned: Vec<PathBuf>,
+                     pub run_roots_removed: Vec<PathBuf>,
+                     pub sessions_closed: Vec<SessionToken> }
+pub enum RetireOutcome { Retired, WouldRetire, AlreadyRetired, Kept, Incomplete }
+pub struct FailedHolder { pub kind: BranchHolderKind, pub location: String, pub error: String }
+pub struct RetirementPassReport { pub dry_run: bool, pub examined: Vec<Retired> }
+
+// Each word a rendering and a reader share, spelled as the JSON spells it:
+impl RetirementClass { pub fn as_str(self) -> &'static str; }
+impl KeepReason { pub fn as_str(self) -> &'static str; }
+impl BranchHolderKind { pub fn as_str(self) -> &'static str; }
+impl RetireOutcome { pub fn as_str(self) -> &'static str; }
+impl RetirementProof { pub fn kind(&self) -> &'static str; pub fn commit(&self) -> &str;
+                       pub fn describe(&self) -> String; }
+impl Retirement { pub fn evidence(&self) -> Vec<String>; pub fn verdict(&self) -> String; }
+
+// Two declared types each gain one member, and nothing else about them moves:
+//   Recoverable      pub retirement: Option<Retirement>   // every row onevcs answers carries it
+//   LandingEvidence  Retired { commit: Sha, proof: RetirementProof }   // tier `retired`
+```
+
+They are free functions rather than methods on `Vcs`, for the reason `preserve` is one:
+a method there would break every outside implementor of the trait. With `repo: None` the
+branch is resolved across the registered identities, and refused, naming the
+candidates, where more than one holds it. `RetireMode::Lossless` permits `retirable`
+alone and `RetireMode::Reclaim` `superseded-with-changes` too. `retire_finished` is the
+automatic pass: it first reconciles, once, a late merge for any branch whose change
+request was opened and whose landing is unrecorded — through the same
+`reconcile_late_merge` a `status` read makes — then retires every `retirable` branch in
+scope, never acts on `superseded-with-changes`, and lists each branch it examined with
+its `Retirement` and its `outcome`. It examines the local branches of every place an
+identity keeps work that this host's records name or that hold commits no origin ref
+has; a branch only the origin holds is somebody else's, and a pass acting host-wide
+leaves it alone. `record_supersession` takes `landing` as a full commit id or a change
+request's URL, and is idempotent: the same identity, branch, superseding branch and
+landing are recorded once.
+
+```
+onevcs retire BRANCH [--repo REPO] [--dry-run] [--json]
+onevcs reclaim BRANCH [--repo REPO] [--dry-run] [--json]
+onevcs retire-finished [--repo REPO] [--exclude BRANCH]... [--dry-run] [--json]
+onevcs supersede BRANCH --repo REPO --by BRANCH --landing SHA-OR-URL [--label KEY=VALUE]...
+```
+
+| Command | Acts on | Exit statuses |
+|---|---|---|
+| `onevcs retire` | `RetireMode::Lossless` | `0` retired, would retire, or already retired; `4` refused because the class is not permitted, printing class, reason and evidence; `1` retired in part, naming what was not deleted; any other non-zero is an error |
+| `onevcs reclaim` | `RetireMode::Reclaim` | the same as `retire` |
+| `onevcs retire-finished` | the pass | `0` unless the pass itself failed |
+| `onevcs supersede` | records a supersession | `0` recorded or already recorded |
+
+**The `Retirement` JSON** is the `--json` of `retire`, `reclaim` and — per examined
+branch — `retire-finished`, each of which adds `outcome`, `deleted`, `failed`,
+`slots_returned`, `run_roots_removed` and `sessions_closed` beside it; and it is the new
+field `retirement` on every `recoverable --json` row. Every key is always written, `null`
+and `[]` included. `reason` is set exactly for `keep`, `proof` exactly for `retirable`,
+and `superseded_by` for `superseded-with-changes`; `differing_paths` is non-empty exactly
+when the class is `superseded-with-changes` or `keep` with `unmerged-unique-commits`, and
+a document whose fields contradict each other does not deserialize.
+
+```json
+{"class": "superseded-with-changes", "reason": null,
+ "identity": "github.com/acme/project", "branch": "feature/first-try",
+ "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "base": "main", "proof": null,
+ "content_free_commits": ["2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e"],
+ "superseded_by": {"branch": "feature/second-try",
+                   "landing": "https://github.com/acme/project/pull/12",
+                   "labels": {"node": "build"}},
+ "differing_paths": ["src/lib.rs", "src/main.rs"],
+ "holders": [{"kind": "checkout", "location": "/home/me/src/project"},
+             {"kind": "slot", "location": "/home/me/.onevcs/workspaces/project/pool/1/clone"},
+             {"kind": "run-clone", "location": "/home/me/.onevcs/workspaces/project/runs/s-abc/clone"},
+             {"kind": "origin", "location": "https://github.com/acme/project.git"}]}
+```
+
+`proof` is `null` or one of `{"kind": "merged-change-request", "change_url": str,
+"head": sha}`, `{"kind": "recorded-landing", "commit": sha}` and `{"kind":
+"content-identical", "base_commit": sha}`.
+
+**`recoverable` reports the classification and never acts on it.** By default it omits
+a row whose class is `retirable`, as it already omits a landed branch, and `--all` lists
+it with its `retirement`. A `superseded-with-changes` row prints, beside its `Resume:`
+line, `Reclaim: onevcs reclaim <branch> --repo <publication checkout>`, followed by its
+evidence: what superseded it and where that landed, the labels, and the differing
+paths. It stays read-only: the classification it reports is made from this host's
+records and local refs alone, asks no host, fetches nothing and deletes nothing, and a
+read narrowed by `--session` or `--label` classifies from the places those sessions can
+hold a branch in and no others. A `Recoverable` an implementation other than `onevcs`
+answered omits the field.
+
+**`status` reports the retirement.** A branch nothing on this host holds any more
+resolves through its `branch-retired` record, and the report prints a `retired:` line
+with the class, proof, trigger, mode and time; its JSON gains `retired` —
+`{"class", "proof", "trigger", "mode", "at", "tip"}` — omitted, as every absent field of
+this report is, for a branch nobody retired or a name re-cut since. `REPORT_VERSION`
+is `9`, with its goldens. `status`, `recoverable`, `release status` and `session
+holders` never delete anything.
+
+**Where it runs by itself.** `session close` retires the branch of the session it
+closed where its landing is recorded and it is `retirable` (`trigger: "session-close"`).
+`onevcs sweep` gains the family `finished-branches`, which runs the pass (`trigger:
+"sweep"`) — its JSON report gains `finished_branches`, the pass's report, and the text
+report a `Finished branches:` section — and is covered by `--dry-run`; the age floor
+does not apply to it and the live-holder refusals do. `retire_finished` itself is
+`trigger: "pass"`, which is what an engine calls from its idle maintenance.
+
+**No registry or session-record schema change.** `registry.json` stays at version 6 and
+session records at version 3; the two records are stream event kinds under
+`$ONEVCS_HOME/streams`, on one stream per identity and branch, which an older `onevcs`
+sharing the state root passes over as kinds it has no word for.
+
+Event kinds added: `branch-superseded`, `branch-retired`.
+
+- `branch-superseded` — `{identity, branch, superseded_by, landing, labels}`.
+- `branch-retired` — every field always written:
+
+```json
+{"identity": "github.com/acme/project", "branch": "feature/done",
+ "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "class": "retirable", "reason": null,
+ "proof": {"kind": "recorded-landing", "commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"},
+ "superseded_by": null, "differing_paths": [], "mode": "automatic", "trigger": "sweep",
+ "deleted": [{"kind": "checkout", "location": "/home/me/src/project"},
+             {"kind": "origin", "location": "https://github.com/acme/project.git"}],
+ "failed": [{"kind": "slot", "location": "/home/me/.onevcs/workspaces/project/pool/1/clone",
+             "error": "cannot lock ref 'refs/heads/feature/done'"}],
+ "slots_returned": ["/home/me/.onevcs/workspaces/project/pool/1"],
+ "run_roots_removed": ["/home/me/.onevcs/workspaces/project/runs/s-abc"],
+ "sessions_closed": ["s-abc"]}
+```
+
+  `mode` is `retire`, `reclaim` or `automatic`, and `trigger` is `verb`,
+  `session-close`, `sweep` or `pass`. Both kinds are at `integrate`.
+
+One existing kind gains a field: a `push` of the branch's own name gains `head`, the
+commit it put on the origin — what a change request opened from the branch carries, and
+what `merged-change-request` asks the branch's content to be contained in.
 
 ---
 

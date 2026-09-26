@@ -267,7 +267,7 @@ pub(crate) fn pool_dir(identity_root: &Path) -> PathBuf {
 /// Held from the survey to the record's save, so two opens cannot both take one idle
 /// slot or both count the same overflow headroom. Short by construction — a shared
 /// clone and a checkout — and never held across the fetch, which happens before it.
-fn placement_identity(pool: &Path) -> String {
+pub(crate) fn placement_identity(pool: &Path) -> String {
     format!("pool:{}", pool.display())
 }
 
@@ -957,6 +957,18 @@ fn last_slot_of(identity: &str, branch: &Ref) -> Result<Option<u32>> {
         }
     }
     Ok(newest.map(|(_, number)| number))
+}
+
+/// Whether one slot is idle now: no open session record names it and no live
+/// maintenance claims it — the one proof a placement takes a slot on.
+pub(crate) fn is_idle(identity: &str, slot: &Path) -> Result<bool> {
+    let Some(pool) = slot.parent() else {
+        return Ok(false);
+    };
+    Ok(survey(identity, pool)?
+        .slots
+        .iter()
+        .any(|surveyed| surveyed.dir == slot && surveyed.state == SlotState::Idle))
 }
 
 /// Whether a slot's worktree stands as a return leaves it: detached, and clean.

@@ -91,6 +91,85 @@ pub enum Command {
         #[command(subcommand)]
         command: PoolCommand,
     },
+    /// Delete a branch everywhere this host holds it, where it provably holds no
+    /// work beyond its base.
+    Retire(RetireArgs),
+    /// Delete a branch a retry superseded and landed, discarding what it still
+    /// differs from the base in.
+    Reclaim(RetireArgs),
+    /// Retire every branch in scope that provably holds no work beyond its base.
+    RetireFinished(RetireFinishedArgs),
+    /// Record that a branch was superseded by a retry that landed.
+    Supersede(SupersedeArgs),
+}
+
+/// Arguments for `onevcs retire` and `onevcs reclaim`, which take the same ones.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct RetireArgs {
+    /// The branch to retire.
+    // llmlint: ignore[invalid_states_unrepresentable] a branch name is valid when `git
+    // check-ref-format` says so, which is a subprocess argument parsing must not run;
+    // `retire` is the boundary that refuses one, as `PreserveArgs::branch` says.
+    pub branch: String,
+    /// The repository it belongs to: an identity key, a registered alias, an origin
+    /// URL, or a path. Omitted, the one identity anything on this host holds it in.
+    // llmlint: ignore[invalid_states_unrepresentable] the four forms cannot be told apart
+    // by a parser — an alias and a key are registry lookups and a path is `canonicalize`
+    // — so `store::resolve` is the one boundary that decides, as `PreserveArgs::repo` says.
+    #[arg(long)]
+    pub repo: Option<String>,
+    /// Report what would be retired, and change nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Report as JSON rather than as prose.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs retire-finished`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct RetireFinishedArgs {
+    /// The repository to examine. Omitted, every registered identity.
+    #[arg(long)]
+    pub repo: Option<String>,
+    /// A branch to leave alone, whatever it is; repeatable.
+    // llmlint: ignore[invalid_states_unrepresentable] a branch name is valid when `git
+    // check-ref-format` says so, a subprocess argument parsing must not run; the pass
+    // refuses an exclusion naming no valid branch where it arrives, by name.
+    #[arg(long, value_name = "BRANCH")]
+    pub exclude: Vec<String>,
+    /// Report what would be retired, and change nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Report as JSON rather than as prose.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs supersede`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct SupersedeArgs {
+    // llmlint: ignore-block[invalid_states_unrepresentable] this module is the parser only,
+    // and every field here is decided by a check it must not run: a branch name by `git
+    // check-ref-format`, a repository by the registry, a landing by whether it is a full
+    // commit id or an http(s) URL. `record_supersession` is the boundary that refuses each
+    // by name, and the command renders exactly the request that operation takes.
+    /// The branch that was superseded.
+    pub branch: String,
+    /// The repository it belongs to: an identity key, a registered alias, an origin
+    /// URL, or a path.
+    #[arg(long)]
+    pub repo: String,
+    /// The branch that superseded it.
+    #[arg(long, value_name = "BRANCH")]
+    pub by: String,
+    /// Where that branch landed: a full commit id, or a change request's URL.
+    #[arg(long, value_name = "SHA-OR-URL")]
+    pub landing: String,
+    /// A label to record with it, as KEY=VALUE; repeatable, one value per key.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
 }
 
 /// The `onevcs pool` subcommands.

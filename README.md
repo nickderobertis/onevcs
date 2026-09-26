@@ -76,6 +76,19 @@ verb that lands it, with the origin beside it. The library form is `preserve`,
 answering `Pushed`, `AlreadyOnOrigin`, or `NoRemote`, and `recoverable` is the
 enumeration beside it.
 
+A branch that provably holds nothing beyond its base is **retired** — deleted from
+every checkout, pool slot clone, run clone and the origin that holds it, with a
+`branch-retired` record left saying why — and that happens on its own: `session
+close` retires the branch of a session whose landing is recorded, `onevcs sweep`
+retires every such branch on the host, and `onevcs retire-finished` is the same pass
+by name. What counts as proof is a merged change request whose head carries the
+branch's work, a recorded landing followed by nothing but commits that change no
+content, or every path the branch changed reading the same on the base. `onevcs
+retire BRANCH` asks for one by name and refuses anything else, printing why it is
+kept; a pool slot is returned rather than removed. A branch a retry superseded,
+recorded with `onevcs supersede`, that still differs from the base is listed by
+`recoverable` with a `Reclaim:` line and only `onevcs reclaim` removes it.
+
 ![`onevcs recoverable --all` over three branches: one whose run was left open and is only in a pool slot's clone, one marked landed whose recorded landing commit is named and which says there is nothing to resume, and one marked "on origin" that `onevcs preserve` pushed and nothing published — each with its identity, an indented "Found in:" path, why it stopped, and a pasteable "Resume: onevcs publish-branch …" line](docs/screenshots/recoverable.svg)
 
 `onevcs status REF` answers what became of a piece of work, asked by whichever
@@ -234,7 +247,7 @@ onevcs --help
 verification that failed, a request that was invalid, and a base that moved under
 it.
 
-![`onevcs --help` in a terminal: the one-line description, the usage line, and the whole command list — register, repos, resolve, session, publish, publish-branch, change, preserve, recover, recoverable, status, import, integrate, sync, sweep, events, artifact, rules, release and pool — each with the one-line summary of what it does, then the global help and version options](docs/screenshots/help.svg)
+![`onevcs --help` in a terminal: the one-line description, the usage line, and the whole command list — register, repos, resolve, session, publish, publish-branch, change, preserve, recover, recoverable, status, import, integrate, sync, sweep, events, artifact, rules, release, pool, retire, reclaim, retire-finished and supersede — each with the one-line summary of what it does, then the global help and version options](docs/screenshots/help.svg)
 
 > Every picture in this README is a real capture of this CLI: the release binary
 > driven against a scratch host of real origins, clones and hooks, with no network

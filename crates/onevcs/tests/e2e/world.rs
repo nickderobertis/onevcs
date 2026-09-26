@@ -670,6 +670,22 @@ impl World {
             .expect("a host that will not lift a draft")
     }
 
+    /// Let the substituted host act on its own clock, the way GitHub does between two
+    /// calls nobody on this host made: a change request it was asked to hold until its
+    /// checks pass lands the moment they are green.
+    ///
+    /// Asked the way any reader of the host asks it — a listing — and by nothing of this
+    /// crate's, so no `onevcs` read has taken the landing up when this returns.
+    pub fn let_the_host_act(&self) {
+        let listed = Command::new(self.path("bin/gh"))
+            .args(["pr", "list", "--json", "number"])
+            .env("ONEVCS_FAKE_GH_STATE", self.path("gh-state"))
+            .env("HOME", &self.root)
+            .output()
+            .expect("the substituted host runs");
+        assert!(listed.status.success(), "the host answers: {listed:?}");
+    }
+
     /// Make the substituted host accept a merge and then not perform it.
     pub fn accept_merges_without_performing_them(&self) {
         std::fs::write(self.path("gh-state/refuse-merge"), "")

@@ -18,7 +18,7 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
@@ -2935,6 +2935,426 @@ pub fn import_branch(cwd: &Path, source: &Path, branch: &str) -> Result<bool> {
         Some(cwd),
     )?;
     Ok(output.ok())
+}
+
+/// Where one local branch stands in a repository, as that repository answers now.
+///
+/// Three answers rather than two, for the reason [`RemoteTip`] has three: a
+/// repository that has no such branch and a repository git would not read are
+/// different facts, and the second is never an absence to act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalTip {
+    /// The branch is there, at this commit.
+    At(ObjectId),
+    /// The repository answered, and has no branch of that name.
+    Absent,
+    /// The repository could not be asked, and this is what git said.
+    Unreadable(String),
+}
+
+/// Where `refs/heads/<branch>` stands in `cwd`, asked by its full ref name so a tag
+/// or a remote-tracking ref wearing the same name is not mistaken for it.
+///
+/// A directory that is not there holds nothing, which is the one negative answer that
+/// is a fact rather than a failure. Anything git declines about a directory that *is*
+/// there is [`LocalTip::Unreadable`], carrying git's own words.
+pub fn local_tip(cwd: &Path, branch: &str) -> LocalTip {
+    if !cwd.exists() {
+        return LocalTip::Absent;
+    }
+    let reference = format!("refs/heads/{branch}");
+    match run(
+        &["for-each-ref", "--format=%(objectname)", &reference],
+        Some(cwd),
+    ) {
+        Ok(output) if output.ok() => {
+            let listed = output.trimmed();
+            if listed.is_empty() {
+                return LocalTip::Absent;
+            }
+            match ObjectId::parse(&listed) {
+                Some(tip) => LocalTip::At(tip),
+                None => LocalTip::Unreadable(format!(
+                    "git listed {reference} as {listed:?}, which is not one commit"
+                )),
+            }
+        }
+        Ok(output) => LocalTip::Unreadable(output.diagnostic()),
+        Err(failure) => LocalTip::Unreadable(failure.to_string()),
+    }
+}
+
+/// Every local branch of a repository with the commit it stands at, in git's ref
+/// order.
+pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
+    Ok(checked(
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%00%(objectname)",
+            "refs/heads",
+        ],
+        Some(cwd),
+    )?
+    .stdout
+    .lines()
+    .filter_map(|line| line.split_once('\0'))
+    .map(|(name, tip)| (name.to_owned(), tip.to_owned()))
+    .collect())
+}
+
+/// Every remote-tracking branch of one remote with the commit it stands at, by the
+/// name the remote gives it; `HEAD` is not a branch and is left out.
+pub fn remote_heads(cwd: &Path, remote: &str) -> Result<BTreeMap<String, String>> {
+    let prefix = format!("refs/remotes/{remote}/");
+    Ok(checked(
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)",
+            &prefix,
+        ],
+        Some(cwd),
+    )?
+    .stdout
+    .lines()
+    .filter_map(|line| line.split_once('\0'))
+    .filter_map(|(name, tip)| Some((name.strip_prefix(&prefix)?.to_owned(), tip.to_owned())))
+    .filter(|(name, _)| name != "HEAD")
+    .collect())
+}
+
+/// Every worktree of a repository — its own and every linked one — with the branch
+/// each has checked out, or `None` for one that is detached or bare.
+pub fn worktrees(cwd: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+    let listing = checked(&["worktree", "list", "--porcelain", "-z"], Some(cwd))?;
+    let mut found = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    let mut branch: Option<String> = None;
+    for field in listing.stdout.split('\0') {
+        if field.is_empty() {
+            if let Some(done) = path.take() {
+                found.push((done, branch.take()));
+            }
+            continue;
+        }
+        if let Some(at) = field.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(at));
+        } else if let Some(named) = field.strip_prefix("branch refs/heads/") {
+            branch = Some(named.to_owned());
+        }
+    }
+    if let Some(done) = path.take() {
+        found.push((done, branch.take()));
+    }
+    Ok(found)
+}
+
+/// The commits at the tip of `commit` that change no content — each one's tree equal
+/// to its first parent's — newest first, stopping at the first one that does change
+/// something and never walking past `stop` or a root.
+///
+/// What a landing record leaves behind: `publish` writes the landing of a branch onto
+/// it as an otherwise empty commit, and such a commit adds nothing a base could lack.
+/// Answered with the commit the walk stopped at, which is the branch's content tip.
+///
+/// One `log` along the first-parent chain, bounded at [`CONTENT_FREE_WALK`] commits:
+/// a walk that runs out of it stops where it is, which is the conservative end — a
+/// content tip no further back than the truth only ever makes a proof harder to meet.
+pub fn content_free_tail<'a>(
+    cwd: impl Into<Asked<'a>>,
+    commit: &str,
+    stop: &str,
+) -> Result<(Vec<String>, String)> {
+    let listed = checked_in(
+        cwd.into(),
+        &[
+            "log",
+            "--first-parent",
+            &format!("-n{}", CONTENT_FREE_WALK + 1),
+            "--format=%H%x00%T",
+            commit,
+        ],
+    )?;
+    let chain: Vec<(&str, &str)> = listed
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once('\0'))
+        .collect();
+    let mut skipped = Vec::new();
+    for pair in chain.windows(2) {
+        let ((at, tree), (_, parent_tree)) = (pair[0], pair[1]);
+        if at == stop || tree != parent_tree {
+            return Ok((skipped, at.to_owned()));
+        }
+        skipped.push(at.to_owned());
+    }
+    let at = chain
+        .get(skipped.len())
+        .map(|(at, _)| (*at).to_owned())
+        .unwrap_or_else(|| commit.to_owned());
+    Ok((skipped, at))
+}
+
+/// How far back [`content_free_tail`] walks.
+const CONTENT_FREE_WALK: usize = 64;
+
+/// Every worktree of a repository with the branch each has checked out, read from the
+/// repository's own `HEAD` files where the layout is the one git writes, and from `git
+/// worktree list` where it is anything else.
+///
+/// Read off the files first because the question is asked of every place a branch is
+/// held on every classification, and a process per place per branch is the whole cost
+/// of a read a hook makes under a bound — and because `worktree list` is not a read the
+/// per-invocation memo can hold, so asking it would throw away every fact remembered so
+/// far.
+pub fn worktree_heads(cwd: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+    match worktree_heads_on_disk(cwd) {
+        Some(found) => Ok(found),
+        None => worktrees(cwd),
+    }
+}
+
+fn worktree_heads_on_disk(cwd: &Path) -> Option<Vec<(PathBuf, Option<String>)>> {
+    let dot_git = cwd.join(".git");
+    if !dot_git.is_dir() {
+        return None;
+    }
+    // A symbolic `HEAD` names the branch checked out, and a detached one is a commit;
+    // anything else is a layout this does not know, and the process is asked instead.
+    let branch_of = |head: &Path| -> Option<Option<String>> {
+        let text = std::fs::read_to_string(head).ok()?;
+        let text = text.trim();
+        if let Some(named) = text.strip_prefix("ref: ") {
+            return Some(named.strip_prefix("refs/heads/").map(str::to_owned));
+        }
+        ObjectId::parse(text).map(|_| None)
+    };
+    let mut found = vec![(cwd.to_path_buf(), branch_of(&dot_git.join("HEAD"))?)];
+    let linked = dot_git.join("worktrees");
+    let entries = match std::fs::read_dir(&linked) {
+        Ok(entries) => entries,
+        Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => return Some(found),
+        Err(_) => return None,
+    };
+    for entry in entries {
+        let admin = entry.ok()?.path();
+        let gitdir = std::fs::read_to_string(admin.join("gitdir")).ok()?;
+        let worktree = Path::new(gitdir.trim()).parent()?.to_path_buf();
+        found.push((worktree, branch_of(&admin.join("HEAD"))?));
+    }
+    Some(found)
+}
+
+/// One commit's whole message, or `None` where the repository does not hold it.
+pub fn commit_message<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result<Option<String>> {
+    let cwd = cwd.into();
+    if !has_commit(cwd, &Sha(commit.to_owned())) {
+        return Ok(None);
+    }
+    Ok(Some(
+        checked_in(cwd, &["log", "-1", "--format=%B", commit])?
+            .stdout
+            .trim_end()
+            .to_owned(),
+    ))
+}
+
+/// The newest commit `rev` reaches whose message carries `needle` verbatim, where
+/// one does.
+pub fn first_commit_mentioning(cwd: &Path, rev: &str, needle: &str) -> Option<String> {
+    run(
+        &[
+            "log",
+            "-n",
+            "1",
+            "--format=%H",
+            "--fixed-strings",
+            &format!("--grep={needle}"),
+            rev,
+        ],
+        Some(cwd),
+    )
+    .ok()
+    .filter(Output::ok)
+    .map(|out| out.trimmed())
+    .filter(|found| !found.is_empty())
+}
+
+/// Every commit `range` names — `A..B` — oldest first.
+pub fn commits_in<'a>(cwd: impl Into<Asked<'a>>, range: &str) -> Result<Vec<String>> {
+    Ok(checked_in(cwd.into(), &["rev-list", "--reverse", range])?
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Whether one commit changes no content: its tree is its first parent's.
+///
+/// A root commit changes whatever it holds, so it is never one.
+pub fn changes_no_content<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result<bool> {
+    let cwd = cwd.into();
+    let parent = run_in(
+        cwd,
+        &["rev-parse", "--verify", &format!("{commit}^1^{{commit}}")],
+    )?;
+    if !parent.ok() {
+        return Ok(false);
+    }
+    let trees = checked_in(
+        cwd,
+        &[
+            "rev-parse",
+            &format!("{commit}^{{tree}}"),
+            &format!("{}^{{tree}}", parent.trimmed()),
+        ],
+    )?;
+    let mut lines = trees.stdout.lines();
+    Ok(lines.next() == lines.next())
+}
+
+/// Every path `to` changed since `from`, both ends of a rename included, as git
+/// names them.
+///
+/// Renames are not detected, for the reason every comparison in this module declines
+/// them. The listing is NUL-separated and its length is held to git's own count of
+/// files, so a name this process could not read whole is refused rather than dropped:
+/// a comparison over *some* of the paths a branch changed would answer that the base
+/// carries the branch when it does not.
+pub fn changed_paths<'a>(cwd: impl Into<Asked<'a>>, from: &str, to: &str) -> Result<Vec<String>> {
+    let cwd = cwd.into();
+    let listed = checked_in(
+        cwd,
+        &["diff", "--name-only", "--no-renames", "-z", from, to],
+    )?;
+    let paths: Vec<String> = listed
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let counted = counted_files(cwd, from, to)?;
+    if paths.len() != counted {
+        return Err(Error::Invalid {
+            reason: format!(
+                "git diff {from} {to} listed {} path(s) and counted {counted}, so which paths it \
+                 changed could not be read whole",
+                paths.len()
+            ),
+        });
+    }
+    Ok(paths)
+}
+
+/// The paths among `paths` whose content differs between two commits — a path one
+/// side has and the other does not among them.
+pub fn differing_among<'a>(
+    cwd: impl Into<Asked<'a>>,
+    first: &str,
+    second: &str,
+    paths: &[String],
+) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec![
+        "diff".to_owned(),
+        "--name-only".to_owned(),
+        "--no-renames".to_owned(),
+        "-z".to_owned(),
+        first.to_owned(),
+        second.to_owned(),
+        "--".to_owned(),
+    ];
+    // Pathspecs, not names, for the reason `known_to_carry_changes` gives.
+    args.extend(paths.iter().map(|path| format!(":(literal){path}")));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let listed = checked_in(cwd.into(), &args)?;
+    let mut differing: Vec<String> = listed
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    differing.sort();
+    differing.dedup();
+    Ok(differing)
+}
+
+/// Delete `refs/heads/<branch>` only while it still stands at `expected`.
+///
+/// Compare-and-delete in one ref transaction: a branch that moved since it was read
+/// is refused by git itself rather than removed with the commit it gained, which is
+/// the one direction a deletion must never fail in.
+pub fn delete_branch_at(cwd: &Path, branch: &str, expected: &str) -> Result<()> {
+    checked(
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/heads/{branch}"),
+            expected,
+        ],
+        Some(cwd),
+    )
+    .map(|_| ())
+}
+
+/// Put `refs/heads/<branch>` back at `commit`, only where nothing has created it
+/// since.
+pub fn restore_branch(cwd: &Path, branch: &str, commit: &str) -> Result<()> {
+    checked(
+        &["update-ref", &format!("refs/heads/{branch}"), commit, ""],
+        Some(cwd),
+    )
+    .map(|_| ())
+}
+
+/// Delete a branch from a remote, **without running the repository's own `pre-push`
+/// hook**, and only while the remote still has it at `expected`.
+///
+/// `--no-verify` for the reason [`push_preserving`] carries it and more: a deletion
+/// lands nothing, so the merge path has nothing to rule on, and a repository whose
+/// hook runs its whole gate would otherwise run it to remove a ref. The lease is what
+/// keeps a deletion from taking a commit somebody pushed after the branch was read.
+pub fn delete_remote_branch(
+    cwd: &Path,
+    remote: &str,
+    branch: &str,
+    expected: &str,
+) -> Result<Pushed> {
+    pushed(
+        &[
+            "push",
+            "--porcelain",
+            "--no-verify",
+            &format!("--force-with-lease=refs/heads/{branch}:{expected}"),
+            "--delete",
+            remote,
+            &format!("refs/heads/{branch}"),
+        ],
+        cwd,
+        &[],
+    )
+}
+
+/// Fetch one branch of a remote into this repository's object store without moving
+/// any ref but `FETCH_HEAD`, so a copy only the remote holds can be read here.
+///
+/// `--refmap=` is what keeps it from moving the remote-tracking ref too, which a fetch
+/// naming one branch otherwise updates on the side.
+pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
+    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
+    Ok(run(
+        &[
+            "fetch",
+            "--no-tags",
+            "--refmap=",
+            remote,
+            &format!("refs/heads/{branch}"),
+        ],
+        Some(cwd),
+    )?
+    .ok())
 }
 
 #[cfg(test)]
