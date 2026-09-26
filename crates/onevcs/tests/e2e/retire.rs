@@ -1474,3 +1474,272 @@ fn a_branch_two_identities_hold_is_refused_without_a_repository_naming_both() {
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("--repo") && said.contains("other"), "{said}");
 }
+
+/// One verb as a person runs it: its exit code, and what it printed.
+fn said(world: &World, args: &[&str]) -> (i32, String) {
+    let output = world.onevcs().args(args).output().expect("the binary runs");
+    (
+        output.status.code().expect("an exit code"),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )
+}
+
+fn says(text: &str, line: &str) {
+    assert!(text.contains(line), "{line:?} in:\n{text}");
+}
+
+#[test]
+fn the_retirement_verbs_say_what_they_did_in_words_a_person_reads() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/said", "said.txt");
+    yard.preserve("feature/said");
+    let (_, classified) = yard.verb(&["retire", "feature/said", "--dry-run"]);
+    let named = format!(
+        "feature/said of {}",
+        classified["identity"].as_str().expect("an identity")
+    );
+
+    let (code, rehearsed) = said(world, &["retire", "feature/said", "--dry-run"]);
+    assert_eq!(code, 0, "{rehearsed}");
+    says(
+        &rehearsed,
+        &format!("would retire: {named} (retirable) would be deleted from checkout "),
+    );
+    says(&rehearsed, "Nothing was changed: this was a rehearsal");
+    says(&rehearsed, "  proof: recorded-landing — ");
+    says(&rehearsed, "and nothing after it changes content");
+    says(
+        &rehearsed,
+        &format!("  held in checkout {}", yard.checkout().display()),
+    );
+    says(&rehearsed, "  held in origin ");
+    assert_eq!(
+        yard.held("feature/said").len(),
+        2,
+        "a rehearsal deletes nothing"
+    );
+
+    let (code, retired) = said(world, &["retire", "feature/said"]);
+    assert_eq!(code, 0, "{retired}");
+    says(
+        &retired,
+        &format!("retired: {named} (retirable) was deleted from checkout "),
+    );
+    says(&retired, "; origin ");
+    assert!(yard.held("feature/said").is_empty());
+
+    let (code, again) = said(world, &["retire", "feature/said"]);
+    assert_eq!(code, 0, "{again}");
+    says(
+        &again,
+        &format!("already retired: nothing on this host holds {named} any more"),
+    );
+}
+
+#[test]
+fn the_pass_says_what_it_retired_and_kept_and_rehearses_without_acting() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/finished", "finished.txt");
+    yard.worked("feature/unfinished", &[("unfinished.txt", "not on main\n")]);
+
+    let (code, rehearsed) = said(world, &["retire-finished", "--dry-run"]);
+    assert_eq!(code, 0, "{rehearsed}");
+    says(&rehearsed, "would retire 1 finished branch(es), kept 1.");
+    says(&rehearsed, "Nothing was changed: this was a rehearsal.");
+    says(&rehearsed, "would retire: feature/finished of ");
+    says(&rehearsed, "refused: feature/unfinished of ");
+    says(&rehearsed, "is keep / unmerged-unique-commits");
+    says(&rehearsed, "  differs from main in: unfinished.txt");
+    assert!(tip(world, yard.checkout(), "feature/finished").is_some());
+
+    let (code, acted) = said(world, &["retire-finished"]);
+    assert_eq!(code, 0, "{acted}");
+    says(&acted, "retired 1 finished branch(es), kept 1.");
+    says(&acted, "retired: feature/finished of ");
+    assert!(!acted.contains("rehearsal"), "{acted}");
+    assert!(yard.held("feature/finished").is_empty());
+    assert!(tip(world, yard.checkout(), "feature/unfinished").is_some());
+}
+
+#[test]
+fn a_retirement_in_part_says_what_was_not_deleted_and_how_to_finish_it() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/stuck", "stuck.txt");
+    yard.run(&[
+        "import",
+        "feature/stuck",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    let refs = yard.worker.join(".git/refs/heads/feature");
+    let original = std::fs::metadata(&refs)
+        .expect("a loose ref directory")
+        .permissions();
+    // llmlint: ignore-block[tests_mirror_real_usage] a ref directory git may not write is
+    // a fact about the host, reachable by no verb of this crate; the real binary meets it.
+    std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o555))
+        .expect("the worker's refs are read-only");
+    let (pass_code, pass) = said(world, &["retire-finished"]);
+    let (sweep_code, swept) = said(world, &["sweep", "--min-age-hours", "0"]);
+    let (verb_code, verb) = said(world, &["retire", "feature/stuck"]);
+    std::fs::set_permissions(&refs, original).expect("and writable again");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    assert_eq!(pass_code, 0, "the pass itself ran: {pass}");
+    says(
+        &pass,
+        "retired 0 finished branch(es), kept 0, and retired 1 in part.",
+    );
+    says(&pass, "retired in part: feature/stuck of ");
+    says(
+        &pass,
+        &format!("was deleted from checkout {}", yard.checkout().display()),
+    );
+    says(
+        &pass,
+        &format!("and not from checkout {} (", yard.worker.display()),
+    );
+    assert_eq!(sweep_code, 0, "{swept}");
+    says(&swept, "Finished branches:");
+    says(&swept, "feature/stuck [");
+    says(&swept, "— incomplete: recorded-landing — ");
+    says(
+        &swept,
+        &format!("; not deleted from {} (", yard.worker.display()),
+    );
+    assert_eq!(verb_code, 1, "{verb}");
+    says(&verb, "retired in part: feature/stuck of ");
+    says(&verb, "was deleted from nowhere and not from checkout ");
+    says(&verb, "Re-run `onevcs retire feature/stuck --repo ");
+    assert!(tip(world, &yard.worker, "feature/stuck").is_some());
+
+    let (code, finished) = said(world, &["retire", "feature/stuck"]);
+    assert_eq!(code, 0, "{finished}");
+    says(&finished, "retired: feature/stuck of ");
+    assert!(yard.held("feature/stuck").is_empty());
+}
+
+#[test]
+fn a_retry_that_landed_as_a_change_request_supersedes_by_its_url_and_the_refusal_says_so() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.worked(
+        "feature/first-try",
+        &[("a.txt", "first\n"), ("b.txt", "first\n")],
+    );
+    yard.worked("feature/never-landed", &[("c.txt", "first\n")]);
+    // The retry merged on the host as a squash, whose subject names its change request
+    // the way GitHub writes one.
+    let elsewhere = world.clone_of(&yard.fixture.origin, "elsewhere");
+    world.commit_file(&elsewhere, "a.txt", "second\n", "feat: the retry (#7)");
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    let url = "https://github.com/owner/project/pull/7";
+    for (branch, landing) in [
+        ("feature/first-try", url),
+        (
+            "feature/never-landed",
+            "https://github.com/owner/project/pull/8",
+        ),
+    ] {
+        yard.run(&[
+            "supersede",
+            branch,
+            "--repo",
+            "project",
+            "--by",
+            "feature/second-try",
+            "--landing",
+            landing,
+            "--label",
+            "node=build",
+        ])
+        .success();
+    }
+
+    let (code, refused) = said(world, &["retire", "feature/first-try"]);
+    assert_eq!(code, 4, "{refused}");
+    says(&refused, "refused: feature/first-try of ");
+    says(
+        &refused,
+        "is superseded-with-changes, which `onevcs retire` does not delete; nothing was deleted",
+    );
+    says(
+        &refused,
+        &format!("  superseded by feature/second-try (landed at {url})"),
+    );
+    says(&refused, "  labels: node=build");
+    says(&refused, "  differs from main in: a.txt, b.txt");
+    says(&refused, "`onevcs reclaim feature/first-try --repo ");
+    assert!(tip(world, yard.checkout(), "feature/first-try").is_some());
+
+    // A change request the base never names is no landing, so nothing superseded it.
+    let (code, kept) = yard.verb(&["retire", "feature/never-landed"]);
+    assert_eq!(code, 4, "{kept}");
+    assert_eq!(kept["class"], "keep", "{kept}");
+    assert_eq!(kept["reason"], "unmerged-unique-commits", "{kept}");
+    assert_eq!(kept["superseded_by"], Value::Null, "{kept}");
+}
+
+#[test]
+fn a_branch_name_that_is_not_one_or_that_nothing_holds_is_refused_by_name() {
+    let yard = Yard::new();
+    let world = yard.world();
+    let (code, invalid) = said(world, &["retire", "feature/..bad"]);
+    assert_eq!(code, 2, "{invalid}");
+    says(&invalid, "\"feature/..bad\" is not a valid branch name");
+    let (code, nowhere) = said(world, &["reclaim", "feature/nowhere"]);
+    assert_ne!(code, 0, "{nowhere}");
+    says(
+        &nowhere,
+        "no checkout, pool slot or run clone of a registered identity holds \"feature/nowhere\"",
+    );
+}
+
+#[test]
+fn the_library_classifies_a_held_branch_a_retired_one_and_refuses_one_nothing_holds() {
+    let yard = Yard::new();
+    yard.landed("feature/asked", "asked.txt");
+    crate::honesty::inhabit(yard.world());
+    let providers = onevcs::Providers::real();
+    let query = |branch: &str| onevcs::RetirementQuery {
+        repo: Some("project".to_owned()),
+        branch: branch.to_owned(),
+    };
+
+    let held = onevcs::classify_retirement(&providers, &query("feature/asked"))
+        .expect("a held branch is classified");
+    assert_eq!(held.class, onevcs::RetirementClass::Retirable);
+    assert_eq!(
+        held.proof.as_ref().map(|proof| proof.kind()),
+        Some("recorded-landing")
+    );
+    assert_eq!(
+        yard.held("feature/asked").len(),
+        1,
+        "classifying deletes nothing"
+    );
+
+    yard.run(&["retire", "feature/asked"]).success();
+    let retired = onevcs::classify_retirement(&providers, &query("feature/asked"))
+        .expect("a retired branch still answers, from its record");
+    assert_eq!(retired.class, onevcs::RetirementClass::Retirable);
+    assert_eq!(retired.branch, "feature/asked");
+    assert!(retired.holders.is_empty(), "{retired:?}");
+
+    let nowhere = onevcs::classify_retirement(&providers, &query("feature/never"))
+        .expect_err("nothing holds it");
+    assert!(
+        nowhere
+            .to_string()
+            .contains("no retirement of it is recorded"),
+        "{nowhere}"
+    );
+}
