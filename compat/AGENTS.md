@@ -26,13 +26,16 @@ claim is about:
 - `tests/released.rs` holds **0.13.0** — a build from before an envelope carried
   `phase` — to reading the envelope this build stamps one on. It is linked as
   `onevcs-envelope-era`, because only a build that old can make that claim.
-- `tests/retired.rs` holds **0.32.2** — the release `ai-orchestrator`'s
-  `config/onevcs.version` names, which is the build a consumer shares a host's
-  `$ONEVCS_HOME` with — to reading the state this build leaves after retiring a
-  branch: the registry, every session record, every stream (the `branch-superseded`
-  and `branch-retired` kinds it has no word for included), and its own `recoverable`
-  and `status` answers about a branch nothing retired, unchanged. It is the plain
-  `onevcs` dependency. When that file moves to another release, move this pin with it.
+- `tests/retired.rs` holds **0.32.2** — the release consumers ran when retirement
+  landed (on 2026-09-26, the one `ai-orchestrator` pinned), so the build a consumer
+  shared a host's `$ONEVCS_HOME` with — to reading the state this build leaves after
+  retiring a branch: the registry, every session record, every stream (the
+  `branch-superseded` and `branch-retired` kinds it has no word for included), and its
+  own `recoverable` and `status` answers about a branch nothing retired, unchanged. It
+  is the plain `onevcs` dependency. The version is a decision recorded here, not a
+  mirror of any other repository's file: this project is offline and cannot read one,
+  and the claim stays true of 0.32.2 whatever a consumer later pins. Moving it to a
+  newer release is a new claim someone decides on, never a sync.
 
 The second claim needs this build to *write* the state, so this build is linked too,
 from the path beside it, as `onevcs-current`: one journey writes a real scratch host

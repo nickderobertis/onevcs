@@ -25,9 +25,11 @@ description = "Holds a released onevcs to reading the envelopes this build write
 [workspace]
 
 [dev-dependencies]
-# The build a consumer pins: the release named in `ai-orchestrator`'s
-# `config/onevcs.version`. Pinned exactly: what this proves is a property of *that*
-# build, so a range that quietly moved would change what was proved.
+# The build consumers ran when retirement landed (2026-09-26), which `tests/retired.rs`
+# holds to reading a host this build retired a branch on. A decision recorded here,
+# not a mirror of another repository — `compat/AGENTS.md` says why. Pinned exactly:
+# what this proves is a property of *that* build, so a range that quietly moved would
+# change what was proved.
 # llmlint: ignore[crates_stay_in_one_cargo_workspace] a released build pinned exactly is the subject of the claim, and a workspace dependency could only name this build.
 onevcs = "=0.32.2"
 # A build from before an envelope carried `phase`, which is the one claim
