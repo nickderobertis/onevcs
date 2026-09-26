@@ -205,7 +205,9 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: taiki-e/install-action@v2
         with:
-          tool: release-plz@${{ steps.pin.outputs.version }}
+          # The rest is what the cut tree's `just _crate-bootstrap` would otherwise
+          # compile from source.
+          tool: release-plz@${{ steps.pin.outputs.version }},nextest,cargo-llvm-cov
       - uses: ./.github/actions/setup-just
       - run: just release-pr-check
 

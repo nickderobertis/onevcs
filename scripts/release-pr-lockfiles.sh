@@ -12,9 +12,9 @@
 # The same `cargo update --workspace` release-plz runs for the root is run here for
 # `compat/`: it moves only the path packages to what their manifests now say and
 # holds every registry package — the released builds `compat/` pins exactly
-# included — where the committed lock has them. It then proves the result with the
-# bootstrap's own `--locked` fetch, so a lock this cannot carry fails here, in the
-# release job, rather than on the pull request.
+# included — where the committed lock has them. It resolves the whole graph to do
+# that, so a lock this cannot carry fails here, in the release job; whether the
+# result bootstraps is what `just release-pr-check` and the PR's own CI answer.
 #
 # Run from the repository root by `release-plz.yml` on the release PR's branch, and
 # by `scripts/release-pr-check.sh` on a tree `release-plz update` produced.
@@ -33,11 +33,5 @@ if ! out="$(cargo update --workspace --manifest-path "$manifest" 2>&1)"; then
     printf '%s\n' "$out" >&2
     echo "release-pr-lockfiles.sh: cargo could not carry ${manifest%Cargo.toml}Cargo.lock to this tree's versions" >&2
     echo "ACTION: fix the error above in $manifest, then re-run" >&2
-    exit 1
-fi
-if ! out="$(cargo fetch --locked --quiet --manifest-path "$manifest" 2>&1)"; then
-    printf '%s\n' "$out" >&2
-    echo "release-pr-lockfiles.sh: ${manifest%Cargo.toml}Cargo.lock still fails the bootstrap's --locked fetch after the update" >&2
-    echo "ACTION: run 'cargo update --manifest-path $manifest' by hand and read what it changes" >&2
     exit 1
 fi
