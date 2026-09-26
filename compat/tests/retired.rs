@@ -33,13 +33,16 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
+        // Short on purpose: a run clone's path spells this root twice — once as its
+        // parent and once inside the workspace name derived from the checkout — and
+        // Windows' git refuses a path past 260 characters ("Filename too long").
         let root = std::env::temp_dir().join(format!(
-            "onevcs-compat-{name}-{}-{}",
+            "oc-{name}-{}-{:x}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("a clock after the epoch")
-                .as_nanos()
+                .subsec_nanos()
         ));
         std::fs::create_dir_all(&root).expect("a scratch directory");
         // Plain, never verbatim: Windows' `canonicalize` answers `\\?\C:\...`, and git
