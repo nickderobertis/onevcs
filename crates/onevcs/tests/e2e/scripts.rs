@@ -2689,3 +2689,282 @@ fn release_pr_check_without_release_plz_names_the_version_the_release_job_pins()
             "ACTION: cargo install release-plz --locked --version {pin}"
         ));
 }
+
+#[test]
+fn a_carry_origin_will_not_serve_or_take_fails_the_job_and_pushes_nothing() {
+    let remote = ReleaseRemote::with_a_stale_release_pr();
+    let cut = remote.head_of(RELEASE_BRANCH);
+
+    // A release PR release-plz named and origin does not hold.
+    remote
+        .carry(r#"{"prs":[{"head_branch":"release-plz-never-pushed"}]}"#)
+        .failed()
+        .said("release-pr-carry.sh: could not fetch release-plz-never-pushed from origin");
+
+    // A commit the runner's own hooks refuse.
+    let hooks = remote.dir.path().join("hooks");
+    std::fs::create_dir_all(&hooks).expect("a hooks directory for the checkout");
+    write_stub(&hooks.join("pre-commit"), "#!/usr/bin/env bash\nexit 1\n");
+    remote.git_in(&["config", "core.hooksPath", &hooks.to_string_lossy()]);
+    remote
+        .carry(&remote.release_pr_json())
+        .failed()
+        .said(&format!(
+            "release-pr-carry.sh: could not commit the carried lockfile on {RELEASE_BRANCH}"
+        ));
+    remote.git_in(&["config", "--unset", "core.hooksPath"]);
+
+    // A push origin refuses, as it does a token without write access.
+    write_stub(
+        &remote.dir.path().join("origin.git/hooks/pre-receive"),
+        "#!/usr/bin/env bash\necho 'permission denied' >&2\nexit 1\n",
+    );
+    remote
+        .carry(&remote.release_pr_json())
+        .failed()
+        .said("permission denied")
+        .said(&format!(
+            "release-pr-carry.sh: could not push the carried lockfile to {RELEASE_BRANCH}"
+        ))
+        .said("ACTION: check the release job's token can push to");
+
+    assert_eq!(
+        remote.head_of(RELEASE_BRANCH),
+        cut,
+        "no failure pushes anything"
+    );
+}
+
+#[test]
+fn a_carry_without_jq_or_outside_a_checkout_says_which() {
+    let remote = ReleaseRemote::with_a_stale_release_pr();
+    let printed = remote.dir.path().join("release-pr.json");
+    std::fs::write(&printed, remote.release_pr_json()).expect("release-plz's output");
+
+    use std::os::unix::fs::symlink;
+    let tools = tempfile::tempdir().expect("a directory for the tools on PATH");
+    symlink(tool_path("bash"), tools.path().join("bash")).expect("bash links onto PATH");
+    Run::script("scripts/release-pr-carry.sh")
+        .arg(&printed)
+        .env("PATH", tools.path())
+        .output()
+        .failed()
+        .said("release-pr-carry.sh: jq is not installed")
+        .said("ACTION: install jq and re-run");
+
+    let outside = tempfile::tempdir().expect("a directory outside any checkout");
+    Run::script("scripts/release-pr-carry.sh")
+        .arg(&printed)
+        .current_dir(outside.path())
+        .env("GIT_CEILING_DIRECTORIES", outside.path())
+        .output()
+        .failed()
+        .said("release-pr-carry.sh: not inside a git checkout");
+}
+
+#[test]
+fn release_pr_check_outside_a_checkout_or_without_just_says_which() {
+    let outside = tempfile::tempdir().expect("a directory outside any checkout");
+    Run::script("scripts/release-pr-check.sh")
+        .current_dir(outside.path())
+        .env("GIT_CEILING_DIRECTORIES", outside.path())
+        .output()
+        .failed()
+        .said("release-pr-check.sh: not inside a git checkout")
+        .said("ACTION: run it from the root of this repository's checkout");
+
+    use std::os::unix::fs::symlink;
+    let tools = tempfile::tempdir().expect("a directory for the tools on PATH");
+    for tool in ["bash", "git"] {
+        symlink(tool_path(tool), tools.path().join(tool)).expect("a tool links onto PATH");
+    }
+    Run::script("scripts/release-pr-check.sh")
+        .env("PATH", tools.path())
+        .output()
+        .failed()
+        .said("release-pr-check.sh: just is not installed")
+        .said("ACTION: cargo install just --locked");
+}
+
+// llmlint: ignore-block[e2e_not_mocked] `release-plz` is the one program stubbed here,
+// and it is the script's external boundary rather than a step of it: the gate does not
+// install it (CI's `release-pr` job does, and runs this script against the real one on
+// every pull request), and the decisions under test — which baseline it is handed, what
+// a failed or empty update is reported as, whether the tree's lockfile step runs, and
+// whether the real `--locked` bootstrap then passes — are the script's, and run for real.
+/// A repository with this one's release shape and a `release-plz` that does one of
+/// the three things the real one can do to it: bump the crate, bump nothing, or fail.
+///
+/// The crate is a stand-in with no registry dependencies and the bootstrap recipe
+/// is the compatibility half of `_crate-bootstrap`, so the whole path runs offline.
+struct ReleaseCut {
+    dir: tempfile::TempDir,
+    stubs: tempfile::TempDir,
+}
+
+/// What the stub `release-plz` does when it is asked to `update`.
+enum Update {
+    Bumps,
+    BumpsNothing,
+    Fails,
+}
+
+impl ReleaseCut {
+    fn new(tagged: bool, carries: bool, update: &Update) -> Self {
+        let dir = tempfile::tempdir().expect("a temporary directory for the repository");
+        let root = dir.path();
+        let write = |relative: &str, body: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().expect("a fixture file has a directory"))
+                .expect("the fixture's directories must be creatable");
+            std::fs::write(path, body).expect("the fixture's files must be writable");
+        };
+        write("crates/onevcs/Cargo.toml", &Self::crate_manifest("0.1.0"));
+        write("crates/onevcs/src/lib.rs", "");
+        // The shape PR #241 gave compat/: the tree under review, linked by path.
+        write(
+            "compat/Cargo.toml",
+            "[package]\nname = \"compat\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+             publish = false\n\n[dependencies]\n\
+             onevcs-current = { package = \"onevcs\", path = \"../crates/onevcs\" }\n\n\
+             [workspace]\n",
+        );
+        write("compat/src/lib.rs", "");
+        write(
+            "justfile",
+            "_crate-bootstrap:\n    cargo fetch --locked --manifest-path compat/Cargo.toml\n",
+        );
+        if carries {
+            write(
+                "scripts/release-pr-lockfiles.sh",
+                &std::fs::read_to_string(workspace_root().join("scripts/release-pr-lockfiles.sh"))
+                    .expect("the real lockfile script is readable"),
+            );
+        }
+        let status = Command::new("cargo")
+            .args(["generate-lockfile", "--offline", "--manifest-path"])
+            .arg(root.join("compat/Cargo.toml"))
+            .status()
+            .expect("cargo must be available to lock the fixture");
+        assert!(
+            status.success(),
+            "cargo could not lock the fixture's compat/"
+        );
+        let git = |args: &[&str]| {
+            let status = hermetic_git(Command::new("git").arg("-C").arg(root).args(args))
+                .status()
+                .expect("git must be available to prepare this journey's repository");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=release-plz",
+            "-c",
+            "user.email=release-plz@invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "chore: release v0.1.0",
+        ]);
+        if tagged {
+            git(&["tag", "v0.1.0"]);
+        }
+
+        let stubs = tempfile::tempdir().expect("a temporary directory for the stub");
+        let does = match update {
+            Update::Bumps => format!(
+                "printf '{}' > crates/onevcs/Cargo.toml",
+                Self::crate_manifest("0.1.1").replace('\n', "\\n")
+            ),
+            Update::BumpsNothing => "true".to_owned(),
+            Update::Fails => {
+                "echo 'error: failed to read the registry manifest' >&2; exit 1".to_owned()
+            }
+        };
+        write_stub(
+            &stubs.path().join("release-plz"),
+            &format!(
+                "#!/usr/bin/env bash\nset -eu\nprintf '%s\\n' \"$*\" >>\"{asked}\"\n\
+                 [ \"$1\" = update ] || exit 2\n{does}\n",
+                asked = stubs.path().join("asked").display(),
+            ),
+        );
+        Self { dir, stubs }
+    }
+
+    fn crate_manifest(version: &str) -> String {
+        format!("[package]\nname = \"onevcs\"\nversion = \"{version}\"\nedition = \"2021\"\n")
+    }
+
+    fn check(&self) -> Reported {
+        let mut run = Run::script("scripts/release-pr-check.sh")
+            .current_dir(self.dir.path())
+            .path_prefix(self.stubs.path())
+            .env("CARGO_NET_OFFLINE", "true");
+        hermetic_git(&mut run.command);
+        run.output()
+    }
+
+    fn asked(&self) -> Vec<String> {
+        read_lines(&self.stubs.path().join("asked"))
+    }
+}
+
+#[test]
+fn release_pr_check_passes_a_tree_whose_lockfile_step_carries_the_compat_lock() {
+    let cut = ReleaseCut::new(true, true, &Update::Bumps);
+    cut.check()
+        .succeeded()
+        .printed("a release PR cut from HEAD (crates/onevcs/Cargo.toml 0.1.0 -> 0.1.1) bootstraps");
+    let asked = cut.asked();
+    assert!(
+        asked.len() == 1
+            && asked[0].starts_with("update --registry-manifest-path ")
+            && asked[0].contains("/baseline/crates/onevcs/Cargo.toml"),
+        "release-plz is asked to update against the v0.1.0 baseline, as the release job \
+         asks it: {asked:?}"
+    );
+}
+
+#[test]
+fn release_pr_check_fails_a_tree_from_before_the_lockfile_step_the_way_242_failed() {
+    // 58591f3's shape: compat/ links the crate by path and nothing carries its lock.
+    ReleaseCut::new(true, false, &Update::Bumps)
+        .check()
+        .failed()
+        .said("this tree has no scripts/release-pr-lockfiles.sh")
+        .said("because --locked was passed")
+        .said(
+            "release-pr-check.sh: a release PR cut from HEAD bumps crates/onevcs/Cargo.toml \
+             0.1.0 -> 0.1.1 and fails the --locked bootstrap",
+        )
+        .said("ACTION: carry compat/Cargo.lock along in the release job");
+}
+
+#[test]
+fn release_pr_check_that_cannot_cut_a_release_says_why_rather_than_passing() {
+    // With no release tag there is no baseline to cut against.
+    let untagged = ReleaseCut::new(false, true, &Update::Bumps);
+    untagged
+        .check()
+        .failed()
+        .said("release-pr-check.sh: no v* release tag is reachable from HEAD");
+    assert!(
+        untagged.asked().is_empty(),
+        "nothing is cut without a baseline"
+    );
+
+    ReleaseCut::new(true, true, &Update::Fails)
+        .check()
+        .failed()
+        .said("error: failed to read the registry manifest")
+        .said("release-pr-check.sh: release-plz update failed on HEAD");
+
+    // A check that bumps nothing proves nothing, so it does not pass.
+    ReleaseCut::new(true, true, &Update::BumpsNothing)
+        .check()
+        .failed()
+        .said("release-plz update left crates/onevcs/Cargo.toml at 0.1.0, so nothing was proved");
+}

@@ -62,7 +62,9 @@ git -C "$root" fetch --quiet origin "refs/heads/$branch" \
     || refuse "could not fetch $branch from origin" "check that the release PR's branch exists and re-run"
 work="$(mktemp -d)"
 trap 'git -C "$root" worktree remove --force "$work/tree" >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
-git -C "$root" worktree add --quiet --detach "$work/tree" FETCH_HEAD
+git -C "$root" worktree add --quiet --detach "$work/tree" FETCH_HEAD \
+    || refuse "could not check $branch out into a worktree under $work" \
+        "check the runner's free space under ${TMPDIR:-/tmp} with df -h, then re-run the job"
 
 cd "$work/tree"
 bash scripts/release-pr-lockfiles.sh
@@ -72,7 +74,9 @@ if git diff --quiet; then
 fi
 git -c user.name='github-actions[bot]' \
     -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-    commit --quiet -am "chore: carry compat/Cargo.lock to the release version"
+    commit --quiet -am "chore: carry compat/Cargo.lock to the release version" \
+    || refuse "could not commit the carried lockfile on $branch" \
+        "read git's error above; a hook or signing requirement on the runner refuses it"
 git push --quiet origin "HEAD:refs/heads/$branch" \
     || refuse "could not push the carried lockfile to $branch" \
         "check the release job's token can push to $branch, then re-run the job"
