@@ -184,8 +184,9 @@ not tell you:
 - **A lockfile outside the workspace is the release job's to carry.** `compat/`
   links `crates/onevcs` by path, so its `Cargo.lock` records the version a release
   bumps, and release-plz refreshes only the workspace's lock. The `release-plz` job
-  therefore runs `scripts/release-pr-lockfiles.sh` on the release PR's branch and
-  pushes what it changes; release-plz has no hook in between. `just
+  therefore runs `scripts/release-pr-carry.sh`, which runs
+  `scripts/release-pr-lockfiles.sh` on the release PR's branch and pushes what it
+  changes; release-plz has no hook in between. `just
   release-pr-check` (CI's `release-pr` job) cuts a release PR's tree offline with
   `release-plz update` and runs the `--locked` bootstrap on it — a new path
   dependency from outside the workspace belongs in that script.

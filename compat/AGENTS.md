@@ -75,7 +75,7 @@ lockfile, and its build lands in the clone's own `target` — `.cargo/config.tom
 reaches every crate under the clone — so there is no second directory to clean.
 Because it links this crate by path, its lockfile records this crate's version, and
 a release bump that release-plz makes leaves it stale; the release job carries it
-along with `scripts/release-pr-lockfiles.sh`, and `just release-pr-check` proves a
+along with `scripts/release-pr-carry.sh`, and `just release-pr-check` proves a
 release PR's tree still bootstraps.
 `nx.json` names `compat/**/*` among the crate test target's inputs, so a change
 here re-runs it rather than replaying a cached pass.

@@ -38,6 +38,15 @@
 //! journeys assert the message rather than merely the exit status, driving each
 //! script the way its caller does.
 //!
+//! `scripts/release-pr-carry.sh` is what keeps a release pull request's
+//! `compat/Cargo.lock` at the version release-plz bumped: it reads release-plz's
+//! JSON, and pushes one bot-authored commit onto the release PR's branch when
+//! `scripts/release-pr-lockfiles.sh` changes anything there. Its journeys run both
+//! scripts for real against a scratch `origin`, because the branch it pushed and
+//! what that branch then locks are the behaviour; `scripts/release-pr-check.sh`,
+//! which cuts a release PR's tree with the real `release-plz`, is driven here only
+//! up to its refusals, and in full by CI's `release-pr` job, which installs it.
+//!
 //! Unix only, like `smoke.rs` beside it: `nx-affected.sh` runs on the Linux
 //! `changes` and `gate` jobs alone, and the platform-specific half of
 //! `retry-install.sh`'s job — that a real `pip`/`npm install` resolves on this
@@ -87,6 +96,12 @@ impl Run {
 
     fn env(mut self, key: &str, value: impl AsRef<std::ffi::OsStr>) -> Self {
         self.command.env(key, value);
+        self
+    }
+
+    /// Run from `dir` rather than this workspace's root.
+    fn current_dir(mut self, dir: &Path) -> Self {
+        self.command.current_dir(dir);
         self
     }
 
@@ -2299,4 +2314,378 @@ fn a_normalizer_run_without_the_scratch_host_refuses_rather_than_writing_a_shot(
                 .ends_with(".norm")),
         "a refused run still wrote a normalized scene"
     );
+}
+
+/// The branch name release-plz gave release PR #242, which the journeys below use
+/// for theirs.
+const RELEASE_BRANCH: &str = "release-plz-2026-09-26T21-25-22Z";
+
+/// What a git run here reads of the host: nothing. A global `commit.gpgsign` or
+/// hook path would otherwise decide whether the journey's own commits succeed.
+fn hermetic_git(command: &mut Command) -> &mut Command {
+    command
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+}
+
+/// A repository shaped like this one where the release job meets it: a crate, a
+/// `compat/` project outside any workspace that links it by path, the real
+/// `scripts/release-pr-lockfiles.sh`, and an `origin` holding `main` and a release
+/// PR's branch that bumped the crate and left `compat/Cargo.lock` behind — which is
+/// the tree release-plz pushed for #242.
+///
+/// The crate is a stand-in with no registry dependencies, so `cargo update` resolves
+/// it offline; the lockfile script is repository-agnostic and runs unchanged.
+struct ReleaseRemote {
+    dir: tempfile::TempDir,
+}
+
+impl ReleaseRemote {
+    fn with_a_stale_release_pr() -> Self {
+        let this = Self {
+            dir: tempfile::tempdir().expect("a temporary directory for the release remote"),
+        };
+        let checkout = this.checkout();
+        this.git(
+            &this.dir.path().to_string_lossy(),
+            &["init", "--quiet", "--bare", "origin.git"],
+        );
+        this.git(
+            &this.dir.path().to_string_lossy(),
+            &["init", "--quiet", "-b", "main", "checkout"],
+        );
+        this.write("crates/foo/Cargo.toml", &Self::crate_manifest("0.1.0"));
+        this.write("crates/foo/src/lib.rs", "");
+        this.write(
+            "compat/Cargo.toml",
+            "[package]\nname = \"compat\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+             publish = false\n\n[dependencies]\nfoo = { path = \"../crates/foo\" }\n\n\
+             [workspace]\n",
+        );
+        this.write("compat/src/lib.rs", "");
+        std::fs::create_dir_all(checkout.join("scripts")).expect("a scripts directory");
+        std::fs::copy(
+            workspace_root().join("scripts/release-pr-lockfiles.sh"),
+            checkout.join("scripts/release-pr-lockfiles.sh"),
+        )
+        .expect("the real lockfile script copies into the fixture");
+        let status = Command::new("cargo")
+            .args(["generate-lockfile", "--offline", "--manifest-path"])
+            .arg(checkout.join("compat/Cargo.toml"))
+            .status()
+            .expect("cargo must be available to lock the fixture");
+        assert!(
+            status.success(),
+            "cargo could not lock the fixture's compat/"
+        );
+        this.commit("chore: a repository with a compatibility project");
+        // Absolute, like the URL the release job's checkout has: the script pushes
+        // from a worktree of its own, where a relative path would name nothing.
+        let origin = this.dir.path().join("origin.git");
+        this.git_in(&["remote", "add", "origin", &origin.to_string_lossy()]);
+        this.git_in(&["push", "--quiet", "origin", "main"]);
+
+        // release-plz's own commit: the crate bumped, compat/Cargo.lock untouched.
+        this.git_in(&["switch", "--quiet", "-c", RELEASE_BRANCH]);
+        this.write("crates/foo/Cargo.toml", &Self::crate_manifest("0.1.1"));
+        this.commit("chore: release v0.1.1");
+        this.git_in(&["push", "--quiet", "origin", RELEASE_BRANCH]);
+        // The release job runs on the push to main, not on the release branch.
+        this.git_in(&["switch", "--quiet", "main"]);
+        this
+    }
+
+    fn crate_manifest(version: &str) -> String {
+        format!("[package]\nname = \"foo\"\nversion = \"{version}\"\nedition = \"2021\"\n")
+    }
+
+    fn checkout(&self) -> PathBuf {
+        self.dir.path().join("checkout")
+    }
+
+    fn write(&self, relative: &str, body: &str) {
+        let path = self.checkout().join(relative);
+        std::fs::create_dir_all(path.parent().expect("a fixture file has a directory"))
+            .expect("the fixture's directories must be creatable");
+        std::fs::write(path, body).expect("the fixture's files must be writable");
+    }
+
+    fn commit(&self, message: &str) {
+        self.git_in(&["add", "-A"]);
+        self.git_in(&[
+            "-c",
+            "user.name=release-plz",
+            "-c",
+            "user.email=release-plz@invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ]);
+    }
+
+    fn git_in(&self, args: &[&str]) -> String {
+        self.git(&self.checkout().to_string_lossy(), args)
+    }
+
+    /// `git` against `origin`, which is what the release PR's reviewers see.
+    fn origin(&self, args: &[&str]) -> String {
+        self.git(&self.dir.path().join("origin.git").to_string_lossy(), args)
+    }
+
+    fn git(&self, dir: &str, args: &[&str]) -> String {
+        let output = hermetic_git(Command::new("git").arg("-C").arg(dir).args(args))
+            .output()
+            .expect("git must be available to prepare this journey's remote");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn head_of(&self, branch: &str) -> String {
+        self.origin(&["rev-parse", &format!("refs/heads/{branch}")])
+    }
+
+    /// The version `origin`'s copy of `branch` locks the crate at.
+    fn locked_on(&self, branch: &str) -> String {
+        let lock = self.origin(&["show", &format!("{branch}:compat/Cargo.lock")]);
+        let mut lines = lock.lines();
+        lines
+            .find(|line| *line == "name = \"foo\"")
+            .and_then(|_| lines.next())
+            .and_then(|line| line.strip_prefix("version = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("{branch}'s compat/Cargo.lock locks no foo:\n{lock}"))
+            .to_owned()
+    }
+
+    /// `scripts/release-pr-carry.sh` as the release job runs it, handed `json` as
+    /// what `release-plz release-pr -o json` printed.
+    fn carry(&self, json: &str) -> Reported {
+        let printed = self.dir.path().join("release-pr.json");
+        std::fs::write(&printed, json).expect("the release-plz output must be writable");
+        let mut run = Run::script("scripts/release-pr-carry.sh")
+            .arg(&printed)
+            .current_dir(&self.checkout())
+            .env("CARGO_NET_OFFLINE", "true");
+        hermetic_git(&mut run.command);
+        run.output()
+    }
+
+    fn release_pr_json(&self) -> String {
+        format!(
+            r#"{{"prs":[{{"head_branch":"{RELEASE_BRANCH}","base_branch":"main","number":242,"releases":[{{"package_name":"foo","version":"0.1.1"}}]}}]}}"#
+        )
+    }
+}
+
+#[test]
+fn a_release_pr_left_with_a_stale_compat_lock_gets_one_bot_commit_carrying_it() {
+    // #242's shape: release-plz bumped the crate and pushed, and compat/Cargo.lock
+    // still locks the old version, so every --locked bootstrap refuses the branch.
+    let remote = ReleaseRemote::with_a_stale_release_pr();
+    let cut = remote.head_of(RELEASE_BRANCH);
+    let main = remote.head_of("main");
+    assert_eq!(
+        remote.locked_on(RELEASE_BRANCH),
+        "0.1.0",
+        "the fixture starts stale"
+    );
+
+    remote
+        .carry(&remote.release_pr_json())
+        .succeeded()
+        .printed(&format!(
+            "pushed the compatibility project's lockfile onto {RELEASE_BRANCH}"
+        ));
+
+    let carried = remote.head_of(RELEASE_BRANCH);
+    assert_eq!(
+        remote.origin(&["rev-parse", &format!("{carried}^")]),
+        cut,
+        "the carry is one commit on top of release-plz's own"
+    );
+    assert_eq!(remote.locked_on(RELEASE_BRANCH), "0.1.1");
+    assert_eq!(
+        remote.origin(&["diff", "--name-only", &cut, &carried]),
+        "compat/Cargo.lock",
+        "the carry changes the lockfile and nothing else"
+    );
+    // release-plz updates a release PR in place only while every commit after its
+    // own is a bot's; anyone else's and it closes the PR and opens another.
+    assert_eq!(
+        remote.origin(&["log", "-1", "--format=%an <%ae> / %cn", &carried]),
+        "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> \
+         / github-actions[bot]"
+    );
+    assert_eq!(
+        remote.head_of("main"),
+        main,
+        "main is not the release job's to push"
+    );
+    assert_eq!(
+        remote.git_in(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        "main",
+        "the checkout running the script is left where it was"
+    );
+
+    // The next push to main re-runs the job on a release PR already carried.
+    remote
+        .carry(&remote.release_pr_json())
+        .succeeded()
+        .printed(&format!(
+            "{RELEASE_BRANCH}'s lockfiles already match its versions"
+        ));
+    assert_eq!(
+        remote.head_of(RELEASE_BRANCH),
+        carried,
+        "nothing to carry pushes nothing"
+    );
+}
+
+#[test]
+fn a_push_that_opened_no_release_pr_has_nothing_to_carry() {
+    let remote = ReleaseRemote::with_a_stale_release_pr();
+    let cut = remote.head_of(RELEASE_BRANCH);
+    remote
+        .carry(r#"{"prs":[]}"#)
+        .succeeded()
+        .printed("release-plz opened no release PR; nothing to carry");
+    assert_eq!(remote.head_of(RELEASE_BRANCH), cut);
+}
+
+#[test]
+fn release_plz_output_that_changed_shape_is_refused_rather_than_read_as_nothing_to_do() {
+    // Each of these would otherwise read as "no branch", skip the carry, and leave
+    // the release PR red the way #242 was — with the job green.
+    let remote = ReleaseRemote::with_a_stale_release_pr();
+    let cut = remote.head_of(RELEASE_BRANCH);
+    for (json, reason) in [
+        (r#"{"pull_requests":[]}"#, "has no 'prs' list"),
+        (r#"{"prs":{}}"#, "has no 'prs' list"),
+        (
+            r#"{"prs":[{"number":242}]}"#,
+            "names a release PR with no head_branch",
+        ),
+        (
+            r#"{"prs":[{"head_branch":null}]}"#,
+            "names a release PR with no head_branch",
+        ),
+        ("not json", "has no 'prs' list"),
+    ] {
+        remote
+            .carry(json)
+            .failed()
+            .said(reason)
+            .said("ACTION: read what release-plz release-pr -o json prints now");
+    }
+    assert_eq!(
+        remote.head_of(RELEASE_BRANCH),
+        cut,
+        "a refusal pushes nothing"
+    );
+}
+
+#[test]
+fn a_head_branch_that_is_not_release_plzs_own_is_never_pushed_to() {
+    let remote = ReleaseRemote::with_a_stale_release_pr();
+    let main = remote.head_of("main");
+    remote
+        .carry(r#"{"prs":[{"head_branch":"main"}]}"#)
+        .failed()
+        .said("release-plz reported head branch 'main', not a release-plz-* branch");
+    remote
+        .carry(r#"{"prs":[{"head_branch":"release-plz-..bad"}]}"#)
+        .failed()
+        .said("'release-plz-..bad', which is not a valid branch name");
+    assert_eq!(remote.head_of("main"), main);
+}
+
+#[test]
+fn a_release_pr_whose_compat_lock_cargo_cannot_carry_fails_the_job_and_pushes_nothing() {
+    let remote = ReleaseRemote::with_a_stale_release_pr();
+    // A path dependency that is not there: the resolve the carry depends on fails.
+    remote.git_in(&["switch", "--quiet", RELEASE_BRANCH]);
+    let compat = std::fs::read_to_string(remote.checkout().join("compat/Cargo.toml"))
+        .expect("the fixture has a compat manifest");
+    remote.write(
+        "compat/Cargo.toml",
+        &compat.replace("../crates/foo", "../crates/gone"),
+    );
+    remote.commit("chore: release v0.1.1");
+    remote.git_in(&["push", "--quiet", "--force", "origin", RELEASE_BRANCH]);
+    remote.git_in(&["switch", "--quiet", "main"]);
+    let cut = remote.head_of(RELEASE_BRANCH);
+
+    remote
+        .carry(&remote.release_pr_json())
+        .failed()
+        .said("release-pr-lockfiles.sh: cargo could not carry compat/Cargo.lock to this tree's versions")
+        .said("ACTION: fix the error above in compat/Cargo.toml");
+    assert_eq!(remote.head_of(RELEASE_BRANCH), cut);
+}
+
+#[test]
+fn the_release_pr_scripts_refuse_a_call_they_cannot_act_on_and_say_what_to_do() {
+    Run::script("scripts/release-pr-carry.sh")
+        .output()
+        .failed()
+        .said("release-pr-carry.sh: takes exactly one argument, got 0")
+        .said("ACTION: pass the file 'release-plz release-pr -o json' wrote");
+    Run::script("scripts/release-pr-carry.sh")
+        .arg("/nonexistent/release-pr.json")
+        .output()
+        .failed()
+        .said("release-pr-carry.sh: /nonexistent/release-pr.json is not a file");
+
+    let outside = tempfile::tempdir().expect("a directory outside any checkout");
+    Run::script("scripts/release-pr-lockfiles.sh")
+        .current_dir(outside.path())
+        .env("GIT_CEILING_DIRECTORIES", outside.path())
+        .output()
+        .failed()
+        .said("release-pr-lockfiles.sh: not inside a git checkout")
+        .said("ACTION: run it from the root of this repository's checkout");
+
+    Run::script("scripts/release-pr-check.sh")
+        .arg("no-such-ref-anywhere")
+        .output()
+        .failed()
+        .said("release-pr-check.sh: 'no-such-ref-anywhere' names no commit in this repository")
+        .said("ACTION: pass a branch, tag, or commit that exists here");
+}
+
+#[test]
+fn release_pr_check_without_release_plz_names_the_version_the_release_job_pins() {
+    // A PATH with what the script needs before it looks for release-plz, and not
+    // release-plz — which is what a fresh clone has.
+    use std::os::unix::fs::symlink;
+    let tools = tempfile::tempdir().expect("a directory for the tools on PATH");
+    for tool in ["bash", "git", "just", "sed"] {
+        symlink(tool_path(tool), tools.path().join(tool)).expect("a tool links onto PATH");
+    }
+    let pin = read_lines(&workspace_root().join(".github/workflows/release-plz.yml"))
+        .into_iter()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("RELEASE_PLZ_VERSION: \"")
+                .and_then(|rest| rest.split('"').next().map(str::to_owned))
+        })
+        .expect("release-plz.yml pins RELEASE_PLZ_VERSION");
+
+    Run::script("scripts/release-pr-check.sh")
+        .env("PATH", tools.path())
+        .output()
+        .failed()
+        .said("release-pr-check.sh: release-plz is not installed")
+        .said(&format!(
+            "ACTION: cargo install release-plz --locked --version {pin}"
+        ));
 }

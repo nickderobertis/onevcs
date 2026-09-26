@@ -16,8 +16,9 @@
 # that, so a lock this cannot carry fails here, in the release job; whether the
 # result bootstraps is what `just release-pr-check` and the PR's own CI answer.
 #
-# Run from the repository root by `release-plz.yml` on the release PR's branch, and
-# by `scripts/release-pr-check.sh` on a tree `release-plz update` produced.
+# Run from the repository root by `scripts/release-pr-carry.sh` on the release PR's
+# branch, and by `scripts/release-pr-check.sh` on a tree `release-plz update`
+# produced.
 
 set -euo pipefail
 

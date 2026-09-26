@@ -5,8 +5,9 @@
 #
 # A release PR's tree is produced by the `release-plz` job in
 # `.github/workflows/release-plz.yml`: `release-plz release-pr` bumps the versions
-# and the workspace's `Cargo.lock`, then `scripts/release-pr-lockfiles.sh` carries
-# the lockfiles outside that workspace along. `release-pr` is `release-plz update`
+# and the workspace's `Cargo.lock`, then `scripts/release-pr-carry.sh` runs
+# `scripts/release-pr-lockfiles.sh` on that branch to carry the lockfiles outside
+# that workspace along. `release-pr` is `release-plz update`
 # plus a push and a pull request, so this runs that same path offline, on a scratch
 # clone of REF:
 #

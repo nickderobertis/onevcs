@@ -246,7 +246,7 @@ semver-check:
 # and a tree it breaks is only seen then. See scripts/release-pr-check.sh.
 # Prove a release PR cut from REF (default HEAD, committed state) still bootstraps.
 release-pr-check ref="HEAD":
-    @bash scripts/release-pr-check.sh {{ref}}
+    @bash scripts/release-pr-check.sh {{quote(ref)}}
 
 # Reads the floor from Cargo.toml's `rust-version`; that toolchain must be
 # installed (`rustup toolchain install <version>`). Warnings are errors here too.
