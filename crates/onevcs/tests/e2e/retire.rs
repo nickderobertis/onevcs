@@ -230,22 +230,28 @@ fn holding(places: &[PathBuf], branch: &str) -> BTreeMap<PathBuf, String> {
         .collect()
 }
 
-/// Every event of one kind in every stream of this world.
+/// Every event of one kind in every stream of this world, read the way a consumer
+/// reads a stream: `onevcs events`, over every stream the contract says the records go
+/// to, under `$ONEVCS_HOME/streams`.
 fn events(world: &World, kind: &str) -> Vec<Value> {
     let Ok(streams) = std::fs::read_dir(world.home().join("streams")) else {
         return Vec::new();
     };
-    let mut found = Vec::new();
-    for stream in streams.flatten() {
-        let text = std::fs::read_to_string(stream.path()).expect("a stream");
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let event: Value = serde_json::from_str(line).expect("an event");
-            if event["kind"] == kind {
-                found.push(event);
-            }
-        }
-    }
-    found
+    let mut tokens: Vec<String> = streams
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .strip_suffix(".ndjson")
+                .map(str::to_owned)
+        })
+        .collect();
+    tokens.sort();
+    tokens
+        .iter()
+        .flat_map(|token| world.events_of(token, kind))
+        .collect()
 }
 
 /// The one fixture the retirement amendment spells that carries `marker`.
@@ -301,6 +307,11 @@ fn status(world: &World, reference: &str) -> Value {
 
 /// Every ref of every place, every session record, every run root and every stream —
 /// what a dry run must leave exactly as it found it.
+// llmlint: ignore[tests_mirror_real_usage] the property under test is the files on disk
+// themselves — a dry run must leave every ref, record, run root and stream byte for byte
+// as it found them — and every read a verb offers answers *about* those files rather than
+// reproducing them, so only reading them can show that nothing moved. What changes the
+// state (or must not) is the real binary, driven through its commands.
 fn snapshot(world: &World, repos: &[PathBuf]) -> BTreeMap<String, String> {
     let mut seen = BTreeMap::new();
     for repo in repos {

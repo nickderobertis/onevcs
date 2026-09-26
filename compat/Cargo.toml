@@ -14,25 +14,30 @@
 name = "onevcs-envelope-compat"
 version = "0.0.0"
 edition = "2021"
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] this project must stay outside the workspace for the release-path reason above, so it has no workspace to inherit its MSRV from; it states the workspace's own.
 rust-version = "1.89"
 license = "MIT"
 publish = false
 description = "Holds a released onevcs to reading the envelopes this build writes."
 
 # Its own workspace root, so cargo does not walk up and find the one next door.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] joining the workspace would put two packages named `onevcs` in one resolve graph and make `--package onevcs` ambiguous on the release path, as the header says; compat/AGENTS.md records it.
 [workspace]
 
 [dev-dependencies]
 # The build a consumer pins: the release named in `ai-orchestrator`'s
 # `config/onevcs.version`. Pinned exactly: what this proves is a property of *that*
 # build, so a range that quietly moved would change what was proved.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] a released build pinned exactly is the subject of the claim, and a workspace dependency could only name this build.
 onevcs = "=0.32.2"
 # A build from before an envelope carried `phase`, which is the one claim
 # `tests/released.rs` makes and only a build that old can make it for.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] a released build pinned exactly is the subject of the claim, and a workspace dependency could only name this build.
 onevcs-envelope-era = { package = "onevcs", version = "=0.13.0" }
 # This build, linked beside the release so one journey writes a host's state with it
 # and reads that state back with the release. A path rather than a version, because
 # what writes the records has to be the tree under review.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] a project outside the workspace reaches the tree under review by path; there is no workspace dependency table it could inherit.
 onevcs-current = { package = "onevcs", path = "../crates/onevcs" }
 # `preserve_order`, as the workspace's own copy declares, so a round trip through
 # the fixture compares field for field rather than reordering it.

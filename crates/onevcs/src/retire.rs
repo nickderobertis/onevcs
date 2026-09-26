@@ -676,7 +676,8 @@ pub(crate) fn describe_pass(report: &RetirementPassReport) -> Vec<String> {
 }
 
 /// Which moment acted, as the event records it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum Trigger {
     /// `onevcs retire` or `onevcs reclaim`.
     Verb,
@@ -690,7 +691,8 @@ pub(crate) enum Trigger {
 }
 
 impl Trigger {
-    fn wire(self) -> &'static str {
+    /// The word this moment travels as.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Trigger::Verb => "verb",
             Trigger::SessionClose => "session-close",
@@ -701,16 +703,18 @@ impl Trigger {
 }
 
 /// Who asked for a retirement, which decides both what it may act on and how the
-/// event records it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Acting {
+/// event records it: its `mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Acting {
     Retire,
     Reclaim,
     Automatic,
 }
 
 impl Acting {
-    fn wire(self) -> &'static str {
+    /// The word this mode travels as.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Acting::Retire => "retire",
             Acting::Reclaim => "reclaim",
@@ -1766,8 +1770,8 @@ pub(crate) struct RetiredPayload {
     proof: Option<RetirementProof>,
     superseded_by: Option<SupersededBy>,
     differing_paths: Vec<String>,
-    mode: String,
-    trigger: String,
+    mode: Acting,
+    trigger: Trigger,
     deleted: Vec<BranchHolder>,
     failed: Vec<FailedHolder>,
     slots_returned: Vec<PathBuf>,
@@ -1788,6 +1792,17 @@ impl RetiredRecord {
             serde_json::from_value(Value::Object(payload.clone())).ok()?;
         Ref::try_from(payload.branch.clone()).ok()?;
         ObjectId::parse(&payload.tip)?;
+        // A retirement acts only on a class its mode permits, and the class decides
+        // which of the reason, the proof and the supersession it carries — so a record
+        // whose fields contradict each other is one nothing wrote, and is no record.
+        let consistent = payload.mode.permits(payload.class)
+            && payload.reason.is_none()
+            && (payload.class == RetirementClass::Retirable) == payload.proof.is_some()
+            && (payload.class == RetirementClass::SupersededWithChanges)
+                == payload.superseded_by.is_some();
+        if !consistent {
+            return None;
+        }
         Some(RetiredRecord {
             payload,
             at: String::from(at.clone()),
@@ -1818,12 +1833,12 @@ impl RetiredRecord {
         &self.payload.tip
     }
 
-    pub(crate) fn mode(&self) -> &str {
-        &self.payload.mode
+    pub(crate) fn mode(&self) -> Acting {
+        self.payload.mode
     }
 
-    pub(crate) fn trigger(&self) -> &str {
-        &self.payload.trigger
+    pub(crate) fn trigger(&self) -> Trigger {
+        self.payload.trigger
     }
 
     pub(crate) fn at(&self) -> &str {
@@ -2054,6 +2069,19 @@ pub(crate) fn pass_over(
     trigger: Trigger,
     sessions: Option<Vec<Record>>,
 ) -> Result<RetirementPassReport> {
+    // Names a caller supplied, refused here where they arrive rather than compared
+    // against as though they were branches: a pair that names no branch excludes
+    // nothing, and a caller who meant to protect one would never learn it was not.
+    for excluded in &request.exclude {
+        if excluded.identity.trim().is_empty() || !git::is_valid_branch_name(&excluded.branch) {
+            return Err(error::invalid(format!(
+                "{branch:?} of {identity:?} is not a branch a pass can leave alone: an \
+                 exclusion names an identity and a valid branch name",
+                branch = excluded.branch,
+                identity = excluded.identity,
+            )));
+        }
+    }
     let host = Host::with(sessions)?;
     let identities = match &request.scope {
         Scope::All => host.identities(),
@@ -2587,8 +2615,8 @@ fn record_retirement(retired: &Retired, branch: &str, acting: Acting, trigger: T
         proof: retirement.proof.clone(),
         superseded_by: retirement.superseded_by.clone(),
         differing_paths: retirement.differing_paths.clone(),
-        mode: acting.wire().to_owned(),
-        trigger: trigger.wire().to_owned(),
+        mode: acting.to_owned(),
+        trigger: trigger.to_owned(),
         deleted: retired.deleted.clone(),
         failed: retired.failed.clone(),
         slots_returned: retired.slots_returned.clone(),

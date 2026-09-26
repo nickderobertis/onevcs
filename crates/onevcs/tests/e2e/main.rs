@@ -159,6 +159,11 @@ mod retries;
 // substituted `gh` as `host.rs`. Its own header carries the reason in full.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice, and the
+// affected selection already fails closed to everything on a base it cannot derive. The
+// twenty-three journeys here run offline, credential-free and in about six seconds.
 mod retire;
 // Unix only: its probes are real POSIX shell scripts and real `sh -c` one-liners,
 // and its landings are real local-direct publications. Its own header carries the

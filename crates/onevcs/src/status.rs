@@ -393,9 +393,9 @@ pub struct RetiredReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof: Option<crate::retire::RetirementProof>,
     /// Which verb or moment acted: `verb`, `session-close`, `sweep` or `pass`.
-    pub trigger: String,
+    pub trigger: crate::retire::Trigger,
     /// What it acted under: `retire`, `reclaim` or `automatic`.
-    pub mode: String,
+    pub mode: crate::retire::Acting,
     /// When, as the event stream stamped it.
     pub at: Stamp,
     /// The commit the branch was deleted at.
@@ -408,8 +408,8 @@ impl RetiredReport {
         Some(RetiredReport {
             class: record.class(),
             proof: record.proof().cloned(),
-            trigger: record.trigger().to_owned(),
-            mode: record.mode().to_owned(),
+            trigger: record.trigger(),
+            mode: record.mode(),
             at: Stamp::try_from(record.at().to_owned()).ok()?,
             tip: record.tip().to_owned(),
         })
@@ -3001,8 +3001,8 @@ impl Report {
                     .as_ref()
                     .map(crate::retire::RetirementProof::describe)
                     .unwrap_or_else(|| "reclaimed, its differences discarded".to_owned()),
-                trigger = retired.trigger,
-                mode = retired.mode,
+                trigger = retired.trigger.as_str(),
+                mode = retired.mode.as_str(),
                 at = String::from(retired.at.clone()),
                 tip = retired.tip,
             ));
