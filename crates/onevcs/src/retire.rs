@@ -2224,11 +2224,7 @@ fn act(
                 failed: Vec::new(),
                 slots_returned: plan.slots,
                 run_roots_removed: plan.run_roots,
-                sessions_closed: plan
-                    .sessions
-                    .iter()
-                    .map(|record| session_token(record))
-                    .collect(),
+                sessions_closed: plan.sessions.iter().map(session_token).collect(),
             });
         }
         // Immediately before anything is deleted, where every copy stands now: a copy
@@ -2239,10 +2235,8 @@ fn act(
         if !moved {
             match census.delete(branch, &classified.copies) {
                 Deletion::Moved => {}
-                Deletion::Done { deleted, failed } => {
-                    return Ok(
-                        census.finish(branch, classified, plan, deleted, failed, acting, trigger)
-                    );
+                Deletion::Done(done) => {
+                    return Ok(census.finish(branch, classified, plan, done, (acting, trigger)));
                 }
             }
         }
@@ -2277,10 +2271,13 @@ enum Deletion {
     /// was put back.
     Moved,
     /// Every copy that could be deleted was.
-    Done {
-        deleted: Vec<BranchHolder>,
-        failed: Vec<FailedHolder>,
-    },
+    Done(Done),
+}
+
+/// The places a deletion reached, and the ones it did not.
+struct Done {
+    deleted: Vec<BranchHolder>,
+    failed: Vec<FailedHolder>,
 }
 
 impl Census<'_> {
@@ -2415,24 +2412,25 @@ impl Census<'_> {
                 },
             }
         }
-        Deletion::Done {
+        Deletion::Done(Done {
             deleted: deleted.into_iter().map(|(holder, _)| holder).collect(),
             failed,
-        }
+        })
     }
 
     /// Close the records, remove the run roots, return the slots, and record it all.
-    #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
         branch: &str,
         classified: Classified,
         plan: Plan,
-        deleted: Vec<BranchHolder>,
-        mut failed: Vec<FailedHolder>,
-        acting: Acting,
-        trigger: Trigger,
+        done: Done,
+        (acting, trigger): (Acting, Trigger),
     ) -> Retired {
+        let Done {
+            deleted,
+            mut failed,
+        } = done;
         let mut sessions_closed = Vec::new();
         for record in &plan.sessions {
             if record.state != Lifecycle::Open {
