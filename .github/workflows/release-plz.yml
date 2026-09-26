@@ -4,7 +4,8 @@ name: Release-plz
 #   * release     — if a merged version-bump PR left the crate manifest at a version with
 #                   no tag yet, tag vX.Y.Z and cut the GitHub Release.
 #   * release-pr  — open/update a "release vX.Y.Z" PR that bumps the version and
-#                   writes the CHANGELOG for the commits since the last release.
+#                   writes the CHANGELOG for the commits since the last release,
+#                   then carry compat/Cargo.lock along (release-plz cannot see it).
 #   * auto-merge  — enable auto-merge on that PR so it merges once the required
 #                   checks pass; the merge re-triggers `release` above.
 #
@@ -110,10 +111,49 @@ jobs:
       # Belt to the baseline fix: never open/merge a release PR on a push that is
       # itself a merged release commit.
       - name: Open or update the release PR
+        id: release-pr
         if: "${{ !startsWith(github.event.head_commit.message, 'chore: release') }}"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-        run: release-plz release-pr ${{ steps.baseline.outputs.arg }} --git-token "$GITHUB_TOKEN"
+        run: |
+          release-plz release-pr ${{ steps.baseline.outputs.arg }} --git-token "$GITHUB_TOKEN" -o json \
+            > "$RUNNER_TEMP/release-pr.json"
+          cat "$RUNNER_TEMP/release-pr.json"
+          # An empty `prs` is "no release PR this time"; a document without the key
+          # is a release-plz whose output changed shape, and the step below must not
+          # read that as nothing to do.
+          jq -e 'has("prs")' "$RUNNER_TEMP/release-pr.json" >/dev/null \
+            || { echo "::error::release-plz release-pr -o json printed no 'prs' key"; exit 1; }
+          echo "branch=$(jq -r '.prs[0].head_branch // empty' "$RUNNER_TEMP/release-pr.json")" >> "$GITHUB_OUTPUT"
+
+      # `compat/` is a cargo project outside the workspace that links crates/onevcs
+      # by path, so its Cargo.lock records that crate's version — and release-plz,
+      # which only refreshes the workspace's own lock, leaves it naming the old one.
+      # release-plz has no hook between its update and its commit, so the release
+      # PR's branch gets one more commit here; `just release-pr-check` drives this
+      # same script on a tree `release-plz update` produced. Authored as the Actions
+      # bot, because release-plz updates a release PR in place only while every
+      # commit after its own is a bot's — anyone else's, and it closes the PR and
+      # opens another.
+      - name: Carry the out-of-workspace lockfiles onto the release PR
+        if: steps.release-pr.outputs.branch != ''
+        env:
+          BRANCH: ${{ steps.release-pr.outputs.branch }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git fetch --quiet origin "refs/heads/$BRANCH"
+          git switch --quiet --detach FETCH_HEAD
+          bash scripts/release-pr-lockfiles.sh
+          if git diff --quiet; then
+            echo "The release PR's lockfiles already match its versions."
+          else
+            git commit --quiet -am "chore: carry compat/Cargo.lock to the release version"
+            git push --quiet origin "HEAD:refs/heads/$BRANCH"
+            echo "Pushed the compatibility project's lockfile onto $BRANCH."
+          fi
 
       - name: Auto-merge the release PR when the gate is green
         if: "${{ !startsWith(github.event.head_commit.message, 'chore: release') }}"

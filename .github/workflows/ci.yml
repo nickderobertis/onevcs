@@ -181,6 +181,34 @@ jobs:
           # it only to point a run somewhere else, and only at a name ending
           # `-smoke` — the tier refuses anything else.
 
+  # The tree a release PR carries is made on a push to main, by release-plz.yml,
+  # after every check here has passed on the pull request — so a change that leaves
+  # that tree unable to bootstrap is otherwise found on the release PR, where #242
+  # found the stale compat/Cargo.lock. This cuts one offline with `release-plz
+  # update` and bootstraps it. Not gated on `changes`: release-plz.toml, the
+  # workflow, and compat/ are all outside the crate project and can each break it.
+  release-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The release baseline is the latest `v*` tag, as release-plz.yml reads it.
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      # The version the release job runs, read from where it is pinned rather than
+      # pinned a second time here.
+      - name: Read the release-plz pin
+        id: pin
+        run: |
+          version="$(sed -n 's/^ *RELEASE_PLZ_VERSION: *"\([^"]*\)".*/\1/p' .github/workflows/release-plz.yml)"
+          [ -n "$version" ] || { echo "::error::release-plz.yml pins no RELEASE_PLZ_VERSION"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz@${{ steps.pin.outputs.version }}
+      - uses: ./.github/actions/setup-just
+      - run: just release-pr-check
+
   # Advisory + license audit and unused-dependency check. Its own Linux-only job:
   # it needs a network advisory DB and must not be duplicated across the matrix.
   deny:

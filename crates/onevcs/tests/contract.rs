@@ -7119,3 +7119,57 @@ fn the_retirement_amendment_spells_exactly_the_flags_its_verbs_take() {
             .collect()
     );
 }
+
+#[test]
+fn a_release_pr_carries_the_compatibility_lockfile_and_ci_cuts_one_to_prove_it() {
+    // `compat/` links crates/onevcs by path from outside the workspace, so its
+    // Cargo.lock records that crate's version, and `release-plz release-pr` — which
+    // refreshes only the workspace's lock — leaves it naming the old one. Release PR
+    // #242 went red on exactly that. Two things keep it from recurring, and both rot
+    // silently: the release job's step that carries the lock, which has to run
+    // after release-plz has cut the branch, and CI's `just release-pr-check`, which
+    // drives that same script on a tree `release-plz update` produced.
+    let workflow = repo_file(".github/workflows/release-plz.yml");
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&workflow).expect("a workflow file is YAML");
+    let runs: Vec<String> = doc
+        .get("jobs")
+        .and_then(|jobs| jobs.get("release-plz"))
+        .and_then(|job| job.get("steps"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .expect("release-plz.yml has a release-plz job with steps")
+        .iter()
+        .map(|step| {
+            step.get("run")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    let cut = runs
+        .iter()
+        .position(|run| run.contains("release-plz release-pr"))
+        .expect("the release-plz job no longer runs `release-plz release-pr`");
+    let carried = runs
+        .iter()
+        .position(|run| run.contains("bash scripts/release-pr-lockfiles.sh"))
+        .expect(
+            "the release-plz job no longer runs scripts/release-pr-lockfiles.sh, so a release \
+             PR leaves compat/Cargo.lock at the old version",
+        );
+    assert!(
+        carried > cut,
+        "scripts/release-pr-lockfiles.sh runs before `release-plz release-pr`, on a tree the \
+         release PR does not carry"
+    );
+    assert!(
+        repo_file("scripts/release-pr-check.sh").contains("bash scripts/release-pr-lockfiles.sh"),
+        "just release-pr-check no longer drives the release job's own lockfile step"
+    );
+    assert!(
+        workflow_run_lines(&repo_file(".github/workflows/ci.yml"))
+            .iter()
+            .any(|line| line == "just release-pr-check"),
+        "ci.yml no longer cuts a release PR's tree and bootstraps it"
+    );
+}

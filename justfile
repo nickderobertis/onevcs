@@ -240,6 +240,14 @@ semver-check:
     @command -v cargo-semver-checks >/dev/null || { echo "cargo-semver-checks not installed: cargo install cargo-semver-checks --locked" >&2; exit 1; }
     @cargo semver-checks check-release --workspace
 
+# Separate from `check`: it needs `release-plz`, which the gate does not install.
+# CI's `release-pr` job runs it with the version `release-plz.yml` pins, because a
+# release PR is cut on a push to main — after every pull-request check has passed —
+# and a tree it breaks is only seen then. See scripts/release-pr-check.sh.
+# Prove a release PR cut from REF (default HEAD, committed state) still bootstraps.
+release-pr-check ref="HEAD":
+    @bash scripts/release-pr-check.sh {{ref}}
+
 # Reads the floor from Cargo.toml's `rust-version`; that toolchain must be
 # installed (`rustup toolchain install <version>`). Warnings are errors here too.
 # Build under the declared MSRV.
