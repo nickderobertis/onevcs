@@ -181,6 +181,14 @@ not tell you:
   everything packaged from it: the wheel takes it via maturin's
   `dynamic = ["version"]` and the npm packages via `scripts/npm-build.mjs`.
   Never write a version into `pyproject.toml` or `npm/onevcs/package.json`.
+- **A lockfile outside the workspace is the release job's to carry.** `compat/`
+  links `crates/onevcs` by path, so its `Cargo.lock` records the version a release
+  bumps, and release-plz refreshes only the workspace's lock. The `release-plz` job
+  therefore runs `scripts/release-pr-lockfiles.sh` on the release PR's branch and
+  pushes what it changes; release-plz has no hook in between. `just
+  release-pr-check` (CI's `release-pr` job) cuts a release PR's tree offline with
+  `release-plz update` and runs the `--locked` bootstrap on it — a new path
+  dependency from outside the workspace belongs in that script.
 - **`onevcs-testing` versions and tags on its own.** It is its own deliverable, so
   a change to a test provider must not bump the CLI everyone installs. Its tag is
   `onevcs-testing-vX.Y.Z` (one `git_tag_name` template for two packages would
