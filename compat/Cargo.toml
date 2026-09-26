@@ -43,4 +43,5 @@ onevcs-envelope-era = { package = "onevcs", version = "=0.13.0" }
 onevcs-current = { package = "onevcs", path = "../crates/onevcs" }
 # `preserve_order`, as the workspace's own copy declares, so a round trip through
 # the fixture compares field for field rather than reordering it.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] a project outside the workspace has no workspace dependency table to inherit this from; it restates the workspace's own version and features.
 serde_json = { version = "1", features = ["preserve_order"] }

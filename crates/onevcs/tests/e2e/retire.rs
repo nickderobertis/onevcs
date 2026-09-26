@@ -1089,6 +1089,10 @@ fn a_change_request_recorded_against_a_base_git_would_not_accept_keeps_the_branc
     let text = std::fs::read_to_string(&stream).expect("the session's stream");
     let recorded = format!("\"base\":\"{base}\"");
     assert!(text.contains(&recorded), "{text}");
+    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate records a change
+    // request against a base git would refuse — publish records the base it published
+    // against — so the input under test is a stream line some other writer left; the real
+    // binary is what reads it.
     std::fs::write(&stream, text.replace(&recorded, "\"base\":\"main..bad\""))
         .expect("the stream rewritten");
     let before = hosted.branch_on_origin("feature/mangled");

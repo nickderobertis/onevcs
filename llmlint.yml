@@ -11,7 +11,8 @@ files:
   exclude:
     - "**/.git/**"
     # Cargo-generated lockfile of the compat project, which compat/AGENTS.md keeps
-    # outside the workspace; a generated file cannot carry a suppression.
+    # outside the workspace; Cargo rewrites it on a lock update, so it cannot carry a
+    # suppression that survives one.
     - "compat/Cargo.lock"
 rationales: true
 # No `agents` block: the harness/model are NOT pinned here. `oneharness.toml`
