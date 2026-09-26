@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0](https://github.com/nickderobertis/onevcs/compare/v0.33.0...v0.34.0) - 2026-09-26
+
+### Added
+
+- *(branches)* retire branches that provably hold no work, and reclaim superseded ones ([#241](https://github.com/nickderobertis/onevcs/pull/241))
+
+### Fixed
+
+- *(release)* keep the compatibility project's lockfile in step with a release's version bump ([#244](https://github.com/nickderobertis/onevcs/pull/244))
+
 ## [0.33.0](https://github.com/nickderobertis/onevcs/compare/v0.32.2...v0.33.0) - 2026-09-26
 
 ### Added

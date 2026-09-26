@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.8.3...onevcs-testing-v0.8.4) - 2026-09-26
+
+### Added
+
+- *(branches)* retire branches that provably hold no work, and reclaim superseded ones ([#241](https://github.com/nickderobertis/onevcs/pull/241))
+
 ## [0.8.3](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.8.2...onevcs-testing-v0.8.3) - 2026-09-26
 
 ### Added
